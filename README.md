@@ -38,8 +38,13 @@ Working today:
   otherwise use for it.
 - Structured data: `page.metadata()` reads a page's JSON-LD, microdata,
   Open Graph, Twitter cards and Dublin Core in one call, in Rust.
-- Crawling: spiders, robots.txt, per-site throttling, and items written
-  to JSON Lines, CSV or Parquet.
+- Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
+  written to JSON Lines, CSV or Parquet. `allowed_domains` keeps a crawl
+  on the sites you meant; `max_items`, `max_pages`, `max_errors` and
+  `max_time` stop it when you've seen enough.
+- A response cache for the days you spend writing a spider: run it thirty
+  times and the site serves its pages once. See
+  [docs/crawling.md](docs/crawling.md#caching-while-you-develop).
 - Declarative spiders, where you describe the item and the links and
   Rust does the rest without running any Python per page.
 - Callbacks in worker processes, for spiders whose own Python is the slow
