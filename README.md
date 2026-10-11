@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/netweir/netweir/main/docs/assets/header.gif" alt="netweir: Rust does the work. You write Python." width="100%"></p>
+
 # netweir
 
 An ultra-fast, self-healing, undetectable web scraper. Rust does the work;
