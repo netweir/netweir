@@ -106,6 +106,12 @@ pub(crate) enum Expr {
         predicates: Vec<Expr>,
         steps: Vec<Step>,
     },
+    /// Part of a predicate that walks the document and depends only on the
+    /// node being tested, not its position or the size of the set, and
+    /// whose value only matters as a number or a yes or no. The evaluator
+    /// keeps that for each node in the numbered slot for the rest of the
+    /// run. Made by [`memoize`].
+    Memo(Box<Expr>, usize),
 }
 
 pub(crate) fn parse(src: &str, tokens: Vec<Token>) -> Result<Expr, XPathError> {
@@ -526,7 +532,149 @@ impl Expr {
                 predicates.iter().for_each(|p| p.variables(out));
                 steps(s, out);
             }
+            Expr::Memo(e, _) => e.variables(out),
             Expr::Literal(_) | Expr::Number(_) => {}
         }
+    }
+
+    /// True when the value reads the position or size of the set being
+    /// filtered. Predicates inside a path or filter have a context of their
+    /// own, so what they read doesn't count.
+    fn reads_position(&self) -> bool {
+        match self {
+            Expr::Call(name, args) => {
+                matches!(name.as_str(), "position" | "last")
+                    || args.iter().any(Expr::reads_position)
+            }
+            Expr::Negate(e) | Expr::Memo(e, _) => e.reads_position(),
+            Expr::Binary(_, a, b) | Expr::Union(a, b) => a.reads_position() || b.reads_position(),
+            Expr::Filter { primary, .. } => primary.reads_position(),
+            Expr::Literal(_) | Expr::Number(_) | Expr::Variable(_) | Expr::Path { .. } => false,
+        }
+    }
+
+    /// True when working the expression out walks the document beyond the
+    /// node itself and its attributes, which is what makes testing a node
+    /// twice expensive.
+    fn walks(&self) -> bool {
+        match self {
+            Expr::Path { absolute, steps } => {
+                *absolute
+                    || steps.iter().any(|s| {
+                        !matches!(s.axis, Axis::Itself | Axis::Attribute)
+                            || s.predicates.iter().any(Expr::walks)
+                    })
+            }
+            Expr::Filter { .. } => true,
+            Expr::Literal(_) | Expr::Number(_) | Expr::Variable(_) => false,
+            Expr::Negate(e) | Expr::Memo(e, _) => e.walks(),
+            Expr::Binary(_, a, b) | Expr::Union(a, b) => a.walks() || b.walks(),
+            Expr::Call(_, args) => args.iter().any(Expr::walks),
+        }
+    }
+}
+
+/// Wraps in [`Expr::Memo`] every predicate that walks the document without
+/// reading its position. In one that does read it, wraps the parts that
+/// walk without reading it and give a yes or no or a number: `and`/`or`
+/// operands, arguments to `not()` and `boolean()`, and calls such as
+/// `count()`. A predicate tests the same node many times when predicates
+/// nest: in `//*[..//*[..//*[.]]]` the inner one sees every node once for
+/// each node the outer one tests, and the work grew as nodes^depth.
+///
+/// A node-set compared with the position, as in `[..//x = position()]`, is
+/// still worked out every time: keeping node-sets for every node could
+/// take memory growing as nodes squared.
+pub(crate) fn memoize(expr: &mut Expr) {
+    visit(expr, &mut 0);
+}
+
+fn visit(expr: &mut Expr, slots: &mut usize) {
+    match expr {
+        Expr::Binary(_, a, b) | Expr::Union(a, b) => {
+            visit(a, slots);
+            visit(b, slots);
+        }
+        Expr::Negate(e) | Expr::Memo(e, _) => visit(e, slots),
+        Expr::Call(_, args) => args.iter_mut().for_each(|a| visit(a, slots)),
+        Expr::Path { steps, .. } => {
+            for p in steps.iter_mut().flat_map(|s| &mut s.predicates) {
+                predicate(p, slots);
+            }
+        }
+        Expr::Filter {
+            primary,
+            predicates,
+            steps,
+        } => {
+            visit(primary, slots);
+            let in_steps = steps.iter_mut().flat_map(|s| &mut s.predicates);
+            for p in predicates.iter_mut().chain(in_steps) {
+                predicate(p, slots);
+            }
+        }
+        Expr::Literal(_) | Expr::Number(_) | Expr::Variable(_) => {}
+    }
+}
+
+fn predicate(p: &mut Expr, slots: &mut usize) {
+    visit(p, slots);
+    keep_or_look_inside(p, slots);
+}
+
+fn keep_or_look_inside(e: &mut Expr, slots: &mut usize) {
+    if !e.walks() {
+        return;
+    }
+    if !e.reads_position() {
+        let inner = std::mem::replace(e, Expr::Number(0.0));
+        *e = Expr::Memo(Box::new(inner), *slots);
+        *slots += 1;
+        return;
+    }
+    match e {
+        Expr::Binary(Op::And | Op::Or, a, b) => {
+            keep_or_look_inside(a, slots);
+            keep_or_look_inside(b, slots);
+        }
+        Expr::Call(name, args) if matches!(name.as_str(), "not" | "boolean") => {
+            args.iter_mut().for_each(|a| keep_or_look_inside(a, slots));
+        }
+        _ => scalar_calls(e, slots),
+    }
+}
+
+/// Wraps the calls under `e` that walk without reading the position and
+/// give a number or a yes or no.
+fn scalar_calls(e: &mut Expr, slots: &mut usize) {
+    match e {
+        Expr::Binary(_, a, b) | Expr::Union(a, b) => {
+            scalar_calls(a, slots);
+            scalar_calls(b, slots);
+        }
+        Expr::Negate(e) => scalar_calls(e, slots),
+        Expr::Call(name, _) => {
+            let scalar = matches!(
+                name.as_str(),
+                "count"
+                    | "sum"
+                    | "string-length"
+                    | "number"
+                    | "boolean"
+                    | "not"
+                    | "contains"
+                    | "starts-with"
+                    | "re:test"
+                    | "floor"
+                    | "ceiling"
+                    | "round"
+            );
+            if scalar && e.walks() && !e.reads_position() {
+                keep_or_look_inside(e, slots);
+            } else if let Expr::Call(_, args) = e {
+                args.iter_mut().for_each(|a| scalar_calls(a, slots));
+            }
+        }
+        _ => {}
     }
 }

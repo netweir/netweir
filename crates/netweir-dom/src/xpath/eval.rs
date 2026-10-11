@@ -1,6 +1,8 @@
 //! Evaluating an XPath expression tree against a document.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use super::parser::{Axis, Expr, NodeTest, Op, Step};
 use crate::document::{Node, NodeKind};
@@ -73,6 +75,17 @@ struct Context<'a, 'v> {
     size: usize,
     root: Node<'a>,
     vars: &'v [(String, XValue)],
+    kept: &'v RefCell<Kept>,
+}
+
+/// Values of a run's [`Expr::Memo`] expressions, by slot and node key. Only
+/// a number or a yes or no is ever needed from them.
+type Kept = HashMap<(usize, (u32, u32)), Scalar>;
+
+#[derive(Debug, Clone, Copy)]
+enum Scalar {
+    Num(f64),
+    Bool(bool),
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -84,12 +97,14 @@ pub(super) fn run<'a>(
     vars: &[(String, XValue)],
 ) -> Result<Vec<Hit<'a>>> {
     let root = scope.doc.root();
+    let kept = RefCell::default();
     let ctx = Context {
         item: Item::Node(scope),
         position: 1,
         size: 1,
         root,
         vars,
+        kept: &kept,
     };
     Ok(into_hits(eval(expr, &ctx)?))
 }
@@ -165,6 +180,26 @@ fn eval_here<'a>(expr: &Expr, ctx: &Context<'a, '_>) -> Result<Value<'a>> {
             Value::Nodes(in_document_order(a))
         }
         Expr::Call(name, args) => call(name, args, ctx)?,
+        Expr::Memo(e, slot) => {
+            let key = (*slot, ctx.item.key());
+            // Not borrowed while evaluating: slots inside `e` fill too.
+            let known = ctx.kept.borrow().get(&key).copied();
+            let scalar = match known {
+                Some(s) => s,
+                None => {
+                    let s = match eval(e, ctx)? {
+                        Value::Num(n) => Scalar::Num(n),
+                        other => Scalar::Bool(boolean(&other)),
+                    };
+                    ctx.kept.borrow_mut().insert(key, s);
+                    s
+                }
+            };
+            match scalar {
+                Scalar::Num(n) => Value::Num(n),
+                Scalar::Bool(b) => Value::Bool(b),
+            }
+        }
         Expr::Path { absolute, steps } => {
             let start = if *absolute {
                 Item::Node(ctx.root)
@@ -402,6 +437,7 @@ fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Resul
             size,
             root: ctx.root,
             vars: ctx.vars,
+            kept: ctx.kept,
         };
         let keep = match eval(pred, &inner)? {
             Value::Num(n) => n == (i + 1) as f64,

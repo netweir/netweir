@@ -38,7 +38,8 @@ pub struct XPath {
 impl XPath {
     pub fn new(src: &str) -> Result<XPath, XPathError> {
         let tokens = lexer::tokenize(src)?;
-        let expr = parser::parse(src, tokens)?;
+        let mut expr = parser::parse(src, tokens)?;
+        parser::memoize(&mut expr);
         Ok(XPath {
             src: src.to_string(),
             expr,

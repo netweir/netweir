@@ -504,3 +504,55 @@ fn id_finds_every_token_in_document_order() {
     assert_eq!(on(html, "id(//p[2]/@id)/text()"), ["2"]);
     assert_eq!(on(html, "id('zz')"), Vec::<String>::new());
 }
+
+/// Runs `query` on another thread and fails if it takes over ten seconds,
+/// so a regression shows up as a failure instead of a hung test run.
+fn finishes_quickly(query: &str) {
+    let query = query.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let doc = Document::parse(PAGE);
+        let result = XPath::new(&query).and_then(|x| x.run(doc.root()));
+        let _ = tx.send(result.map(|hits| hits.len()));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the query was still running after ten seconds")
+        .expect("the query should parse and run");
+}
+
+#[test]
+fn nested_predicates_test_each_node_once() {
+    // A predicate nested in another tests every node again for each node the
+    // outer one tests, so the work grew as nodes^depth: the fuzzer found an
+    // input that ran for half an hour.
+    let nest = |step: &str| (0..12).fold(".".to_string(), |inner, _| format!("{step}[{inner}]"));
+    finishes_quickly(&nest("//*"));
+    finishes_quickly(&format!("//*[{}]", nest("..//*")));
+    // The parts of a predicate that don't read the position are kept even
+    // when another part does.
+    let mixed = |shape: &str| {
+        let nested = (0..12).fold("1".to_string(), |inner, _| {
+            shape.replace("INNER", &format!("..//*[{inner}]"))
+        });
+        format!("//*[{nested}]")
+    };
+    finishes_quickly(&mixed("position() > 0 and INNER"));
+    finishes_quickly(&mixed("count(INNER) >= position()"));
+    finishes_quickly(&mixed("not(INNER) or position() = last()"));
+    finishes_quickly(include_str!(
+        "fixtures/xpath/nested-absolute-predicates.txt"
+    ));
+}
+
+#[test]
+fn a_kept_verdict_still_counts_positions() {
+    // The number a predicate gives is kept per node, but which nodes it
+    // keeps depends on their position in each set it filters.
+    assert_eq!(eval("//li[count(..//li) - 2]/text()"), ["b"]);
+    assert_eq!(eval("//li[count(//li) - 1][. = //li]/text()"), ["c"]);
+    assert_eq!(eval("//div[.//p[2]][//li]/@id"), ["intro"]);
+    assert_eq!(
+        eval("//p[../@id = //div[2]/@id or . = //p[last()]]/text()"),
+        ["Three"]
+    );
+}
