@@ -206,6 +206,17 @@ class Page:
         resolved against the page."""
         return self.root.metadata(self.urljoin(""))
 
+    def js_data(self, name: str | None = None) -> Any:
+        """Data the page keeps in its ``<script>`` elements, read as
+        JavaScript (unquoted keys, single quotes, trailing commas and
+        comments are all fine).
+
+        With ``name``, the value assigned to it (``window.__STATE__ =
+        {...}``, ``var data = [...]``, ``"name": {...}``, or a JSON script
+        with that id, like Next.js's ``__NEXT_DATA__``), or None. Without,
+        a list of every object and array in every script, in order."""
+        return self.root.js_data(name)
+
     def form(
         self,
         query: str | None = None,

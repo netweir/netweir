@@ -6,6 +6,7 @@ mod crawl;
 mod export;
 mod fetch;
 mod filter;
+mod helpers;
 mod node;
 mod rules;
 
@@ -138,5 +139,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crawl::register(m)?;
     export::register(m)?;
     rules::register(m)?;
+    helpers::register(m)?;
     Ok(())
 }

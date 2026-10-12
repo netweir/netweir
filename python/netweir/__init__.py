@@ -13,6 +13,7 @@ from netweir._errors import (
 )
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._form import Form
+from netweir._helpers import Price, parse_date, parse_price
 from netweir._monitor import Checks, validate
 from netweir._native import (
     Browser,
@@ -25,6 +26,7 @@ from netweir._native import (
     SelectorError,
     XPathError,
     __version__,
+    js_data,
     parse,
 )
 from netweir._request import Request
@@ -52,6 +54,7 @@ __all__ = [
     "Node",
     "Page",
     "ParseTimeout",
+    "Price",
     "Selection",
     "SelectorError",
     "XPathError",
@@ -60,7 +63,10 @@ __all__ = [
     "css",
     "export",
     "get",
+    "js_data",
     "parse",
+    "parse_date",
+    "parse_price",
     "post",
     "repair",
     "request",

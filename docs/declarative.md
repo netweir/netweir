@@ -32,7 +32,7 @@ An `Item` subclass lists fields. Each is `netweir.css(query, ...)` or
 | Option | Does |
 |---|---|
 | `re=` | keeps what a regular expression matches: its first group if it has one, else the whole match. Rust's regex syntax. |
-| `into=` | `int`, `float`, `bool` or `str` convert in Rust. A value that won't convert becomes `None`, with one warning naming the field and the text. Any other function runs in Python on the finished value. |
+| `into=` | `int`, `float`, `bool` or `str` convert in Rust. A value that won't convert becomes `None`, with one warning naming the field and the text. Any other function runs in Python on the finished value, `netweir.parse_price` and `netweir.parse_date` among them. |
 | `all=True` | every result, as a list, instead of the first. Nothing found is `[]`. |
 | `strip=True` | trims whitespace. |
 | `default=` | the value when nothing is found (not used with `all=True`). |

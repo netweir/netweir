@@ -572,6 +572,25 @@ impl Node {
         crate::browser::to_python(py, &value)
     }
 
+    /// Data kept in the `<script>` elements at and below this node. With
+    /// `name`, the value assigned to it (`window.name = {...}`,
+    /// `var name = [...]`, `"name": {...}`, or a JSON script with that id),
+    /// or None. Without, a list of every object and array in every script.
+    #[pyo3(signature = (name=None))]
+    fn js_data(&self, py: Python<'_>, name: Option<String>) -> PyResult<Py<PyAny>> {
+        let doc = self.doc.clone();
+        let id = self.id;
+        let wanted = name.clone();
+        // SAFETY: `id` belongs to `doc`.
+        let found =
+            py.detach(move || netweir_dom::js::scripts(unsafe { doc.node(id) }, wanted.as_deref()));
+        match (name, found.first()) {
+            (None, _) => crate::helpers::list(py, &found),
+            (Some(_), Some(value)) => crate::helpers::to_python(py, value),
+            (Some(_), None) => Ok(py.None()),
+        }
+    }
+
     /// The node as HTML.
     #[getter]
     fn html(&self, py: Python<'_>) -> String {

@@ -38,6 +38,12 @@ Working today:
   otherwise use for it.
 - Structured data: `page.metadata()` reads a page's JSON-LD, microdata,
   Open Graph, Twitter cards and Dublin Core in one call, in Rust.
+- Prices, dates and script data: `parse_price` gives a `Decimal` and the
+  currency from `£1,234.50` or `1.234,50 €`; `parse_date` reads ISO,
+  HTTP and numeric dates, month names in seven languages and `3 days
+  ago`; `page.js_data("__INITIAL_STATE__")` reads the JavaScript objects
+  pages keep their data in. All three work as `into=` in an item. See
+  [docs/selecting.md](docs/selecting.md#prices-dates-and-data-in-scripts).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Middlewares, signals and

@@ -1,7 +1,7 @@
 # netweir documentation
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
-- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries.
+- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; structured data, prices, dates and the data in scripts.
 - [Trying a page](shell.md): the page netweir gets, on stdout, in your browser or at a Python prompt.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
 - [Crawling](crawling.md): spiders, requests, pipelines, middlewares, signals, exporters and the command line.
@@ -24,3 +24,4 @@ The designs behind it, for anyone working on netweir:
 - [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
 - [design/scrapy.md](design/scrapy.md): netweir as Scrapy's download handler.
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
+- [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
