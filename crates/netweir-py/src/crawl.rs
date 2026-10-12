@@ -671,6 +671,7 @@ impl Crawler {
         breaker_window=50, breaker_ratio=0.3, breaker_pause=300.0, checkpoint=None,
         browser="off", browser_pages=4, max_response_size=None, allowed_domains=None,
         cache=None, cache_expiry=None, deltafetch=None, deltafetch_reset=false,
+        warc=None, har=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -710,6 +711,8 @@ impl Crawler {
         cache_expiry: Option<f64>,
         deltafetch: Option<std::path::PathBuf>,
         deltafetch_reset: bool,
+        warc: Option<std::path::PathBuf>,
+        har: Option<std::path::PathBuf>,
     ) -> PyResult<Crawler> {
         let allowed_domains = netweir_core::allowed_domains(&allowed_domains.unwrap_or_default())
             .map_err(PyValueError::new_err)?;
@@ -799,6 +802,8 @@ impl Crawler {
             cache_expiry,
             deltafetch,
             deltafetch_reset,
+            warc,
+            har,
         };
         let mut options = fetch_options(profile, proxy, timeout, verify)?;
         options.max_body = max_response_size;
@@ -1183,8 +1188,17 @@ impl Crawler {
         })
     }
 
-    /// Commits the checkpoint and closes its file. Raises OSError if a
-    /// write failed.
+    /// Opens the WARC and HAR files and starts writing what was fetched.
+    /// Raises OSError if a file can't be opened, or a resumed one can't be
+    /// read.
+    fn start_archive(&self, py: Python<'_>) -> PyResult<()> {
+        let engine = self.engine.clone();
+        py.detach(move || engine.core.start_archive())
+            .map_err(pyo3::exceptions::PyOSError::new_err)
+    }
+
+    /// Commits the checkpoint and closes its file, and finishes the WARC
+    /// and HAR files. Raises OSError if a write failed.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let engine = self.engine.clone();
         py.detach(move || engine.core.close())
@@ -1218,6 +1232,7 @@ impl Crawler {
         d.set_item("cache_hits", s.cache_hits)?;
         d.set_item("cache_stores", s.cache_stores)?;
         d.set_item("proxies_benched", s.proxies_benched)?;
+        d.set_item("archive_errors", s.archive_errors)?;
         Ok(d)
     }
 

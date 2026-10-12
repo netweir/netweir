@@ -3,13 +3,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use url::Url;
-use wreq::header::{HeaderName, HeaderValue, LOCATION, OrigHeaderMap, SET_COOKIE};
+use wreq::header::{HeaderMap, HeaderName, HeaderValue, LOCATION, OrigHeaderMap, SET_COOKIE};
 use wreq::{Proxy, Uri, Version, redirect};
+use wreq_proto::ext::{OnPreserveHeaderCallback, ReasonPhrase};
 
+use crate::archive::{Archive, Exchange};
 use crate::decode::decode;
 use crate::profile::{Profile, Shape};
 
@@ -34,6 +36,8 @@ pub struct FetchOptions {
     /// that has already decided whether to use a proxy (Scrapy's proxy
     /// middleware), or a request it sent direct would go through one.
     pub system_proxy: bool,
+    /// Where every request sent and the response it got are kept.
+    pub archive: Option<Archive>,
 }
 
 impl FetchOptions {
@@ -46,6 +50,7 @@ impl FetchOptions {
             max_body: None,
             cookies: true,
             system_proxy: true,
+            archive: None,
         }
     }
 }
@@ -137,6 +142,121 @@ pub struct Fetcher {
     remembers_http1: bool,
     /// The headers of requests other than typing an address.
     shapes: Arc<Shapes>,
+    archive: Option<Archive>,
+}
+
+/// The header lines a request went out with, as the client wrote them.
+type Sent = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+/// What an exchange's record needs of a request and its response before
+/// the body is read.
+struct Record {
+    started: SystemTime,
+    clock: Instant,
+    /// From sending to the response's head.
+    wait: Duration,
+    sent: Sent,
+    headers: Vec<(String, Vec<u8>)>,
+    reason: String,
+}
+
+impl Record {
+    fn exchange(
+        self,
+        current: &Url,
+        outgoing: &Outgoing,
+        response: &Response,
+        truncated: bool,
+    ) -> Exchange {
+        Exchange {
+            started: self.started,
+            url: current.to_string(),
+            method: outgoing.method.clone(),
+            // The proxy's login is the crawl's own, never sent to the site.
+            request_headers: std::mem::take(
+                &mut *self.sent.lock().unwrap_or_else(|e| e.into_inner()),
+            )
+            .into_iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case("proxy-authorization"))
+            .collect(),
+            request_body: outgoing.body.clone(),
+            version: response.version,
+            status: response.status,
+            reason: self.reason,
+            response_headers: self.headers,
+            body: response.body.clone(),
+            truncated,
+            wait: self.wait,
+            receive: self.clock.elapsed().saturating_sub(self.wait),
+        }
+    }
+}
+
+/// wreq's header ordering for one request, writing down each line as the
+/// client emits it: the request's headers after the profile's defaults,
+/// the jar's Cookie, Host and Content-Length are all in. wreq calls
+/// `call_visit` as it writes an HTTP/1.1 head, and `call` before it encodes
+/// an HTTP/2 HEADERS frame (whose names are lowercase, and whose
+/// pseudo-headers aren't in the map).
+struct Recorder {
+    order: OrigHeaderMap,
+    sent: Sent,
+}
+
+impl OnPreserveHeaderCallback for Recorder {
+    fn call(&self, headers: &mut HeaderMap) {
+        self.order.call(headers);
+        let lines = headers
+            .iter()
+            .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
+            .collect();
+        *self.sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
+    }
+
+    fn call_visit(
+        &self,
+        headers: &mut HeaderMap,
+        dst: &mut dyn FnMut(&dyn AsRef<[u8]>, &HeaderValue),
+    ) {
+        let mut lines = Vec::with_capacity(headers.len());
+        self.order.call_visit(headers, &mut |name, value| {
+            lines.push((
+                String::from_utf8_lossy(name.as_ref()).into_owned(),
+                value.as_bytes().to_vec(),
+            ));
+            dst(name, value);
+        });
+        *self.sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
+    }
+}
+
+/// Sends `request` with its headers in `order`, writing down the lines it
+/// went out with in `sent`, if given.
+async fn dispatch(
+    request: wreq::RequestBuilder,
+    order: OrigHeaderMap,
+    sent: Option<&Sent>,
+) -> Result<wreq::Response, FetchError> {
+    let Some(sent) = sent else {
+        return Ok(request.orig_headers(order).send().await?);
+    };
+    // The hook goes in the request's extensions, where wreq's own ordering
+    // would otherwise go; the client has no default order to put back in
+    // its place (see Profile::emulation).
+    let (client, request) = request.build_split();
+    let mut request = request?;
+    let mut carrier = http::Request::new(());
+    wreq_proto::ext::on_preserve_header(
+        &mut carrier,
+        Recorder {
+            order,
+            sent: sent.clone(),
+        },
+    );
+    request
+        .extensions_mut()
+        .extend(carrier.into_parts().0.extensions);
+    Ok(client.execute(request).await?)
 }
 
 /// A profile's captured shapes, and its name to say which is missing.
@@ -775,6 +895,7 @@ impl Fetcher {
                 fetch: profile.fetch.clone(),
                 after_form_redirect: profile.after_form_redirect.clone(),
             }),
+            archive: options.archive.clone(),
         })
     }
 
@@ -918,18 +1039,38 @@ impl Fetcher {
         headers: &[(String, String)],
         hop: usize,
     ) -> Result<Response, FetchError> {
-        let (current, response) = self.request(url, outgoing, headers, hop).await?;
-        into_response(current.to_string(), response, self.max_body).await
+        let (current, response, record) = self.request(url, outgoing, headers, hop).await?;
+        let response = into_response(current.to_string(), response, self.max_body).await?;
+        self.keep(record, &current, outgoing, &response, false)
+            .await;
+        Ok(response)
     }
 
-    /// Sends one request, and gives the URL it went to with the answer.
+    /// Hands the exchange to the archive, when there is one.
+    async fn keep(
+        &self,
+        record: Option<Record>,
+        current: &Url,
+        outgoing: &Outgoing,
+        response: &Response,
+        truncated: bool,
+    ) {
+        if let (Some(archive), Some(record)) = (&self.archive, record) {
+            archive
+                .record(record.exchange(current, outgoing, response, truncated))
+                .await;
+        }
+    }
+
+    /// Sends one request, and gives the URL it went to with the answer,
+    /// and, with an archive, what its record needs before the body is read.
     async fn request(
         &self,
         url: &str,
         outgoing: &Outgoing,
         headers: &[(String, String)],
         hop: usize,
-    ) -> Result<(Url, wreq::Response), FetchError> {
+    ) -> Result<(Url, wreq::Response, Option<Record>), FetchError> {
         let headers = match Url::parse(url) {
             Ok(u) => outgoing.callers_headers(headers, &u),
             Err(_) => headers.to_vec(),
@@ -948,14 +1089,38 @@ impl Fetcher {
             .as_str()
             .parse()
             .map_err(|_| FetchError::invalid(format!("bad URL {url:?}")))?;
+        let sent: Option<Sent> = self.archive.as_ref().map(|_| Sent::default());
+        let (started, clock) = (SystemTime::now(), Instant::now());
         let response = if outgoing.typed() {
-            self.send_typed(&uri, &caller, hop > 0).await?
+            self.send_typed(&uri, &caller, hop > 0, sent.as_ref())
+                .await?
         } else {
-            self.send_shaped(&uri, &current, outgoing, &caller, hop > 0)
+            self.send_shaped(&uri, &current, outgoing, &caller, hop > 0, sent.as_ref())
                 .await?
         };
+        let wait = clock.elapsed();
         self.note_version(&uri, response.version());
-        Ok((current, response))
+        // The headers byte for byte, and the server's own reason phrase.
+        let record = sent.map(|sent| Record {
+            started,
+            clock,
+            wait,
+            sent,
+            headers: response
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
+                .collect(),
+            reason: match response.extensions().get::<ReasonPhrase>() {
+                Some(r) => String::from_utf8_lossy(r.as_ref()).into_owned(),
+                None => response
+                    .status()
+                    .canonical_reason()
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+        });
+        Ok((current, response, record))
     }
 
     /// `hop` for any request.
@@ -966,34 +1131,15 @@ impl Fetcher {
         headers: &[(String, String)],
         hop: usize,
     ) -> Result<Hop, FetchError> {
-        let (current, response) = self.request(url, outgoing, headers, hop).await?;
+        let (current, response, record) = self.request(url, outgoing, headers, hop).await?;
         let status = response.status().as_u16();
         let location = response
             .status()
             .is_redirection()
             .then(|| response.headers().get(LOCATION))
             .flatten()
-            .and_then(|l| l.to_str().ok());
-        let Some(location) = location else {
-            return Ok(Hop::Done(
-                into_response(current.to_string(), response, self.max_body).await?,
-            ));
-        };
-        if hop >= MAX_REDIRECTS {
-            return Err(FetchError {
-                kind: FetchErrorKind::TooManyRedirects,
-                message: format!("more than {MAX_REDIRECTS} redirects, the last to {url}"),
-            });
-        }
-        let next = current
-            .join(location)
-            .map_err(|_| FetchError::invalid(format!("redirect to a bad URL {location:?}")))?;
-        if !matches!(next.scheme(), "http" | "https") {
-            return Err(FetchError::invalid(format!(
-                "redirect to an unsupported URL {next}"
-            )));
-        }
-        let then = outgoing.redirected(status, &current, &next);
+            .and_then(|l| l.to_str().ok())
+            .map(str::to_string);
         let cookies = response
             .headers()
             .get_all(SET_COOKIE)
@@ -1001,6 +1147,35 @@ impl Fetcher {
             .filter_map(|v| v.to_str().ok())
             .map(str::to_string)
             .collect();
+        let Some(location) = location else {
+            let response = into_response(current.to_string(), response, self.max_body).await?;
+            self.keep(record, &current, outgoing, &response, false)
+                .await;
+            return Ok(Hop::Done(response));
+        };
+        // A redirect's body is read the same way whether or not it's
+        // recorded, so the connection is reused or not alike: a short one
+        // in full, which leaves the connection free for the next request,
+        // and of a long or slow one only its start, the rest dropped with
+        // the connection.
+        let (hop_response, truncated) = drain(current.to_string(), response).await;
+        self.keep(record, &current, outgoing, &hop_response, truncated)
+            .await;
+        if hop >= MAX_REDIRECTS {
+            return Err(FetchError {
+                kind: FetchErrorKind::TooManyRedirects,
+                message: format!("more than {MAX_REDIRECTS} redirects, the last to {url}"),
+            });
+        }
+        let next = current
+            .join(&location)
+            .map_err(|_| FetchError::invalid(format!("redirect to a bad URL {location:?}")))?;
+        if !matches!(next.scheme(), "http" | "https") {
+            return Err(FetchError::invalid(format!(
+                "redirect to an unsupported URL {next}"
+            )));
+        }
+        let then = outgoing.redirected(status, &current, &next);
         Ok(Hop::Redirect(next.into(), then, cookies))
     }
 
@@ -1009,6 +1184,7 @@ impl Fetcher {
         uri: &Uri,
         caller: &[(&str, HeaderName, HeaderValue)],
         redirected: bool,
+        sent: Option<&Sent>,
     ) -> Result<wreq::Response, FetchError> {
         let base = if redirected {
             &self.redirect_order
@@ -1024,7 +1200,7 @@ impl Fetcher {
                 order.insert(raw.to_string());
             }
         }
-        let mut request = self.client.get(uri.clone()).orig_headers(order);
+        let mut request = self.client.get(uri.clone());
         if self.remembers_http1 && uri.scheme_str() == Some("https") && !self.expects_http2(uri) {
             // As Safari does: an origin that answered over HTTP/1.1 is only
             // offered http/1.1 from then on.
@@ -1040,7 +1216,7 @@ impl Fetcher {
         for (_, name, value) in caller {
             request = request.header(name.clone(), value.clone());
         }
-        Ok(request.send().await?)
+        dispatch(request, order, sent).await
     }
 
     /// Any request but typing an address: the headers of the profile's
@@ -1053,6 +1229,7 @@ impl Fetcher {
         outgoing: &Outgoing,
         caller: &[(&str, HeaderName, HeaderValue)],
         redirected: bool,
+        sent: Option<&Sent>,
     ) -> Result<wreq::Response, FetchError> {
         let shapes = &self.shapes;
         let (shape, what, without) = match outgoing.kind {
@@ -1168,7 +1345,6 @@ impl Fetcher {
                 }
             }
         }
-        request = request.orig_headers(order);
         if self.remembers_http1 && uri.scheme_str() == Some("https") && !self.expects_http2(uri) {
             request = request.version(Version::HTTP_11);
         }
@@ -1178,7 +1354,7 @@ impl Fetcher {
         if let Some(body) = &outgoing.body {
             request = request.body(body.clone());
         }
-        Ok(request.send().await?)
+        dispatch(request, order, sent).await
     }
 }
 
@@ -1203,21 +1379,63 @@ fn https_origin(url: &Uri) -> Option<String> {
     })
 }
 
-async fn into_response(
-    url: String,
-    response: wreq::Response,
-    max_body: Option<u64>,
-) -> Result<Response, FetchError> {
+/// The most of a redirect's body read, and how long reading it may take.
+const REDIRECT_BODY: usize = 64 << 10;
+const REDIRECT_WAIT: Duration = Duration::from_secs(2);
+
+/// A redirect as a Response, with as much of its body as `REDIRECT_BODY`
+/// and `REDIRECT_WAIT` allow; true if that wasn't all of it.
+async fn drain(url: String, response: wreq::Response) -> (Response, bool) {
+    use http_body_util::BodyExt;
     let status = response.status().as_u16();
-    let version = match response.version() {
+    let version = version_name(response.version());
+    let headers = response_headers(&response);
+    let mut body = Vec::new();
+    let mut stream = wreq::Body::from(response);
+    let read = tokio::time::timeout(REDIRECT_WAIT, async {
+        while let Some(frame) = stream.frame().await {
+            let Ok(frame) = frame else {
+                return false;
+            };
+            let Ok(chunk) = frame.into_data() else {
+                continue; // trailers
+            };
+            let room = REDIRECT_BODY - body.len();
+            if chunk.len() > room {
+                body.extend_from_slice(&chunk[..room]);
+                return false;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        true
+    })
+    .await;
+    let whole = matches!(read, Ok(true));
+    (
+        Response {
+            url,
+            status,
+            version,
+            headers,
+            body: body.into(),
+        },
+        !whole,
+    )
+}
+
+fn version_name(version: Version) -> &'static str {
+    match version {
         Version::HTTP_09 => "HTTP/0.9",
         Version::HTTP_10 => "HTTP/1.0",
         Version::HTTP_11 => "HTTP/1.1",
         Version::HTTP_2 => "HTTP/2",
         Version::HTTP_3 => "HTTP/3",
         _ => "unknown",
-    };
-    let headers = response
+    }
+}
+
+fn response_headers(response: &wreq::Response) -> Vec<(String, String)> {
+    response
         .headers()
         .iter()
         .map(|(k, v)| {
@@ -1226,7 +1444,17 @@ async fn into_response(
                 String::from_utf8_lossy(v.as_bytes()).into_owned(),
             )
         })
-        .collect();
+        .collect()
+}
+
+async fn into_response(
+    url: String,
+    response: wreq::Response,
+    max_body: Option<u64>,
+) -> Result<Response, FetchError> {
+    let status = response.status().as_u16();
+    let version = version_name(response.version());
+    let headers = response_headers(&response);
     let body = match max_body {
         None => response.bytes().await?,
         Some(max) => read_at_most(&url, response, max).await?,

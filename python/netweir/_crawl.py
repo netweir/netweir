@@ -123,6 +123,14 @@ class Settings:
     deltafetch: str | None = None
     #: Forget every page deltafetch remembered, at the start of this run.
     deltafetch_reset: bool = False
+    #: A file to keep every request the crawl sends and every response it
+    #: gets in, as WARC: a name ending in .warc.gz (each record gzipped) or
+    #: .warc. Pages served from the cache or fetched in Chrome aren't in it.
+    #: Without a checkpoint each run starts it afresh; a resumed crawl adds
+    #: to it.
+    warc: str | None = None
+    #: The same, as a HAR file to open in a browser's network panel.
+    har: str | None = None
     #: How similar (0 to 1) an element must be to count as a tracked
     #: selector's element after the selector stops matching.
     track_threshold: float = 0.75
@@ -168,6 +176,26 @@ class Settings:
             raise ValueError("deltafetch is a directory: give one, or None")
         if self.deltafetch_reset and self.deltafetch is None:
             raise ValueError("deltafetch_reset empties deltafetch's record: set deltafetch too")
+        for name in ("warc", "har"):
+            path = getattr(self, name)
+            if path is None:
+                continue
+            # A pathlib.Path is fine to pass.
+            path = os.fspath(path)
+            object.__setattr__(self, name, path)
+            # Checked now, rather than once the crawl has started.
+            if not os.path.isdir(os.path.dirname(os.path.abspath(path))):
+                raise ValueError(f"{name}={path!r}: the directory it goes in doesn't exist")
+        # One file, by link or by letter case (one file on a case-insensitive
+        # disk, so refused on any).
+        if (
+            self.warc is not None
+            and self.har is not None
+            and os.path.realpath(self.warc).casefold() == os.path.realpath(self.har).casefold()
+        ):
+            raise ValueError(f"warc and har are both {self.warc!r}: each needs a file of its own")
+        if self.warc is not None and not self.warc.endswith((".warc", ".warc.gz")):
+            raise ValueError(f"warc must be a file ending in .warc.gz or .warc, not {self.warc!r}")
         if self.retries < 0 or self.breaker_window < 0:
             raise ValueError("retries and breaker_window must be 0 or more")
         if not 0 < self.backoff_base <= self.backoff_max or self.breaker_pause < 0:
@@ -240,6 +268,8 @@ class Settings:
             if self.deltafetch is None
             else os.path.join(self.deltafetch, "deltafetch.sqlite3"),
             deltafetch_reset=self.deltafetch_reset,
+            warc=self.warc,
+            har=self.har,
         )
 
     def _checkpoint_file(self) -> str | None:
@@ -424,6 +454,9 @@ class Spider:
             # Before any output file is touched: a pipeline that can't open
             # leaves them as they were.
             await run.open()
+            # The WARC and HAR files too: a crawl that couldn't start leaves
+            # them as they were.
+            run.engine.start_archive()
             # Cut each file back to where the record last saw it: the pages
             # of anything after that weren't recorded, and are fetched
             # again. Then record, before any is opened, how long each will

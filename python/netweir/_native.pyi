@@ -333,6 +333,8 @@ class Crawler:
         cache_expiry: float | None = None,
         deltafetch: str | None = None,
         deltafetch_reset: bool = False,
+        warc: str | None = None,
+        har: str | None = None,
     ) -> None: ...
     def add_rule(
         self,
@@ -425,6 +427,7 @@ class Crawler:
     ]: ...
     def stats(self) -> dict[str, int]: ...
     def proxy_stats(self) -> dict[str, dict[str, int]]: ...
+    def start_archive(self) -> None: ...
 
 class ItemSpec:
     def __init__(

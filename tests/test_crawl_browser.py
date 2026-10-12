@@ -3,6 +3,7 @@ blocking until a browser passes its challenge. Skipped without Chrome,
 unless NETWEIR_REQUIRE_CHROME is set."""
 
 import asyncio
+import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -95,6 +96,32 @@ def test_a_browser_request_reaches_its_callback_rendered_with_the_page_open(base
     assert seen[base + "/plain"] == ([], False), "only the request that asked used Chrome"
     assert stats["browser_fetches"] == 1
     assert all(p is None or p.closed for p in spider.kept), "pages close after the callback"
+
+
+def test_pages_fetched_in_chrome_are_left_out_of_the_warc_and_har_files(base, tmp_path):
+    from warcio.archiveiterator import ArchiveIterator
+
+    class Shop(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/rendered", browser=True)
+            yield netweir.Request(base + "/plain")
+
+        def parse(self, page):
+            pass
+
+    spider = Shop()
+    spider.settings = settings(warc=str(tmp_path / "c.warc"), har=str(tmp_path / "c.har"))
+    assert spider.run()["browser_fetches"] == 1
+    with open(tmp_path / "c.warc", "rb") as f:
+        uris = [
+            r.rec_headers.get_header("WARC-Target-URI")
+            for r in ArchiveIterator(f)
+            if r.rec_type == "response"
+        ]
+    assert uris == [base + "/plain"]
+    with open(tmp_path / "c.har", encoding="utf-8") as f:
+        entries = json.load(f)["log"]["entries"]
+    assert [e["request"]["url"] for e in entries] == [base + "/plain"]
 
 
 def test_on_block_gets_through_in_chrome_and_carries_on_over_http(base):

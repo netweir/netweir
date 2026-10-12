@@ -23,3 +23,4 @@ The designs behind it, for anyone working on netweir:
 - [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.
 - [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
 - [design/scrapy.md](design/scrapy.md): netweir as Scrapy's download handler.
+- [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.

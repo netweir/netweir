@@ -14,15 +14,19 @@ netweir-browser = { path = "../netweir-browser" }
 btls = "0.5.6"
 bytes = "1"
 chardetng = "1"
+data-encoding = "2"
 encoding_rs = "0.8"
 flate2 = "1"
+http = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.11"
 sha2 = "0.11"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 toml = "1"
 url = "2"
+wreq-proto = { version = "0.2.6", default-features = false }
 wreq = { version = "0.16.1", default-features = false, features = ["chromium-roots", "tokio-rt", "gzip", "brotli", "zstd", "deflate", "cookies"] }
 zstd = "0.14"
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }

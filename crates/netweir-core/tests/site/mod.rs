@@ -67,6 +67,8 @@ pub struct Site {
     pub hits: Arc<Mutex<Vec<(String, Instant)>>>,
     /// Each request's headers, in arrival order, lowercase names.
     pub requests: Arc<Mutex<Vec<Request>>>,
+    /// Each request's head, request line to blank line, byte for byte.
+    pub heads: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl Site {
@@ -85,6 +87,8 @@ impl Site {
         let served: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
         let requests: Arc<Mutex<Vec<Request>>> = Arc::default();
         let seen = requests.clone();
+        let heads: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let raw = heads.clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(Mutex::new(Vec::new()));
@@ -95,6 +99,7 @@ impl Site {
                 let log = log.clone();
                 let served = served.clone();
                 let seen = seen.clone();
+                let raw = raw.clone();
                 tokio::spawn(async move {
                     loop {
                         let mut head = Vec::new();
@@ -105,6 +110,7 @@ impl Site {
                                 _ => return,
                             }
                         }
+                        raw.lock().unwrap().push(head.clone());
                         let text = String::from_utf8_lossy(&head).to_string();
                         let path = text.split(' ').nth(1).unwrap_or("/").to_string();
                         log.lock().unwrap().push((path.clone(), Instant::now()));
@@ -158,6 +164,7 @@ impl Site {
             port,
             hits,
             requests,
+            heads,
         }
     }
 

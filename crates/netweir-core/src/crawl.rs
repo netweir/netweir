@@ -11,6 +11,7 @@ use netweir_browser::{Browser, Cookie, LaunchOptions, WaitUntil};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
+use crate::archive::Archive;
 use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
@@ -95,6 +96,13 @@ pub struct CrawlSettings {
     pub deltafetch: Option<std::path::PathBuf>,
     /// Empty that record when the crawl starts.
     pub deltafetch_reset: bool,
+    /// A WARC file (gzipped if the name ends in `.gz`) to keep every
+    /// request and response the crawl's HTTP client made in. `Crawler::new`
+    /// only checks it; it's opened by `Crawler::start_archive`, or else
+    /// when events are first read, and until then what's fetched waits.
+    pub warc: Option<std::path::PathBuf>,
+    /// A HAR file to keep them in, opened as `warc` is. Not the same file.
+    pub har: Option<std::path::PathBuf>,
 }
 
 /// How a crawl uses its `proxies`.
@@ -239,6 +247,8 @@ impl Default for CrawlSettings {
             cache_expiry: None,
             deltafetch: None,
             deltafetch_reset: false,
+            warc: None,
+            har: None,
         }
     }
 }
@@ -429,6 +439,9 @@ pub struct Stats {
     pub cache_stores: u64,
     /// Times a proxy was benched.
     pub proxies_benched: u64,
+    /// Responses that didn't reach the WARC or HAR file they should have,
+    /// once for each file.
+    pub archive_errors: u64,
 }
 
 /// What one proxy did in a crawl.
@@ -758,8 +771,10 @@ impl Ord for Queued {
 }
 
 impl Crawler {
-    /// Starts the scheduler on the current tokio runtime.
-    pub fn new(fetch: FetchOptions, settings: CrawlSettings) -> Result<Crawler, FetchError> {
+    /// Starts the scheduler on the current tokio runtime. The WARC and
+    /// HAR files are checked here, and opened by `start_archive` or the
+    /// first `next`.
+    pub fn new(mut fetch: FetchOptions, settings: CrawlSettings) -> Result<Crawler, FetchError> {
         check_proxies(&fetch, &settings)?;
         let mut state = State {
             proxies: Pool::new(&settings.proxies),
@@ -776,6 +791,18 @@ impl Crawler {
             }
             None => (None, None),
         };
+        if settings.warc.is_some() || settings.har.is_some() {
+            // A crawl the checkpoint has anything of resumes, and adds to
+            // its files; any other starts them afresh.
+            let resuming = !state.seen.is_empty()
+                || saved.as_ref().is_some_and(|s| {
+                    !s.pending.is_empty() || !s.items.is_empty() || s.counters.is_some()
+                });
+            fetch.archive = Some(
+                Archive::new(settings.warc.as_deref(), settings.har.as_deref(), resuming)
+                    .map_err(FetchError::invalid)?,
+            );
+        }
         let cache = match &settings.cache {
             Some(path) => Some(Arc::new(
                 Cache::open(
@@ -932,10 +959,24 @@ impl Crawler {
         }
     }
 
-    /// Commits the checkpoint and closes its file, for when the crawl is
-    /// over. Checkpoint writes after this are dropped.
+    /// Opens the WARC and HAR files and starts writing to them. Until
+    /// then they're only checked, so a crawl that fails to start leaves
+    /// them as they were; what's fetched meanwhile waits to be written.
+    pub fn start_archive(&self) -> Result<(), String> {
+        match &self.shared.options.archive {
+            Some(archive) => archive.start(),
+            None => Ok(()),
+        }
+    }
+
+    /// Commits the checkpoint and closes its file, and finishes the WARC
+    /// and HAR files, for when the crawl is over. Checkpoint writes after
+    /// this are dropped.
     pub fn close(&self) -> Result<(), String> {
-        let flushed = self.flush();
+        let mut flushed = self.flush();
+        if let Some(archive) = &self.shared.options.archive {
+            flushed = flushed.and(archive.close());
+        }
         if let Some(cp) = &self.shared.checkpoint {
             cp.close();
         }
@@ -1102,6 +1143,7 @@ impl Crawler {
     /// empty batch once nothing is queued, in flight or being checked: the
     /// crawl is finished unless more is submitted.
     pub async fn next(&self, max: usize) -> Vec<Event> {
+        self.archive_by_now();
         next_events(self.shared.clone(), max).await
     }
 
@@ -1111,11 +1153,30 @@ impl Crawler {
         &self,
         max: usize,
     ) -> impl std::future::Future<Output = Vec<Event>> + Send + 'static {
+        self.archive_by_now();
         next_events(self.shared.clone(), max)
     }
 
+    /// Starts the archive, if `start_archive` hasn't: by the time the
+    /// caller reads events, the crawl has started. A file that can't be
+    /// opened is a warning; the exchanges meant for it count in
+    /// `archive_errors`.
+    fn archive_by_now(&self) {
+        if let Some(archive) = &self.shared.options.archive
+            && let Err(message) = archive.start()
+        {
+            let mut state = self.shared.lock();
+            self.shared
+                .push_event(&mut state, Event::Warning { message });
+        }
+    }
+
     pub fn stats(&self) -> Stats {
-        self.shared.lock().stats.clone()
+        let mut stats = self.shared.lock().stats.clone();
+        if let Some(archive) = &self.shared.options.archive {
+            stats.archive_errors = archive.errors();
+        }
+        stats
     }
 
     /// Each of `proxies`, then each other proxy a request named, with what
@@ -1192,6 +1253,11 @@ impl Drop for Crawler {
     fn drop(&mut self) {
         self.shared.lock().closed = true;
         self.shared.schedule.notify_one();
+        // Ends the HAR file and lets go of both; a crawl that wasn't
+        // closed has no one to tell if that fails.
+        if let Some(archive) = &self.shared.options.archive {
+            let _ = archive.close();
+        }
         // The scheduler keeps the shared state alive a while longer; the
         // checkpoint file shouldn't stay open with it.
         if let Some(cp) = &self.shared.checkpoint {
@@ -1719,6 +1785,11 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
         ),
     }
     state.stats.in_flight -= 1;
+    if let Some(archive) = &shared.options.archive {
+        for message in archive.take_warnings() {
+            shared.push_event(&mut state, Event::Warning { message });
+        }
+    }
     if let Some(host) = state.hosts.get_mut(&q.host) {
         host.in_flight -= 1;
         if settings.throttle {

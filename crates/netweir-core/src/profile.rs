@@ -5,7 +5,7 @@
 use std::io::Write;
 
 use serde::Deserialize;
-use wreq::header::{HeaderMap, HeaderName, HeaderValue, OrigHeaderMap};
+use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::http2::{
     Http2Options, PseudoId, PseudoOrder, SettingId, SettingsOrder, StreamDependency, StreamId,
 };
@@ -368,10 +368,11 @@ impl Profile {
             ));
         }
 
+        // No header order: every request sets its own (Fetcher), and a
+        // client-wide one would take the place of the hook that records
+        // what a request was sent with.
         let mut headers = HeaderMap::new();
-        let mut header_order = OrigHeaderMap::new();
         for (k, v) in &self.headers {
-            header_order.insert(k.clone());
             // Host comes from the URL; an empty value only holds a position.
             if k.eq_ignore_ascii_case("host") || v.is_empty() {
                 continue;
@@ -381,16 +382,10 @@ impl Profile {
             let value = HeaderValue::from_str(v).map_err(|_| bad("header value", v))?;
             headers.insert(name, value);
         }
-        // Their place in the order; Fetcher adds them per request.
-        for (k, _) in &self.http2_headers {
-            header_order.insert(k.clone());
-        }
-
         Ok(Emulation::builder()
             .tls_options(tls.build())
             .http2_options(http2.build())
             .headers(headers)
-            .orig_headers(header_order)
             .build(Group::new(self.name.clone())))
     }
 }

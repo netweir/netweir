@@ -39,7 +39,7 @@ Changelog = "https://github.com/netweir/netweir/releases"
 [dependency-groups]
 # pip only so editors that list packages with `python -m pip list` (VS
 # Code's Python extension) can; uv itself doesn't need it.
-dev = ["pytest>=8", "pytest-asyncio>=1.2", "maturin>=1.15,<2", "ruff>=0.14", "pyarrow>=21", "pip>=25", "fsspec>=2025", "jsonschema>=4.23", "scrapy>=2.15"]
+dev = ["pytest>=8", "pytest-asyncio>=1.2", "maturin>=1.15,<2", "ruff>=0.14", "pyarrow>=21", "pip>=25", "fsspec>=2025", "jsonschema>=4.23", "scrapy>=2.15", "warcio>=1.7"]
 bench = ["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10"]
 
 [tool.maturin]

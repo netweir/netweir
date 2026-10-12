@@ -4,6 +4,7 @@
 //! [`Profile`]'s browser sends: the same TLS ClientHello, HTTP/2 settings
 //! and header order.
 
+mod archive;
 mod cache;
 pub mod canonical;
 pub mod checkpoint;
@@ -20,6 +21,7 @@ pub mod tdmrep;
 pub mod tracks;
 pub mod traps;
 
+pub use archive::Archive;
 pub use crawl::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler, DropReason, Event, LivePage, ProxyRotation,
     ProxyStats, Stats, Submitted, allowed_domains, offsite,

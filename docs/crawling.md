@@ -375,6 +375,70 @@ They work together. A checkpoint keeps today's run safe from a crash while
 checkpoint has committed its items, and a request read back from the
 checkpoint is fetched even if `deltafetch` has its page, so a crash
 between the two loses nothing.
+## Keeping what you fetched
+
+Items are what you wanted from a site, but sometimes you need the site
+itself: a record you can show someone later, pages to parse again next
+month without asking twice, or the exact request that got a strange
+answer. Give the crawl a file and it keeps every exchange:
+
+```python
+settings = netweir.Settings(warc="crawl.warc.gz", har="crawl.har")
+```
+
+or `-s warc=crawl.warc.gz` from the shell. Use either or both.
+
+The WARC file is the archive. It's the format web archives keep (WARC
+1.1, each record gzipped on its own; name it `.warc` for no gzip), and
+every response the crawl got is in it with the request that asked for it:
+each hop of a redirect, every retry and block page, robots.txt and the
+sitemaps, and the pages declarative rules followed in Rust. The request is
+what netweir sent, header for header in the order they went out, cookies
+included. Read it back with [warcio](https://github.com/webrecorder/warcio):
+
+```python
+from warcio.archiveiterator import ArchiveIterator
+
+with open("crawl.warc.gz", "rb") as f:
+    for record in ArchiveIterator(f, check_digests=True):
+        if record.rec_type == "response":
+            url = record.rec_headers.get_header("WARC-Target-URI")
+            status = record.http_headers.get_statuscode()
+            html = record.content_stream().read()
+```
+
+Bodies are kept the way your callback saw them, decompressed. So a gzipped
+page is stored unzipped, with no `Content-Encoding` header and a
+`Content-Length` that matches what's there, and the record's digest is of
+those bytes. If you need the compressed bytes off the wire, this isn't
+them. Response headers come as the HTTP client keeps them: lowercase
+names, values byte for byte, and a header the server repeated (two
+`Set-Cookie`s, say) with its values side by side. A redirect's body is
+kept up to 64 KiB; past that, the record is marked truncated.
+
+The HAR file is for looking. Open your browser's developer tools, go to the
+Network panel and drop the file on it (Chrome and Firefox both import HAR):
+you'll see every request the crawl made, its headers, the response and how
+long it took. Images and other binary bodies are in there base64, as the
+format wants.
+
+Three things aren't in either file. A page served from the
+[cache](#caching-while-you-develop) wasn't fetched. A page fetched in
+Chrome is left out, because netweir only sees the page after its scripts
+ran, never what the server sent. And a request that got no answer (a
+timeout, or a body over `max_response_size`) has nothing to record.
+
+Both files are written as the crawl goes, on a thread of their own,
+straight from the pages the crawl already holds, so a 50 MB download
+doesn't cost another 50 MB to archive. They're opened once your pipelines
+have opened, so a crawl that fails to start leaves them as they were.
+Without a checkpoint, each run starts them afresh. With one, a resumed crawl adds
+to them: if the last run died part way through writing a record, that torn
+record is cut off first, so the files stay readable. The HAR file only
+becomes valid JSON when the crawl closes it; a resume closes it properly.
+If the disk fills up, you get one warning naming the file, the crawl goes
+on, and `archive_errors` in the stats counts what didn't get written.
+[The design](design/archive.md) has the details.
 
 ## Callbacks in worker processes
 
