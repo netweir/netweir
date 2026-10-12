@@ -1009,7 +1009,10 @@ def _print_spiders(request: dict[str, Any]) -> None:
                                 os.path.join(scratch, str(len(stand_ins)), os.path.basename(value)),
                             )
                             os.makedirs(os.path.dirname(parsed[key]), exist_ok=True)
-                    dataclasses.replace(own, **parsed)._engine()
+                    built = dataclasses.replace(own, **parsed)
+                    # The queue's settings are checked by now; making the
+                    # engine with it would connect to Redis.
+                    dataclasses.replace(built, queue=None)._engine()
             except Exception as e:  # noqa: BLE001 - reported, whatever it is
                 settings_error = str(e)
     json.dump({"spiders": found, "errors": errors, "settings_error": settings_error}, out)

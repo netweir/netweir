@@ -632,6 +632,32 @@ def test_checking_a_spider_s_own_path_settings_makes_nothing(tmp_path, project):
     assert not (project / "own").exists()
 
 
+def test_scheduling_a_distributed_job_doesn_t_reach_redis(tmp_path, project):
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed = s.getsockname()[1]  # nothing listens here once it's closed
+    with serving(tmp_path, project, max_jobs=0) as base:
+        status, answer = call(
+            f"{base}/schedule.json",
+            {
+                "project": "shop",
+                "spider": "Books",
+                "setting": f"queue=redis://127.0.0.1:{closed}/0",
+            },
+        )
+        assert status == 200, answer
+        # Still checked: a queue with a checkpoint can't work.
+        status, answer = call(
+            f"{base}/schedule.json",
+            {
+                "project": "shop",
+                "spider": "Books",
+                "setting": ["queue=redis://127.0.0.1:6379/0", "checkpoint=state"],
+            },
+        )
+        assert status == 400 and "checkpoint too" in answer["message"], answer
+
+
 def test_a_path_setting_s_own_mistakes_are_caught_when_scheduled(tmp_path, project):
     with serving(tmp_path, project) as base:
         status, answer = call(

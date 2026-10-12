@@ -101,7 +101,7 @@ auth a 401, a refused origin or host a 403, a body too big a 413.
   spider's class, applies them over the spider's own settings, as
   `netweir crawl -s` does, and makes the engine, with every path setting
   moved into a scratch directory thrown away after, so nothing is
-  created. Scrapy's setting names aren't translated.
+  created, and without the `queue`, so nothing connects to Redis. Scrapy's setting names aren't translated.
 - `checkpoint`, `cache`, `deltafetch`, `warc` and `har`, the settings
   that name a file or directory, must be relative paths without `..`,
   `:` (a URL or a drive) or a backslash. They're resolved inside the
