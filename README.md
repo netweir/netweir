@@ -58,6 +58,9 @@ Working today:
 - A response cache for the days you spend writing a spider: run it thirty
   times and the site serves its pages once. See
   [docs/crawling.md](docs/crawling.md#caching-while-you-develop).
+- A crawl you run every day can skip the pages whose items it already
+  has, as scrapy-deltafetch does, and still read every listing for what's
+  new. The output keeps every run's items, a crash included. See [docs/crawling.md](docs/crawling.md#skipping-what-you-already-have).
 - Declarative spiders, where you describe the item and the links and
   Rust does the rest without running any Python per page.
 - Callbacks in worker processes, for spiders whose own Python is the slow

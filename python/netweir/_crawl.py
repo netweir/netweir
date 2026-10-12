@@ -113,6 +113,16 @@ class Settings:
     cache: str | None = None
     #: Seconds after which a kept response is fetched again; None for never.
     cache_expiry: float | None = None
+    #: A directory to remember, across runs, which requests' pages gave
+    #: items: this run and later ones with the same directory skip them,
+    #: unless they have dont_filter=True. Pages that gave none, such as
+    #: listings, are fetched every run. ``meta["deltafetch_key"]`` (a str
+    #: or bytes) names a request in place of its method, URL and body, and
+    #: ``meta["deltafetch_enabled"] = False`` leaves one out. Output files
+    #: are added to, not started afresh, so they keep every run's items.
+    deltafetch: str | None = None
+    #: Forget every page deltafetch remembered, at the start of this run.
+    deltafetch_reset: bool = False
     #: How similar (0 to 1) an element must be to count as a tracked
     #: selector's element after the selector stops matching.
     track_threshold: float = 0.75
@@ -154,6 +164,10 @@ class Settings:
                 raise ValueError(f"{name} is in MiB and must be positive")
         if self.cache_expiry is not None and self.cache_expiry <= 0:
             raise ValueError("cache_expiry must be positive")
+        if self.deltafetch is not None and not str(self.deltafetch):
+            raise ValueError("deltafetch is a directory: give one, or None")
+        if self.deltafetch_reset and self.deltafetch is None:
+            raise ValueError("deltafetch_reset empties deltafetch's record: set deltafetch too")
         if self.retries < 0 or self.breaker_window < 0:
             raise ValueError("retries and breaker_window must be 0 or more")
         if not 0 < self.backoff_base <= self.backoff_max or self.breaker_pause < 0:
@@ -222,6 +236,10 @@ class Settings:
             browser_pages=self.browser_pages,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
+            deltafetch=None
+            if self.deltafetch is None
+            else os.path.join(self.deltafetch, "deltafetch.sqlite3"),
+            deltafetch_reset=self.deltafetch_reset,
         )
 
     def _checkpoint_file(self) -> str | None:
@@ -398,25 +416,49 @@ class Spider:
             # length, dropping anything half-written or not recorded (which
             # the run makes again), and adds to it.
             state = run.resume()
+            files = run.recorded_files(state)
+            # Every output is checked before any is touched.
+            exporters = [s for s in pipelines if isinstance(s, export._Exporter)]
+            for stage in exporters:
+                run.check_output(stage, state, files)
             # Before any output file is touched: a pipeline that can't open
             # leaves them as they were.
             await run.open()
-            files = (state or {}).get("files", {})
-            for stage in pipelines:
-                if not isinstance(stage, export._Exporter):
+            # Cut each file back to where the record last saw it: the pages
+            # of anything after that weren't recorded, and are fetched
+            # again. Then record, before any is opened, how long each will
+            # be once it is (a JSON or XML file taken up again loses its
+            # closing tag; one started afresh is empty), as not closed: a
+            # crash from here on leaves at most a tail the next run cuts.
+            ends = {}
+            for stage in exporters:
+                if isinstance(stage, export.parquet) or stage.batch is not None:
                     continue
+                path = os.path.abspath(stage.path)
+                size = files.get(path, (None,))[0]
+                if size is None:
+                    ends[path] = 0
+                    continue
+                if os.path.exists(stage.path):
+                    with open(stage.path, "r+b") as f:
+                        f.truncate(size)
+                ends[path] = stage._resume_length()
+            if ends and (run.delta or state is not None):
+                run.record_lengths(ends)
+            for stage in exporters:
+                path = os.path.abspath(stage.path)
                 if isinstance(stage, export.parquet):
                     # Written whole at the end; a resumed run adds a part.
-                    run.tidy_parts(stage)
-                    stage.hold = run.saving
-                    stage.start(append=state is not None)
+                    run.tidy_parts(stage, files)
+                    # Named only once its part is on record.
+                    stage.hold = run.saving or (run.delta and stage.batch is None)
+                    stage.start(append=state is not None or path in files)
+                elif stage.batch is not None:
+                    # With deltafetch, each run's batches go beside the last
+                    # run's, never over them.
+                    stage.start(append=run.delta)
                 else:
-                    size = files.get(os.path.abspath(stage.path))
-                    if size is not None and os.path.exists(stage.path):
-                        _check_resumable(stage, size)
-                        with open(stage.path, "r+b") as f:
-                            f.truncate(size)
-                    stage.start(append=size is not None)
+                    stage.start(append=path in files)
                 started.append(stage)
             run.outputs_ready = True
             stats = await run.go()
@@ -458,7 +500,7 @@ class Spider:
             # After the exporters: closed() and close_spider find the output
             # files complete.
             await run.close(reason)
-            run.finish()
+            run.finish(closed=failure is None)
             if failure is not None and not raising:
                 raise failure
 
@@ -469,6 +511,18 @@ def _check_outputs(settings: Settings, pipelines: list[Any]) -> None:
     bucket nor a run of batches allows."""
     from netweir import export
 
+    if settings.deltafetch is not None:
+        for stage in pipelines:
+            if not isinstance(stage, export._Exporter):
+                continue
+            # deltafetch keeps every run's items in the output; a run that
+            # emptied it would lose the items of every page it skips.
+            if stage.batch is None and stage.remote:
+                raise ValueError(
+                    f"with deltafetch, {stage.path} would be replaced each run, losing the"
+                    " items of pages it skips: write to a local file, which each run adds"
+                    " to, or use batch=, whose files each run adds to"
+                )
     if settings.checkpoint is None:
         return
     for stage in pipelines:
@@ -486,17 +540,47 @@ def _check_outputs(settings: Settings, pipelines: list[Any]) -> None:
             )
 
 
-def _check_resumable(stage: Any, size: int) -> None:
+def _tail(path: str, size: int) -> str:
+    """A digest of a file's last 64 KiB before ``size``, and of ``size``:
+    enough to tell the file a crawl wrote from another one that has grown
+    past the same length."""
+    digest = hashlib.sha256(str(size).encode())
+    if size == 0:
+        return digest.hexdigest()  # the file may not be there yet
+    with open(path, "rb") as f:
+        start = max(0, size - _TAIL)
+        f.seek(start)
+        digest.update(f.read(size - start))
+    return digest.hexdigest()
+
+
+#: How much of a file's end _tail reads.
+_TAIL = 64 * 1024
+
+#: An output file as last recorded: its length, a digest of its end
+#: (_tail), and whether the run that wrote it closed it.
+_Recorded = tuple[int, str | None, bool]
+
+
+def _check_resumable(stage: Any, size: int, tail: str | None = None) -> None:
     """Before a resumed crawl cuts ``stage``'s file back to ``size``: the
-    file must still be the one it wrote, at least that long and starting as
-    the format starts. Otherwise the cut would lose someone else's file, or
-    pad it with zero bytes."""
+    file must still be the one it wrote, at least that long, starting as
+    the format starts and, when a digest of its end was recorded, the same
+    up to ``size``. Otherwise the cut would lose someone else's file, cut
+    an item in half, or pad it with zero bytes."""
     path = stage.path
     actual = os.path.getsize(path)
     if actual < size:
         raise ValueError(
             f"{path} is shorter ({actual} bytes) than this crawl recorded ({size}):"
             " it was changed since; move it away, or start the crawl afresh"
+            " (a new checkpoint, or deltafetch_reset=True)"
+        )
+    if tail is not None and _tail(path, size) != tail:
+        raise ValueError(
+            f"{path} isn't the file this crawl wrote: its first {size} bytes changed"
+            " since (another run wrote to it, or it was replaced); move it away, or"
+            " start the crawl afresh (a new checkpoint, or deltafetch_reset=True)"
         )
     head = stage._head()
     if head:
@@ -505,7 +589,8 @@ def _check_resumable(stage: Any, size: int) -> None:
         if start != head[: len(start)] or len(start) < min(len(head), size):
             raise ValueError(
                 f"{path} doesn't start as this crawl's file did: it was replaced since;"
-                " move it away, or start the crawl afresh"
+                " move it away, or start the crawl afresh (a new checkpoint, or"
+                " deltafetch_reset=True)"
             )
 
 
@@ -578,6 +663,20 @@ class _Run:
         self.saving = self.settings.checkpoint is not None
         #: Ids of items delivered but not yet recorded as such.
         self.unrecorded: list[str] = []
+        self.delta = self.settings.deltafetch is not None
+        #: With deltafetch: the page the running callback was given, as
+        #: (method, url, body, deltafetch_key) or None, and whether it has
+        #: given a delivered item yet. It's recorded only if the callback
+        #: finishes: one that raises part way may have had more to give.
+        self.from_page: tuple | None = None
+        self.gave = False
+        #: Keys of pages that gave items, until their items are on disk.
+        self.produced: set[bytes] = set()
+        #: Items delivered when output lengths were last recorded.
+        self.delta_items = 0
+        #: Output lengths to record in place of the files' own, while
+        #: record_lengths runs.
+        self.ends: dict[str, int] | None = None
         #: Parquet parts whose items are on record, by absolute path.
         self.parts: list[str] = []
         self.completed = False
@@ -713,6 +812,18 @@ class _Run:
         meta = request.meta or {}
         if proxy is None and "proxy" in meta:
             proxy = meta["proxy"] or ""
+        delta = _delta_meta(meta) if self.delta else (True, None)
+        if delta is None:
+            # As a callback's error would be, from a callback or start().
+            self.counts["callback_errors"] += 1
+            message = (
+                f'{request.url}: meta["deltafetch_key"] must be a str or bytes, not'
+                f" {type(meta['deltafetch_key']).__name__}; skipped"
+            )
+            if self.settings.fail_fast:
+                raise TypeError(message)
+            log.error("%s", message)
+            return
         outcome = self.engine.submit(
             rid,
             request.url,
@@ -732,9 +843,13 @@ class _Run:
             referer=request.referer,
             retry_post=request.retry_post,
             proxy=proxy,
+            delta=delta[0],
+            delta_key=delta[1],
         )
         if outcome == "queued":
             self.waiting[rid] = request
+        elif outcome == "delta":
+            log.debug("gave items in an earlier run, skipped: %s", request.url)
         elif outcome == "invalid":
             self.counts["invalid_urls"] += 1
             log.warning("not an http(s) URL, skipped: %s", request.url)
@@ -936,66 +1051,225 @@ class _Run:
         """Every event in the batch has been dealt with. Once the files its
         items went to are on disk, record the items as delivered and the
         requests as done, in that order, so a crash never loses an item:
-        at worst, a resume writes one again."""
-        if self.saving:
-            from netweir import export
-
-            exporters = [s for s in self.pipelines if isinstance(s, export._Exporter)]
-            if not all(stage.flush() for stage in exporters):
-                # Not on disk until closed (Parquet): nothing is final yet.
-                return
-            self.record()
-        self.engine.ack()
-
-    def record(self) -> None:
-        """Records the delivered items, and how long each output file is
-        with them in it, in one commit."""
+        at worst, a resume writes one again. deltafetch's pages are
+        recorded then too, so a page is never skipped for an item that
+        didn't reach the file."""
+        delta = self.delta and (self.produced or self.counts["items"] != self.delta_items)
+        if not (self.saving or delta):
+            self.engine.ack()
+            return
         from netweir import export
 
-        files = {
+        exporters = [s for s in self.pipelines if isinstance(s, export._Exporter)]
+        # Not final until closed: Parquet is readable only then, and a file
+        # bound for cloud storage (never with a checkpoint) is uploaded then.
+        if not all(stage.flush() for stage in exporters) or any(s.remote for s in exporters):
+            if not self.saving:
+                self.engine.ack()
+            return
+        if self.saving:
+            self.record()
+        if self.checkpoint_committed():
+            self.record_pages()
+        self.engine.ack()
+
+    def checkpoint_committed(self) -> bool:
+        """With a checkpoint and deltafetch, waits for the checkpoint's
+        commit: the deltafetch record must never be ahead of it, or a resume
+        would cut the output back to the checkpoint's lengths and lose items
+        whose pages deltafetch skips. False if the commit failed (the close
+        reports it); the pages wait for the next batch."""
+        if not (self.saving and self.delta):
+            return True
+        try:
+            self.engine.flush()
+        except OSError:
+            return False
+        return True
+
+    def recorded_files(self, state: dict[str, Any] | None) -> dict[str, _Recorded]:
+        """The output files as last recorded, by absolute path: a resuming
+        checkpoint's, else deltafetch's (Parquet files and parts with a
+        length of 0), else none."""
+        if state is not None:
+            tails, clean = state.get("tails", {}), state.get("clean", False)
+            return {p: (n, tails.get(p), clean) for p, n in state.get("files", {}).items()}
+        if self.delta:
+            return dict(self.engine.delta_files())
+        return {}
+
+    def check_output(
+        self, stage: Any, state: dict[str, Any] | None, files: dict[str, _Recorded]
+    ) -> None:
+        """Refuses an output file the crawl can't carry on: one changed
+        since it was recorded, one that has grown since the run that wrote
+        it closed it, or, with deltafetch, one that is there but that a
+        record with pages in it doesn't know (its pages' items may be in
+        another file, and starting it afresh would lose what it holds)."""
+        from netweir import export
+
+        path = os.path.abspath(stage.path)
+        if stage.batch is not None or stage.remote or not os.path.exists(stage.path):
+            return
+        if path in files:
+            size, tail, clean = files[path]
+            if isinstance(stage, export.parquet):
+                return
+            _check_resumable(stage, size, tail)
+            if isinstance(stage, export.csv):
+                stage._check_columns()
+            # A run that closed its file left it ending at the length on
+            # record. Only after a crash can there be more, a tail it tore;
+            # past a clean close, the bytes are someone else's.
+            if clean and os.path.getsize(stage.path) > size:
+                raise ValueError(
+                    f"{stage.path} has grown since the crawl that wrote it finished"
+                    f" ({os.path.getsize(stage.path)} bytes; it left {size}): something else"
+                    " added to it, which carrying on would cut off; move it away, or start"
+                    " the crawl afresh (a new checkpoint, or deltafetch_reset=True)"
+                )
+            return
+        if self.delta and state is None and not self.engine.delta_was_empty():
+            raise ValueError(
+                f"{stage.path} is already there, and deltafetch's record in"
+                f" {self.settings.deltafetch} doesn't know it: move it away (the run then"
+                " writes only what's new), write to another path, or start afresh with"
+                " deltafetch_reset=True"
+            )
+
+    def record_lengths(self, ends: dict[str, int]) -> None:
+        """Records ``ends`` as the output files' lengths, not closed, and
+        waits for that to be on disk."""
+        self.ends = ends
+        try:
+            if self.saving:
+                self.record()
+                # A failed write is reported when the crawl closes.
+                with contextlib.suppress(OSError):
+                    self.engine.flush()
+            self.record_pages()
+        finally:
+            self.ends = None
+
+    def output_lengths(self) -> dict[str, int]:
+        """Each single output file's length (not a Parquet file's), by
+        absolute path: as it is, or as given to record_lengths."""
+        from netweir import export
+
+        if self.ends is not None:
+            return self.ends
+        return {
             os.path.abspath(stage.path): os.path.getsize(stage.path)
             for stage in self.pipelines
             if isinstance(stage, export._Exporter)
             and not isinstance(stage, export.parquet)
+            and stage.batch is None
             and os.path.exists(stage.path)
         }
+
+    def record_pages(self, closed: bool = False) -> bool:
+        """Tells deltafetch which pages gave delivered items, and how long
+        each output file is with them in it (a Parquet file only once
+        ``closed``, when it's written), and whether its writer has closed
+        it. Whether that was recorded. A failed write is a warning, once,
+        and its pages wait for the next write: until one lands, the files'
+        lengths on record don't cover their items, and a crash meanwhile
+        only means fetching those pages again."""
+        if not self.delta:
+            return False
+        from netweir import export
+
+        files = [
+            (path, size, _tail(path, size), closed) for path, size in self.output_lengths().items()
+        ]
+        if self.ends is None and closed:
+            for stage in self.pipelines:
+                if isinstance(stage, export.parquet) and stage.batch is None:
+                    # The output, and this run's part (closed, not yet
+                    # named), in the same commit as its pages: a crash before
+                    # it's named leaves a part the next run names.
+                    files.append((os.path.abspath(stage.path), 0, None, True))
+                    if stage.pending is not None:
+                        files.append((os.path.abspath(stage.pending), 0, None, True))
+        produced, self.produced = list(self.produced), set()
+        try:
+            self.engine.produced(produced, files)
+        except OSError as e:
+            # Kept for the next write, which records them with the lengths
+            # that cover their items.
+            self.produced |= set(produced)
+            if "deltafetch" not in self.warned:
+                self.warned.add("deltafetch")
+                log.warning("%s; those pages will be fetched again next run", e)
+            return False
+        self.delta_items = self.counts["items"]
+        return True
+
+    def record(self, closed: bool = False) -> None:
+        """Records the delivered items, and how long each output file is
+        with them in it and whether the exporters have ``closed`` them, in
+        one commit."""
+        from netweir import export
+
+        files = self.output_lengths()
+        tails = {path: _tail(path, size) for path, size in files.items()}
         parts = [
             os.path.abspath(stage.pending)
             for stage in self.pipelines
             if isinstance(stage, export.parquet) and stage.pending is not None
         ]
         self.parts.extend(p for p in parts if p not in self.parts)
-        self.engine.settle(self.unrecorded, json.dumps({"files": files, "parts": self.parts}))
+        counters = {"files": files, "tails": tails, "clean": closed, "parts": self.parts}
+        self.engine.settle(self.unrecorded, json.dumps(counters))
         self.unrecorded = []
 
-    def tidy_parts(self, stage: Any) -> None:
+    def tidy_parts(self, stage: Any, files: dict[str, Any]) -> None:
         """Before a Parquet exporter starts: a part whose items were recorded
+        (as delivered by the checkpoint, or with its pages by deltafetch)
         but which the process died before naming gets its name; any other
         .partial file of this output, never recorded, is deleted (the run
-        makes its items again)."""
+        makes its items again). A part the checkpoint has is one whose run
+        closed its pipelines, as finish leaves it out otherwise."""
         import glob
 
+        known = set(self.parts) | set(files)
+        if self.delta:
+            known |= set(self.engine.delta_files())
         stem = stage.path[: -len(".parquet")] if stage.path.endswith(".parquet") else stage.path
         for partial in glob.glob(glob.escape(stem) + "*.parquet.partial"):
             final = partial[: -len(".partial")]
-            if os.path.abspath(final) in self.parts and not os.path.exists(final):
+            recorded = os.path.abspath(final) in known
+            if recorded and not os.path.exists(final):
                 os.replace(partial, final)
             else:
                 os.remove(partial)
 
-    def finish(self) -> None:
+    def finish(self, closed: bool = True) -> None:
         """After the exporters are closed: the items they hold are final.
         The requests are done only if the crawl got to the end; one cut
-        short leaves its last batch to be fetched again."""
+        short leaves its last batch to be fetched again. ``closed`` is
+        False when an exporter failed to close (an upload, say): its items
+        may not be there, so deltafetch doesn't record their pages."""
         from netweir import export
 
+        # With deltafetch, a run whose pipelines didn't all close leaves
+        # the checkpoint as its last batch did: a Parquet part it won't name
+        # mustn't have its items on record as delivered, nor its requests
+        # as done, or a run taking the checkpoint up again would lose them.
+        # That run fetches them again instead.
+        keep = closed or not self.delta
+        recorded = committed = False
         try:
             # Only once the output files were cut back to their recorded
             # lengths: a crawl that failed before that (a pipeline that
             # couldn't open) mustn't record a half-written tail as kept.
-            if self.saving and self.outputs_ready:
-                self.record()
-            if self.completed:
+            if self.saving and self.outputs_ready and keep:
+                self.record(closed=closed)
+            if self.outputs_ready and closed:
+                committed = self.checkpoint_committed()
+                if committed:
+                    recorded = self.record_pages(closed=True)
+            if self.completed and (keep and (committed or not self.delta)):
                 self.engine.ack()
         finally:
             # Not left to the garbage collector: a traceback can keep this
@@ -1006,8 +1280,24 @@ class _Run:
         # Only now, with their items on record, do Parquet parts get their
         # real names.
         for stage in self.pipelines:
-            if isinstance(stage, export.parquet):
-                stage.publish()
+            if not isinstance(stage, export.parquet):
+                continue
+            # A part is named once its items are on record: its pages in
+            # deltafetch's record, or its items as delivered in the
+            # checkpoint (which a run taking it up again won't write again,
+            # so the part must stay).
+            on_record = recorded or (self.saving and committed)
+            if self.delta and stage.pending is not None and not on_record:
+                # Named, it would be read along with the items the next run
+                # fetches for its pages again.
+                log.warning(
+                    "%s: its pages couldn't be recorded, so it's left as %s.partial,"
+                    " which the next run deletes; that run fetches its pages again",
+                    stage.pending,
+                    stage.pending,
+                )
+                continue
+            stage.publish()
 
     async def dispatch_batch(
         self, events: list[tuple], jobs: list[Any], respond: bool = False
@@ -1096,7 +1386,14 @@ class _Run:
             # too.
             self.source, self.position = f"rule{rule}:{url}", 0
             self.page = None
-            await self.handle(item_class._finish(item, self.warned))
+            # The page a rule's link led to, fetched as a plain GET. Its
+            # one item is all it gives.
+            self.from_page = ("GET", url, None, None) if self.delta else None
+            self.gave = False
+            try:
+                await self.handle(item_class._finish(item, self.warned))
+            finally:
+                self.page_done()
         elif kind == "ruled":
             _, rule, url, response, root, depth = event[:6]
             callback = self.rules[rule].callback
@@ -1385,6 +1682,9 @@ class _Run:
         self.depth = (source.depth if isinstance(source, (Page, Request)) else 0) + 1
         self.source = source.url if isinstance(source, (Page, Request)) else url
         self.page = source if isinstance(source, Page) else None
+        # An errback's or on_block's items came with no page to skip.
+        self.from_page = self.delta_of(self.page.request) if self.page is not None else None
+        self.gave = False
         self.position = 0
         try:
             fn = self.resolve(fn, default)
@@ -1399,6 +1699,7 @@ class _Run:
                     many = isinstance(result, Iterable) and not isinstance(result, _NOT_MANY)
                     for out in result if many else [result]:
                         await self.handle(out)
+            self.page_done()
         except Exception:
             self.counts["callback_errors"] += 1
             if self.settings.fail_fast:
@@ -1413,6 +1714,8 @@ class _Run:
         self.source = page_url
         # The page stayed in the worker.
         self.page = None
+        self.from_page = self.delta_of(request)
+        self.gave = False
         self.position = 0
         try:
             outputs, reports, repairs, error, (pid, peak) = await job
@@ -1431,6 +1734,7 @@ class _Run:
                 await self.handle(out)
             if error is not None:
                 raise error[0]
+            self.page_done()
         except Exception as e:
             self.counts["callback_errors"] += 1
             if self.settings.fail_fast:
@@ -1461,6 +1765,9 @@ class _Run:
             item_id = hashlib.sha256(key.encode()).hexdigest()[:24]
             if item_id in self.delivered:
                 self.counts["items_already_written"] += 1
+                # Delivered by the run before, whose record of its page may
+                # be what was lost.
+                self.page_gave_item()
                 return
             if isinstance(item, dict):
                 item.setdefault("_id", item_id)
@@ -1504,6 +1811,7 @@ class _Run:
                 )
                 return
         self.counts["items"] += 1
+        self.page_gave_item()
         self.cover(item)
         await self.signal("item_scraped", item=item, response=self.page, spider=self.spider)
         if item_id is not None:
@@ -1511,6 +1819,49 @@ class _Run:
             self.unrecorded.append(item_id)
         if self.settings.max_items is not None and self.counts["items"] >= self.settings.max_items:
             raise _Stop("max_items")
+
+    def delta_of(self, request: Request | None) -> tuple | None:
+        """The request as the engine keys it for deltafetch: (method, url,
+        body, deltafetch_key). None without deltafetch, or for a request
+        that leaves it out."""
+        if not self.delta or request is None:
+            return None
+        delta = _delta_meta(request.meta or {})
+        if delta is None or not delta[0]:
+            return None
+        body = request.body.encode() if isinstance(request.body, str) else request.body
+        return (request.method, request.url, body, delta[1])
+
+    def page_gave_item(self) -> None:
+        """The running callback's page has given a delivered item."""
+        self.gave = True
+
+    def page_done(self) -> None:
+        """The running callback has finished: if its page gave an item,
+        deltafetch records the page once the items are on disk."""
+        if self.gave and self.from_page is not None:
+            key = Crawler.delta_key(*self.from_page)
+            if key is not None:
+                self.produced.add(key)
+        self.from_page = None
+        self.gave = False
+
+
+def _delta_meta(meta: dict[str, Any]) -> tuple[bool, bytes | None] | None:
+    """What a request's meta says to deltafetch, as scrapy-deltafetch reads
+    it: whether the record is asked at all (``deltafetch_enabled``), and
+    the request's own key, if it has one (an empty one is none). None for a
+    key that's neither a str nor bytes."""
+    if not meta.get("deltafetch_enabled", True):
+        return (False, None)
+    key = meta.get("deltafetch_key")
+    if not key:
+        return (True, None)
+    if isinstance(key, str):
+        return (True, key.encode())
+    if isinstance(key, bytes):
+        return (True, key)
+    return None
 
 
 #: What guarded() gives for a middleware that raised IgnoreRequest, and for

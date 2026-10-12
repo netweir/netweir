@@ -627,12 +627,16 @@ def test_a_handler_takes_only_the_arguments_it_names(base, capsys):
 # --- second review -----------------------------------------------------------
 
 
-def test_a_failed_open_on_resume_doesn_t_record_a_half_written_tail(base, tmp_path):
+def test_a_failed_open_on_resume_doesn_t_record_a_half_written_tail(base, tmp_path, monkeypatch):
     out = tmp_path / "items.jsonl"
     checkpoint = str(tmp_path / "state")
     Site, _ = spider(base, follow=False)
     Site.settings = netweir.Settings(**{**vars(FAST), "checkpoint": checkpoint})
-    Site().run(output=str(out))
+    # The run dies once its items are on record, before it's wound up: its
+    # file isn't on record as closed.
+    with monkeypatch.context() as m:
+        m.setattr(netweir._crawl._Run, "finish", lambda self, closed=True: self.engine.close())
+        Site().run(output=str(out))
     kept = out.read_text()
     with out.open("a") as f:
         f.write('{"half":')  # a run that died mid-line

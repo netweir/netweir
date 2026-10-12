@@ -78,6 +78,8 @@ error, not ignored. Times are in seconds.
 | `checkpoint` | `None` | a directory to keep the crawl's state in, so it resumes after a crash |
 | `cache` | `None` | a directory to keep responses in, so a rerun gets its pages from there rather than the site; see [Crawling](crawling.md#caching-while-you-develop) |
 | `cache_expiry` | `None` | seconds after which a cached response is fetched again; `None` keeps it for good |
+| `deltafetch` | `None` | a directory to remember, across runs, which requests' pages gave items, so later runs skip them; output files are added to, run after run. See [Crawling](crawling.md#skipping-what-you-already-have) |
+| `deltafetch_reset` | `False` | forget every page `deltafetch` remembered, at the start of this run, and start the output files afresh |
 | `track_threshold` | `0.75` | how similar an element must be to count as a tracked selector's element |
 | `fail_fast` | `False` | stop the crawl at the first exception in a callback or pipeline |
 | `workers` | `1` | processes to run callbacks in; see [Crawling](crawling.md#callbacks-in-worker-processes) |

@@ -10,6 +10,7 @@ pub mod checkpoint;
 pub mod classify;
 mod crawl;
 mod decode;
+pub mod deltafetch;
 mod fetch;
 pub mod install;
 mod profile;
@@ -24,6 +25,7 @@ pub use crawl::{
     ProxyStats, Stats, Submitted, allowed_domains, offsite,
 };
 pub use decode::{decode, meta_content};
+pub use deltafetch::DeltaKey;
 pub use fetch::{
     FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, Outgoing, Response, check_proxy,
     masked,

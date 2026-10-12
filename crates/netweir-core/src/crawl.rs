@@ -15,6 +15,7 @@ use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
 use crate::classify::{BlockKind, Outcome, classify};
+use crate::deltafetch::{self, DeltaKey, Record};
 use crate::fetch::{
     FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Outgoing, Response, check_proxy, masked,
 };
@@ -89,6 +90,11 @@ pub struct CrawlSettings {
     pub cache: Option<std::path::PathBuf>,
     /// How long a kept response stays fresh; for good if None.
     pub cache_expiry: Option<Duration>,
+    /// A file recording requests whose pages gave items, which this and
+    /// later crawls skip (`Crawler::produced`).
+    pub deltafetch: Option<std::path::PathBuf>,
+    /// Empty that record when the crawl starts.
+    pub deltafetch_reset: bool,
 }
 
 /// How a crawl uses its `proxies`.
@@ -231,6 +237,8 @@ impl Default for CrawlSettings {
             allowed_domains: Vec::new(),
             cache: None,
             cache_expiry: None,
+            deltafetch: None,
+            deltafetch_reset: false,
         }
     }
 }
@@ -258,6 +266,9 @@ pub struct CrawlRequest {
     /// Send it through this proxy, whatever the rotation. Over HTTP only:
     /// Chrome has one proxy for every page.
     pub proxy: Option<String>,
+    /// How the deltafetch record knows the request: by its fingerprint
+    /// (the default), by a key of the caller's, or not at all.
+    pub delta_key: DeltaKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +288,8 @@ pub enum Submitted {
     Offsite,
     /// Its proxy isn't one the client can use.
     BadProxy,
+    /// Its page gave items in an earlier crawl (`deltafetch`).
+    Delta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -395,6 +408,8 @@ pub struct Stats {
     pub skipped_depth: u64,
     pub skipped_traps: u64,
     pub skipped_domain_full: u64,
+    /// Requests skipped because their page gave items before (`deltafetch`).
+    pub skipped_delta: u64,
     pub retries: u64,
     /// Responses that were blocks, retried or not.
     pub blocked: u64,
@@ -438,6 +453,7 @@ struct Shared {
     fetcher: Fetcher,
     checkpoint: Option<Checkpoint>,
     cache: Option<Arc<Cache>>,
+    delta: Option<Record>,
     /// What the checkpoint held at the start, until the caller takes it.
     saved: Mutex<Option<Saved>>,
     /// What new sessions are made from.
@@ -774,11 +790,18 @@ impl Crawler {
             )),
             None => None,
         };
+        let delta = match &settings.deltafetch {
+            Some(path) => {
+                Some(Record::open(path, settings.deltafetch_reset).map_err(FetchError::invalid)?)
+            }
+            None => None,
+        };
         let settings_pages = settings.browser_pages.max(1);
         let shared = Arc::new(Shared {
             fetcher: Fetcher::new(fetch.clone())?,
             checkpoint,
             cache,
+            delta,
             saved: Mutex::new(saved),
             options: fetch,
             settings,
@@ -847,6 +870,42 @@ impl Crawler {
         }
     }
 
+    /// Records that the pages of these requests (their `deltafetch::key`)
+    /// gave items, so this and later crawls skip them. Call it once the
+    /// items are on disk, with each output file's length then: the next
+    /// crawl cuts a file back to it, as what came after was never
+    /// recorded and is fetched again. A failed write is an error, and the
+    /// crawl can go on: those pages are skipped for the rest of this
+    /// crawl, and fetched again by the next.
+    pub fn produced(
+        &self,
+        keys: &[crate::canonical::Fingerprint],
+        files: &[deltafetch::Output],
+    ) -> Result<(), String> {
+        let Some(record) = &self.shared.delta else {
+            return Ok(());
+        };
+        record.add(keys, files).map_err(|e| {
+            format!(
+                "the deltafetch record at {} couldn't be written: {e}",
+                record.path().display()
+            )
+        })
+    }
+
+    /// Each output file as the last crawl recorded it (its length, the
+    /// caller's digest of its end, and whether it was closed cleanly), if
+    /// there is a deltafetch record.
+    pub fn delta_files(&self) -> Option<std::collections::HashMap<String, deltafetch::Recorded>> {
+        self.shared.delta.as_ref().map(|r| r.files().clone())
+    }
+
+    /// Whether the deltafetch record had no pages when the crawl started;
+    /// None without one.
+    pub fn delta_was_empty(&self) -> Option<bool> {
+        self.shared.delta.as_ref().map(Record::was_empty)
+    }
+
     /// Saves the caller's counters (JSON) alongside the crawl.
     pub fn save_counters(&self, json: String) {
         if let Some(cp) = &self.shared.checkpoint {
@@ -863,6 +922,16 @@ impl Crawler {
         }
     }
 
+    /// Waits until every checkpoint write so far is committed; an error if
+    /// that commit failed (not an earlier one, which `flush` still
+    /// reports).
+    pub fn commit(&self) -> Result<(), String> {
+        match &self.shared.checkpoint {
+            Some(cp) => cp.commit(),
+            None => Ok(()),
+        }
+    }
+
     /// Commits the checkpoint and closes its file, for when the crawl is
     /// over. Checkpoint writes after this are dropped.
     pub fn close(&self) -> Result<(), String> {
@@ -872,6 +941,9 @@ impl Crawler {
         }
         if let Some(cache) = &self.shared.cache {
             cache.close();
+        }
+        if let Some(delta) = &self.shared.delta {
+            delta.close();
         }
         flushed
     }
@@ -937,6 +1009,26 @@ impl Crawler {
         if !state.seen.insert(fp) && !request.dont_filter && !restored {
             state.stats.duplicates += 1;
             return Submitted::Duplicate;
+        }
+        // After the duplicate filter, so a page linked from many places is
+        // skipped once and a duplicate after. Not for a request read back
+        // from the checkpoint: its items may not be in the output yet.
+        if let Some(record) = &self.shared.delta
+            && !request.dont_filter
+            && !restored
+        {
+            let key = match &request.delta_key {
+                DeltaKey::Custom(custom) => {
+                    deltafetch::key(&o.method, &request.url, None, Some(custom))
+                }
+                DeltaKey::Fingerprint => Some(fp),
+                DeltaKey::Off => None,
+            };
+            if key.is_some_and(|k| record.has(&k)) {
+                // Seen in memory only: a resumed crawl asks the record again.
+                state.stats.skipped_delta += 1;
+                return Submitted::Delta;
+            }
         }
         let host = parsed.host_str().unwrap_or_default();
         let accepted = state.hosts.get(host).map_or(0, |h| h.accepted);
@@ -1107,6 +1199,9 @@ impl Drop for Crawler {
         }
         if let Some(cache) = &self.shared.cache {
             cache.close();
+        }
+        if let Some(delta) = &self.shared.delta {
+            delta.close();
         }
         let shared = self.shared.clone();
         self.shared.runtime.spawn(async move {
@@ -3168,6 +3263,7 @@ mod tests {
                 outgoing: Outgoing::navigate(),
                 retry_post: false,
                 proxy: None,
+                delta_key: DeltaKey::Fingerprint,
             },
             host: String::new(),
             origin: String::new(),

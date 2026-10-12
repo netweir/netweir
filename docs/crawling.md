@@ -230,6 +230,152 @@ Nothing is ever evicted, so the cache grows with every new page: fine for
 the few hundred pages a spider in progress sees, not something to leave on
 for a crawl of the whole site.
 
+## Skipping what you already have
+
+Say you crawl a shop's catalogue every morning. Yesterday's run wrote ten
+thousand products, and today maybe forty are new. Without help, today's
+run fetches all ten thousand again to find the forty. Give it somewhere to
+remember what it found:
+
+```python
+class Shop(netweir.Spider):
+    settings = netweir.Settings(deltafetch="state/shop")
+```
+
+or `-s deltafetch=state/shop`. Now a request whose page gave an item in an
+earlier run is dropped before it's fetched, counted as `skipped_delta`.
+Listing pages give links, not items, so they're never remembered: every run
+reads them all and finds the forty. It's the idea behind scrapy-deltafetch,
+with the differences listed below.
+
+Your output keeps every run's items. With `deltafetch` set, each run adds to
+its output file rather than starting it afresh, so `-o shop.jsonl` holds
+yesterday's ten thousand and today's forty. That's what makes skipping safe:
+the items of a page that's skipped are already in the file. JSON Lines, CSV
+(one header, whose columns the next runs keep), JSON and XML files go on
+from where the last run left them,
+and a Parquet output gets a part per run beside it (`shop.1.parquet`,
+`shop.2.parquet`), which pyarrow reads together as one dataset as long
+as every run's items have the same fields and types (each part's columns
+come from its own items). Batches
+(`batch=`) go beside the last run's, numbered on from them (`shop-4.jsonl`
+after `shop-3.jsonl`), and a run with nothing new writes no file at all.
+
+If you'd rather keep each run's new items apart, move the file away when a
+run is done, to an archive, say: the next run starts the file again and
+writes only what's new. Or give each run a file of its own:
+
+```
+netweir crawl shop.py -s deltafetch=state/shop -o "shop-$(date +%F).jsonl"
+```
+
+What netweir won't do is write over a file it can't account for. An output
+that's there but that the record has never seen, while the record already
+has pages, is refused: its pages' items may be somewhere else, and starting
+it afresh would lose what it holds. So is a file that has changed since the
+record last saw it (another run, without `deltafetch`, wrote to it), and
+one that has grown since the run that wrote it finished cleanly (you added
+lines to it). Move it away, write to another path, or start afresh with
+`deltafetch_reset=True`. The one case it can't tell apart: lines added by
+hand to a file whose last run crashed look just like the half-written end
+the crash left, and are cut off with it. A single file in cloud storage is refused too, as
+it can't be added to; write a local file, or batches.
+
+A page is remembered once its callback has finished and at least one of its
+items has come out of every pipeline and reached the output file. An item a
+pipeline or a validate stage dropped doesn't count, and neither does a page
+whose callback raised part way: it may have had more to give, so it's
+fetched again next run, and the items it gave before the error are written
+a second time. Items from callbacks in worker processes and from
+link rules' `Item`s count; items an errback or `on_block` yields don't, as
+no page gave them.
+
+If the crawl dies, killed or crashed, no item is lost, and an output that
+is a single file (or a Parquet output and its parts) has nothing in it
+twice. The record keeps how long each output file was, and a digest of its
+end, each time it remembers pages, in the same commit; the next run cuts
+the file back to that length, and the pages whose items were past it are
+fetched again. A Parquet part gets its name only once it's on record with
+its pages. With a checkpoint too, the checkpoint's commit always lands
+first, so the two never disagree about what's in the file. Batches are
+files of their own and aren't cut back: after a crash, the batch being
+written may end in a half-written item, and items in it or in batches
+finished since the last record are written again by the next run.
+
+With a new record, or one just reset, an output file that's there is
+started afresh: every page is about to be fetched again.
+
+Pages are remembered by method, URL and body, as the duplicate filter
+knows them, so `?b=2&a=1` and `?a=1&b=2` are one page, two POSTs with
+different bodies are two, and a page that redirects is known by the URL
+you asked for. When the same product turns up under several URLs, name it
+yourself:
+
+```python
+yield page.follow(href, callback=self.product, meta={"deltafetch_key": sku})
+```
+
+The key is a str or bytes (`"sku-1"` and `b"sku-1"` are one key). Any
+falsy value (`""`, `0`, `None`, an empty list) counts as no key, as in
+scrapy-deltafetch, and anything else is an error that drops the request,
+counted like a callback's error, whether it came from a callback or from
+`start()`. `meta={"deltafetch_enabled": False}`
+leaves a request out entirely: it's never skipped, and its page is never
+remembered.
+
+A request with `dont_filter=True` is fetched whatever it gave before. To
+fetch everything again, set `deltafetch_reset=True` for one run, or delete
+the directory; either way the output files start afresh with it, except
+the part files earlier runs gave a Parquet output (`shop.1.parquet` and
+on), which stay where they are: delete them yourself, or a reader that
+takes the folder as one dataset reads their items again. A page
+that `max_items` stopped part way is fetched again next run, so the items
+it gave before the stop are written a second time.
+
+Nothing is ever forgotten on its own: a product whose price changes
+tomorrow keeps its old item. If you need changes, not only new pages,
+reset now and then.
+
+The record is in memory while the crawl runs: 16 bytes a page, up to
+about 40 with the set that holds them, so some 40 MB for a million
+products. Pages found during a run wait in Python until their items are on
+disk, at 80 to 100 bytes each; with a Parquet output, that's until the end
+of the run.
+
+### Coming from scrapy-deltafetch
+
+- Start requests are skipped too. scrapy-deltafetch only looks at what
+  callbacks yield, so it fetches a start URL every run; netweir doesn't, so
+  a start URL that is itself a product page is fetched once. Give it
+  `dont_filter=True` to fetch it every run.
+- A page is remembered once its items have been through the pipelines and
+  are in the output, and only if its callback finished. scrapy-deltafetch
+  remembers it as soon as the callback yields an item, before any pipeline
+  has seen it.
+- `dont_filter=True` fetches a remembered page; scrapy-deltafetch skips it
+  regardless.
+- Output files are added to, run after run, and cut back after a crash.
+  Scrapy's feeds append too, but nothing ties them to what the record
+  holds.
+- Scrapy's `DELTAFETCH_RESET` setting, or `-a deltafetch_reset=1`, is
+  `-s deltafetch_reset=true` here.
+
+### Which of the three to use
+
+- a [checkpoint](self-healing.md#checkpoints) carries one crawl on after
+  it stops. Run a finished crawl again with the same checkpoint and it
+  does nothing at all;
+- `deltafetch` is for a crawl you run again and again: every run re-reads
+  the listings, and only the pages that gave items are skipped;
+- the cache is for writing the spider. Every page comes off your disk, and
+  your callbacks run on all of them.
+
+They work together. A checkpoint keeps today's run safe from a crash while
+`deltafetch` keeps what every run found. A page is remembered only once the
+checkpoint has committed its items, and a request read back from the
+checkpoint is fetched even if `deltafetch` has its page, so a crash
+between the two loses nothing.
+
 ## Callbacks in worker processes
 
 The engine fetches and parses in Rust, but a spider's callbacks take turns

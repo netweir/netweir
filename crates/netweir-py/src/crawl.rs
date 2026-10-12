@@ -210,6 +210,7 @@ impl Engine {
                 outgoing: netweir_core::Outgoing::navigate(),
                 retry_post: false,
                 proxy: None,
+                delta_key: Default::default(),
             };
             let payload = format!(r#"{{"rule":{at}}}"#);
             if self.core.submit_with(request, &payload) != Submitted::Queued {
@@ -669,7 +670,7 @@ impl Crawler {
         proxy_rotation="on_block", proxy_failures=3, proxy_cooldown=60.0,
         breaker_window=50, breaker_ratio=0.3, breaker_pause=300.0, checkpoint=None,
         browser="off", browser_pages=4, max_response_size=None, allowed_domains=None,
-        cache=None, cache_expiry=None,
+        cache=None, cache_expiry=None, deltafetch=None, deltafetch_reset=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -707,6 +708,8 @@ impl Crawler {
         allowed_domains: Option<Vec<String>>,
         cache: Option<std::path::PathBuf>,
         cache_expiry: Option<f64>,
+        deltafetch: Option<std::path::PathBuf>,
+        deltafetch_reset: bool,
     ) -> PyResult<Crawler> {
         let allowed_domains = netweir_core::allowed_domains(&allowed_domains.unwrap_or_default())
             .map_err(PyValueError::new_err)?;
@@ -794,6 +797,8 @@ impl Crawler {
             allowed_domains,
             cache,
             cache_expiry,
+            deltafetch,
+            deltafetch_reset,
         };
         let mut options = fetch_options(profile, proxy, timeout, verify)?;
         options.max_body = max_response_size;
@@ -869,14 +874,17 @@ impl Crawler {
     }
 
     /// Queues a request. Returns "queued", "duplicate", "invalid",
-    /// "too_deep", "trap", "domain_full", "offsite" or "bad_proxy".
+    /// "too_deep", "trap", "domain_full", "offsite", "bad_proxy" or
+    /// "delta" (its page gave items before). `delta_key` is its key in
+    /// that record in place of its fingerprint; with `delta` false, the
+    /// record isn't asked.
     /// With `apply_rules`, the rules take links from the page; then the page
     /// reaches Python only if `to_python`, and a "handled" event says so
     /// otherwise. `method`, `kind` ("navigate", "form" or "fetch"), `body`,
     /// `content_type` and `referer` say what to send, as Fetcher.send
     /// takes them. `proxy` sends it through that proxy, whatever the
     /// rotation.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None))]
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -898,6 +906,8 @@ impl Crawler {
         referer: Option<String>,
         retry_post: bool,
         proxy: Option<String>,
+        delta_key: Option<Vec<u8>>,
+        delta: bool,
     ) -> PyResult<&'static str> {
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
@@ -929,6 +939,11 @@ impl Crawler {
             outgoing,
             retry_post,
             proxy,
+            delta_key: match (delta, delta_key) {
+                (false, _) => netweir_core::DeltaKey::Off,
+                (true, Some(key)) => netweir_core::DeltaKey::Custom(key),
+                (true, None) => netweir_core::DeltaKey::Fingerprint,
+            },
         };
         let outcome = match row {
             Some(row) => self.engine.core.resubmit(request, row),
@@ -946,6 +961,7 @@ impl Crawler {
             Submitted::DomainFull => "domain_full",
             Submitted::Offsite => "offsite",
             Submitted::BadProxy => "bad_proxy",
+            Submitted::Delta => "delta",
         })
     }
 
@@ -1051,6 +1067,7 @@ impl Crawler {
                 outgoing: netweir_core::Outgoing::navigate(),
                 retry_post: false,
                 proxy: p.proxy,
+                delta_key: Default::default(),
             };
             if self.engine.core.resubmit(request, p.row) != Submitted::Queued {
                 self.engine.tags().remove(&id);
@@ -1094,6 +1111,64 @@ impl Crawler {
         self.engine.core.settle(items, state);
     }
 
+    /// A request's 16-byte key in the deltafetch record: `delta_key`
+    /// when given, else its fingerprint. None for a URL that can't be
+    /// crawled.
+    #[staticmethod]
+    #[pyo3(signature = (method, url, body=None, delta_key=None))]
+    fn delta_key<'py>(
+        py: Python<'py>,
+        method: &str,
+        url: &str,
+        body: Option<Vec<u8>>,
+        delta_key: Option<Vec<u8>>,
+    ) -> Option<Bound<'py, PyBytes>> {
+        netweir_core::deltafetch::key(method, url, body.as_deref(), delta_key.as_deref())
+            .map(|k| PyBytes::new(py, &k))
+    }
+
+    /// Records that the pages with these keys (from `delta_key`) gave
+    /// items, so this and later crawls skip them, and how long each output
+    /// file (by path) is with their items in it, with a digest of its end
+    /// and whether its writer has closed it. Call it once the items are on
+    /// disk. Raises OSError if the write failed.
+    fn produced(
+        &self,
+        py: Python<'_>,
+        keys: Vec<Vec<u8>>,
+        files: Vec<netweir_core::deltafetch::Output>,
+    ) -> PyResult<()> {
+        let keys: Vec<_> = keys
+            .iter()
+            .filter_map(|k| <[u8; 16]>::try_from(k.as_slice()).ok())
+            .collect();
+        let engine = self.engine.clone();
+        py.detach(move || engine.core.produced(&keys, &files))
+            .map_err(pyo3::exceptions::PyOSError::new_err)
+    }
+
+    /// Each output file, by path, as the last crawl recorded it in the
+    /// deltafetch record: (length, digest of its end, closed cleanly).
+    /// None without one.
+    fn delta_files(&self) -> Option<HashMap<String, netweir_core::deltafetch::Recorded>> {
+        self.engine.core.delta_files()
+    }
+
+    /// Whether the deltafetch record had no pages when the crawl started;
+    /// None without one.
+    fn delta_was_empty(&self) -> Option<bool> {
+        self.engine.core.delta_was_empty()
+    }
+
+    /// Waits until every checkpoint write so far is committed. Raises
+    /// OSError if that commit failed; an earlier failure is raised by
+    /// close.
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        let engine = self.engine.clone();
+        py.detach(move || engine.core.commit())
+            .map_err(pyo3::exceptions::PyOSError::new_err)
+    }
+
     /// Saves Python's counters (JSON) in the checkpoint.
     fn save_counters(&self, json: String) {
         self.engine.core.save_counters(json);
@@ -1131,6 +1206,7 @@ impl Crawler {
         d.set_item("skipped_depth", s.skipped_depth)?;
         d.set_item("skipped_traps", s.skipped_traps)?;
         d.set_item("skipped_domain_full", s.skipped_domain_full)?;
+        d.set_item("skipped_delta", s.skipped_delta)?;
         d.set_item("retries", s.retries)?;
         d.set_item("blocked", s.blocked)?;
         d.set_item("throttled", s.throttled)?;

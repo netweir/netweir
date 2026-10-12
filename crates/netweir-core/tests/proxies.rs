@@ -62,6 +62,7 @@ fn request(id: u64, url: &str) -> CrawlRequest {
         outgoing: netweir_core::Outgoing::navigate(),
         retry_post: false,
         proxy: None,
+        delta_key: Default::default(),
     }
 }
 

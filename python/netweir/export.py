@@ -5,7 +5,7 @@
 
 Serialising happens in Rust. A crawl opens its exporters when it starts
 and closes them when it ends; each run writes the file afresh, except a run
-that resumes from a checkpoint, which adds to it. Used on its own, an
+that resumes from a checkpoint, or one with ``deltafetch``, which adds to it. Used on its own, an
 exporter opens its file at the first item; close it to finish the file.
 
 A path such as ``s3://bucket/books.jsonl`` is written locally and uploaded
@@ -15,6 +15,8 @@ every N items, named by ``{batch}`` (and ``{time}``) in the path.
 
 from __future__ import annotations
 
+import contextlib
+import csv as _csv
 import datetime
 import logging
 import os
@@ -31,6 +33,18 @@ log = logging.getLogger("netweir")
 
 #: The package each common filesystem needs alongside fsspec.
 _FS_PACKAGES = {"s3": "s3fs", "gs": "gcsfs", "gcs": "gcsfs", "az": "adlfs", "abfs": "adlfs"}
+
+
+def _sync_dir(directory: str) -> None:
+    """Asks the OS to keep a directory's entries (a file created or renamed
+    in it). Not on Windows, which has no such call for a directory."""
+    if os.name == "nt":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _remote(path: str) -> bool:
@@ -119,10 +133,16 @@ class _Exporter:
         self._count = 0
         self._target = self.path
         if self.batch is not None:
-            started = datetime.datetime.now(datetime.timezone.utc)
-            self._target = self.path.format(
-                batch=self._number, time=started.strftime("%Y-%m-%dT%H-%M-%SZ")
-            )
+            while True:
+                started = datetime.datetime.now(datetime.timezone.utc)
+                self._target = self.path.format(
+                    batch=self._number, time=started.strftime("%Y-%m-%dT%H-%M-%SZ")
+                )
+                # Started with ``append``, batches go beside the files already
+                # there, numbered on from them, never over one.
+                if not (self._append and self._exists(self._target)):
+                    break
+                self._number += 1
         if self.remote:
             # Written here, in Rust, and uploaded when finished.
             suffix = os.path.splitext(urllib.parse.urlparse(self._target).path)[1]
@@ -131,6 +151,16 @@ class _Exporter:
         else:
             self._file = self._target
         return self._open()
+
+    def _exists(self, target: str) -> bool:
+        if not self.remote:
+            return os.path.exists(target) or os.path.exists(target + ".partial")
+        fs, path = _fsspec(target).core.url_to_fs(target)
+        return fs.exists(path)
+
+    def _resume_length(self) -> int:
+        """How long the file will be once started with ``append``."""
+        return os.path.getsize(self.path) if os.path.exists(self.path) else 0
 
     def _open(self) -> Any:
         """The writer for ``self._file``."""
@@ -179,8 +209,19 @@ class _Exporter:
         self._finish(writer)
 
     def _finish(self, writer: Any) -> None:
+        if self._append and self._count == 0 and self.batch is not None:
+            # Adding to what's there, and nothing came: no empty batch.
+            self._discard(writer)
+            return
         self._closed(writer.close())
         self._finished()
+
+    def _discard(self, writer: Any) -> None:
+        """Closes the file begun for a batch that got no items, and removes
+        it."""
+        writer.close()
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self._file)
 
     def _closed(self, report: Any) -> None:
         pass
@@ -218,6 +259,10 @@ class json(_Exporter):  # noqa: N801
     def _open(self) -> JsonWriter:
         return JsonWriter(self._file, self._append)
 
+    def _resume_length(self) -> int:
+        # Without its closing "]".
+        return JsonWriter.resume_length(self.path)
+
     def _head(self) -> bytes:
         return b"["
 
@@ -238,6 +283,10 @@ class xml(_Exporter):  # noqa: N801
     def _open(self) -> XmlWriter:
         return XmlWriter(self._file, self.root, self.item, self._append)
 
+    def _resume_length(self) -> int:
+        # Without its closing root tag.
+        return XmlWriter.resume_length(self.path, self.root)
+
     def _head(self) -> bytes:
         return b'<?xml version="1.0" encoding="utf-8"?>\n<'
 
@@ -254,9 +303,32 @@ class csv(_Exporter):  # noqa: N801
         self._warned: set[str] = set()
         return CsvWriter(self._file, self.fields, self._append)
 
+    def _check_columns(self) -> None:
+        """Before a crawl adds to the file: ``fields``, if given, must be
+        the columns its header already has."""
+        if self.fields is None or not os.path.exists(self.path):
+            return
+        with open(self.path, newline="", encoding="utf-8-sig", errors="replace") as f:
+            header = next(_csv.reader(f), None)
+        if header is not None and header != list(self.fields):
+            raise ValueError(
+                f"can't add to {self.path}: its columns are {header}, not the fields given"
+                f" ({list(self.fields)}); write to another file, or give the same fields"
+            )
+
     def __call__(self, item: Any) -> Any:
+        written = self._write(item)
+        if written is None:
+            if "" not in self._warned:
+                self._warned.add("")
+                log.warning(
+                    "%s: an item with no fields was left out: it has no columns to start"
+                    " the file with",
+                    self.path,
+                )
+            return item
         # A checkpoint's _id is only a column if fields= asks for it.
-        extra = set(self._write(item)) - self._warned - {"_id"}
+        extra = set(written) - self._warned - {"_id"}
         if extra:
             self._warned |= extra
             log.warning(
@@ -303,8 +375,22 @@ class parquet(_Exporter):  # noqa: N801
         self._final = self._part(self._file)
         return ParquetWriter(self._final + ".partial")
 
+    def _finish(self, writer: Any) -> None:
+        if self._append and self._count == 0:
+            # Adding a part, and nothing came: no empty part.
+            self._discard(writer)
+            return
+        super()._finish(writer)
+
+    def _discard(self, writer: Any) -> None:
+        writer.close()
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self._final + ".partial")
+
     def _finished(self) -> None:
         self.pending = self._final
+        # On disk under its .partial name before a crawl records it.
+        _sync_dir(os.path.dirname(os.path.abspath(self._final)))
         if not self.hold:
             self.publish()
         if self.remote:
@@ -314,6 +400,7 @@ class parquet(_Exporter):  # noqa: N801
         """Gives the closed file its real name."""
         if self.pending is not None:
             os.replace(self.pending + ".partial", self.pending)
+            _sync_dir(os.path.dirname(os.path.abspath(self.pending)))
             self.pending = None
 
     def flush(self) -> bool:

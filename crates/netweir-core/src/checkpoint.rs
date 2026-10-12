@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -68,7 +69,7 @@ enum Op {
     /// Items and counters that must land in the same commit.
     Settle(Vec<String>, String),
     /// Commit what's queued and reply.
-    Flush(Sender<()>),
+    Flush(Sender<Result<(), String>>),
 }
 
 /// The open checkpoint. Writes are queued and committed by its thread;
@@ -78,6 +79,9 @@ pub struct Checkpoint {
     writer: Mutex<Option<JoinHandle<()>>>,
     /// The first write that failed since the last flush.
     failed: Arc<Mutex<Option<String>>>,
+    /// How many commits have failed, and how many `commit` has reported.
+    failures: Arc<AtomicU64>,
+    reported: Mutex<u64>,
 }
 
 #[derive(Debug)]
@@ -185,15 +189,19 @@ impl Checkpoint {
         let (ops, inbox) = channel();
         let failed = Arc::new(Mutex::new(None));
         let writer_failed = failed.clone();
+        let failures = Arc::new(AtomicU64::new(0));
+        let writer_failures = failures.clone();
         let writer = std::thread::Builder::new()
             .name("netweir-checkpoint".into())
-            .spawn(move || write_loop(conn, inbox, writer_failed))
+            .spawn(move || write_loop(conn, inbox, writer_failed, writer_failures))
             .map_err(|e| CheckpointError(format!("can't start the checkpoint writer: {e}")))?;
         Ok((
             Checkpoint {
                 ops: Mutex::new(Some(ops)),
                 writer: Mutex::new(Some(writer)),
                 failed,
+                failures,
+                reported: Mutex::new(0),
             },
             saved,
         ))
@@ -245,16 +253,46 @@ impl Checkpoint {
     }
 
     /// Waits until everything queued so far is committed. An error if a
-    /// write since the last flush failed; that batch is not in the file,
-    /// so a resume would do its work again.
+    /// write has failed; that batch is not in the file, so a resume would
+    /// do its work again. The error stays: every flush after it, and the
+    /// one that closes the crawl, reports it too, so a caller that waits
+    /// on a commit mid-crawl can't hide it from the end.
     pub fn flush(&self) -> Result<(), String> {
         let (tx, rx) = channel();
         self.send(Op::Flush(tx));
         let _ = rx.recv();
-        match self.failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            Some(e) => Err(e),
+        match &*self.failed.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(e) => Err(e.clone()),
             None => Ok(()),
         }
+    }
+
+    /// Waits until everything queued so far is committed, and says whether
+    /// every commit since the last call worked: the writes queued before
+    /// this call may have gone in an earlier commit than the one it waited
+    /// on. Unlike `flush`, a failure reported once isn't reported again:
+    /// the next settle holds the latest counters, so once a later round
+    /// commits whole the file is up to date again, but for the failed
+    /// batch's own writes, which a resume does again.
+    pub fn commit(&self) -> Result<(), String> {
+        let (tx, rx) = channel();
+        self.send(Op::Flush(tx));
+        // No reply: the writer has stopped, so nothing was committed.
+        let result = rx
+            .recv()
+            .unwrap_or_else(|_| Err("the checkpoint writer has stopped".into()));
+        let failures = self.failures.load(Ordering::SeqCst);
+        let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        if failures != *reported {
+            *reported = failures;
+            let failed = self
+                .failed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            return Err(failed.unwrap_or_else(|| "a checkpoint write failed".into()));
+        }
+        result
     }
 }
 
@@ -350,16 +388,27 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
 }
 
 /// Commits the queued writes in order, a batch per transaction.
-fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Option<String>>>) {
+fn write_loop(
+    mut conn: Connection,
+    inbox: Receiver<Op>,
+    failed: Arc<Mutex<Option<String>>>,
+    failures: Arc<AtomicU64>,
+) {
     // Waits for the first write, then takes whatever else arrives within
     // this long, so a busy crawl commits in batches rather than per row.
     const GATHER: Duration = Duration::from_millis(50);
     while let Ok(first) = inbox.recv() {
+        let waited_on = matches!(first, Op::Flush(_));
         let mut batch = vec![first];
         let until = std::time::Instant::now() + GATHER;
-        while batch.len() < 10_000 {
+        while !waited_on && batch.len() < 10_000 {
             let left = until.saturating_duration_since(std::time::Instant::now());
             match inbox.recv_timeout(left) {
+                // Someone is waiting on this commit: make it now.
+                Ok(op @ Op::Flush(_)) => {
+                    batch.push(op);
+                    break;
+                }
                 Ok(op) => batch.push(op),
                 Err(_) => break,
             }
@@ -368,17 +417,19 @@ fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Optio
         // when it fails part way.
         let (flushes, writes): (Vec<Op>, Vec<Op>) =
             batch.into_iter().partition(|op| matches!(op, Op::Flush(_)));
-        if let Err(e) = commit(&mut conn, writes) {
-            // The crawl goes on; the next flush reports it, and a resume
-            // would do this batch's work again.
+        let result = commit(&mut conn, writes).map_err(|e| format!("checkpoint write failed: {e}"));
+        if let Err(e) = &result {
+            // The crawl goes on; every flush from now on reports it, and a
+            // resume would do this batch's work again.
             failed
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .get_or_insert_with(|| format!("checkpoint write failed: {e}"));
+                .get_or_insert_with(|| e.clone());
+            failures.fetch_add(1, Ordering::SeqCst);
         }
         for op in flushes {
             if let Op::Flush(reply) = op {
-                let _ = reply.send(());
+                let _ = reply.send(result.clone());
             }
         }
     }
@@ -555,9 +606,49 @@ mod tests {
             .execute("DROP TABLE requests", [])
             .unwrap();
         cp.request([1; 16], pending(1, "https://e.com/a"));
-        let err = cp.flush().unwrap_err();
+        let err = cp.commit().unwrap_err();
         assert!(err.contains("requests"), "{err}");
-        assert!(cp.flush().is_ok(), "reported once");
+        // The table is back: the next commit works, and says so.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(SCHEMA)
+            .unwrap();
+        cp.request([2; 16], pending(2, "https://e.com/b"));
+        cp.commit().unwrap();
+        // The failure is still there for the flush that closes the crawl,
+        // whoever committed in between.
+        assert!(cp.flush().unwrap_err().contains("requests"));
+        assert!(cp.flush().is_err(), "reported until the end");
+        drop(cp);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn commit_reports_a_failure_in_a_commit_it_did_not_wait_on() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-earlier-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cp, _) = Checkpoint::open(&path).unwrap();
+        cp.commit().unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute("DROP TABLE requests", [])
+            .unwrap();
+        // The write goes in a commit before the one commit() waits on, as
+        // when the writer's gathering window ends between the two.
+        cp.request([1; 16], pending(1, "https://e.com/a"));
+        let _ = cp.flush();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(SCHEMA)
+            .unwrap();
+        assert!(cp.commit().unwrap_err().contains("requests"));
+        // Reported once: the next round commits whole.
+        cp.request([2; 16], pending(2, "https://e.com/b"));
+        cp.commit().unwrap();
+        // With the writer gone, nothing can have been committed.
+        cp.close();
+        assert!(cp.commit().is_err());
         drop(cp);
         std::fs::remove_dir_all(&dir).unwrap();
     }

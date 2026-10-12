@@ -297,7 +297,7 @@ def test_parquet_parts_appear_only_once_recorded(base, tmp_path, monkeypatch):
     # The process dies after the file is closed, before it's recorded.
     real_record = netweir._crawl._Run.record
 
-    def die(self):
+    def die(self, closed=False):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(netweir._crawl._Run, "record", die)

@@ -142,9 +142,12 @@ impl JsonlWriter {
         Ok(())
     }
 
+    /// Finishes the file and asks the OS to keep it: a crawl records its
+    /// length next.
     fn close(&self) -> PyResult<()> {
         if let Some(mut out) = self.out.lock().unwrap_or_else(|e| e.into_inner()).take() {
             out.flush().map_err(io_error)?;
+            out.get_ref().sync_data().map_err(io_error)?;
         }
         Ok(())
     }
@@ -175,12 +178,32 @@ fn cell(value: &Value) -> String {
 
 #[pymethods]
 impl CsvWriter {
-    /// With `append`, rows go after what the file already holds, and a
-    /// file that isn't empty is taken to have its header.
+    /// With `append`, rows go after what the file already holds. A file
+    /// that isn't empty has its header, whose columns this writer keeps:
+    /// `fields` must be the same, and without it they are what the file
+    /// has, not this run's first item's.
     #[new]
     #[pyo3(signature = (path, fields=None, append=false))]
     fn new(path: &str, fields: Option<Vec<String>>, append: bool) -> PyResult<CsvWriter> {
         let has_header = append && std::fs::metadata(path).is_ok_and(|m| m.len() > 0);
+        let mut fields = fields;
+        if has_header {
+            let header: Vec<String> = csv::Reader::from_path(path)
+                .and_then(|mut r| r.headers().cloned())
+                .map_err(|e| PyValueError::new_err(format!("can't read {path}'s header: {e}")))?
+                .iter()
+                .map(str::to_string)
+                .collect();
+            match &fields {
+                Some(given) if *given != header => {
+                    return Err(PyValueError::new_err(format!(
+                        "can't add to {path}: its columns are {header:?}, not the fields \
+                         given ({given:?}); write to another file, or give the same fields"
+                    )));
+                }
+                _ => fields = Some(header),
+            }
+        }
         let out = csv::Writer::from_writer(open_for(path, append)?);
         Ok(CsvWriter {
             state: Mutex::new(CsvState {
@@ -192,8 +215,10 @@ impl CsvWriter {
     }
 
     /// Writes the item's row. Returns the keys it had that aren't columns,
-    /// which are left out of the file.
-    fn write(&self, item: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    /// which are left out of the file; None, writing nothing, for an item
+    /// with no keys while there are no columns yet, as a header of none
+    /// would hold every later row to an empty column.
+    fn write(&self, item: &Bound<'_, PyAny>) -> PyResult<Option<Vec<String>>> {
         let Value::Object(map) = to_json(item, 0)? else {
             return Err(PyTypeError::new_err(
                 "CSV rows need dict (or dataclass) items",
@@ -206,6 +231,9 @@ impl CsvWriter {
             .as_mut()
             .ok_or_else(|| PyValueError::new_err("the writer is closed"))?;
         let csv_err = |e: csv::Error| io_error(std::io::Error::other(e));
+        if state.fields.is_none() && map.is_empty() {
+            return Ok(None);
+        }
         let fields = state
             .fields
             .get_or_insert_with(|| map.keys().cloned().collect());
@@ -219,11 +247,12 @@ impl CsvWriter {
                 .map(|f| map.get(f).map(cell).unwrap_or_default()),
         )
         .map_err(csv_err)?;
-        Ok(map
-            .keys()
-            .filter(|k| !fields.contains(k))
-            .cloned()
-            .collect())
+        Ok(Some(
+            map.keys()
+                .filter(|k| !fields.contains(k))
+                .cloned()
+                .collect(),
+        ))
     }
 
     /// Pushes what's buffered to the file and asks the OS to keep it.
@@ -246,6 +275,7 @@ impl CsvWriter {
                     .map_err(|e| io_error(std::io::Error::other(e)))?;
             }
             out.flush().map_err(io_error)?;
+            out.get_ref().get_ref().sync_data().map_err(io_error)?;
         }
         Ok(())
     }
@@ -546,6 +576,7 @@ impl ParquetWriter {
         if let Some(out) = state.out.take() {
             let mut file = out.into_inner().map_err(parquet_error)?;
             file.flush().map_err(io_error)?;
+            file.get_ref().sync_data().map_err(io_error)?;
         }
         Ok(std::mem::take(&mut state.problems)
             .into_iter()
@@ -595,27 +626,8 @@ impl Framed {
         let len = file.metadata().map_err(cant)?.len();
         let mut any = false;
         if append && len > 0 {
-            let mut start = vec![0; head.len().min(len as usize)];
-            file.read_exact(&mut start).map_err(cant)?;
-            if start != head {
-                return Err(PyValueError::new_err(format!(
-                    "can't add to {path}: it doesn't start as this format's files do ({})",
-                    String::from_utf8_lossy(head).replace('\n', " ")
-                )));
-            }
-            // Only the end matters: the foot, whitespace, and enough before
-            // to see the head.
-            let tail_len = len.min((head.len() + foot.len() + 4096) as u64);
-            file.seek(SeekFrom::Start(len - tail_len)).map_err(cant)?;
-            let mut tail = Vec::with_capacity(tail_len as usize);
-            file.read_to_end(&mut tail).map_err(cant)?;
-            let mut end = trim_end(&tail);
-            let foot = trim_end_slice(&foot);
-            if tail[..end].ends_with(foot) {
-                end = trim_end(&tail[..end - foot.len()]);
-            }
-            any = !tail[..end].ends_with(trim_end_slice(head));
-            let keep = len - tail_len + end as u64;
+            let (keep, has) = Framed::resume_point(path, &mut file, len, head, &foot)?;
+            any = has;
             file.set_len(keep).map_err(cant)?;
             file.seek(SeekFrom::Start(keep)).map_err(cant)?;
         } else {
@@ -628,6 +640,57 @@ impl Framed {
             separator,
             foot,
         })
+    }
+
+    /// Where a file of `len` bytes goes on from, with `append`: the end of
+    /// its last item (or of `head`), with `foot` and trailing whitespace
+    /// taken off; and whether it has an item.
+    fn resume_point(
+        path: &str,
+        file: &mut File,
+        len: u64,
+        head: &[u8],
+        foot: &[u8],
+    ) -> PyResult<(u64, bool)> {
+        let cant = |e: std::io::Error| PyValueError::new_err(format!("can't write {path}: {e}"));
+        let mut start = vec![0; head.len().min(len as usize)];
+        file.seek(SeekFrom::Start(0)).map_err(cant)?;
+        file.read_exact(&mut start).map_err(cant)?;
+        if start != head {
+            return Err(PyValueError::new_err(format!(
+                "can't add to {path}: it doesn't start as this format's files do ({})",
+                String::from_utf8_lossy(head).replace('\n', " ")
+            )));
+        }
+        // Only the end matters: the foot, whitespace, and enough before to
+        // see the head.
+        let tail_len = len.min((head.len() + foot.len() + 4096) as u64);
+        file.seek(SeekFrom::Start(len - tail_len)).map_err(cant)?;
+        let mut tail = Vec::with_capacity(tail_len as usize);
+        file.read_to_end(&mut tail).map_err(cant)?;
+        let mut end = trim_end(&tail);
+        let foot = trim_end_slice(foot);
+        if tail[..end].ends_with(foot) {
+            end = trim_end(&tail[..end - foot.len()]);
+        }
+        let any = !tail[..end].ends_with(trim_end_slice(head));
+        Ok((len - tail_len + end as u64, any))
+    }
+
+    /// How long the file at `path` will be once opened with `append`, the
+    /// file left as it is: a crawl records that before the file is cut.
+    fn resume_length(path: &str, head: &[u8], foot: &[u8]) -> PyResult<u64> {
+        let cant = |e: std::io::Error| PyValueError::new_err(format!("can't read {path}: {e}"));
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(cant(e)),
+        };
+        let len = file.metadata().map_err(cant)?.len();
+        if len == 0 {
+            return Ok(0);
+        }
+        Ok(Framed::resume_point(path, &mut file, len, head, foot)?.0)
     }
 
     fn write(&mut self, item: &[u8]) -> PyResult<()> {
@@ -654,6 +717,7 @@ impl Framed {
         if let Some(mut out) = self.out.take() {
             out.write_all(&self.foot).map_err(io_error)?;
             out.flush().map_err(io_error)?;
+            out.get_ref().sync_data().map_err(io_error)?;
         }
         Ok(())
     }
@@ -673,6 +737,17 @@ fn trim_end_slice(bytes: &[u8]) -> &[u8] {
     &bytes[..trim_end(bytes)]
 }
 
+/// How a JSON file of items ends.
+const JSON_FOOT: &[u8] = b"\n]\n";
+
+/// How an XML file of items with this root element starts and ends.
+fn xml_frame(root: &str) -> (String, Vec<u8>) {
+    (
+        format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<{root}>"),
+        format!("\n</{root}>\n").into_bytes(),
+    )
+}
+
 /// Writes one JSON array, an item a line, as Scrapy's JSON exporter does.
 #[pyclass(module = "netweir")]
 pub struct JsonWriter {
@@ -685,10 +760,17 @@ impl JsonWriter {
     #[new]
     #[pyo3(signature = (path, append=false))]
     fn new(path: &str, append: bool) -> PyResult<JsonWriter> {
-        let framed = Framed::open(path, append, b"[", b"\n", b",\n", b"\n]\n".to_vec())?;
+        let framed = Framed::open(path, append, b"[", b"\n", b",\n", JSON_FOOT.to_vec())?;
         Ok(JsonWriter {
             out: Mutex::new(framed),
         })
+    }
+
+    /// How long `path` will be once a writer opens it with `append`: its
+    /// closing `]` taken off. 0 if it isn't there.
+    #[staticmethod]
+    fn resume_length(path: &str) -> PyResult<u64> {
+        Framed::resume_length(path, b"[", JSON_FOOT)
     }
 
     fn write(&self, item: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -729,13 +811,21 @@ impl XmlWriter {
                 "the root and item elements need different names, not both {root:?}"
             )));
         }
-        let head = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<{root}>");
-        let foot = format!("\n</{root}>\n").into_bytes();
+        let (head, foot) = xml_frame(&root);
         let framed = Framed::open(path, append, head.as_bytes(), b"\n", b"\n", foot)?;
         Ok(XmlWriter {
             out: Mutex::new(framed),
             item: xml_name(item),
         })
+    }
+
+    /// How long `path` will be once a writer opens it with `append`: its
+    /// closing root tag taken off. 0 if it isn't there.
+    #[staticmethod]
+    #[pyo3(signature = (path, root="items"))]
+    fn resume_length(path: &str, root: &str) -> PyResult<u64> {
+        let (head, foot) = xml_frame(&xml_name(root));
+        Framed::resume_length(path, head.as_bytes(), &foot)
     }
 
     fn write(&self, item: &Bound<'_, PyAny>) -> PyResult<()> {
