@@ -3125,6 +3125,11 @@ mod tests {
         );
         assert_eq!(adjust_delay(&s, ms(300), ms(10), Some(429)), ms(600));
         assert_eq!(
+            adjust_delay(&s, ms(100), ms(10), Some(429)),
+            ms(500),
+            "a 429 raises it to at least half a second"
+        );
+        assert_eq!(
             adjust_delay(&s, ms(50_000), ms(200_000), Some(200)),
             ms(60_000),
             "clamped to the max"

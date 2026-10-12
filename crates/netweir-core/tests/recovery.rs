@@ -302,16 +302,18 @@ async fn a_429_doubles_the_delay_once_with_the_throttle_on() {
     .await;
     let c = crawler(CrawlSettings {
         throttle: true,
-        start_delay: Duration::from_millis(100),
+        start_delay: Duration::from_secs(1),
         ..settings()
     });
     c.submit(request(1, site.url("/a")));
     drain(&c).await;
     let t = site.times("/a");
     let gap = t[1] - t[0];
-    // 100 ms doubled is below the half-second floor: 500 ms, not 1 s.
+    // Doubled once: 2 s, not 4 s. The gap between the two leaves room for
+    // a slow machine; the half-second floor is checked in adjust_delay's
+    // own test.
     assert!(
-        gap >= Duration::from_millis(480) && gap < Duration::from_millis(800),
+        gap >= Duration::from_millis(1980) && gap < Duration::from_secs(3),
         "{gap:?}"
     );
 }
