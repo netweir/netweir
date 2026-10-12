@@ -10,12 +10,16 @@
 - [Browser](browser.md): drive Chrome for pages that need JavaScript.
 - [Settings](settings.md): every setting and its default.
 
-The design behind it all is in [design/v0.1.md](design/v0.1.md), the
-browser driver's in [design/browser.md](design/browser.md), requests
-other than GETs in [design/requests.md](design/requests.md), the
-development cache in [design/cache.md](design/cache.md), and the fetch,
-view and shell commands in [design/shell.md](design/shell.md), and
-middlewares, signals and pipeline lifecycles in
-[design/hooks.md](design/hooks.md), and the JSON, XML, cloud and batch
-exporters in [design/exports.md](design/exports.md), and item validation
-and end-of-crawl checks in [design/monitoring.md](design/monitoring.md).
+The designs behind it, for anyone working on netweir:
+
+- [design/v0.1.md](design/v0.1.md): the engine, the parser and the first release.
+- [design/browser.md](design/browser.md): the Chrome driver.
+- [design/requests.md](design/requests.md): requests other than GETs.
+- [design/workers.md](design/workers.md): callbacks in worker processes.
+- [design/cache.md](design/cache.md): the development cache.
+- [design/shell.md](design/shell.md): the fetch, view and shell commands.
+- [design/hooks.md](design/hooks.md): middlewares, signals and pipeline lifecycles.
+- [design/exports.md](design/exports.md): JSON, XML, cloud storage and batches.
+- [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.
+- [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
+- [design/scrapy.md](design/scrapy.md): netweir as Scrapy's download handler.

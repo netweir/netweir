@@ -266,6 +266,8 @@ class Fetcher:
         timeout: float = 30.0,
         verify: bool = True,
         max_size: int | None = None,
+        cookies: bool = True,
+        system_proxy: bool = True,
     ) -> None: ...
     async def get(self, url: str, headers: list[tuple[str, str]] | None = None) -> Response: ...
     def get_blocking(self, url: str, headers: list[tuple[str, str]] | None = None) -> Response: ...
@@ -278,6 +280,8 @@ class Fetcher:
         content_type: str | None = None,
         referer: str | None = None,
         headers: list[tuple[str, str]] | None = None,
+        follow: bool = True,
+        chain: list[tuple[int, str]] | None = None,
     ) -> Response: ...
     def send_blocking(
         self,

@@ -243,3 +243,26 @@ def test_profiles_by_browser_or_version(base):
         assert netweir.get(f"{base}/page", profile=profile).status == 200, profile
     with pytest.raises(ValueError, match="firefox"):
         netweir.get(f"{base}/page", profile="netscape")
+
+
+def test_a_redirect_can_be_left_unfollowed(base):
+    from netweir._native import Fetcher
+
+    async def go():
+        response = await Fetcher().send(f"{base}/redirect", follow=False)
+        return response.status, dict(response.headers)["location"]
+
+    assert asyncio.run(go()) == (302, "/page")
+
+
+def test_a_fetcher_without_cookies_keeps_none(base):
+    from netweir._native import Fetcher
+
+    async def go(cookies):
+        fetcher = Fetcher(cookies=cookies)
+        await fetcher.get(f"{base}/set-cookie")
+        sent = json.loads((await fetcher.get(f"{base}/headers")).body)
+        return [v for k, v in sent if k.lower() == "cookie"]
+
+    assert asyncio.run(go(True)) == ["session=abc"]
+    assert asyncio.run(go(False)) == []

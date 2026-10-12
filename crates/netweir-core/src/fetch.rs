@@ -25,6 +25,15 @@ pub struct FetchOptions {
     /// The most bytes of a response body to read, after decompression; a
     /// larger one fails with `TooLarge`. None reads any size.
     pub max_body: Option<u64>,
+    /// Keep cookies: send the ones responses set. Off for a caller that
+    /// manages cookies itself (Scrapy's cookie middleware), so they aren't
+    /// sent twice.
+    pub cookies: bool,
+    /// With no `proxy`, use the system's (its environment variables, and on
+    /// macOS and Windows its settings), as a browser does. Off for a caller
+    /// that has already decided whether to use a proxy (Scrapy's proxy
+    /// middleware), or a request it sent direct would go through one.
+    pub system_proxy: bool,
 }
 
 impl FetchOptions {
@@ -35,6 +44,8 @@ impl FetchOptions {
             timeout: Duration::from_secs(30),
             verify_certificates: true,
             max_body: None,
+            cookies: true,
+            system_proxy: true,
         }
     }
 }
@@ -513,6 +524,23 @@ impl Outgoing {
             && self.body.is_none()
     }
 
+    /// The request this one has become at `url` after the redirects in
+    /// `chain`, each the status that redirected and the URL it came from,
+    /// in order: what `send` works out hop by hop, for a caller that
+    /// follows redirects itself and asks for each hop with `once`.
+    pub fn after_redirects(
+        &self,
+        chain: &[(u16, String)],
+        url: &str,
+    ) -> Result<Outgoing, FetchError> {
+        let mut outgoing = self.clone();
+        for (i, (status, from)) in chain.iter().enumerate() {
+            let to = chain.get(i + 1).map_or(url, |(_, next)| next.as_str());
+            outgoing = outgoing.redirected(*status, &parse_url(from)?, &parse_url(to)?);
+        }
+        Ok(outgoing)
+    }
+
     /// The request a `status` redirect from `from` to `to` makes of this
     /// one, as browsers follow them: 303, and 301 or 302 after a POST,
     /// turn it into a GET without a body; 307 and 308 repeat it.
@@ -678,10 +706,6 @@ impl Fetcher {
             let mut builder = wreq::Client::builder()
                 .emulation(emulation)
                 .timeout(options.timeout)
-                .cookie_provider(Arc::new(OrderedJar {
-                    jar: jar.clone(),
-                    newest_first: profile.cookies_newest_first,
-                }))
                 .gzip(true)
                 .brotli(true)
                 .zstd(true)
@@ -691,6 +715,15 @@ impl Fetcher {
                 // headers.
                 .redirect(redirect::Policy::none())
                 .tls_cert_verification(options.verify_certificates);
+            if options.cookies {
+                builder = builder.cookie_provider(Arc::new(OrderedJar {
+                    jar: jar.clone(),
+                    newest_first: profile.cookies_newest_first,
+                }));
+            }
+            if options.proxy.is_none() && !options.system_proxy {
+                builder = builder.no_proxy();
+            }
             if let Some(proxy) = &options.proxy {
                 builder = builder.proxy(check_proxy(proxy)?);
             }
@@ -874,14 +907,29 @@ impl Fetcher {
         self.hop_as(url, &Outgoing::navigate(), headers, hop).await
     }
 
-    /// `hop` for any request.
-    pub async fn hop_as(
+    /// One request and whatever answered it, a redirect included, which
+    /// isn't followed: for a caller that follows redirects itself (Scrapy's
+    /// redirect middleware). `hop` is the redirects followed to get here,
+    /// as for `hop`.
+    pub async fn once(
         &self,
         url: &str,
         outgoing: &Outgoing,
         headers: &[(String, String)],
         hop: usize,
-    ) -> Result<Hop, FetchError> {
+    ) -> Result<Response, FetchError> {
+        let (current, response) = self.request(url, outgoing, headers, hop).await?;
+        into_response(current.to_string(), response, self.max_body).await
+    }
+
+    /// Sends one request, and gives the URL it went to with the answer.
+    async fn request(
+        &self,
+        url: &str,
+        outgoing: &Outgoing,
+        headers: &[(String, String)],
+        hop: usize,
+    ) -> Result<(Url, wreq::Response), FetchError> {
         let headers = match Url::parse(url) {
             Ok(u) => outgoing.callers_headers(headers, &u),
             Err(_) => headers.to_vec(),
@@ -906,8 +954,20 @@ impl Fetcher {
             self.send_shaped(&uri, &current, outgoing, &caller, hop > 0)
                 .await?
         };
-        let status = response.status().as_u16();
         self.note_version(&uri, response.version());
+        Ok((current, response))
+    }
+
+    /// `hop` for any request.
+    pub async fn hop_as(
+        &self,
+        url: &str,
+        outgoing: &Outgoing,
+        headers: &[(String, String)],
+        hop: usize,
+    ) -> Result<Hop, FetchError> {
+        let (current, response) = self.request(url, outgoing, headers, hop).await?;
+        let status = response.status().as_u16();
         let location = response
             .status()
             .is_redirection()
@@ -1184,6 +1244,43 @@ async fn into_response(
 mod tests {
     use super::*;
     use wreq::cookie::CookieStore;
+
+    #[test]
+    fn after_redirects_is_what_following_them_one_by_one_gives() {
+        // A form POSTed on one site: 303 to a page there, which 307s on,
+        // which 308s to another site.
+        let first = Outgoing::form(
+            b"q=1".to_vec(),
+            Some("application/x-www-form-urlencoded".into()),
+            Some("https://a.test/search".into()),
+        );
+        let hops = [
+            (303, "https://a.test/submit"),
+            (307, "https://a.test/results"),
+            (308, "https://a.test/moved"),
+        ];
+        let end = "https://b.test/final";
+        let mut by_hand = first.clone();
+        for (i, (status, from)) in hops.iter().enumerate() {
+            let to = hops.get(i + 1).map_or(end, |(_, next)| next);
+            by_hand = by_hand.redirected(
+                *status,
+                &Url::parse(from).unwrap(),
+                &Url::parse(to).unwrap(),
+            );
+        }
+        let chain: Vec<(u16, String)> = hops.iter().map(|(s, u)| (*s, u.to_string())).collect();
+        assert_eq!(first.after_redirects(&chain, end).unwrap(), by_hand);
+        // The 303 made it a GET without a body, and the last hop left the
+        // site it started on.
+        assert_eq!(by_hand.method, "GET");
+        assert!(by_hand.body.is_none());
+        assert!(
+            first
+                .after_redirects(&[(302, "not a url".into())], end)
+                .is_err()
+        );
+    }
 
     fn fetcher() -> Fetcher {
         Fetcher::new(FetchOptions::new(Profile::named("chrome").unwrap())).unwrap()

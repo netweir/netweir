@@ -470,6 +470,48 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
 - Spider middlewares (`process_spider_output` and the rest) and signals
   other than the five above aren't there.
 
+### Or keep Scrapy, and fetch with netweir
+
+Not ready to move a project over? Keep it on Scrapy and let netweir do the
+fetching. Two lines in `settings.py`:
+
+```python
+DOWNLOAD_HANDLERS = {
+    "http": "netweir.scrapy.DownloadHandler",
+    "https": "netweir.scrapy.DownloadHandler",
+}
+NETWEIR_PROFILE = "chrome"  # or "firefox", "safari", or a version
+```
+
+Every request then goes out as the profile's browser sends it, from the
+TLS handshake to the order of the headers, and Scrapy carries on as
+before. Its middlewares still do their jobs:
+
+- redirects: each hop is sent as the browser sends the request a redirect
+  makes, so a start URL that redirects still looks typed, and a form that
+  answers with a 303 lands with a GET;
+- cookies, kept by Scrapy's cookie middleware and sent once;
+- retries: netweir's errors arrive as Scrapy's own (`DownloadTimeoutError`,
+  `DownloadConnectionRefusedError`, `CannotResolveHostError` and the
+  rest), so they're retried as Scrapy's would be. A body over the size
+  limit (`DownloadCancelledError`) or a request that can't be sent
+  (`NotSupported`) isn't;
+- proxies from `meta["proxy"]`, login included (sent as UTF-8), and
+  `meta["proxy"] = None` for none at all: the system's proxy is never used
+  behind Scrapy's back;
+- `download_timeout`, and `DOWNLOAD_MAXSIZE` or `meta["download_maxsize"]`;
+- AutoThrottle, which gets each response's `download_latency`.
+
+The browser's own User-Agent and Accept-Encoding come from the profile;
+Scrapy's `USER_AGENT` doesn't reach the site. Accept and Accept-Language
+come from the profile too unless a request sets its own: a `JsonRequest`,
+or a request with `Accept: application/json`, asks as a page's script
+does, and gets its JSON. `meta["netweir_kind"]` (`"navigate"`, `"form"`
+or `"fetch"`) chooses for a request that needs it. A body arrives already
+decompressed. `DOWNLOAD_WARNSIZE` and `DOWNLOAD_FAIL_ON_DATALOSS` don't
+apply: a body cut short is always an error. It needs Scrapy 2.15 or
+later, on its default asyncio reactor.
+
 ## Checking items and crawls
 
 A crawl that finishes isn't always a crawl that worked: a redesign can

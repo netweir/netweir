@@ -52,6 +52,9 @@ Working today:
 - Validating items against a dataclass or a JSON Schema, and checks at
   the end of a crawl (item counts, error rate, field coverage) that make
   `netweir crawl` exit 1 when a crawl finished but didn't work.
+- A download handler for Scrapy, so a Scrapy project can fetch as a
+  browser does without moving off Scrapy. See
+  [docs/crawling.md](docs/crawling.md#or-keep-scrapy-and-fetch-with-netweir).
 - A response cache for the days you spend writing a spider: run it thirty
   times and the site serves its pages once. See
   [docs/crawling.md](docs/crawling.md#caching-while-you-develop).

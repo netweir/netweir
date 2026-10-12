@@ -70,16 +70,21 @@ pub struct Fetcher {
 #[pymethods]
 impl Fetcher {
     #[new]
-    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None))]
+    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None, cookies=true, system_proxy=true))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         profile: &str,
         proxy: Option<String>,
         timeout: f64,
         verify: bool,
         max_size: Option<u64>,
+        cookies: bool,
+        system_proxy: bool,
     ) -> PyResult<Fetcher> {
         let mut options = fetch_options(profile, proxy, timeout, verify)?;
         options.max_body = max_size;
+        options.cookies = cookies;
+        options.system_proxy = system_proxy;
         // Everything that can fail here is a bad argument (profile, proxy).
         let inner = CoreFetcher::new(options).map_err(|e| PyValueError::new_err(e.message))?;
         Ok(Fetcher { inner })
@@ -101,8 +106,13 @@ impl Fetcher {
         })
     }
 
-    /// Awaitable request of any kind. Resolves to a Response.
-    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None))]
+    /// Awaitable request of any kind. Resolves to a Response. With
+    /// `follow=False` a redirect isn't followed: the 3xx is the response.
+    /// `chain` is then the redirects that led here, each (status, the URL
+    /// it came from), and the request is sent as the browser would send it
+    /// at the end of them: the method, the page it comes from and the
+    /// header order as the redirects left them.
+    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None, follow=true, chain=None))]
     #[allow(clippy::too_many_arguments)]
     fn send<'py>(
         &self,
@@ -114,16 +124,25 @@ impl Fetcher {
         content_type: Option<String>,
         referer: Option<String>,
         headers: Option<Vec<(String, String)>>,
+        follow: bool,
+        chain: Option<Vec<(u16, String)>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let fetcher = self.inner.clone();
-        let outgoing = outgoing(method, kind, body, content_type, referer)?;
+        let mut outgoing = outgoing(method, kind, body, content_type, referer)?;
         let headers = headers.unwrap_or_default();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = fetcher
-                .send(&url, &outgoing, &headers)
-                .await
+        let chain = chain.unwrap_or_default();
+        if !chain.is_empty() {
+            outgoing = outgoing
+                .after_redirects(&chain, &url)
                 .map_err(fetch_error)?;
-            Ok(Response::from(response))
+        }
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = if follow {
+                fetcher.send(&url, &outgoing, &headers).await
+            } else {
+                fetcher.once(&url, &outgoing, &headers, chain.len()).await
+            };
+            Ok(Response::from(response.map_err(fetch_error)?))
         })
     }
 
