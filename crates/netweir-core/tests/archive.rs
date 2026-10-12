@@ -737,9 +737,19 @@ async fn scenario(
 
 /// A capture with the server's port taken out, for comparing two runs.
 fn comparable(c: &netweir_fingerprint::Capture, port: u16) -> String {
+    // Which connection a request went on only over HTTP/2, where one
+    // carries them all. Over HTTP/1.1 the client puts a connection back in
+    // its pool in the background once the answer is read, and the next
+    // request can sometimes get there first and open another: a race in
+    // the client, archive or not.
+    let (connection, request) = if c.protocol == "h2" {
+        (Some(c.connection), Some(c.request))
+    } else {
+        (None, None)
+    };
     serde_json::json!({
-        "connection": c.connection,
-        "request": c.request,
+        "connection": connection,
+        "request": request,
         "protocol": c.protocol,
         "method": c.method,
         "path": c.path,
