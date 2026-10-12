@@ -362,3 +362,25 @@ def test_workers_send_page_html_for_a_repair_only_when_asked_once(monkeypatch, t
         assert len(first) == 1 and "cost" in first[0][4] and again == []
     finally:
         _track._crawl.reset(token)
+
+
+def test_abandoning_the_pool_cancels_the_jobs_it_handed_out(tmp_path):
+    # Their BrokenProcessPool, set after the loop's last turn, would
+    # otherwise be reported as an exception nobody retrieved.
+    import asyncio
+
+    from netweir import _workers
+    from netweir._native import _response
+
+    async def go():
+        pool = _workers.Pool(
+            worker_spiders.SlowAfterFirst(), settings(workers=1), str(tmp_path / "track")
+        )
+        url = BASE_URL[0] + "/item/1"
+        job = pool.submit(
+            "item", _response(url, 200, "HTTP/1.1", [], b"<p>x</p>"), netweir.Request(url)
+        )
+        pool.close(abandon=True)
+        return job
+
+    assert asyncio.run(go()).cancelled()

@@ -236,6 +236,7 @@ class Pool:
                 repairing,
             ),
         )
+        self._jobs: set[asyncio.Future] = set()
 
     def submit(self, name: str, response: Any, request: Request) -> asyncio.Future:
         job = asyncio.wrap_future(self._executor.submit(run, name, response, request))
@@ -243,12 +244,19 @@ class Pool:
         # their BrokenProcessPool, once close() ends the workers, would be
         # reported as an error nobody handled. Awaiting a job still raises.
         job.add_done_callback(_seen)
+        self._jobs.add(job)
+        job.add_done_callback(self._jobs.discard)
         return job
 
     def close(self, abandon: bool = False) -> None:
         """Waits for the workers to finish, or, abandoning the crawl (an
         error with fail_fast, an interrupt), stops them where they are."""
         if abandon:
+            # Cancelled, the jobs still out can't report the BrokenProcessPool
+            # ending the workers brings: it may arrive after the loop's last
+            # turn, before _seen could retrieve it.
+            for job in list(self._jobs):
+                job.cancel()
             # Known limit: the executor has no public way to stop running
             # work; its processes are terminated directly.
             for process in list(getattr(self._executor, "_processes", {}).values()):
