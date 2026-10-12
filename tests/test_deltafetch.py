@@ -25,16 +25,21 @@ class Handler(BaseHTTPRequestHandler):
     #: The catalogue's products, by number; the listing links to each.
     products: list[int] = []
     asked: collections.Counter = collections.Counter()
+    # The server answers in threads, and += on a Counter isn't atomic
+    # without the GIL.
+    lock = threading.Lock()
 
     def log_message(self, *args):
         pass
 
     def do_GET(self):
-        Handler.asked[self.path] += 1
-        if self.path.startswith("/old/"):
-            # Moved: the request's own URL is what the record keys.
+        with Handler.lock:
+            Handler.asked[self.path] += 1
+        if self.path == "/old/1":
+            # Moved: the request's own URL is what the record keys. A fixed
+            # target: nothing from the request reaches the header.
             self.send_response(301)
-            self.send_header("Location", "/item/" + self.path.rsplit("/", 1)[1])
+            self.send_header("Location", "/item/1")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
