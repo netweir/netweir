@@ -10,12 +10,19 @@ import sys
 import textwrap
 import threading
 import time
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 pytest.importorskip("scrapy")
+
+
+#: Where each /redirect-to/ path sends the client.
+REDIRECTS = {
+    "/redirect-to/%2Flanded%3Fa%3D1": "/landed?a=1",
+    "/redirect-to/%2Fwith%20space": "/with space",
+    "/redirect-to/%2Fsecond": "/second",
+}
 
 
 class Site(BaseHTTPRequestHandler):
@@ -46,10 +53,10 @@ class Site(BaseHTTPRequestHandler):
         self.reply(200, body, [("Content-Type", "application/json")])
 
     def do_GET(self):
-        if self.path.startswith("/redirect-to/"):
+        if self.path in REDIRECTS:
             Site.seen.append((self.command, self.path))
-            target = urllib.parse.unquote(self.path[len("/redirect-to/") :])
-            self.reply(302, headers=[("Location", target)])
+            # Fixed targets: nothing from the request reaches the header.
+            self.reply(302, headers=[("Location", REDIRECTS[self.path])])
         elif self.path == "/redirect":
             Site.seen.append((self.command, self.path))
             self.reply(302, headers=[("Location", "/landed")])
