@@ -153,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("netweir: interrupted", file=sys.stderr)
         return 130
-    return 0
+    # A failed check is a failed crawl, for a scheduler or CI job.
+    return 1 if spider.check_failures else 0
 
 
 def _install(args) -> int:

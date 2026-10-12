@@ -455,6 +455,99 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
 - Spider middlewares (`process_spider_output` and the rest) and signals
   other than the five above aren't there.
 
+## Checking items and crawls
+
+A crawl that finishes isn't always a crawl that worked: a redesign can
+leave every price empty, and a block can cut a crawl to a tenth of its
+pages, and the crawl still ends with "finished". Two things catch that.
+
+### Validating items
+
+`netweir.validate(schema)` is a pipeline stage that checks each item.
+`schema` is a dataclass, or a JSON Schema as a dict (for that,
+`pip install jsonschema`):
+
+```python
+import dataclasses
+
+
+@dataclasses.dataclass
+class Book:
+    title: str
+    price: float
+    stock: int | None = None
+
+
+class Books(netweir.Spider):
+    pipelines = [clean_price, netweir.validate(Book), netweir.export.jsonl("books.jsonl")]
+```
+
+With a dataclass, a field without a default must be there, and not None
+unless its type allows None (`int | None`, `Any`), and each value must be
+of its field's type: `str`, `int`, `float` (an int
+is fine), `bool`, `list`, `dict`, `X | None`, and `list[X]` and
+`dict[str, X]`, whose contents are checked too. Other annotations aren't
+checked, and nor is a field whose type can't be found (one imported only
+for type checkers), which is logged when the stage is made.
+
+An item that fails is dropped and counted as `items_invalid` in the stats
+(not as `items_dropped`, though `item_dropped` listeners hear of it). With
+`validate(schema, drop=False)` it's kept, and a dict item gets its errors
+added to an `_errors` field, such as `["price: required"]`. Either way,
+`spider.invalid_fields` counts the errors by field, as `{"price": 12}`,
+with list positions and numeric keys as `*` (`offers.*.price`), and the first error for
+each field is logged with the page it came from. `items_validated` counts
+the items checked, once each however many validate stages there are. The
+`_id` a checkpoint adds and `_errors` aren't validated, so a schema that
+allows no other properties still works.
+
+### Checks at the end
+
+`checks` run once the crawl has ended, whether it ran out of pages or a
+limit stopped it:
+
+```python
+class Books(netweir.Spider):
+    checks = [
+        netweir.Checks(
+            min_items=900,
+            max_error_rate=0.02,
+            coverage={"title": 1.0, "price": 0.95},
+            finish_reasons=("finished",),
+        )
+    ]
+```
+
+| check | fails when |
+|---|---|
+| `min_items` | fewer items than this |
+| `max_error_rate` | failed fetches and callback errors, out of pages fetched plus failed fetches, are more than this fraction |
+| `max_invalid` | items that failed `validate`, out of those it checked, are more than this fraction |
+| `coverage` | a field is there, and not empty, in less than its fraction of items (None, "", [] and {} are empty) |
+| `finish_reasons` | the crawl ended for another reason, such as a limit |
+
+A check can also be a function of `(stats, spider)`, sync or async. It
+passes by returning None or True, and fails by returning False, a
+message, a list of messages, or anything else. One that raises counts as
+failed. `checks` can be one check rather than a list.
+
+Checks run once the output files are complete, so a check can read them.
+After the run, `spider.check_failures` lists what failed (it's empty if
+every check passed), `stats["checks_failed"]` counts it, and each failure
+is logged as a warning. They're ready before `closed()` and the
+`spider_closed` signal, so a handler can send them on by email or chat.
+`netweir crawl` exits with status 1 when a check failed, so a scheduler or
+CI job notices.
+
+The stats and counts are the run's own. A crawl resumed from a checkpoint
+checks only what that run did, so `min_items` and `coverage` judge part
+of the whole; set them for one run's share, or check the output file in
+a check of your own.
+
+Every crawl counts its fields, checks or not: `spider.coverage` is
+`{field: items it was present and not empty in}`, to set beside
+`stats["items"]`.
+
 ## Exporters
 
 `run(output=...)`, `-o` and the exporters write items in Rust:

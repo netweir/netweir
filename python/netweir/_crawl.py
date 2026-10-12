@@ -25,7 +25,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _track
+from netweir import _monitor, _track
 from netweir._fetch import Page, _pairs
 from netweir._native import Crawler, TrackStore, _robots_sitemaps, fingerprint
 from netweir._native import _sitemap as _parse_sitemap
@@ -247,6 +247,15 @@ class Spider:
     #: the setting that stopped it ("max_items", "max_pages", "max_errors",
     #: "max_time").
     finish_reason: str | None = None
+    #: Checks run once the crawl has ended: netweir.Checks, or functions of
+    #: (stats, spider) returning None, a message or a list of messages.
+    checks: list[Any] = []
+    #: After a run: what the checks found wrong (empty if they all passed),
+    #: how many items each field was present and not empty in, and how many
+    #: validation errors each field had.
+    check_failures: list[str] = []
+    coverage: dict[str, int] = {}
+    invalid_fields: dict[str, int] = {}
 
     async def start(self) -> AsyncIterator[Request]:
         """The first requests. An async generator by default; a plain
@@ -341,6 +350,7 @@ class Spider:
         #: exporter doesn't replace that error (sys.exc_info() can't tell:
         #: it also sees an exception the caller is handling).
         raising = False
+        stats: dict[str, int] | None = None
         try:
             # None, or the state of the output files when items were last
             # recorded: a resumed run cuts each file back to its recorded
@@ -396,6 +406,12 @@ class Spider:
                     except Exception as e:  # noqa: BLE001 - raised below
                         log.error("closing %r failed: %s", stage, e)
                         failure = failure or e
+            # Checks too come after the exporters, so one can read the output
+            # files, and before closed() and spider_closed, which may want to
+            # pass the results on. Not for a crawl that raised.
+            if stats is not None and not raising:
+                self.check_failures = await _monitor.run_checks(self.checks, stats, self)
+                stats["checks_failed"] = len(self.check_failures)
             # After the exporters: closed() and close_spider find the output
             # files complete.
             await run.close(reason)
@@ -530,6 +546,10 @@ class _Run:
         self.depth = 0
         #: The page the running callback was given, for item signals.
         self.page: Page | None = None
+        #: Whether the item being handled has met a validate stage yet, and
+        #: failed one: each is counted once an item.
+        self.validating = False
+        self.invalid = False
         # Tracked selectors keep fingerprints in the checkpoint file, or in
         # the default store.
         state = self.settings._checkpoint_file()
@@ -538,6 +558,9 @@ class _Run:
         self.engine.set_tracks(store, self.settings.track_threshold)
         spider.repairs = []
         spider.finish_reason = None
+        spider.check_failures = []
+        spider.coverage = {}
+        spider.invalid_fields = {}
         #: When the crawl started, for max_time.
         self.started = time.monotonic()
         #: Repairs to ask for once the crawl is done, one per site and name.
@@ -546,6 +569,8 @@ class _Run:
         self.counts = {
             "items": 0,
             "items_dropped": 0,
+            "items_validated": 0,
+            "items_invalid": 0,
             "requests_dropped": 0,
             "responses_dropped": 0,
             "callback_errors": 0,
@@ -1039,6 +1064,56 @@ class _Run:
             else:
                 log.info("skipped %s: %s", request.url, _why(detail))
 
+    def validated(self, stage: Any, item: Any) -> Any:
+        """``item`` after a validate stage: as it was, None when it failed
+        and is dropped, or with drop=False a dict item with its errors in
+        ``_errors``. Errors are counted per field, and each field's first is
+        logged with the page it came from."""
+        if not self.validating:
+            # Counted once an item, however many validate stages it meets.
+            self.validating = True
+            self.counts["items_validated"] += 1
+        checked = item
+        if isinstance(item, dict) and ("_id" in item or "_errors" in item):
+            # netweir's own fields: a schema that allows no others mustn't
+            # fail an item for the _id a checkpoint gives it.
+            checked = {k: v for k, v in item.items() if k not in ("_id", "_errors")}
+        problems = stage.problems(checked)
+        if not problems:
+            return item
+        if not self.invalid:
+            self.invalid = True
+            self.counts["items_invalid"] += 1
+        fields = self.spider.invalid_fields
+        for field, message in problems:
+            # offers.0.price and offers.1.price are one field.
+            key = ".".join("*" if part.isdigit() else part for part in field.split("."))
+            if key not in fields:
+                log.warning("invalid item from %s: %s: %s", self.source, field or "item", message)
+            fields[key] = fields.get(key, 0) + 1
+        if stage.drop:
+            return None
+        if isinstance(item, dict):
+            item.setdefault("_errors", []).extend(f"{f}: {m}" if f else m for f, m in problems)
+        return item
+
+    def cover(self, item: Any) -> None:
+        """Counts the item's fields that are there and not empty."""
+        if isinstance(item, dict):
+            values = item.items()
+        elif dataclasses.is_dataclass(item):
+            values = ((f.name, getattr(item, f.name)) for f in dataclasses.fields(item))
+        else:
+            return
+        coverage = self.spider.coverage
+        for field, value in values:
+            try:
+                there = field not in ("_id", "_errors") and not _monitor.empty(value)
+            except Exception:  # noqa: BLE001 - counting must never cost an item
+                there = True
+            if there:
+                coverage[field] = coverage.get(field, 0) + 1
+
     async def open(self) -> None:
         """As Scrapy opens a crawl: every pipeline's open_spider, then the
         spider_opened signal, then the spider's opened(). An exception stops
@@ -1275,7 +1350,23 @@ class _Run:
                 return
             if isinstance(item, dict):
                 item.setdefault("_id", item_id)
+        self.validating = self.invalid = False
         for stage in self.pipelines:
+            if isinstance(stage, _monitor.validate):
+                given = item
+                item = self.validated(stage, item)
+                if item is None:
+                    # Counted as items_invalid, not items_dropped; listeners
+                    # hear of it as of any other drop.
+                    await self.signal(
+                        "item_dropped",
+                        item=given,
+                        response=self.page,
+                        exception=None,
+                        spider=self.spider,
+                    )
+                    return
+                continue
             given = item
             process = getattr(stage, "process_item", None)
             dropped = None
@@ -1299,6 +1390,7 @@ class _Run:
                 )
                 return
         self.counts["items"] += 1
+        self.cover(item)
         await self.signal("item_scraped", item=item, response=self.page, spider=self.spider)
         if item_id is not None:
             self.delivered.add(item_id)

@@ -49,6 +49,9 @@ Working today:
 - `netweir shell URL`, `fetch` and `view`: the page netweir gets, at a
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).
+- Validating items against a dataclass or a JSON Schema, and checks at
+  the end of a crawl (item counts, error rate, field coverage) that make
+  `netweir crawl` exit 1 when a crawl finished but didn't work.
 - A response cache for the days you spend writing a spider: run it thirty
   times and the site serves its pages once. See
   [docs/crawling.md](docs/crawling.md#caching-while-you-develop).

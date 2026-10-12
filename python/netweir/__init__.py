@@ -13,6 +13,7 @@ from netweir._errors import (
 )
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._form import Form
+from netweir._monitor import Checks, validate
 from netweir._native import (
     Browser,
     BrowserContext,
@@ -37,6 +38,7 @@ __all__ = [
     "BrowserPage",
     "BrowserResponse",
     "BrowserTimeout",
+    "Checks",
     "Client",
     "DropItem",
     "Follow",
@@ -63,5 +65,6 @@ __all__ = [
     "repair",
     "request",
     "submit",
+    "validate",
     "xpath",
 ]
