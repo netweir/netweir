@@ -2,12 +2,13 @@
 //! an awaitable.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use netweir_browser::{
-    Browser as CoreBrowser, Context as CoreContext, Cookie, Error, LaunchOptions, Page as CorePage,
-    Response as CoreResponse, WaitUntil,
+    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Error, LaunchOptions,
+    NetworkEvent, Page as CorePage, Request as CoreRequest, Response as CoreResponse,
+    Route as CoreRoute, WaitUntil,
 };
 use netweir_dom::Document;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -133,7 +134,7 @@ impl Browser {
         let browser = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let inner = browser.new_page().await.map_err(raise)?;
-            Ok(BrowserPage { inner, live: None })
+            Ok(BrowserPage::new(inner, None))
         })
     }
 
@@ -142,7 +143,10 @@ impl Browser {
         let browser = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let inner = browser.new_context().await.map_err(raise)?;
-            Ok(BrowserContext { inner })
+            Ok(BrowserContext {
+                inner,
+                network: OnceLock::new(),
+            })
         })
     }
 
@@ -182,16 +186,67 @@ impl Browser {
 #[pyclass(frozen, module = "netweir")]
 pub struct BrowserContext {
     inner: CoreContext,
+    /// The context's routes, kept in Python (netweir._network).
+    network: OnceLock<Py<PyAny>>,
 }
 
 #[pymethods]
 impl BrowserContext {
-    fn new_page<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn new_page<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let context = slf.get().inner.clone();
+        let me = slf.clone().unbind();
+        pyo3_async_runtimes::tokio::future_into_py(slf.py(), async move {
+            let inner = context.new_page().await.map_err(raise)?;
+            Ok(BrowserPage::new(inner, Some(me)))
+        })
+    }
+
+    /// Routes every page of the context: each request whose URL matches
+    /// `pattern` (a glob, a compiled regex, or a callable taking the URL)
+    /// goes to `handler`, called with a Route to decide about.
+    fn route<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        handler: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        network(slf.py(), &slf.get().network, None)?.call_method1("route", (slf, pattern, handler))
+    }
+
+    /// Removes the routes with `pattern` (only the one with `handler`, if
+    /// given).
+    #[pyo3(signature = (pattern, handler=None))]
+    fn unroute<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        handler: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        network(slf.py(), &slf.get().network, None)?
+            .call_method1("unroute", (slf, pattern, handler))
+    }
+
+    fn _route<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = context.new_page().await.map_err(raise)?;
-            Ok(BrowserPage { inner, live: None })
+            let rx = context.route().await.map_err(raise)?;
+            Ok(Routes::new(rx))
         })
+    }
+
+    fn _unroute<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let context = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            context.unroute().await.map_err(raise)
+        })
+    }
+
+    /// Stops handing requests to the context's routes, at once.
+    fn _drop_routes(&self) {
+        self.inner.drop_routes();
+    }
+
+    /// The context's routes, for its pages to fall back on.
+    fn _network<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        network(py, &self.network, None)
     }
 
     fn cookies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -248,15 +303,89 @@ pub struct BrowserPage {
     /// For a page a crawl fetched: closing it frees its place in the
     /// crawl's pool.
     live: Option<netweir_core::LivePage>,
+    /// The shared context the page was opened in, whose routes it falls
+    /// back on.
+    context: Option<Py<BrowserContext>>,
+    /// The page's listeners, waiters and routes, kept in Python
+    /// (netweir._network).
+    network: OnceLock<Py<PyAny>>,
 }
 
 impl BrowserPage {
+    fn new(inner: CorePage, context: Option<Py<BrowserContext>>) -> BrowserPage {
+        BrowserPage {
+            inner,
+            live: None,
+            context,
+            network: OnceLock::new(),
+        }
+    }
+
     pub(crate) fn from_crawl(live: netweir_core::LivePage) -> BrowserPage {
         BrowserPage {
             inner: live.page().clone(),
             live: Some(live),
+            context: None,
+            network: OnceLock::new(),
         }
     }
+
+    fn network<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let parent = match &self.context {
+            Some(c) => Some(network(py, &c.get().network, None)?),
+            None => None,
+        };
+        network(py, &self.network, parent)
+    }
+}
+
+/// The netweir._network.Network kept in `slot`, made the first time.
+fn network<'py>(
+    py: Python<'py>,
+    slot: &OnceLock<Py<PyAny>>,
+    parent: Option<Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(n) = slot.get() {
+        return Ok(n.bind(py).clone());
+    }
+    let made = py
+        .import("netweir._network")?
+        .getattr("Network")?
+        .call1((parent,))?;
+    // Another thread may have got there first; its one is kept.
+    Ok(slot.get_or_init(|| made.unbind()).bind(py).clone())
+}
+
+/// What the caller passed as headers: a dict, or (name, value) pairs.
+fn header_pairs(headers: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
+    let items = match headers.cast::<PyDict>() {
+        Ok(d) => d.items().into_any(),
+        Err(_) => headers.clone(),
+    };
+    items
+        .try_iter()?
+        .map(|pair| pair?.extract::<(String, String)>())
+        .collect::<PyResult<_>>()
+        .map_err(|_| {
+            PyTypeError::new_err("headers must be a dict, or (name, value) pairs, of strings")
+        })
+}
+
+/// What the caller passed as a body: bytes, or a str sent as UTF-8.
+fn body_bytes(body: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(s) = body.extract::<String>() {
+        return Ok(s.into_bytes());
+    }
+    body.extract::<Vec<u8>>()
+        .map_err(|_| PyTypeError::new_err("body must be bytes or a str"))
+}
+
+fn delegate<'py>(
+    slf: &Bound<'py, BrowserPage>,
+    method: &str,
+    args: impl pyo3::call::PyCallArgs<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    slf.get().network(slf.py())?.call_method1(method, args)
 }
 
 #[pymethods]
@@ -287,7 +416,7 @@ impl BrowserPage {
         let page = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let inner = page.goto(&url, wait, timeout).await.map_err(raise)?;
-            Ok(BrowserResponse { inner })
+            Ok(BrowserResponse::new(inner, &page))
         })
     }
 
@@ -312,7 +441,7 @@ impl BrowserPage {
                 .wait_for_navigation(&after, wait, timeout)
                 .await
                 .map_err(raise)?;
-            Ok(BrowserResponse { inner })
+            Ok(BrowserResponse::new(inner, &page))
         })
     }
 
@@ -449,6 +578,154 @@ impl BrowserPage {
         })
     }
 
+    /// Calls `callback` (a function or a coroutine function) with each
+    /// response the page gets.
+    fn on_response<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "on", (slf, "response", callback))
+    }
+
+    fn remove_response_listener<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "off", ("response", callback))
+    }
+
+    /// Calls `callback` with each request the page makes.
+    fn on_request<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "on", (slf, "request", callback))
+    }
+
+    fn remove_request_listener<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "off", ("request", callback))
+    }
+
+    /// Waits for a response whose URL matches `pattern` (a glob or a
+    /// compiled regex), or for which `pattern` (a callable) is true.
+    #[pyo3(signature = (pattern, timeout=None))]
+    fn wait_for_response<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "wait", (slf, "response", pattern, timeout))
+    }
+
+    #[pyo3(signature = (pattern, timeout=None))]
+    fn wait_for_request<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "wait", (slf, "request", pattern, timeout))
+    }
+
+    /// `wait_for_response` as an async context manager, so the wait starts
+    /// before what makes the request: `async with page.expect_response(p)
+    /// as info:`, then `await info.value`.
+    #[pyo3(signature = (pattern, timeout=None))]
+    fn expect_response<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "expect", (slf, "response", pattern, timeout))
+    }
+
+    #[pyo3(signature = (pattern, timeout=None))]
+    fn expect_request<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "expect", (slf, "request", pattern, timeout))
+    }
+
+    /// Each request whose URL matches `pattern` (a glob, a compiled regex,
+    /// or a callable taking the URL) goes to `handler`, called with a
+    /// Route to decide about.
+    fn route<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        handler: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "route", (slf, pattern, handler))
+    }
+
+    /// Removes the routes with `pattern` (only the one with `handler`, if
+    /// given).
+    #[pyo3(signature = (pattern, handler=None))]
+    fn unroute<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Bound<'py, PyAny>,
+        handler: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "unroute", (slf, pattern, handler))
+    }
+
+    /// Fails, before they leave Chrome, requests of the resource types
+    /// given and those whose URLs match one of the globs in `urls`.
+    #[pyo3(signature = (resource_types=vec!["image".to_string(), "font".to_string(), "media".to_string()], urls=Vec::new()))]
+    fn block<'py>(
+        &self,
+        py: Python<'py>,
+        resource_types: Vec<String>,
+        urls: Vec<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let types: Vec<&str> = resource_types.iter().map(String::as_str).collect();
+            page.block(&types, &urls).await.map_err(raise)
+        })
+    }
+
+    /// Hears every request and response from now on.
+    fn _listen(&self) -> NetworkEvents {
+        NetworkEvents {
+            rx: Arc::new(tokio::sync::Mutex::new(self.inner.listen())),
+            page: self.inner.clone(),
+        }
+    }
+
+    fn _route<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let rx = page.route().await.map_err(raise)?;
+            Ok(Routes::new(rx))
+        })
+    }
+
+    fn _unroute<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            page.unroute().await.map_err(raise)
+        })
+    }
+
+    /// Stops handing requests to the page's routes, at once.
+    fn _drop_routes(&self) {
+        self.inner.drop_routes();
+    }
+
+    /// The browser's default limit, in seconds.
+    #[getter]
+    fn _timeout(&self) -> f64 {
+        self.inner.default_timeout().as_secs_f64()
+    }
+
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let (page, live) = (self.inner.clone(), self.live.clone());
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -482,10 +759,34 @@ impl BrowserPage {
     }
 }
 
-/// The main document's response to a navigation.
+/// A response the page got: the main document's to a navigation, or any
+/// other the page's listeners heard about.
 #[pyclass(frozen, module = "netweir")]
 pub struct BrowserResponse {
     inner: CoreResponse,
+    /// The page that got it, which has its body.
+    page: CorePage,
+}
+
+impl BrowserResponse {
+    fn new(inner: CoreResponse, page: &CorePage) -> BrowserResponse {
+        BrowserResponse {
+            inner,
+            page: page.clone(),
+        }
+    }
+
+    fn read<'py>(
+        &self,
+        py: Python<'py>,
+        then: fn(Python<'_>, Vec<u8>) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (page, response) = (self.page.clone(), self.inner.clone());
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let body = page.body(&response).await.map_err(raise)?;
+            Python::attach(|py| then(py, body))
+        })
+    }
 }
 
 #[pymethods]
@@ -506,9 +807,272 @@ impl BrowserResponse {
         self.inner.headers.clone()
     }
 
+    /// The request's method.
+    #[getter]
+    fn method(&self) -> &str {
+        &self.inner.method
+    }
+
+    /// "document", "xhr", "fetch", "image" and so on.
+    #[getter]
+    fn resource_type(&self) -> &str {
+        &self.inner.resource_type
+    }
+
+    /// The body as bytes, once it has all arrived.
+    fn body<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.read(py, |py, body| {
+            Ok(PyBytes::new(py, &body).into_any().unbind())
+        })
+    }
+
+    /// The body as text, read as UTF-8.
+    fn text<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.read(py, |py, body| {
+            Ok(String::from_utf8_lossy(&body)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        })
+    }
+
+    /// The body parsed as JSON.
+    fn json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.read(py, |py, body| {
+            Ok(py
+                .import("json")?
+                .call_method1("loads", (PyBytes::new(py, &body),))?
+                .unbind())
+        })
+    }
+
     fn __repr__(&self) -> String {
         format!("<BrowserResponse {} {}>", self.inner.status, self.inner.url)
     }
+}
+
+/// A request the page made.
+#[pyclass(frozen, module = "netweir")]
+pub struct BrowserRequest {
+    inner: CoreRequest,
+}
+
+#[pymethods]
+impl BrowserRequest {
+    #[getter]
+    fn url(&self) -> &str {
+        &self.inner.url
+    }
+
+    #[getter]
+    fn method(&self) -> &str {
+        &self.inner.method
+    }
+
+    #[getter]
+    fn headers(&self) -> Vec<(String, String)> {
+        self.inner.headers.clone()
+    }
+
+    /// "document", "xhr", "fetch", "image" and so on.
+    #[getter]
+    fn resource_type(&self) -> &str {
+        &self.inner.resource_type
+    }
+
+    /// The body sent with it, as bytes; None when there was none.
+    #[getter]
+    fn post_data<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.inner.post_data.as_ref().map(|b| PyBytes::new(py, b))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<BrowserRequest {} {}>", self.inner.method, self.inner.url)
+    }
+}
+
+/// A page's requests and responses, as they happen, for netweir._network.
+#[pyclass(frozen, module = "netweir._native")]
+pub struct NetworkEvents {
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<NetworkEvent>>>,
+    page: CorePage,
+}
+
+#[pymethods]
+impl NetworkEvents {
+    /// Stops listening: the page sends nothing more here. A `next`
+    /// still waiting finishes first.
+    fn close(&self) {
+        let rx = self.rx.clone();
+        pyo3_async_runtimes::tokio::get_runtime().spawn(async move { rx.lock().await.close() });
+    }
+
+    /// Resolves to the next BrowserRequest or BrowserResponse, or None
+    /// once the page has closed.
+    fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let (rx, page) = (self.rx.clone(), self.page.clone());
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let event = rx.lock().await.recv().await;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(match event {
+                    None => py.None(),
+                    Some(NetworkEvent::Request(inner)) => {
+                        Py::new(py, BrowserRequest { inner })?.into_any()
+                    }
+                    Some(NetworkEvent::Response(inner)) => {
+                        Py::new(py, BrowserResponse::new(inner, &page))?.into_any()
+                    }
+                })
+            })
+        })
+    }
+}
+
+/// Requests the routes of a page or a context get to decide about, for
+/// netweir._network.
+#[pyclass(frozen, module = "netweir._native")]
+pub struct Routes {
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<CoreRoute>>>,
+}
+
+impl Routes {
+    fn new(rx: tokio::sync::mpsc::UnboundedReceiver<CoreRoute>) -> Routes {
+        Routes {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
+    }
+}
+
+#[pymethods]
+impl Routes {
+    /// Resolves to the next Route, or None once routing has stopped.
+    fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.rx.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let route = rx.lock().await.recv().await;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(match route {
+                    None => py.None(),
+                    Some(inner) => Py::new(py, Route { inner })?.into_any(),
+                })
+            })
+        })
+    }
+}
+
+/// A request held in Chrome until a route handler decides about it:
+/// `abort()`, `continue_()` or `fulfill()`, once. One the handler leaves
+/// undecided goes on unchanged when the handler returns.
+#[pyclass(frozen, module = "netweir")]
+pub struct Route {
+    inner: CoreRoute,
+}
+
+#[pymethods]
+impl Route {
+    #[getter]
+    fn request(&self) -> BrowserRequest {
+        BrowserRequest {
+            inner: self.inner.request().clone(),
+        }
+    }
+
+    /// Whether it's been aborted, continued or fulfilled.
+    #[getter]
+    fn handled(&self) -> bool {
+        self.inner.is_decided()
+    }
+
+    /// Fails the request; the page sees a network error.
+    fn abort<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let route = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { route.abort().await.map_err(raise) },
+        )
+    }
+
+    /// Lets the request go on, changed as asked. `headers` replace all the
+    /// request's headers.
+    #[pyo3(signature = (url=None, method=None, headers=None, body=None))]
+    fn continue_<'py>(
+        &self,
+        py: Python<'py>,
+        url: Option<String>,
+        method: Option<String>,
+        headers: Option<Bound<'py, PyAny>>,
+        body: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let with = Continue {
+            url,
+            method,
+            headers: headers.as_ref().map(header_pairs).transpose()?,
+            body: body.as_ref().map(body_bytes).transpose()?,
+        };
+        let route = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            route.continue_(with).await.map_err(raise)
+        })
+    }
+
+    /// Answers the request without it leaving Chrome. `json` is sent as
+    /// JSON, with an application/json content type unless `headers` give
+    /// one.
+    #[pyo3(signature = (status=200, headers=None, body=None, json=None))]
+    fn fulfill<'py>(
+        &self,
+        py: Python<'py>,
+        status: u16,
+        headers: Option<Bound<'py, PyAny>>,
+        body: Option<Bound<'py, PyAny>>,
+        json: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let mut headers = headers
+            .as_ref()
+            .map(header_pairs)
+            .transpose()?
+            .unwrap_or_default();
+        let body = match (body, json) {
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err("give body or json, not both"));
+            }
+            (Some(body), None) => body_bytes(&body)?,
+            (None, Some(json)) => {
+                if !headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                {
+                    headers.push(("Content-Type".into(), "application/json".into()));
+                }
+                py.import("json")?
+                    .call_method1("dumps", (json,))?
+                    .extract::<String>()?
+                    .into_bytes()
+            }
+            (None, None) => Vec::new(),
+        };
+        let route = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            route.fulfill(status, &headers, &body).await.map_err(raise)
+        })
+    }
+
+    /// Lets the request go on unchanged, unless it's been decided.
+    fn _release(&self) {
+        self.inner.release();
+    }
+
+    fn __repr__(&self) -> String {
+        let r = self.inner.request();
+        format!("<Route {} {}>", r.method, r.url)
+    }
+}
+
+/// Whether `url` matches the glob `pattern`, as routes and waiters match
+/// them.
+#[pyfunction]
+fn _glob_match(pattern: &str, url: &str) -> bool {
+    netweir_browser::glob_match(pattern, url)
 }
 
 fn cookie_list(py: Python<'_>, cookies: &[Cookie]) -> PyResult<Py<PyAny>> {
@@ -647,5 +1211,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BrowserContext>()?;
     m.add_class::<BrowserPage>()?;
     m.add_class::<BrowserResponse>()?;
+    m.add_class::<BrowserRequest>()?;
+    m.add_class::<Route>()?;
+    m.add_class::<NetworkEvents>()?;
+    m.add_class::<Routes>()?;
+    m.add_function(wrap_pyfunction!(_glob_match, m)?)?;
+    m.add(
+        "_RESOURCE_TYPES",
+        netweir_browser::resource_types().collect::<Vec<_>>(),
+    )?;
     Ok(())
 }

@@ -28,7 +28,14 @@ from urllib.parse import urlsplit
 from netweir import _memory, _monitor, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs
-from netweir._native import Crawler, TrackStore, _check_queue_url, _robots_sitemaps, fingerprint
+from netweir._native import (
+    _RESOURCE_TYPES,
+    Crawler,
+    TrackStore,
+    _check_queue_url,
+    _robots_sitemaps,
+    fingerprint,
+)
 from netweir._native import _sitemap as _parse_sitemap
 from netweir._request import Request
 from netweir._rules import Follow, _warn_invalid
@@ -160,6 +167,10 @@ class Settings:
     browser: str = "off"
     #: Chrome pages open at once.
     browser_pages: int = 4
+    #: Resource types the crawl's Chrome pages never fetch, such as
+    #: ``("image", "font", "media")``: Chrome fails them before they leave
+    #: it.
+    browser_block: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.concurrency < 1 or self.per_domain < 1:
@@ -221,6 +232,22 @@ class Settings:
             raise ValueError(f'browser must be "off", "on_block" or "always", not {self.browser!r}')
         if self.browser_pages < 1:
             raise ValueError("browser_pages must be at least 1")
+        if isinstance(self.browser_block, str):
+            raise ValueError(
+                f"browser_block is a tuple of resource types, such as ({self.browser_block!r},)"
+            )
+        object.__setattr__(self, "browser_block", tuple(self.browser_block))
+        for kind in self.browser_block:
+            if kind == "document":
+                raise ValueError(
+                    'browser_block can\'t hold "document": the page itself is one, so it'
+                    " would never load"
+                )
+            if kind not in _RESOURCE_TYPES:
+                raise ValueError(
+                    f"browser_block: unknown resource type {kind!r}; known ones are "
+                    + ", ".join(t for t in _RESOURCE_TYPES if t != "document")
+                )
         if self.workers < 1:
             raise ValueError("workers must be at least 1")
         # A list is fine to pass; stored as a tuple, as Settings is frozen.
@@ -308,6 +335,7 @@ class Settings:
             checkpoint=self._checkpoint_file(),
             browser=self.browser,
             browser_pages=self.browser_pages,
+            browser_block=list(self.browser_block),
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None

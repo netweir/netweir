@@ -70,6 +70,7 @@ error, not ignored. Times are in seconds.
 |---|---|---|
 | `browser` | `"off"` | which requests go through Chrome: `"off"` (those with `browser=True`), `"on_block"` (also any still blocked after its retries) or `"always"` |
 | `browser_pages` | `4` | Chrome pages open at once |
+| `browser_block` | `()` | resource types the crawl's Chrome pages never fetch, such as `("image", "font", "media")`; Chrome fails them before they leave it. Any of `stylesheet`, `image`, `media`, `font`, `script`, `texttrack`, `xhr`, `fetch` (which blocks `xhr` too, and the other way round), `prefetch`, `eventsource`, `websocket`, `manifest`, `signedexchange`, `ping`, `cspviolationreport`, `preflight`, `other`; see [Browser](browser.md#blocking-and-changing-requests) |
 
 ## State
 

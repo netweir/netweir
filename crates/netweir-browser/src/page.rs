@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use base64::Engine;
@@ -13,6 +13,9 @@ use tokio::time::Instant;
 
 use crate::browser::{Inner, context_cookies, set_context_cookies, str_of};
 use crate::conn::{GONE, Handler};
+use crate::network::{
+    Decider, NetworkEvent, Request, Route, SharedRules, chrome_type, headers_of, lock,
+};
 use crate::{Error, Result};
 
 /// netweir's helpers, installed in each document's isolated world. The
@@ -53,7 +56,8 @@ impl FromStr for WaitUntil {
     }
 }
 
-/// The main document's response to a navigation.
+/// A response the page got: the main document's to a navigation, or any
+/// other a listener heard about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub url: String,
@@ -63,6 +67,13 @@ pub struct Response {
     /// Chrome's id for the document's load, which
     /// [`Page::wait_for_navigation`] waits past.
     pub loader: String,
+    /// Chrome's id for the request, for [`Page::body`]; empty when there
+    /// was no response.
+    pub request_id: String,
+    /// The request's method.
+    pub method: String,
+    /// "document", "xhr", "fetch", "image" and so on.
+    pub resource_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,7 +136,7 @@ pub struct Page {
     inner: Arc<PageInner>,
 }
 
-struct PageInner {
+pub(crate) struct PageInner {
     browser: Arc<Inner>,
     target: String,
     session: String,
@@ -136,6 +147,35 @@ struct PageInner {
     /// The isolated world of the current document: (loader id, context id).
     world: tokio::sync::Mutex<Option<(String, i64)>>,
     closed: AtomicBool,
+    /// What the page blocks and routes.
+    rules: SharedRules,
+    /// What its context blocks and routes, for a shared context.
+    shared_context: Option<Arc<ContextRules>>,
+    /// Whether a guard sees the main frame's documents first.
+    guarded: bool,
+    /// Whether the Fetch domain is on, held while it's changed.
+    fetching: tokio::sync::Mutex<bool>,
+}
+
+/// The rules of a shared context, and its pages, to tell when they
+/// change.
+#[derive(Default)]
+pub(crate) struct ContextRules {
+    pub rules: SharedRules,
+    pages: Mutex<Vec<Weak<PageInner>>>,
+}
+
+impl ContextRules {
+    /// The context's pages still open.
+    pub(crate) fn pages(&self) -> Vec<Page> {
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages.retain(|p| p.strong_count() > 0);
+        pages
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|inner| Page { inner })
+            .collect()
+    }
 }
 
 /// What the reader thread updates and the waiters watch.
@@ -155,11 +195,21 @@ struct State {
     /// Lifecycle events seen, by loader.
     events: HashMap<String, Vec<String>>,
     responses: HashMap<String, Response>,
+    /// Requests still loading, with their methods, by request id.
+    loading: HashMap<String, String>,
+    /// Where requests and responses go, while anyone listens.
+    listeners: Vec<tokio::sync::mpsc::UnboundedSender<NetworkEvent>>,
     gone: bool,
 }
 
 /// How many documents' events and responses are kept.
 const KEPT: usize = 16;
+
+/// How many requests still loading are kept track of. Known limit: past
+/// that (a page holding thousands of requests open), the record starts
+/// again, and a response whose request was forgotten says GET for its
+/// method and has its body read without waiting for it to finish.
+const LOADING: usize = 4096;
 
 impl State {
     fn on(&mut self, method: &str, p: &Value) {
@@ -186,30 +236,58 @@ impl State {
             "Page.navigatedWithinDocument" if p["frameId"] == self.frame.as_str() => {
                 self.url = str_of(p, "url");
             }
-            "Network.responseReceived"
-                if p["type"] == "Document" && p["frameId"] == self.frame.as_str() =>
-            {
+            "Network.requestWillBeSent" => {
+                let id = str_of(p, "requestId");
+                let request = Request::from_cdp(id.clone(), &p["request"], &p["type"]);
+                if self.loading.len() >= LOADING {
+                    self.loading.clear();
+                }
+                self.loading.insert(id, request.method.clone());
+                self.tell(NetworkEvent::Request(request));
+            }
+            "Network.loadingFinished" | "Network.loadingFailed" => {
+                self.loading
+                    .remove(p["requestId"].as_str().unwrap_or_default());
+            }
+            "Network.responseReceived" => {
                 let r = &p["response"];
-                let headers = r["headers"]
-                    .as_object()
-                    .into_iter()
-                    .flatten()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
-                    .collect();
+                let id = str_of(p, "requestId");
                 let response = Response {
                     url: str_of(r, "url"),
                     status: r["status"].as_u64().unwrap_or(0) as u16,
-                    headers,
+                    headers: headers_of(&r["headers"]),
                     loader: str_of(p, "loaderId"),
+                    method: self
+                        .loading
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| "GET".into()),
+                    request_id: id,
+                    resource_type: p["type"].as_str().unwrap_or("Other").to_ascii_lowercase(),
                 };
-                // Navigations that never commit (a 204, a download) leave
-                // responses behind; only committed ones are kept.
-                let committed = &self.committed;
-                self.responses.retain(|l, _| committed.contains(l));
-                self.responses.insert(str_of(p, "loaderId"), response);
+                if p["type"] == "Document" && p["frameId"] == self.frame.as_str() {
+                    // Navigations that never commit (a 204, a download)
+                    // leave responses behind; only committed ones are kept.
+                    let committed = &self.committed;
+                    self.responses.retain(|l, _| committed.contains(l));
+                    self.responses
+                        .insert(response.loader.clone(), response.clone());
+                }
+                self.tell(NetworkEvent::Response(response));
             }
-            "Inspector.targetCrashed" | GONE => self.gone = true,
+            "Inspector.targetCrashed" | GONE => {
+                self.gone = true;
+                // Listeners hear there's nothing more: their receivers end.
+                self.listeners.clear();
+            }
             _ => {}
+        }
+    }
+
+    /// Passes `event` to whoever is listening; nothing is kept for later.
+    fn tell(&mut self, event: NetworkEvent) {
+        if !self.listeners.is_empty() {
+            self.listeners.retain(|l| l.send(event.clone()).is_ok());
         }
     }
 
@@ -244,6 +322,7 @@ impl Page {
         context: Option<String>,
         owns_context: bool,
         guard: Option<crate::browser::Guard>,
+        shared_context: Option<Arc<ContextRules>>,
     ) -> Result<Page> {
         let conn = &browser.conn;
         let mut params = json!({"url": "about:blank"});
@@ -269,38 +348,56 @@ impl Page {
             changed: Notify::new(),
         });
         let watched = shared.clone();
+        let rules = SharedRules::default();
+        let mut all_rules = vec![rules.clone()];
+        all_rules.extend(shared_context.as_ref().map(|c| c.rules.clone()));
+        // Holds the connection, not the browser: the connection holds the
+        // handler that holds this, and the browser would never be let go.
+        let decider = Arc::new(Decider {
+            conn: conn.clone(),
+            timeout: browser.timeout,
+            session: session.clone(),
+            rules: all_rules,
+            runtime: tokio::runtime::Handle::current(),
+            guard: guard.clone(),
+            frame: target.clone(),
+        });
+        let is_guarded = guard.is_some();
         // Documents the guard must see first, answered on a task of their
         // own, since the guard is async and the reader thread can't wait.
+        // What it lets through goes on to the page's rules, so no route
+        // sees, let alone answers, a document the guard refused.
         let guarded = guard.map(|guard| {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
             let (conn, session) = (conn.clone(), session.clone());
+            let decider = decider.clone();
             tokio::spawn(async move {
-                while let Some((id, url)) = rx.recv().await {
-                    let (method, params) = if guard(url).await {
-                        ("Fetch.continueRequest", json!({"requestId": id}))
+                while let Some(params) = rx.recv().await {
+                    if guard(str_of(&params["request"], "url")).await {
+                        decider.decide(&params);
                     } else {
-                        (
+                        conn.send(
+                            &session,
                             "Fetch.failRequest",
-                            json!({"requestId": id, "errorReason": "BlockedByClient"}),
-                        )
-                    };
-                    conn.send(&session, method, params);
+                            json!({"requestId": str_of(&params, "requestId"), "errorReason": "BlockedByClient"}),
+                        );
+                    }
                 }
             });
             tx
         });
-        let fetching = browser.proxy_login.is_some() || guarded.is_some();
-        let login = Login {
+        let intercept = Intercept {
             conn: conn.clone(),
             session: session.clone(),
             credentials: browser.proxy_login.clone(),
             guarded,
             frame: target.clone(),
+            decider,
         };
         let handler: Handler = Arc::new(move |method, params| {
             match method {
-                "Fetch.authRequired" => return login.answer(params),
-                "Fetch.requestPaused" => return login.release(params),
+                "Fetch.authRequired" => return intercept.answer(params),
+                "Fetch.requestPaused" => return intercept.release(params),
                 _ => {}
             }
             watched
@@ -321,33 +418,24 @@ impl Page {
                 shared,
                 world: tokio::sync::Mutex::new(None),
                 closed: AtomicBool::new(false),
+                rules,
+                shared_context: shared_context.clone(),
+                guarded: is_guarded,
+                fetching: tokio::sync::Mutex::new(false),
             }),
         };
+        if let Some(c) = &shared_context {
+            c.pages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(Arc::downgrade(&page.inner));
+        }
         let setup = async {
             page.call("Page.enable", json!({})).await?;
             page.call("Page.setLifecycleEventsEnabled", json!({"enabled": true}))
                 .await?;
             page.call("Network.enable", json!({})).await?;
-            if fetching {
-                // To answer the proxy's challenges, Chrome has every
-                // request paused, each released as it comes: a round trip
-                // per request, only for a proxy with a login. A guard needs
-                // only documents paused. Page script can't see the Fetch
-                // domain.
-                let pattern = if browser.proxy_login.is_some() {
-                    json!({"urlPattern": "*"})
-                } else {
-                    json!({"urlPattern": "*", "resourceType": "Document"})
-                };
-                page.call(
-                    "Fetch.enable",
-                    json!({
-                        "handleAuthRequests": browser.proxy_login.is_some(),
-                        "patterns": [pattern],
-                    }),
-                )
-                .await?;
-            }
+            page.refresh_fetch().await?;
             if let Some(identity) = &browser.identity {
                 page.call(
                     "Network.setUserAgentOverride",
@@ -516,7 +604,153 @@ impl Page {
                 status: 0,
                 headers: Vec::new(),
                 loader: loader.to_string(),
+                request_id: String::new(),
+                method: "GET".into(),
+                resource_type: "document".into(),
             })
+    }
+
+    /// Hears about every request the page makes and every response it
+    /// gets, from now until the receiver is dropped or the page closes.
+    /// Nothing is kept for a page nobody listens to.
+    pub fn listen(&self) -> tokio::sync::mpsc::UnboundedReceiver<NetworkEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = self.state();
+        // A page that's gone has nothing more to say: the receiver ends.
+        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
+            state.listeners.push(tx);
+        }
+        rx
+    }
+
+    /// The body of a response the page got, once it has all arrived.
+    /// Chrome keeps bodies for the document showing now, and only so many
+    /// bytes of them, so the body of a response from before a navigation,
+    /// or of one Chrome let go of, is [`Error::Gone`].
+    pub async fn body(&self, response: &Response) -> Result<Vec<u8>> {
+        let id = &response.request_id;
+        if id.is_empty() {
+            return Err(Error::Gone(format!(
+                "{} has no body: there was no response",
+                response.url
+            )));
+        }
+        self.until(
+            || format!("the body of {}", response.url),
+            self.timeout(None),
+            |s| !s.loading.contains_key(id),
+        )
+        .await?;
+        let r = match self
+            .call("Network.getResponseBody", json!({"requestId": id}))
+            .await
+        {
+            Ok(r) => r,
+            Err(Error::Protocol { message, .. }) => {
+                return Err(Error::Gone(format!(
+                    "the body of {} isn't available any more (the page may have navigated \
+                     away, or the request failed): {message}",
+                    response.url
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+        let body = r["body"].as_str().unwrap_or_default();
+        if r["base64Encoded"].as_bool().unwrap_or(false) {
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .map_err(|e| Error::Protocol {
+                    method: "Network.getResponseBody".into(),
+                    message: e.to_string(),
+                })
+        } else {
+            Ok(body.as_bytes().to_vec())
+        }
+    }
+
+    /// Fails, before they leave Chrome, the page's requests of the given
+    /// resource types ("image", "font", ...) and those whose URLs match
+    /// one of the globs. Adds to what the page already blocks.
+    pub async fn block(&self, resource_types: &[&str], urls: &[String]) -> Result<()> {
+        add_blocks(&self.inner.rules, resource_types, urls)?;
+        self.refresh_fetch().await
+    }
+
+    /// Sends every request the page makes to the receiver, as a [`Route`]
+    /// to decide about, until [`Page::unroute`]. Documents a guard refuses
+    /// and requests the page blocks never get there.
+    pub async fn route(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<Route>> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        lock(&self.inner.rules).routes = Some(tx);
+        self.refresh_fetch().await?;
+        Ok(rx)
+    }
+
+    /// Stops routing; requests waiting for a decision go on unchanged.
+    pub async fn unroute(&self) -> Result<()> {
+        lock(&self.inner.rules).routes = None;
+        self.refresh_fetch().await
+    }
+
+    /// Stops handing requests to routes at once, without asking Chrome
+    /// anything: for when whatever decided about them has gone (the event
+    /// loop it ran on ended, say). Requests Chrome still pauses for routing
+    /// go on unchanged as they come, until routing changes again.
+    pub fn drop_routes(&self) {
+        lock(&self.inner.rules).routes = None;
+    }
+
+    /// Has the Fetch domain pause what the page's rules, its context's,
+    /// its guard and its proxy's login need, and nothing else; or turns
+    /// it off when nothing does. Page script can't see the Fetch domain.
+    pub(crate) async fn refresh_fetch(&self) -> Result<()> {
+        let mut on = self.inner.fetching.lock().await;
+        let login = self.inner.browser.proxy_login.is_some();
+        let mut all = login;
+        let mut types: Vec<&str> = Vec::new();
+        if self.inner.guarded {
+            types.push("Document");
+        }
+        let context = self.inner.shared_context.as_ref().map(|c| &c.rules);
+        for rules in std::iter::once(&self.inner.rules).chain(context) {
+            let rules = lock(rules);
+            all |= rules.pauses_all();
+            types.extend(rules.types.iter().copied());
+        }
+        types.sort_unstable();
+        types.dedup();
+        // To answer the proxy's challenges, Chrome has every request
+        // paused, each released as it comes: a round trip per request,
+        // only for a proxy with a login. Routes and blocked URLs need
+        // every request paused too; a guard and blocked resource types
+        // only their own.
+        let patterns: Vec<Value> = if all {
+            vec![json!({"urlPattern": "*"})]
+        } else {
+            types
+                .iter()
+                .map(|t| json!({"urlPattern": "*", "resourceType": t}))
+                .collect()
+        };
+        if patterns.is_empty() {
+            if *on {
+                self.call("Fetch.disable", json!({})).await?;
+                *on = false;
+            }
+            return Ok(());
+        }
+        self.call(
+            "Fetch.enable",
+            json!({"handleAuthRequests": login, "patterns": patterns}),
+        )
+        .await?;
+        *on = true;
+        Ok(())
+    }
+
+    /// The browser's default limit, which waits and route handlers get.
+    pub fn default_timeout(&self) -> Duration {
+        self.inner.browser.timeout
     }
 
     /// The current URL.
@@ -806,6 +1040,8 @@ impl Page {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return Ok(());
         }
+        // Whoever takes the page's routes hears there are no more.
+        lock(&self.inner.rules).routes = None;
         let conn = &self.inner.browser.conn;
         let closed = self
             .inner
@@ -837,20 +1073,38 @@ impl Page {
     }
 }
 
-/// Answers a page's authentication challenges: a proxy's with the
-/// proxy's login, a site's by leaving it to Chrome. A wrong login isn't
-/// given again: Chrome stops asking after it's refused.
-struct Login {
+/// Adds resource types and URL globs to what `rules` block.
+pub(crate) fn add_blocks(rules: &SharedRules, types: &[&str], urls: &[String]) -> Result<()> {
+    let types = types
+        .iter()
+        .map(|t| chrome_type(t))
+        .collect::<Result<Vec<_>>>()?;
+    let mut rules = lock(rules);
+    for t in types {
+        if !rules.types.contains(&t) {
+            rules.types.push(t);
+        }
+    }
+    rules.urls.extend(urls.iter().cloned());
+    Ok(())
+}
+
+/// What the Fetch domain asks of a page. Authentication challenges are
+/// answered: a proxy's with the proxy's login, a site's by leaving it to
+/// Chrome. A wrong login isn't given again: Chrome stops asking after
+/// it's refused. Paused requests go to the guard, then to the rules.
+struct Intercept {
     conn: crate::conn::Connection,
     session: String,
     credentials: Option<(String, String)>,
     /// Where the main frame's documents go to be guarded.
-    guarded: Option<tokio::sync::mpsc::UnboundedSender<(String, String)>>,
+    guarded: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
     /// The main frame, whose id is the target's.
     frame: String,
+    decider: Arc<Decider>,
 }
 
-impl Login {
+impl Intercept {
     fn answer(&self, params: &Value) {
         let response = match &self.credentials {
             Some((username, password)) if params["authChallenge"]["source"] == "Proxy" => {
@@ -866,32 +1120,27 @@ impl Login {
     }
 }
 
-impl Login {
-    /// Lets a request Fetch paused go on unchanged, unless it's a document
-    /// for the main frame and there's a guard to ask first.
+impl Intercept {
+    /// Puts a request Fetch paused to the guard first, if it's a document
+    /// for the main frame and there's a guard; then to the rules, which
+    /// let it go on unchanged unless they block or route it.
     fn release(&self, params: &Value) {
         if let Some(guarded) = &self.guarded
             && params["resourceType"] == "Document"
             && params["frameId"] == self.frame.as_str()
         {
-            let url = str_of(&params["request"], "url");
-            let id = str_of(params, "requestId");
-            if guarded.send((id.clone(), url)).is_err() {
+            if guarded.send(params.clone()).is_err() {
                 // The guard has gone (it panicked): nothing it would have
                 // been asked about goes through unasked.
                 self.conn.send(
                     &self.session,
                     "Fetch.failRequest",
-                    json!({"requestId": id, "errorReason": "BlockedByClient"}),
+                    json!({"requestId": str_of(params, "requestId"), "errorReason": "BlockedByClient"}),
                 );
             }
             return;
         }
-        self.conn.send(
-            &self.session,
-            "Fetch.continueRequest",
-            json!({"requestId": str_of(params, "requestId")}),
-        );
+        self.decider.decide(params);
     }
 }
 

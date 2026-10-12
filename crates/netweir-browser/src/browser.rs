@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::conn::Connection;
-use crate::page::{Cookie, Page, WaitUntil, cookies_from, cookies_to};
+use crate::network::Route;
+use crate::page::{ContextRules, Cookie, Page, WaitUntil, cookies_from, cookies_to};
 use crate::{Error, Result, launch};
 
 /// Decides whether a page may fetch a document, given its URL.
@@ -312,7 +313,7 @@ impl Browser {
     /// The client hints Chrome reports for itself, read where no override
     /// is in force and the hints are visible: chrome://version.
     async fn own_metadata(&self) -> Result<Value> {
-        let page = Page::open(self.inner.clone(), None, false, None).await?;
+        let page = Page::open(self.inner.clone(), None, false, None, None).await?;
         let read = async {
             page.goto("chrome://version", WaitUntil::Load, None).await?;
             page.evaluate(
@@ -368,7 +369,7 @@ impl Browser {
     /// any other page. Closing it closes the context.
     pub async fn new_page(&self) -> Result<Page> {
         let context = self.create_context().await?;
-        Page::open(self.inner.clone(), Some(context), true, None).await
+        Page::open(self.inner.clone(), Some(context), true, None, None).await
     }
 
     /// Like [`Browser::new_page`], but every document the page's main
@@ -377,7 +378,7 @@ impl Browser {
     /// fails with `ERR_BLOCKED_BY_CLIENT`.
     pub async fn new_guarded_page(&self, guard: Guard) -> Result<Page> {
         let context = self.create_context().await?;
-        Page::open(self.inner.clone(), Some(context), true, Some(guard)).await
+        Page::open(self.inner.clone(), Some(context), true, Some(guard), None).await
     }
 
     /// A context whose pages share cookies and storage with each other.
@@ -385,6 +386,7 @@ impl Browser {
         Ok(Context {
             browser: self.inner.clone(),
             id: self.create_context().await?,
+            rules: Arc::default(),
         })
     }
 
@@ -867,11 +869,51 @@ pub(crate) fn str_of(v: &Value, key: &str) -> String {
 pub struct Context {
     browser: Arc<Inner>,
     id: String,
+    /// What every page of the context routes.
+    rules: Arc<ContextRules>,
 }
 
 impl Context {
     pub async fn new_page(&self) -> Result<Page> {
-        Page::open(self.browser.clone(), Some(self.id.clone()), false, None).await
+        Page::open(
+            self.browser.clone(),
+            Some(self.id.clone()),
+            false,
+            None,
+            Some(self.rules.clone()),
+        )
+        .await
+    }
+
+    /// Like [`Page::route`], for every page of the context, those open
+    /// now and those opened later. A page's own routes come first.
+    pub async fn route(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<Route>> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::network::lock(&self.rules.rules).routes = Some(tx);
+        self.refresh().await?;
+        Ok(rx)
+    }
+
+    /// Stops the context's routing; requests waiting for a decision go on
+    /// unchanged.
+    pub async fn unroute(&self) -> Result<()> {
+        crate::network::lock(&self.rules.rules).routes = None;
+        self.refresh().await
+    }
+
+    /// Like [`Page::drop_routes`], for the context's routes.
+    pub fn drop_routes(&self) {
+        crate::network::lock(&self.rules.rules).routes = None;
+    }
+
+    async fn refresh(&self) -> Result<()> {
+        for page in self.rules.pages() {
+            match page.refresh_fetch().await {
+                Ok(()) | Err(Error::PageClosed) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     pub async fn cookies(&self) -> Result<Vec<Cookie>> {

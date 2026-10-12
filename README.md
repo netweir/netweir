@@ -91,7 +91,9 @@ Working today:
   after a block, with proxies that keep failing benched for a while. See
   [docs/self-healing.md](docs/self-healing.md#proxies).
 - A Chrome driver for pages that need JavaScript: click, type and wait
-  like Playwright, then read the page with netweir's selectors. In a
+  like Playwright, then read the page with netweir's selectors, or read
+  the JSON its own requests got back. Requests can be blocked, changed or
+  answered before they leave Chrome. In a
   crawl, it can take over a request a site keeps blocking, and hand the
   cookies it earns back to the fast HTTP client. `netweir install chrome`
   fetches the Chrome it's tuned for.

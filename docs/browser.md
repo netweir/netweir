@@ -182,6 +182,163 @@ with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`
 and `same_site`. `await page.set_cookies([...])` takes the same dicts;
 `name`, `value` and `domain` are required.
 
+## Reading what the page fetched
+
+Plenty of pages that need JavaScript are a thin shell around an API. The
+list you're after arrives as JSON, and the page's script turns it into
+HTML. You can skip the HTML and take the JSON:
+
+```python
+page = await browser.new_page()
+await page.goto("https://example.com/catalogue")
+async with page.expect_response("**/api/products*") as info:
+    await page.click("button.load-more")
+response = await info.value
+products = (await response.json())["products"]
+```
+
+`expect_response` starts waiting when the `async with` block starts, so
+the response can't arrive before you're listening, however fast the
+server is. `await info.value` is the first response that matched. If you
+just want to wait, `await page.wait_for_response(pattern)` does the same
+from the moment it's called.
+
+A pattern is one of three things:
+
+- A glob, matched against the whole URL: `*` is anything but a `/`, `**`
+  is anything at all, `{png,jpg}` is either, and every other character,
+  `?` included, is itself. So `"**/api/*"` matches
+  `https://example.com/api/items?page=2`, and `"**/*.{png,jpg}"` matches
+  every PNG and JPEG.
+- A compiled regex, searched for in the URL: `re.compile(r"/api/v\d+/")`.
+- A function that takes the response and returns true for the one you
+  want: `lambda r: r.resource_type == "xhr" and r.status == 200`. It can be
+  `async`; a slow one holds nothing else up, but among `async` functions
+  the first to say yes wins, which may not be the earliest response.
+
+A response has `url`, `status`, `headers`, `method` (the request's) and
+`resource_type`: `"document"`, `"xhr"`, `"fetch"`, `"image"`,
+`"stylesheet"`, `"script"`, `"font"`, `"media"` and so on. Its body is
+fetched only when you ask: `await response.body()` for bytes,
+`await response.text()` for text read as UTF-8, `await response.json()`
+for the parsed JSON. They wait for the body to finish arriving. The
+response `goto` returns works the same way.
+
+Chrome keeps bodies only for the page that's showing. Once the page moves
+on to another document, the bodies from the old one are gone, and asking
+for one raises `netweir.BrowserError` saying so. Read what you need
+before you navigate. A body Chrome couldn't decode, such as a broken
+image, comes back empty.
+
+To see everything rather than wait for one response, add a listener:
+
+```python
+def seen(response):
+    print(response.status, response.resource_type, response.url)
+
+page.on_response(seen)
+await page.goto("https://example.com/")
+page.remove_response_listener(seen)
+```
+
+A listener can be a plain function or an `async` one, and an exception in
+it is logged to the `netweir` logger rather than raised. `on_request`,
+`wait_for_request` and `expect_request` do the same for requests as they
+go out; a request has `url`, `method`, `headers`, `resource_type` and
+`post_data` (the body it sends, as bytes, or `None`).
+
+Nothing piles up behind your back. netweir only hears Chrome's network
+events while a listener or a wait wants them, and keeps none of them:
+a response nobody asked for is let go as it arrives.
+
+`wait_for_response` and `expect_response` take `timeout=` in seconds, the
+browser's `timeout` by default, and raise `netweir.BrowserTimeout` when
+it runs out. If the page closes first, they raise `netweir.BrowserError`.
+
+Use a page's listeners, waits and routes from one event loop at a time.
+A page can outlive its loop (two `asyncio.run` calls, or a test framework
+that gives each test a loop of its own). When the loop that reads the
+page's events or routes ends, every listener and route on the page is
+dropped, whichever loop added it, and the page carries on without them:
+its requests go on unchanged. Add what you need again in the new loop.
+A listener or wait added from another thread's loop does run on that
+loop, but its routes would still be served by the first.
+
+## Blocking and changing requests
+
+The quickest win is not fetching what you'll never look at. Images, fonts
+and video are most of a page's weight:
+
+```python
+page = await browser.new_page()
+await page.block()  # images, fonts and media
+await page.block(resource_types=(), urls=["**/analytics/**", "**/*.mp4"])
+await page.goto("https://example.com/")
+```
+
+`block()` takes `resource_types` (`("image", "font", "media")` unless you
+say otherwise) and `urls`, a list of globs. Each call adds to what the
+page already blocks. A blocked request fails inside Chrome before it's
+sent, so the server never sees it, and the page sees a network error as
+it would for any failed request. Before a request is sent, Chrome can't
+tell `fetch()` from `XMLHttpRequest`, so blocking `"xhr"` or `"fetch"`
+blocks both.
+
+For more than yes or no, add a route. Every request whose URL matches
+the pattern goes to your handler, which decides what happens to it:
+
+```python
+async def handle(route):
+    if route.request.resource_type == "xhr":
+        await route.fulfill(json={"items": ["a test item"]})
+    else:
+        headers = dict(route.request.headers) | {"X-Debug": "1"}
+        await route.continue_(headers=headers)
+
+await page.route("**/api/**", handle)
+```
+
+The handler gets a `Route`, with the request as `route.request`, and calls
+one of:
+
+| Method | Does |
+|---|---|
+| `abort()` | fails the request; the page sees a network error |
+| `continue_(url=None, method=None, headers=None, body=None)` | sends it on, changed as asked; `headers` replace all of the request's headers, so start from `route.request.headers` to change one |
+| `fulfill(status=200, headers=None, body=None, json=None)` | answers it without it leaving Chrome; `body` is bytes or a str, and `json` is sent as JSON with an `application/json` content type |
+
+Patterns work as they do for waiting, except that a function gets the
+URL rather than a response. Routes are asked in turn, so a slow `async`
+pattern function holds up the page's other routed requests. When more
+than one route matches, the newest wins. `await page.unroute(pattern)` removes the routes with that pattern
+(only the one with that handler, if you pass it as well).
+
+A context has `route` and `unroute` too, and they apply to every page in
+it, the ones open now and the ones you open later. A page's own routes
+come first; if none of them matches, the context's get the request.
+
+Requests are never left hanging. A handler that returns without deciding,
+or raises (the exception goes to the `netweir` logger), lets the request
+go on unchanged. One that hasn't decided by the browser's `timeout` (30
+seconds unless you changed it) loses the request, which goes on unchanged
+too; deciding after that raises `netweir.BrowserError`.
+
+Routing has a cost: while a page has routes, every request it makes is
+held in Chrome until netweir has asked your Python code about it, which is
+a round trip each. `block()` with resource types only holds requests of
+those types, and decides them without asking Python.
+
+Some things routes don't see. In a crawl, a page that robots.txt or
+TDMRep rules out is refused before any route is asked, and no route can
+answer for it. Nor can a route send a page elsewhere to get round them:
+`continue_(url=...)` on a page the crawl checked has the new URL checked
+too, and one ruled out fails with `ERR_BLOCKED_BY_CLIENT`, exactly as a
+refused page does, without being fetched. Requests from service workers, from workers, and from
+frames that load from another site go out unrouted and unheard, since
+Chrome runs those in processes of their own. A redirect's own response
+isn't reported to listeners: you hear about the response the redirects
+end at.
+
 ## In a crawl
 
 A spider can send some requests through Chrome and the rest through the
@@ -210,7 +367,8 @@ robots.txt and TDMRep first, and one they rule out isn't fetched (the
 request is dropped, as over HTTP). The check stays on while your callback
 drives `page.browser`: navigating it somewhere ruled out fails with
 Chrome's `ERR_BLOCKED_BY_CLIENT`. `browser_pages` (4 by default) caps how many are
-open at once.
+open at once. `browser_block=("image", "font", "media")` has every page
+the crawl opens in Chrome skip those, as `page.block()` would.
 A declarative spider's rules read the rendered HTML, so callbacks the rules
 call, and a rules spider's own `parse`, get the rendered page but not
 `page.browser`.

@@ -84,6 +84,9 @@ pub struct CrawlSettings {
     pub browser_pages: usize,
     /// How Chrome is started, the first time a request needs it.
     pub browser_launch: LaunchOptions,
+    /// Resource types ("image", "font", ...) the crawl's Chrome pages
+    /// fail before they're fetched.
+    pub browser_block: Vec<String>,
     /// Domains requests may go to, with their subdomains, normalised by
     /// `allowed_domains`; empty for any. A request elsewhere is dropped
     /// unless it has `dont_filter`.
@@ -244,6 +247,7 @@ impl Default for CrawlSettings {
             browser: BrowserMode::Off,
             browser_pages: 4,
             browser_launch: LaunchOptions::default(),
+            browser_block: Vec::new(),
             allowed_domains: Vec::new(),
             cache: None,
             cache_expiry: None,
@@ -2793,6 +2797,14 @@ async fn render(
         browser.new_page().await
     }
     .map_err(browser_error)?;
+    let blocked = &shared.settings.browser_block;
+    if !blocked.is_empty() {
+        let types: Vec<&str> = blocked.iter().map(String::as_str).collect();
+        if let Err(e) = page.block(&types, &[]).await {
+            let _ = page.close().await;
+            return Err(browser_error(e));
+        }
+    }
     let live = LivePage {
         inner: Arc::new(Live {
             page: page.clone(),
