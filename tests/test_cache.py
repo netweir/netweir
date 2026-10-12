@@ -20,6 +20,9 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     asked: collections.Counter = collections.Counter()
     served: collections.Counter = collections.Counter()
+    # The server answers in threads, and += on a Counter isn't atomic
+    # without the GIL.
+    lock = threading.Lock()
 
     def log_message(self, *args):
         pass
@@ -33,9 +36,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        Handler.asked[self.path] += 1
-        Handler.served[self.path] += 1
-        n = Handler.served[self.path]
+        with Handler.lock:
+            Handler.asked[self.path] += 1
+            Handler.served[self.path] += 1
+            n = Handler.served[self.path]
         prefix, _, last = self.path.rpartition("/")
         if self.path == "/go1":
             # A fixed target: nothing from the request reaches the header.
@@ -60,7 +64,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
-        Handler.asked[self.path] += 1
+        with Handler.lock:
+            Handler.asked[self.path] += 1
         self.answer(200, b"you sent " + body, [("Content-Type", "text/plain")])
 
 

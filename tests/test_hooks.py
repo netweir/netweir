@@ -15,19 +15,24 @@ FAST = netweir.Settings(throttle=False, start_delay=0, obey_robots=False, obey_t
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     served: collections.Counter = collections.Counter()
+    # The server answers in threads, and += on a Counter isn't atomic
+    # without the GIL.
+    lock = threading.Lock()
 
     def log_message(self, *args):
         pass
 
     def do_GET(self):
-        Handler.served[self.path] += 1
+        with Handler.lock:
+            Handler.served[self.path] += 1
+            n = Handler.served[self.path]
         if self.path == "/":
             body = b"<a href='/a'>a</a><a href='/b'>b</a>"
         elif self.path.startswith("/echo"):
             body = json.dumps({k.lower(): v for k, v in self.headers.items()}).encode()
         elif self.path.startswith("/ready"):
             # Not ready the first time it's asked for.
-            body = b"ready" if Handler.served[self.path] > 1 else b"not yet"
+            body = b"ready" if n > 1 else b"not yet"
         else:
             body = f"<p>{self.path}</p>".encode()
         self.send_response(200)
