@@ -63,6 +63,9 @@ Working today:
 - Self-healing: block pages recognised and recovered from, crawls that
   resume after a crash, and selectors that find their element again after
   a redesign.
+- Proxy pools: a new proxy for every request, one per site, or one only
+  after a block, with proxies that keep failing benched for a while. See
+  [docs/self-healing.md](docs/self-healing.md#proxies).
 - A Chrome driver for pages that need JavaScript: click, type and wait
   like Playwright, then read the page with netweir's selectors. In a
   crawl, it can take over a request a site keeps blocking, and hand the

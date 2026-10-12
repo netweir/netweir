@@ -18,7 +18,10 @@ error, not ignored. Times are in seconds.
 |---|---|---|
 | `profile` | `"chrome"` | the browser every request looks like: `"chrome"`, `"firefox"` or `"safari"` (the newest of each), or a version such as `"safari-27-macos"` |
 | `proxy` | `None` | an `http://`, `https://` or `socks5://` proxy for every request (`socks5h://` to have the proxy look names up); any other scheme is an error |
-| `proxies` | `()` | proxies a site moves through each time it blocks a session |
+| `proxies` | `()` | proxies to send requests through, as `proxy_rotation` says |
+| `proxy_rotation` | `"on_block"` | how `proxies` are used: `"on_block"` (a site takes the next proxy each time it blocks a session), `"per_request"` (every request takes the next) or `"per_host"` (each site keeps one until a block moves it on); the last two need `proxies` and refuse `proxy`. See [Proxies](self-healing.md#proxies) |
+| `proxy_failures` | `3` | failures in a row after which a proxy is benched: no connection to the proxy, a 407 (or a tunnel refused with one), a tunnel it broke off, or a block page. A site that's down, slow or has a bad certificate doesn't count. See [Proxies](self-healing.md#when-a-proxy-stops-working) |
+| `proxy_cooldown` | `60.0` | how long a benched proxy sits out; twice that each time after, up to 30 minutes |
 | `timeout` | `30.0` | the limit for one whole request |
 | `max_response_size` | `67108864` | the most bytes of a response body (64 MiB), counted after decompression, so a small compressed answer that unpacks to gigabytes is stopped too; a larger one fails with `FetchError(kind="too_large")`, and `None` reads any size |
 

@@ -63,6 +63,7 @@ netweir.Request(
     browser=False,              # True fetches it in Chrome
     method="GET",               # or POST, PUT...; with one of form=, json=, body=
     referer="https://example.com/",  # the page it comes from; page.follow sets it
+    proxy="http://10.0.0.9:8080",    # this one request goes through this proxy
 )
 ```
 
@@ -466,7 +467,6 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
 - `IgnoreRequest` from `process_request` or `process_response` drops the
   request there; Scrapy passes it on to `process_exception` and the
   errback.
-- `request.meta["proxy"]` does nothing: proxies are the `proxy` setting.
 - Spider middlewares (`process_spider_output` and the rest) and signals
   other than the five above aren't there.
 

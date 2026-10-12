@@ -20,11 +20,15 @@ builds it into the engine, where the fetching is.
 - `"per_request"`: every request takes the next healthy proxy, round
   robin. Cookies are the crawl's, whichever proxy carries them, as a
   browser behind a rotating gateway would have them. A block is answered
-  by the rotation itself: the retry goes out through another proxy. (If
-  the cookie store can drop one host's cookies, a block drops them, as a
-  new session would; otherwise they're kept, and the docs say so.)
-- `"per_host"`: each host gets a proxy of its own the first time it's
-  fetched, the next healthy one in turn, and keeps it; its session (its
+  by the rotation itself: the retry goes out through another proxy. A
+  block also drops the blocked host's cookies from the crawl's jar (and
+  any its parent domains set), as a new session would: every proxy's
+  client shares the one jar, and the jar can remove cookies by domain,
+  path and name.
+- `"per_host"`: each host gets a proxy of its own the first time a
+  request of its takes the rotation (one naming its own proxy, or going
+  direct, doesn't, and robots.txt goes the way the first waiting request
+  does), the next healthy one in turn, and keeps it; its session (its
   cookies) goes with it. A block, or the proxy being taken out, moves the
   host to the next healthy proxy with a fresh session.
 
@@ -33,10 +37,20 @@ proxy, and `proxy`, if given too, is refused: it's not clear which wins.
 
 ## Health
 
-A proxy fails a request when the request through it ends in a connection
-error, a timeout, a TLS error, a 407 (the proxy wants a login) or a
-block. Any other answer, a 404 or a 500 included, is the site's, and a
-success for the proxy. After `proxy_failures` failures in a row (3), the
+A proxy fails a request when the connection to the proxy fails, the
+proxy wants a login (a 407, or a CONNECT refused with 407), the proxy
+breaks off a tunnel (an early close, a bad answer to CONNECT), or the
+answer is a block. Any other answer, a 404 or a 500 included, is the
+site's, and a success for the proxy. So are failures the client can't
+pin on the proxy: a CONNECT refused with any other status (wreq keeps
+no status for it, and it's mostly 502/503/504, the proxy failing to
+reach the site), a TLS error with the site inside an open tunnel, and
+any timeout (wreq reports a slow proxy and a slow site alike). Leaning
+that way keeps dead or slow sites from benching healthy proxies; a proxy
+that accepts connections and never answers isn't benched, which costs a
+timeout per request through it. The classification reads wreq's error
+chain (`client error (ProxyConnect)`, `tunnel error: unsuccessful`),
+since its tunnel errors aren't public. After `proxy_failures` failures in a row (3), the
 proxy is benched: left out of rotation for `proxy_cooldown` seconds (60),
 twice that the next time it's benched, and so on up to 30 minutes. A
 benched proxy comes back on its own when its time is up, and one success
@@ -45,6 +59,21 @@ clears its record.
 When every proxy is benched, the crawl doesn't stall: requests go to the
 one coming back soonest, and a warning says the pool is exhausted (once,
 until a proxy is healthy again).
+
+A proxy back from the bench goes straight back on it if its next request
+fails: the run of failures is only cleared by a success. A 407 from a
+proxy the pool picked is retried, like a connection error, since the
+next try may go through another. robots.txt and tdmrep.json go through
+the pool as a host's pages would; if a pool proxy fails to fetch one,
+it's fetched again (only when the proxy was at fault, by the rules
+above) through each healthy pool proxy that hasn't failed that origin yet, whatever `retries` says (even 0), and a host with a
+session of its own moves to the proxy picked. So while a healthy proxy
+is left, a dead one can't disallow a whole site. When none is left, or a
+proxy outside the pool fails, the file is unreachable, as a network
+error makes it: robots.txt disallows everything for the crawl, tdmrep.json
+counts as none. A 407 on either is read the same way, never as the
+site's 4xx. Health doesn't read 502, 503 or 504: a gateway's and the
+site's look the same.
 
 Benching is logged (the proxy's address with any login hidden: `http://
 ***@host:port`), and counted as `proxies_benched` in the stats. After a
@@ -55,11 +84,25 @@ carried, how many failed, and how many times it was benched.
 
 `Request(url, proxy="http://host:port")` sends that request through that
 proxy, whatever the rotation; so does `meta={"proxy": ...}`, as in Scrapy.
-It counts toward that proxy's health if the proxy is in the pool.
+As in Scrapy, `meta={"proxy": None}` or `""` means no proxy: the request
+goes direct whatever the rotation (the engine takes an empty proxy as
+that, and the checkpoint keeps it). A proxy outside the pool gets its own
+`proxy_stats` row up to 1,000 of them; the rest share an `"other"` row.
+The clients kept for proxies requests name are bounded (least recently
+used dropped): the pool's own plus 256 for the crawl's jar, 16 per host
+session.
+It counts toward that proxy's health if the proxy is in the pool, and
+shows in `proxy_stats` either way. The request's proxy is saved in the
+checkpoint (format 3 adds the column). A proxy the client can't use
+skips the request with a warning, as an unusable URL does.
 
 ## Chrome
 
-A page fetched in Chrome goes through the proxy its host's session has
-(`"per_host"`, `"on_block"`), as today; with `"per_request"`, through the
-next healthy proxy when the browser is started. Chrome starts with one
-proxy for all its pages, so per-request rotation doesn't apply inside it.
+Chrome starts with one proxy for all its pages, so neither rotation
+applies inside it. With `"on_block"` it goes through the crawl's `proxy`,
+as before; with `"per_request"` or `"per_host"` (where there's no crawl
+proxy), through the next healthy proxy of the pool when the browser is
+started. The session a page hands Chrome's cookies to goes through that
+proxy too, since the cookies are tied to its address. Giving each host
+its own proxy inside Chrome would need a browser context per proxy, and
+the proxy logins Chrome answers are per browser today.

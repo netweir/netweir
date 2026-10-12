@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use netweir_core::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler as CoreCrawler, DropReason, Event,
-    FetchError, Submitted,
+    FetchError, ProxyRotation, Submitted,
 };
 use netweir_dom::extract::{self, TrackContext, Value};
 use netweir_dom::{Document, Query};
@@ -56,7 +56,7 @@ fn not_a_page(r: &netweir_core::Response) -> Option<String> {
 }
 
 /// How long one rule page may take to parse before it is given up on.
-// ponytail: fixed budget; make it a setting if real pages need longer.
+// Known limit: fixed budget; make it a setting if real pages need longer.
 const PARSE_BUDGET: Duration = Duration::from_secs(10);
 
 /// What to do with a request's page besides returning it.
@@ -209,6 +209,7 @@ impl Engine {
                 browser: false,
                 outgoing: netweir_core::Outgoing::navigate(),
                 retry_post: false,
+                proxy: None,
             };
             let payload = format!(r#"{{"rule":{at}}}"#);
             if self.core.submit_with(request, &payload) != Submitted::Queued {
@@ -665,6 +666,7 @@ impl Crawler {
         throttle=true, start_delay=1.0, min_delay=0.0, max_delay=60.0, target_concurrency=1.0,
         max_depth=None, max_pages_per_domain=None, max_pages=None,
         retries=3, backoff_base=1.0, backoff_max=60.0, proxies=None,
+        proxy_rotation="on_block", proxy_failures=3, proxy_cooldown=60.0,
         breaker_window=50, breaker_ratio=0.3, breaker_pause=300.0, checkpoint=None,
         browser="off", browser_pages=4, max_response_size=None, allowed_domains=None,
         cache=None, cache_expiry=None,
@@ -692,6 +694,9 @@ impl Crawler {
         backoff_base: f64,
         backoff_max: f64,
         proxies: Option<Vec<String>>,
+        proxy_rotation: &str,
+        proxy_failures: u32,
+        proxy_cooldown: f64,
         breaker_window: usize,
         breaker_ratio: f64,
         breaker_pause: f64,
@@ -712,6 +717,17 @@ impl Crawler {
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "browser must be \"off\", \"on_block\" or \"always\", not {browser:?}"
+                )));
+            }
+        };
+        let proxy_rotation = match proxy_rotation {
+            "on_block" => ProxyRotation::OnBlock,
+            "per_request" => ProxyRotation::PerRequest,
+            "per_host" => ProxyRotation::PerHost,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "proxy_rotation must be \"on_block\", \"per_request\" or \"per_host\", \
+                     not {proxy_rotation:?}"
                 )));
             }
         };
@@ -765,6 +781,9 @@ impl Crawler {
             backoff_base: seconds("backoff_base", backoff_base)?,
             backoff_max: seconds("backoff_max", backoff_max)?,
             proxies: proxies.unwrap_or_default(),
+            proxy_rotation,
+            proxy_failures,
+            proxy_cooldown: seconds("proxy_cooldown", proxy_cooldown)?,
             breaker_window,
             breaker_ratio,
             breaker_pause: seconds("breaker_pause", breaker_pause)?,
@@ -850,13 +869,14 @@ impl Crawler {
     }
 
     /// Queues a request. Returns "queued", "duplicate", "invalid",
-    /// "too_deep", "trap" or "domain_full".
+    /// "too_deep", "trap", "domain_full", "offsite" or "bad_proxy".
     /// With `apply_rules`, the rules take links from the page; then the page
     /// reaches Python only if `to_python`, and a "handled" event says so
     /// otherwise. `method`, `kind` ("navigate", "form" or "fetch"), `body`,
     /// `content_type` and `referer` say what to send, as Fetcher.send
-    /// takes them.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false))]
+    /// takes them. `proxy` sends it through that proxy, whatever the
+    /// rotation.
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -877,6 +897,7 @@ impl Crawler {
         content_type: Option<String>,
         referer: Option<String>,
         retry_post: bool,
+        proxy: Option<String>,
     ) -> PyResult<&'static str> {
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
@@ -907,6 +928,7 @@ impl Crawler {
             browser,
             outgoing,
             retry_post,
+            proxy,
         };
         let outcome = match row {
             Some(row) => self.engine.core.resubmit(request, row),
@@ -923,6 +945,7 @@ impl Crawler {
             Submitted::Trap => "trap",
             Submitted::DomainFull => "domain_full",
             Submitted::Offsite => "offsite",
+            Submitted::BadProxy => "bad_proxy",
         })
     }
 
@@ -962,7 +985,7 @@ impl Crawler {
     /// What the checkpoint held, after requests the rules made are queued
     /// again: a dict with "pending" (Python's requests, as (row, url,
     /// priority, headers, dont_filter, depth, payload, method, kind, body,
-    /// content_type, referer, retry_post)), "items" (ids of
+    /// content_type, referer, retry_post, proxy)), "items" (ids of
     /// items already delivered) and "counters" (JSON, or None). None
     /// without a checkpoint. Call it once, after adding the rules.
     fn resume<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
@@ -1000,6 +1023,7 @@ impl Crawler {
                         p.content_type,
                         p.referer,
                         p.retry_post,
+                        p.proxy,
                     ),
                 ));
                 continue;
@@ -1026,6 +1050,7 @@ impl Crawler {
                 browser: false,
                 outgoing: netweir_core::Outgoing::navigate(),
                 retry_post: false,
+                proxy: p.proxy,
             };
             if self.engine.core.resubmit(request, p.row) != Submitted::Queued {
                 self.engine.tags().remove(&id);
@@ -1116,7 +1141,22 @@ impl Crawler {
         d.set_item("offsite", s.offsite)?;
         d.set_item("cache_hits", s.cache_hits)?;
         d.set_item("cache_stores", s.cache_stores)?;
+        d.set_item("proxies_benched", s.proxies_benched)?;
         Ok(d)
+    }
+
+    /// What each proxy did: {url: {"requests", "failures", "benched"}},
+    /// the crawl's proxies first, then any a request named.
+    fn proxy_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (url, s) in self.engine.core.proxy_stats() {
+            let d = PyDict::new(py);
+            d.set_item("requests", s.requests)?;
+            d.set_item("failures", s.failures)?;
+            d.set_item("benched", s.benched)?;
+            out.set_item(url, d)?;
+        }
+        Ok(out)
     }
 }
 

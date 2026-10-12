@@ -60,6 +60,7 @@ fn request(id: u64, url: String, browser: bool) -> CrawlRequest {
 
         outgoing: netweir_core::Outgoing::navigate(),
         retry_post: false,
+        proxy: None,
     }
 }
 
@@ -236,6 +237,58 @@ async fn a_blocked_request_gets_through_in_chrome_and_hands_its_cookies_back() {
     assert!(page.is_none(), "fetched over HTTP");
     assert_eq!(response.status, 200);
     assert_eq!(c.stats().browser_fetches, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrome() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/guarded", challenge())]).await;
+    let own = Site::start(vec![(
+        site.url("/mine").as_str(),
+        Page::html("<p>through my proxy</p>"),
+    )])
+    .await;
+    // The crawl looks like Firefox; Chrome's cookies go to a session that
+    // looks like the Chrome that earned them.
+    let c = Crawler::new(
+        FetchOptions::new(Profile::named("firefox").unwrap()),
+        settings(BrowserMode::OnBlock),
+    )
+    .unwrap();
+    c.submit(request(1, site.url("/guarded"), false));
+    let events = drain(&c).await;
+    if events.iter().any(
+        |e| matches!(e, Event::Warning { message } if message.contains("no matching netweir profile")),
+    ) {
+        eprintln!("skipped: no profile for this Chrome");
+        return;
+    }
+    for e in &events {
+        if let Event::Fetched {
+            page: Some(page), ..
+        } = e
+        {
+            page.close().await;
+        }
+    }
+    c.submit(CrawlRequest {
+        proxy: Some(format!("http://127.0.0.1:{}", own.port)),
+        ..request(2, site.url("/mine"), false)
+    });
+    drain(&c).await;
+    let requests = own.requests.lock().unwrap().clone();
+    let (_, headers) = requests.first().expect("the own proxy carried it");
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    assert!(header("user-agent").contains("Chrome/"), "{headers:?}");
+    assert!(header("cookie").contains("pass=1"), "{headers:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

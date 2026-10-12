@@ -239,7 +239,10 @@ tried again a minute later.
 Chrome goes through the crawl's `proxy`, login included, so the cookies it
 earns come from the address the HTTP client uses. It doesn't move through
 `proxies` as a blocked HTTP session does: it and the session it hands its
-cookies to both use `proxy`.
+cookies to both use `proxy`. With `proxy_rotation="per_request"` or
+`"per_host"` there's no `proxy`, so Chrome takes the next healthy one of
+`proxies` when it starts and keeps it for every page; the session it hands
+its cookies to goes through that one too.
 
 The stats count `browser_fetches`, pages Chrome fetched, and
 `browser_unblocked`, blocked requests it got through. Each hand-back counts

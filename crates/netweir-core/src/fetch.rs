@@ -202,6 +202,22 @@ impl FetchError {
             message: message.into(),
         }
     }
+
+    /// Whether the proxy, not the site, made the request fail: no
+    /// connection to the proxy, or a tunnel the proxy wanted a login for
+    /// or broke off. A tunnel it refused ("unsuccessful") isn't: that's a
+    /// 502, 503 or 504 when it couldn't reach the site, and the client
+    /// keeps no status to tell those from a refusal of its own. Nor is a
+    /// timeout, which looks the same whether the proxy or the site was
+    /// slow, nor a TLS error with the site through an open tunnel.
+    // Known limit: read from the error's text, as the client's tunnel errors
+    // aren't public; a wreq upgrade that rewords them needs this checked
+    // (the proxy tests in tests/proxies.rs would fail).
+    pub fn proxy_at_fault(&self) -> bool {
+        self.message.contains("(ProxyConnect)")
+            && !self.message.contains("tunnel error: unsuccessful")
+            && self.kind != FetchErrorKind::Timeout
+    }
 }
 
 impl From<wreq::Error> for FetchError {
@@ -572,12 +588,88 @@ impl Outgoing {
     }
 }
 
+/// `proxy` as the client takes it, or why it can't. The client treats a
+/// scheme it doesn't know as no proxy at all, which would send every
+/// request out directly, so only these four get through.
+pub fn check_proxy(proxy: &str) -> Result<Proxy, FetchError> {
+    let scheme = proxy.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+    if !matches!(
+        scheme.as_deref(),
+        Some("http" | "https" | "socks5" | "socks5h")
+    ) {
+        return Err(FetchError::invalid(format!(
+            "a proxy is an http://, https://, socks5:// or socks5h:// URL, not {:?}",
+            masked(proxy)
+        )));
+    }
+    let rest = proxy.split_once("://").map_or(proxy, |(_, rest)| rest);
+    // A login with an unencoded / ? # or @ in it moves where the client
+    // thinks the host starts, and it would quietly go somewhere else.
+    if let Some((login, _)) = rest.rsplit_once('@')
+        && login.contains(['/', '?', '#', '@', ' ', '[', ']'])
+    {
+        return Err(FetchError::invalid(format!(
+            "the login in the proxy {} has characters the URL can't hold as they are: \
+             percent-encode the username and password (/ as %2F, ? as %3F, # as %23, \
+             @ as %40, a space as %20)",
+            masked(proxy)
+        )));
+    }
+    // And the host and port have to be the ones written, read back.
+    let authority = rest.rsplit_once('@').map_or(rest, |(_, a)| a);
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, p)) => (format!("[{h}]"), p.strip_prefix(':')),
+            None => (authority.to_string(), None),
+        },
+        None => match authority.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), Some(p)),
+            None => (authority.to_string(), None),
+        },
+    };
+    let read = Url::parse(proxy).ok();
+    let same = read.as_ref().is_some_and(|u| {
+        u.host_str().is_some_and(|h| h.eq_ignore_ascii_case(&host))
+            && port.is_none_or(|p| p.parse::<u16>().ok() == u.port_or_known_default())
+    });
+    if !same {
+        return Err(FetchError::invalid(format!(
+            "the proxy {} doesn't read back as the host and port written; if it has a \
+             login, percent-encode the username and password",
+            masked(proxy)
+        )));
+    }
+    Proxy::all(proxy).map_err(|e| FetchError::invalid(format!("{}: {e}", masked(proxy))))
+}
+
+/// `proxy` with any login in it hidden, for logs: `http://***@host:port`.
+/// Everything up to the last `@` goes, so a password with an unencoded
+/// `/`, `?`, `#` or `@` in it is hidden whole.
+pub fn masked(proxy: &str) -> String {
+    let (scheme, rest) = proxy.split_once("://").unwrap_or(("", proxy));
+    match rest.rfind('@') {
+        Some(at) if scheme.is_empty() => format!("***@{}", &rest[at + 1..]),
+        Some(at) => format!("{scheme}://***@{}", &rest[at + 1..]),
+        None => proxy.to_string(),
+    }
+}
+
 /// Chrome follows at most 20 redirects.
 const MAX_REDIRECTS: usize = 20;
 
 impl Fetcher {
     pub fn new(options: FetchOptions) -> Result<Fetcher, FetchError> {
-        let jar = Arc::new(wreq::cookie::Jar::default());
+        Fetcher::with_jar(options, Arc::new(wreq::cookie::Jar::default()))
+    }
+
+    /// A Fetcher with `options` that keeps its cookies in `other`'s jar:
+    /// the same visitor, through another proxy.
+    pub fn sharing_cookies(options: FetchOptions, other: &Fetcher) -> Result<Fetcher, FetchError> {
+        Fetcher::with_jar(options, other.jar.clone())
+    }
+
+    fn with_jar(options: FetchOptions, jar: Arc<wreq::cookie::Jar>) -> Result<Fetcher, FetchError> {
         let profile = &options.profile;
         let emulation = profile
             .emulation()
@@ -600,20 +692,7 @@ impl Fetcher {
                 .redirect(redirect::Policy::none())
                 .tls_cert_verification(options.verify_certificates);
             if let Some(proxy) = &options.proxy {
-                // The client treats a scheme it doesn't know as no proxy at
-                // all, which would send every request out directly.
-                let scheme = proxy.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
-                if !matches!(
-                    scheme.as_deref(),
-                    Some("http" | "https" | "socks5" | "socks5h")
-                ) {
-                    return Err(FetchError::invalid(format!(
-                        "a proxy is an http://, https://, socks5:// or socks5h:// URL, not {proxy:?}"
-                    )));
-                }
-                builder = builder.proxy(
-                    Proxy::all(proxy.as_str()).map_err(|e| FetchError::invalid(e.to_string()))?,
-                );
+                builder = builder.proxy(check_proxy(proxy)?);
             }
             builder
                 .build()
@@ -668,7 +747,7 @@ impl Fetcher {
 
     /// Whether a request to `url` will go over HTTP/2: never for http://,
     /// and not for https origins that have answered over HTTP/1.1 before.
-    // ponytail: the first request to an https origin without HTTP/2 still
+    // Known limit: the first request to an https origin without HTTP/2 still
     // carries the HTTP/2-only headers. Knowing for sure needs the ALPN result
     // before the request is written, which wreq does not expose; the fix
     // belongs in wreq (drop marked headers when the connection is HTTP/1).
@@ -726,6 +805,24 @@ impl Fetcher {
             }
             let scheme = if c.secure { "https" } else { "http" };
             self.jar.add(line, format!("{scheme}://{host}{}", c.path));
+        }
+    }
+
+    /// Drops every cookie that would be sent to `host`, its parent
+    /// domains' among them, as a new session would start without them.
+    pub fn forget(&self, host: &str) {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        for c in self.jar.get_all() {
+            let path = c.path().unwrap_or("/");
+            // A cookie without a domain is its host's alone, and kept under
+            // that host; one with a domain is kept under the domain.
+            let domain = match c.domain().map(|d| d.trim_start_matches('.')) {
+                None => host.as_str(),
+                Some(d) if host == d || host.ends_with(&format!(".{d}")) => d,
+                Some(_) => continue,
+            };
+            self.jar
+                .remove(c.name().to_string(), format!("https://{domain}{path}"));
         }
     }
 
@@ -1271,6 +1368,86 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_proxy_login_is_hidden_from_logs() {
+        assert_eq!(
+            masked("http://ann:p%40ss@10.0.0.1:8080"),
+            "http://***@10.0.0.1:8080"
+        );
+        assert_eq!(
+            masked("socks5://ann@proxy:1080/"),
+            "socks5://***@proxy:1080/"
+        );
+        assert_eq!(masked("http://proxy:8080"), "http://proxy:8080");
+        assert_eq!(masked("ann:secret@proxy:8080"), "***@proxy:8080");
+        let err = check_proxy("ftp://ann:secret@proxy:21").unwrap_err();
+        assert!(!err.message.contains("secret"), "{}", err.message);
+        // A password with an unencoded / ? # or @ is hidden whole.
+        for raw in [
+            "http://ann:se/cret@proxy:8080",
+            "http://ann:se?cret@proxy:8080",
+            "http://ann:se#cret@proxy:8080",
+            "http://ann:se@cret@proxy:8080",
+        ] {
+            assert_eq!(masked(raw), "http://***@proxy:8080", "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_proxy_login_that_isnt_percent_encoded_is_refused() {
+        for raw in [
+            "http://ann:se/cret@proxy:8080",
+            "http://ann:se?cret@proxy:8080",
+            "http://ann:se#cret@proxy:8080",
+            "http://ann:se@cret@proxy:8080",
+            "http://ann:se cret@proxy:8080",
+        ] {
+            let err = check_proxy(raw).unwrap_err();
+            assert!(err.message.contains("percent-encode"), "{raw}: {err}");
+            assert!(!err.message.contains("cret"), "{raw}: {err}");
+        }
+        for fine in [
+            "http://ann:se%2Fcret@proxy:8080",
+            "http://ann:se:cret@proxy:8080",
+            "http://proxy:8080",
+            "http://proxy:8080/",
+            "socks5h://[::1]:1080",
+        ] {
+            assert!(check_proxy(fine).is_ok(), "{fine}");
+        }
+    }
+
+    #[test]
+    fn forgetting_a_host_drops_its_cookies_and_its_domains_and_no_others() {
+        let a = fetcher();
+        let b = Fetcher::sharing_cookies(FetchOptions::new(Profile::named("chrome").unwrap()), &a)
+            .unwrap();
+        a.add_set_cookies("https://www.shop.example/", &["own=1; Path=/".into()]);
+        a.add_set_cookies(
+            "https://www.shop.example/cart/",
+            &["deep=1; Path=/cart".into()],
+        );
+        a.add_set_cookies(
+            "https://www.shop.example/",
+            &["wide=1; Domain=shop.example".into()],
+        );
+        a.add_set_cookies("https://other.example/", &["own=2".into()]);
+        a.add_set_cookies("https://api.shop.example/", &["api=1".into()]);
+        let names = |f: &Fetcher| {
+            let mut n: Vec<String> = f.jar.get_all().map(|c| c.name().to_string()).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&b), ["api", "deep", "own", "own", "wide"], "shared");
+        b.forget("www.shop.example");
+        assert_eq!(names(&a), ["api", "own"]);
+        assert!(
+            a.jar
+                .matches("https://other.example/")
+                .any(|c| c.value() == "2")
+        );
     }
 
     fn safari_cookies(jar: &OrderedJar, url: &str, version: Version) -> Vec<String> {

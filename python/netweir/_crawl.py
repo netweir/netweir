@@ -83,9 +83,19 @@ class Settings:
     retries: int = 3
     backoff_base: float = 1.0
     backoff_max: float = 60.0
-    #: Proxies a host moves through each time it blocks a session; every
-    #: new session also starts with an empty cookie jar.
+    #: Proxies to send requests through, as proxy_rotation says:
+    #: "on_block" (a site moves to the next each time it blocks a session,
+    #: which also starts with an empty cookie jar), "per_request" (every
+    #: request takes the next) or "per_host" (each site keeps one until a
+    #: block moves it on).
     proxies: tuple[str, ...] = ()
+    proxy_rotation: str = "on_block"
+    #: A proxy that fails this many requests in a row (no connection to
+    #: it, a 407, a tunnel it broke off, or a block; never a site that's
+    #: down or slow) is left out for
+    #: proxy_cooldown seconds, twice that the next time, up to 30 minutes.
+    proxy_failures: int = 3
+    proxy_cooldown: float = 60.0
     #: If more than breaker_ratio of a host's last breaker_window responses
     #: were blocks, it pauses for breaker_pause seconds.
     breaker_window: int = 50
@@ -160,6 +170,22 @@ class Settings:
             raise ValueError("workers must be at least 1")
         # A list is fine to pass; stored as a tuple, as Settings is frozen.
         object.__setattr__(self, "proxies", tuple(self.proxies))
+        rotation = self.proxy_rotation
+        if rotation not in ("on_block", "per_request", "per_host"):
+            raise ValueError(
+                f'proxy_rotation must be "on_block", "per_request" or "per_host", not {rotation!r}'
+            )
+        if rotation != "on_block" and not self.proxies:
+            raise ValueError(f'proxy_rotation="{rotation}" rotates through proxies; give some')
+        if rotation != "on_block" and self.proxy is not None:
+            raise ValueError(
+                f'proxy_rotation="{rotation}" takes proxies, not proxy as well: it isn\'t'
+                " clear which would win; put that proxy in proxies"
+            )
+        if self.proxy_failures < 1:
+            raise ValueError("proxy_failures must be at least 1")
+        if self.proxy_cooldown <= 0:
+            raise ValueError("proxy_cooldown must be positive")
 
     def _engine(self, allowed_domains: Iterable[str] = ()) -> Crawler:
         return Crawler(
@@ -185,6 +211,9 @@ class Settings:
             backoff_base=self.backoff_base,
             backoff_max=self.backoff_max,
             proxies=list(self.proxies),
+            proxy_rotation=self.proxy_rotation,
+            proxy_failures=self.proxy_failures,
+            proxy_cooldown=self.proxy_cooldown,
             breaker_window=self.breaker_window,
             breaker_ratio=self.breaker_ratio,
             breaker_pause=self.breaker_pause,
@@ -265,6 +294,9 @@ class Spider:
     check_failures: list[str] = []
     coverage: dict[str, int] = {}
     invalid_fields: dict[str, int] = {}
+    #: After a run: for each proxy of Settings.proxies, then each other
+    #: proxy a request named, {"requests": n, "failures": n, "benched": n}.
+    proxy_stats: dict[str, dict[str, int]] = {}
 
     async def start(self) -> AsyncIterator[Request]:
         """The first requests. An async generator by default; a plain
@@ -401,6 +433,8 @@ class Spider:
             raising = True
             raise
         finally:
+            # However the crawl ended, what each proxy did is known.
+            self.proxy_stats = run.engine.proxy_stats()
             await run.engine.close_browser()
             # Each stage is closed even if one before it fails (an upload,
             # say); the first failure is raised once the crawl is wound up.
@@ -570,6 +604,7 @@ class _Run:
         spider.check_failures = []
         spider.coverage = {}
         spider.invalid_fields = {}
+        spider.proxy_stats = {}
         #: When the crawl started, for max_time.
         self.started = time.monotonic()
         #: For max_memory: each worker's peak memory as it last reported
@@ -607,7 +642,7 @@ class _Run:
             return None
         self.delivered = set(saved["items"])
         for (row, url, priority, headers, dont_filter, depth, payload), sent in saved["pending"]:
-            method, kind, body, content_type, referer, retry_post = sent
+            method, kind, body, content_type, referer, retry_post, proxy = sent
             data = json.loads(payload)
             request = Request(
                 url,
@@ -623,6 +658,7 @@ class _Run:
                 body=body,
                 referer=referer,
                 retry_post=retry_post,
+                proxy=proxy,
                 kind=kind,
                 content_type=content_type,
             )
@@ -671,6 +707,12 @@ class _Run:
         # A request with no callback on a rules spider is the rules' to read.
         apply_rules = bool(self.rules) and request.callback is None
         to_python = not apply_rules or self.has_parse
+        # Request.proxy wins; then meta's, where None or "" means no proxy
+        # at all, as in Scrapy, which the engine reads as "".
+        proxy = request.proxy
+        meta = request.meta or {}
+        if proxy is None and "proxy" in meta:
+            proxy = meta["proxy"] or ""
         outcome = self.engine.submit(
             rid,
             request.url,
@@ -689,12 +731,20 @@ class _Run:
             content_type=request.content_type,
             referer=request.referer,
             retry_post=request.retry_post,
+            proxy=proxy,
         )
         if outcome == "queued":
             self.waiting[rid] = request
         elif outcome == "invalid":
             self.counts["invalid_urls"] += 1
             log.warning("not an http(s) URL, skipped: %s", request.url)
+        elif outcome == "bad_proxy":
+            self.counts["invalid_urls"] += 1
+            log.warning(
+                "%s: its proxy can't be used (an http://, https://, socks5:// or socks5h:// URL,"
+                " with any login percent-encoded); skipped",
+                request.url,
+            )
 
     def resolve(
         self, fn: Callable[..., Any] | str | None, default: str | None

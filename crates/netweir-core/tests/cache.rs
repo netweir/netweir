@@ -61,6 +61,7 @@ fn request(id: u64, url: String) -> CrawlRequest {
         browser: false,
         outgoing: netweir_core::Outgoing::navigate(),
         retry_post: false,
+        proxy: None,
     }
 }
 

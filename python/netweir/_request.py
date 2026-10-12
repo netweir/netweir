@@ -27,6 +27,12 @@ class Request:
     page it comes from; ``page.follow`` sets it. A POST or PATCH that gets
     a server error isn't retried, since the server may have acted on it,
     unless ``retry_post=True``; nor is it ever handed to Chrome.
+
+    ``proxy`` sends the request through that proxy, whatever the crawl's
+    ``proxy_rotation``; ``""`` sends it direct, through no proxy at all.
+    When ``proxy`` isn't set, ``meta["proxy"]`` does the same, as in
+    Scrapy, None or ``""`` there meaning no proxy. Chrome has one proxy for all its pages, so it
+    doesn't apply to a request fetched there.
     """
 
     url: str
@@ -45,6 +51,8 @@ class Request:
     body: bytes | str | None = None
     referer: str | None = None
     retry_post: bool = False
+    #: Left out of repr(): a proxy's URL may hold its password.
+    proxy: str | None = dataclasses.field(default=None, repr=False)
     #: Set from form, json and body: "navigate", "form" or "fetch", and the
     #: body's Content-Type.
     kind: str | None = None

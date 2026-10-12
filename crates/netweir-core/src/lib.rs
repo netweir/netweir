@@ -20,9 +20,12 @@ pub mod tracks;
 pub mod traps;
 
 pub use crawl::{
-    BrowserMode, CrawlRequest, CrawlSettings, Crawler, DropReason, Event, LivePage, Stats,
-    Submitted, allowed_domains, offsite,
+    BrowserMode, CrawlRequest, CrawlSettings, Crawler, DropReason, Event, LivePage, ProxyRotation,
+    ProxyStats, Stats, Submitted, allowed_domains, offsite,
 };
 pub use decode::{decode, meta_content};
-pub use fetch::{FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, Outgoing, Response};
+pub use fetch::{
+    FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, Outgoing, Response, check_proxy,
+    masked,
+};
 pub use profile::{DEFAULT as DEFAULT_PROFILE, Profile, ProfileError};

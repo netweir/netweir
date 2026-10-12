@@ -314,6 +314,9 @@ class Crawler:
         backoff_base: float = 1.0,
         backoff_max: float = 60.0,
         proxies: list[str] | None = None,
+        proxy_rotation: Literal["on_block", "per_request", "per_host"] = "on_block",
+        proxy_failures: int = 3,
+        proxy_cooldown: float = 60.0,
         breaker_window: int = 50,
         breaker_ratio: float = 0.3,
         breaker_pause: float = 300.0,
@@ -357,8 +360,16 @@ class Crawler:
         content_type: str | None = None,
         referer: str | None = None,
         retry_post: bool = False,
+        proxy: str | None = None,
     ) -> Literal[
-        "queued", "duplicate", "invalid", "too_deep", "trap", "domain_full", "offsite"
+        "queued",
+        "duplicate",
+        "invalid",
+        "too_deep",
+        "trap",
+        "domain_full",
+        "offsite",
+        "bad_proxy",
     ]: ...
     def resume(self) -> dict[str, Any] | None: ...
     def ack(self) -> None: ...
@@ -394,6 +405,7 @@ class Crawler:
         | tuple[Literal["warning"], str]
     ]: ...
     def stats(self) -> dict[str, int]: ...
+    def proxy_stats(self) -> dict[str, dict[str, int]]: ...
 
 class ItemSpec:
     def __init__(

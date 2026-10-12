@@ -21,7 +21,7 @@ use crate::canonical::Fingerprint;
 
 /// The layout this build writes. Older files are upgraded on open; newer
 /// ones are refused.
-pub const FORMAT: i64 = 2;
+pub const FORMAT: i64 = 3;
 
 /// A request that was saved and not finished.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +41,8 @@ pub struct Pending {
     pub content_type: Option<String>,
     pub referer: Option<String>,
     pub retry_post: bool,
+    /// The proxy the request asked for, if any. Formats 1 and 2 had none.
+    pub proxy: Option<String>,
 }
 
 /// What a checkpoint held when it was opened.
@@ -58,7 +60,7 @@ pub struct Saved {
 enum Op {
     /// A new request and its URL's seen mark, which must land in the same
     /// commit: seen but not queued, a resume would never fetch it.
-    Request(Fingerprint, Pending),
+    Request(Fingerprint, Box<Pending>),
     Seen(Fingerprint),
     Done(i64),
     Item(String),
@@ -109,7 +111,8 @@ const SCHEMA: &str = "
         body BLOB,
         content_type TEXT,
         referer TEXT,
-        retry_post INTEGER NOT NULL DEFAULT 0
+        retry_post INTEGER NOT NULL DEFAULT 0,
+        proxy TEXT
     );
     CREATE INDEX IF NOT EXISTS pending ON requests (row) WHERE done = 0;
     CREATE TABLE IF NOT EXISTS seen (fingerprint BLOB PRIMARY KEY) WITHOUT ROWID;
@@ -149,7 +152,17 @@ impl Checkpoint {
                      ALTER TABLE requests ADD COLUMN content_type TEXT;
                      ALTER TABLE requests ADD COLUMN referer TEXT;
                      ALTER TABLE requests ADD COLUMN retry_post INTEGER NOT NULL DEFAULT 0;
-                     UPDATE meta SET value = '2' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN proxy TEXT;
+                     UPDATE meta SET value = '3' WHERE key = 'format';
+                     COMMIT;",
+                )
+                .map_err(sql)?;
+            }
+            Some(Ok(2)) => {
+                conn.execute_batch(
+                    "BEGIN;
+                     ALTER TABLE requests ADD COLUMN proxy TEXT;
+                     UPDATE meta SET value = '3' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -195,7 +208,7 @@ impl Checkpoint {
 
     /// Records a new request as queued and its URL as seen, in one commit.
     pub fn request(&self, fp: Fingerprint, pending: Pending) {
-        self.send(Op::Request(fp, pending));
+        self.send(Op::Request(fp, Box::new(pending)));
     }
 
     pub fn seen(&self, fp: Fingerprint) {
@@ -290,7 +303,7 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
     let mut saved = Saved::default();
     let mut stmt = conn.prepare(
         "SELECT row, url, priority, headers, dont_filter, depth, payload,
-                method, kind, body, content_type, referer, retry_post
+                method, kind, body, content_type, referer, retry_post, proxy
          FROM requests WHERE done = 0 ORDER BY row",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -309,6 +322,7 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
             content_type: r.get(10)?,
             referer: r.get(11)?,
             retry_post: r.get(12)?,
+            proxy: r.get(13)?,
         })
     })?;
     for row in rows {
@@ -375,8 +389,8 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
     {
         let mut request = tx.prepare_cached(
             "INSERT OR REPLACE INTO requests (row, url, priority, headers, dont_filter, depth, payload,
-                 method, kind, body, content_type, referer, retry_post)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 method, kind, body, content_type, referer, retry_post, proxy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         let mut seen = tx.prepare_cached("INSERT OR IGNORE INTO seen (fingerprint) VALUES (?1)")?;
         let mut done = tx.prepare_cached("UPDATE requests SET done = 1 WHERE row = ?1")?;
@@ -403,7 +417,8 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
                         p.body,
                         p.content_type,
                         p.referer,
-                        p.retry_post
+                        p.retry_post,
+                        p.proxy
                     ])?;
                 }
                 Op::Seen(fp) => {
@@ -471,6 +486,7 @@ mod tests {
             content_type: None,
             referer: Some("https://e.com/".into()),
             retry_post: false,
+            proxy: Some("http://ann:secret@10.0.0.1:8080".into()),
         }
     }
 
@@ -513,7 +529,10 @@ mod tests {
         // One write, as the writer thread may cut a batch after any op.
         commit(
             &mut conn,
-            vec![Op::Request([9; 16], pending(1, "https://e.com/a"))],
+            vec![Op::Request(
+                [9; 16],
+                Box::new(pending(1, "https://e.com/a")),
+            )],
         )
         .unwrap();
         drop(conn);
@@ -570,8 +589,13 @@ mod tests {
             (4, "GET", "navigate")
         );
         assert_eq!(
-            (p.body.as_ref(), p.referer.as_ref(), p.retry_post),
-            (None, None, false)
+            (
+                p.body.as_ref(),
+                p.referer.as_ref(),
+                p.retry_post,
+                p.proxy.as_ref()
+            ),
+            (None, None, false, None)
         );
         // And it takes requests with bodies from then on.
         let mut post = pending(5, "https://e.com/search");
@@ -582,6 +606,40 @@ mod tests {
         drop(cp);
         let (_cp, saved) = Checkpoint::open(&path).unwrap();
         assert_eq!(saved.pending[1], post);
+        drop(_cp);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_checkpoint_from_before_request_proxies_is_upgraded() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-v2-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The second format's requests table, as 0.2.0 wrote it.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('format', '2');
+                 CREATE TABLE requests (row INTEGER PRIMARY KEY, url TEXT NOT NULL,
+                     priority INTEGER NOT NULL, headers TEXT NOT NULL,
+                     dont_filter INTEGER NOT NULL, depth INTEGER NOT NULL,
+                     payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+                     method TEXT NOT NULL DEFAULT 'GET',
+                     kind TEXT NOT NULL DEFAULT 'navigate', body BLOB,
+                     content_type TEXT, referer TEXT,
+                     retry_post INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO requests (row, url, priority, headers, dont_filter, depth, payload)
+                     VALUES (4, 'https://e.com/a', 0, '[]', 0, 1, '{}');",
+            )
+            .unwrap();
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        assert_eq!(saved.pending[0].proxy, None);
+        cp.request([5; 16], pending(5, "https://e.com/b"));
+        drop(cp);
+        let (_cp, saved) = Checkpoint::open(&path).unwrap();
+        assert_eq!(saved.pending[1], pending(5, "https://e.com/b"));
         drop(_cp);
         std::fs::remove_dir_all(&dir).unwrap();
     }

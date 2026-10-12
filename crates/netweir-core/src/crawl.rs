@@ -15,7 +15,9 @@ use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
 use crate::classify::{BlockKind, Outcome, classify};
-use crate::fetch::{FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Outgoing, Response};
+use crate::fetch::{
+    FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Outgoing, Response, check_proxy, masked,
+};
 use crate::profile::Profile;
 use crate::robots::Robots;
 use crate::tdmrep::{self, Reservation, TdmFile};
@@ -54,9 +56,16 @@ pub struct CrawlSettings {
     /// backoff_max ("full jitter").
     pub backoff_base: Duration,
     pub backoff_max: Duration,
-    /// Proxies a host moves through when it blocks a session. Empty: the
-    /// fetch options' proxy, with a fresh cookie jar each time.
+    /// The crawl's proxies, used as `proxy_rotation` says. Empty: the
+    /// fetch options' proxy, with a fresh cookie jar for each new session.
     pub proxies: Vec<String>,
+    pub proxy_rotation: ProxyRotation,
+    /// Failures in a row (`FetchError::proxy_at_fault`, a 407 or a block)
+    /// after which a proxy is benched.
+    pub proxy_failures: u32,
+    /// How long a proxy is benched the first time; twice that each time
+    /// after, up to `MAX_COOLDOWN`, until it gets an answer through.
+    pub proxy_cooldown: Duration,
     /// The circuit breaker looks at a host's last `breaker_window`
     /// responses; if more than `breaker_ratio` of them were blocks, the
     /// host pauses for `breaker_pause`.
@@ -80,6 +89,101 @@ pub struct CrawlSettings {
     pub cache: Option<std::path::PathBuf>,
     /// How long a kept response stays fresh; for good if None.
     pub cache_expiry: Option<Duration>,
+}
+
+/// How a crawl uses its `proxies`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProxyRotation {
+    /// The fetch options' proxy until a host blocks a session; then the
+    /// host's new session takes the next proxy.
+    #[default]
+    OnBlock,
+    /// Every request takes the next proxy, with the crawl's cookies.
+    PerRequest,
+    /// Each host keeps a proxy, and its cookies with it, until a block or
+    /// the proxy being benched moves it to the next.
+    PerHost,
+}
+
+/// The longest a proxy is benched for, however often it has failed.
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+
+/// Proxies outside `proxies` that requests named, each counted on its own
+/// in `proxy_stats`; any more are counted together under `OTHER_PROXIES`.
+pub const MAX_OTHER_PROXIES: usize = 1000;
+
+/// The `proxy_stats` row for proxies beyond `MAX_OTHER_PROXIES`.
+pub const OTHER_PROXIES: &str = "other";
+
+/// Clients through proxies requests named, kept beyond the pool's own:
+/// each holds a connection pool, so a gateway named with a new login per
+/// request mustn't keep one per request for the whole crawl.
+const VIA_EXTRA: usize = 256;
+
+/// Clients a host keeps through proxies its requests named.
+const HOST_VIA: usize = 16;
+
+/// What `Pool::pick` found.
+#[derive(Debug, PartialEq, Eq)]
+enum Picked {
+    Healthy(String),
+    /// Back from the bench soonest, and whether to warn the pool is
+    /// exhausted.
+    Soonest(String, bool),
+    None,
+}
+
+/// A map that keeps its `cap` most recently used entries.
+struct Lru<T> {
+    map: HashMap<String, (T, u64)>,
+    clock: u64,
+    cap: usize,
+}
+
+impl<T: Clone> Lru<T> {
+    fn new(cap: usize) -> Lru<T> {
+        Lru {
+            map: HashMap::new(),
+            clock: 0,
+            cap: cap.max(1),
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<T> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.map.get_mut(key).map(|(value, used)| {
+            *used = clock;
+            value.clone()
+        })
+    }
+
+    fn insert(&mut self, key: &str, value: T) {
+        if self.map.len() >= self.cap && !self.map.contains_key(key) {
+            // Known limit: a scan to find the oldest, only when full; a linked
+            // list would make it O(1) if caps ever grow large.
+            if let Some(oldest) = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(k, _)| k.clone())
+            {
+                self.map.remove(&oldest);
+            }
+        }
+        self.clock += 1;
+        self.map.insert(key.to_string(), (value, self.clock));
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+
+impl Default for Lru<Fetcher> {
+    fn default() -> Self {
+        Lru::new(VIA_EXTRA)
+    }
 }
 
 /// Which requests a crawl fetches in Chrome.
@@ -114,6 +218,9 @@ impl Default for CrawlSettings {
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             proxies: Vec::new(),
+            proxy_rotation: ProxyRotation::OnBlock,
+            proxy_failures: 3,
+            proxy_cooldown: Duration::from_secs(60),
             breaker_window: 50,
             breaker_ratio: 0.3,
             breaker_pause: Duration::from_secs(300),
@@ -148,6 +255,9 @@ pub struct CrawlRequest {
     /// Retry a POST or PATCH after a server error too. Off by default:
     /// the server may have acted on it, and a retry would act twice.
     pub retry_post: bool,
+    /// Send it through this proxy, whatever the rotation. Over HTTP only:
+    /// Chrome has one proxy for every page.
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +275,8 @@ pub enum Submitted {
     DomainFull,
     /// Outside `allowed_domains`.
     Offsite,
+    /// Its proxy isn't one the client can use.
+    BadProxy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -300,6 +412,20 @@ pub struct Stats {
     pub cache_hits: u64,
     /// Responses written to the cache.
     pub cache_stores: u64,
+    /// Times a proxy was benched.
+    pub proxies_benched: u64,
+}
+
+/// What one proxy did in a crawl.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyStats {
+    /// Requests sent through it.
+    pub requests: u64,
+    /// Those that failed it (`FetchError::proxy_at_fault`, a 407 or a
+    /// block).
+    pub failures: u64,
+    /// Times it was benched.
+    pub benched: u64,
 }
 
 /// A crawl in progress. Dropping it stops the scheduler; fetches already
@@ -316,8 +442,6 @@ struct Shared {
     saved: Mutex<Option<Saved>>,
     /// What new sessions are made from.
     options: FetchOptions,
-    /// The next entry of `settings.proxies` a new session takes.
-    proxy_turn: std::sync::atomic::AtomicUsize,
     settings: CrawlSettings,
     state: Mutex<State>,
     /// Woken when there may be something to schedule.
@@ -370,6 +494,152 @@ struct State {
     warned_cache: bool,
     /// Hosts whose next request waits for a free Chrome page.
     page_waiters: Vec<String>,
+    proxies: Pool,
+    /// The crawl's cookies through each proxy, made the first time a
+    /// request goes through it without a session of its host's own. Room
+    /// for every proxy of the pool and `VIA_EXTRA` that requests named.
+    via: Lru<Fetcher>,
+    /// The proxy Chrome was started with, which the cookies it earns are
+    /// tied to.
+    chrome_proxy: Option<String>,
+    /// Whether the crawl was told no proxy of the pool suits Chrome.
+    warned_chrome_proxy: bool,
+}
+
+/// The crawl's proxies and how each is doing, in `proxies` order; then
+/// any other proxy a request named, which is counted but never benched.
+#[derive(Default)]
+struct Pool {
+    entries: Vec<PoolEntry>,
+    index: HashMap<String, usize>,
+    /// The first `pooled` entries are `settings.proxies`.
+    pooled: usize,
+    /// The entry the round robin looks at next.
+    turn: usize,
+    /// Whether the crawl was told every proxy is benched, since one was
+    /// last healthy.
+    warned_exhausted: bool,
+}
+
+struct PoolEntry {
+    url: String,
+    stats: ProxyStats,
+    /// Failures since its last success.
+    run: u32,
+    /// Times benched since its last success, which doubles the cooldown.
+    level: u32,
+    /// Benched until then.
+    until: Option<Instant>,
+}
+
+impl Pool {
+    fn new(proxies: &[String]) -> Pool {
+        let mut pool = Pool::default();
+        for url in proxies {
+            pool.push(url);
+        }
+        pool.pooled = pool.entries.len();
+        pool
+    }
+
+    /// The entry for `url`, made if it's new. Proxies outside the pool
+    /// beyond `MAX_OTHER_PROXIES` share one entry, `OTHER_PROXIES`: a
+    /// rotating gateway with a session in each login would otherwise add
+    /// one for every request.
+    fn entry(&mut self, url: &str) -> usize {
+        if let Some(&k) = self.index.get(url) {
+            return k;
+        }
+        if self.entries.len() - self.pooled >= MAX_OTHER_PROXIES {
+            return self.push(OTHER_PROXIES);
+        }
+        self.push(url)
+    }
+
+    fn push(&mut self, url: &str) -> usize {
+        if let Some(&k) = self.index.get(url) {
+            return k;
+        }
+        self.entries.push(PoolEntry {
+            url: url.to_string(),
+            stats: ProxyStats::default(),
+            run: 0,
+            level: 0,
+            until: None,
+        });
+        self.index.insert(url.to_string(), self.entries.len() - 1);
+        self.entries.len() - 1
+    }
+
+    fn pooled(&self, url: &str) -> bool {
+        self.index.get(url).is_some_and(|&k| k < self.pooled)
+    }
+
+    /// Whether `url` is in the pool and benched now.
+    fn benched(&self, url: &str, now: Instant) -> bool {
+        self.index
+            .get(url)
+            .is_some_and(|&k| k < self.pooled && self.entries[k].benched(now))
+    }
+
+    fn any_healthy(&self, now: Instant) -> bool {
+        self.entries[..self.pooled].iter().any(|e| !e.benched(now))
+    }
+
+    /// The first of the pool in turn that `usable` takes and isn't
+    /// benched, and true; or, with every one it takes benched, the one
+    /// back soonest, and false. None if it takes none.
+    fn choose(&self, now: Instant, usable: impl Fn(&str) -> bool) -> Option<(usize, bool)> {
+        let n = self.pooled;
+        let usable_at = |k: usize| usable(&self.entries[k].url);
+        let healthy = (0..n)
+            .map(|i| (self.turn + i) % n)
+            .find(|&k| usable_at(k) && !self.entries[k].benched(now));
+        if let Some(k) = healthy {
+            return Some((k, true));
+        }
+        (0..n)
+            .filter(|&k| usable_at(k))
+            .min_by_key(|&k| self.entries[k].until)
+            .map(|k| (k, false))
+    }
+
+    /// The next healthy proxy in turn that `usable` takes, another than
+    /// `avoid` if there is one; or, with every one it takes benched, the
+    /// one back soonest. The second says to warn that the pool is
+    /// exhausted: only when every proxy is benched, not only every one
+    /// `usable` takes, and once until one is healthy again.
+    fn pick(&mut self, now: Instant, avoid: Option<&str>, usable: impl Fn(&str) -> bool) -> Picked {
+        let other = self
+            .choose(now, |p| usable(p) && Some(p) != avoid)
+            .filter(|(_, healthy)| *healthy);
+        let Some((k, healthy)) = other.or_else(|| self.choose(now, &usable)) else {
+            return Picked::None;
+        };
+        let url = self.entries[k].url.clone();
+        if healthy {
+            self.turn = k + 1;
+            self.warned_exhausted = false;
+            return Picked::Healthy(url);
+        }
+        let warn = !self.any_healthy(now) && !self.warned_exhausted;
+        self.warned_exhausted |= warn;
+        Picked::Soonest(url, warn)
+    }
+
+    /// The pool's proxy back from the bench soonest.
+    fn soonest(&self) -> Option<&str> {
+        self.entries[..self.pooled]
+            .iter()
+            .min_by_key(|e| e.until)
+            .map(|e| e.url.as_str())
+    }
+}
+
+impl PoolEntry {
+    fn benched(&self, now: Instant) -> bool {
+        self.until.is_some_and(|until| until > now)
+    }
 }
 
 struct Host {
@@ -385,8 +655,17 @@ struct Host {
     timer: Option<Instant>,
     /// Requests submitted for this host, for `max_pages_per_domain`.
     accepted: u64,
-    /// This host's own session after a block; until then, the crawl's.
+    /// This host's own session after a block, or from its first request
+    /// with per_host rotation; until then, the crawl's.
     session: Option<Fetcher>,
+    /// The proxy of `proxies` the session goes through, if it's one.
+    proxy: Option<String>,
+    /// What the session was made with (Chrome's profile, after a hand
+    /// back), for the clients through proxies its requests name.
+    options: Option<FetchOptions>,
+    /// The session through proxies requests named, made as they're
+    /// needed; the last `HOST_VIA` of them.
+    via: Lru<Fetcher>,
     /// Whether each of the last responses was a block, newest last.
     recent: VecDeque<bool>,
 }
@@ -397,6 +676,12 @@ struct Origin {
     tdm: Gate<Option<TdmFile>>,
     /// Hosts waiting for this origin's robots.txt or TDMRep file.
     waiting: Vec<String>,
+    /// Proxies of the pool that failed to fetch this origin's robots.txt
+    /// or tdmrep.json, so the next try goes through another.
+    failed_proxies: Vec<String>,
+    /// The proxy that next try goes through, when the host has no session
+    /// of its own to move.
+    retry_through: Option<String>,
 }
 
 #[derive(Default)]
@@ -459,7 +744,12 @@ impl Ord for Queued {
 impl Crawler {
     /// Starts the scheduler on the current tokio runtime.
     pub fn new(fetch: FetchOptions, settings: CrawlSettings) -> Result<Crawler, FetchError> {
-        let mut state = State::default();
+        check_proxies(&fetch, &settings)?;
+        let mut state = State {
+            proxies: Pool::new(&settings.proxies),
+            via: Lru::new(settings.proxies.len() + VIA_EXTRA),
+            ..State::default()
+        };
         let (checkpoint, saved) = match &settings.checkpoint {
             Some(path) => {
                 let (cp, mut saved) =
@@ -491,7 +781,6 @@ impl Crawler {
             cache,
             saved: Mutex::new(saved),
             options: fetch,
-            proxy_turn: std::sync::atomic::AtomicUsize::new(0),
             settings,
             state: Mutex::new(state),
             schedule: Notify::new(),
@@ -610,6 +899,14 @@ impl Crawler {
         let Ok(parsed) = Url::parse(&request.url) else {
             return Submitted::Invalid;
         };
+        if request
+            .proxy
+            .as_deref()
+            // An empty proxy sends the request direct.
+            .is_some_and(|p| !p.is_empty() && check_proxy(p).is_err())
+        {
+            return Submitted::BadProxy;
+        }
         let settings = &self.shared.settings;
         let mut state = self.shared.lock();
         if !request.dont_filter && offsite(&parsed, &settings.allowed_domains) {
@@ -687,6 +984,7 @@ impl Crawler {
                             content_type: request.outgoing.content_type.clone(),
                             referer: request.outgoing.referer.clone(),
                             retry_post: request.retry_post,
+                            proxy: request.proxy.clone(),
                         },
                     );
                     row
@@ -727,6 +1025,51 @@ impl Crawler {
     pub fn stats(&self) -> Stats {
         self.shared.lock().stats.clone()
     }
+
+    /// Each of `proxies`, then each other proxy a request named, with what
+    /// it did.
+    pub fn proxy_stats(&self) -> Vec<(String, ProxyStats)> {
+        self.shared
+            .lock()
+            .proxies
+            .entries
+            .iter()
+            .map(|e| (e.url.clone(), e.stats.clone()))
+            .collect()
+    }
+}
+
+/// Refuses proxy settings that can't work, or that leave it unclear which
+/// proxy a request goes through.
+fn check_proxies(fetch: &FetchOptions, settings: &CrawlSettings) -> Result<(), FetchError> {
+    let mode = match settings.proxy_rotation {
+        ProxyRotation::OnBlock => None,
+        ProxyRotation::PerRequest => Some("per_request"),
+        ProxyRotation::PerHost => Some("per_host"),
+    };
+    if let Some(mode) = mode {
+        if settings.proxies.is_empty() {
+            return Err(FetchError::invalid(format!(
+                "proxy_rotation \"{mode}\" rotates through proxies, and none were given"
+            )));
+        }
+        if fetch.proxy.is_some() {
+            return Err(FetchError::invalid(format!(
+                "proxy_rotation \"{mode}\" takes proxies, not proxy as well: it isn't clear \
+                 which would win; put that proxy in proxies"
+            )));
+        }
+    }
+    if settings.proxy_failures == 0 {
+        return Err(FetchError::invalid("proxy_failures must be at least 1"));
+    }
+    if settings.proxy_cooldown.is_zero() {
+        return Err(FetchError::invalid("proxy_cooldown must be positive"));
+    }
+    for proxy in &settings.proxies {
+        check_proxy(proxy)?;
+    }
+    Ok(())
 }
 
 async fn next_events(shared: Arc<Shared>, max: usize) -> Vec<Event> {
@@ -859,16 +1202,19 @@ enum Persist<'a> {
     Restored(i64),
 }
 
+/// The session a request goes out with, and the proxy of the pool or
+/// the request's own it goes through (None for the fetch options').
+type Route = (Result<Fetcher, FetchError>, Option<String>);
+
 /// What the scheduler decided to do with a host's next request.
 enum Action {
-    /// With a Chrome page slot for a browser request.
-    Fetch(Box<Queued>, Fetcher, Option<OwnedSemaphorePermit>),
-    CheckRobots(String),
-    CheckTdm(String),
+    Fetch(Box<Queued>, Route),
+    /// In Chrome, in the page slot the permit holds.
+    Render(Box<Queued>, OwnedSemaphorePermit),
+    CheckRobots(String, Route),
+    CheckTdm(String, Route),
     /// Read a hit from the cache.
     Serve(Box<Queued>),
-    /// Another host's check of the same origin is under way.
-    Wait,
 }
 
 /// Runs until the Crawler is dropped, which sets `closed` and wakes it.
@@ -886,22 +1232,21 @@ async fn schedule_loop(s: Arc<Shared>) {
         };
         for action in actions {
             match action {
-                Action::Fetch(q, _, Some(permit)) => {
+                Action::Render(q, permit) => {
                     tokio::spawn(browser_fetch(s.clone(), *q, permit));
                 }
-                Action::Fetch(q, session, None) => {
-                    tokio::spawn(fetch(s.clone(), *q, session));
+                Action::Fetch(q, route) => {
+                    tokio::spawn(fetch(s.clone(), *q, route));
                 }
-                Action::CheckRobots(origin) => {
-                    tokio::spawn(check_robots(s.clone(), origin));
+                Action::CheckRobots(origin, route) => {
+                    tokio::spawn(check_robots(s.clone(), origin, route));
                 }
-                Action::CheckTdm(origin) => {
-                    tokio::spawn(check_tdm(s.clone(), origin));
+                Action::CheckTdm(origin, route) => {
+                    tokio::spawn(check_tdm(s.clone(), origin, route));
                 }
                 Action::Serve(q) => {
                     tokio::spawn(serve(s.clone(), *q));
                 }
-                Action::Wait => {}
             }
         }
         match sleep_until {
@@ -981,6 +1326,9 @@ fn enqueue(
         timer: None,
         accepted: 0,
         session: None,
+        proxy: None,
+        options: None,
+        via: Lru::new(HOST_VIA),
         recent: VecDeque::new(),
     });
     if hit {
@@ -1082,37 +1430,48 @@ fn plan(
             };
             let Some(next) = host.queue.peek() else { break };
             let origin = next.origin.clone();
+            // A robots.txt or tdmrep.json goes the way this request will.
+            let wanted = next.request.proxy.clone();
             let path = &next.path;
             // Robots and TDMRep must be known for this origin first.
             let o = state.origins.entry(origin.clone()).or_default();
+            // Some(true) to fetch robots.txt, Some(false) tdmrep.json.
             let mut gate = None;
+            let mut wait = false;
             if settings.obey_robots {
                 match o.robots {
                     Gate::Unknown => {
                         o.robots = Gate::Fetching;
-                        gate = Some(Action::CheckRobots(origin.clone()));
+                        gate = Some(true);
                     }
-                    Gate::Fetching => gate = Some(Action::Wait),
+                    Gate::Fetching => wait = true,
                     Gate::Ready(_) => {}
                 }
             }
-            if gate.is_none() && settings.obey_tdmrep {
+            if gate.is_none() && !wait && settings.obey_tdmrep {
                 match o.tdm {
                     Gate::Unknown => {
                         o.tdm = Gate::Fetching;
-                        gate = Some(Action::CheckTdm(origin.clone()));
+                        gate = Some(false);
                     }
-                    Gate::Fetching => gate = Some(Action::Wait),
+                    Gate::Fetching => wait = true,
                     Gate::Ready(_) => {}
                 }
             }
-            if let Some(gate) = gate {
+            if gate.is_some() || wait {
                 if !o.waiting.contains(&name) {
                     o.waiting.push(name.clone());
                 }
-                if !matches!(gate, Action::Wait) {
+                if let Some(robots) = gate {
                     state.gate_fetches += 1;
-                    actions.push(gate);
+                    // Through the proxy the host's pages would go through,
+                    // so the site sees one visitor.
+                    let route = gate_route(shared, state, &origin, &name, wanted.as_deref());
+                    actions.push(if robots {
+                        Action::CheckRobots(origin, route)
+                    } else {
+                        Action::CheckTdm(origin, route)
+                    });
                 }
                 break;
             }
@@ -1183,11 +1542,13 @@ fn plan(
             state.stats.queued -= 1;
             state.stats.in_flight += 1;
             state.sent += 1;
-            let session = host
-                .session
-                .clone()
-                .unwrap_or_else(|| shared.fetcher.clone());
-            actions.push(Action::Fetch(Box::new(q), session, permit));
+            actions.push(match permit {
+                Some(permit) => Action::Render(Box::new(q), permit),
+                None => {
+                    let route = route(shared, state, &name, q.request.proxy.as_deref());
+                    Action::Fetch(Box::new(q), route)
+                }
+            });
         }
     }
     let sleep_until = state.timers.peek().map(|Reverse((at, _))| *at);
@@ -1207,20 +1568,25 @@ async fn guarded<T: Send + 'static>(
     }
 }
 
-async fn fetch(shared: Arc<Shared>, mut q: Queued, session: Fetcher) {
+async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let started = Instant::now();
     let (url, headers, hops) = (q.request.url.clone(), q.request.headers.clone(), q.hops);
     let outgoing = q.request.outgoing.clone();
-    let result = guarded(
-        async move { session.hop_as(&url, &outgoing, &headers, hops).await },
-        |why| {
-            Err(FetchError {
-                kind: FetchErrorKind::Other,
-                message: format!("the fetch failed inside netweir: {why}"),
-            })
-        },
-    )
-    .await;
+    let result = match session {
+        Ok(session) => {
+            guarded(
+                async move { session.hop_as(&url, &outgoing, &headers, hops).await },
+                |why| {
+                    Err(FetchError {
+                        kind: FetchErrorKind::Other,
+                        message: format!("the fetch failed inside netweir: {why}"),
+                    })
+                },
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
     let latency = started.elapsed();
     let settings = &shared.settings;
     let outcome = match &result {
@@ -1281,6 +1647,20 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, session: Fetcher) {
         );
     }
     state.make_ready(&q.host);
+    // Before a block picks a new session's proxy, so it knows whether this
+    // one is still fit to pick.
+    if let Some(p) = &proxy {
+        let failed = match &result {
+            Err(e) => proxy_trouble(e),
+            Ok(Hop::Done(r)) => r.status == 407 || matches!(outcome, Some(Outcome::Blocked { .. })),
+            Ok(Hop::Redirect(..)) => false,
+        };
+        record(&shared, &mut state, p, failed);
+    }
+    // The pool picked this proxy, so the next try can go through another
+    // (with per_host, once this one is benched).
+    let rotated =
+        q.request.proxy.is_none() && proxy.as_deref().is_some_and(|p| state.proxies.pooled(p));
     let can_retry = q.attempts < settings.retries;
     // A POST the server may have acted on is only sent again when asked.
     let may_repeat = q.request.outgoing.idempotent() || q.request.retry_post;
@@ -1288,7 +1668,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, session: Fetcher) {
         (Ok(Hop::Done(response)), Some(Outcome::Blocked { vendor, kind })) => {
             state.stats.blocked += 1;
             if can_retry {
-                new_session(&shared, &mut state, &q.host);
+                let _ = new_session(&shared, &mut state, &q.host);
             }
             slow_down(settings, &mut state, &q.host, None, true);
             if can_retry {
@@ -1337,6 +1717,12 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, session: Fetcher) {
         (Ok(Hop::Done(response)), Some(Outcome::HttpError(status)))
             if can_retry && may_repeat && RETRY_STATUSES.contains(&status) =>
         {
+            drop(response);
+            retry(settings, &mut state, q);
+            None
+        }
+        // A proxy that wants a login never passed the request on.
+        (Ok(Hop::Done(response)), _) if response.status == 407 && rotated && can_retry => {
             drop(response);
             retry(settings, &mut state, q);
             None
@@ -1895,6 +2281,7 @@ fn origin_and_path(url: &str) -> Option<(String, String)> {
 async fn refusal_of(shared: &Arc<Shared>, url: &str) -> Option<DropReason> {
     let settings = &shared.settings;
     let (origin, path) = origin_and_path(url)?;
+    let host = Url::parse(url).ok()?.host_str()?.to_string();
     if settings.obey_robots {
         loop {
             let fetch = {
@@ -1903,18 +2290,18 @@ async fn refusal_of(shared: &Arc<Shared>, url: &str) -> Option<DropReason> {
                 match &o.robots {
                     Gate::Ready(r) if r.allowed(&settings.robots_agent, &path) => break,
                     Gate::Ready(_) => return Some(DropReason::Robots),
-                    Gate::Fetching => false,
+                    Gate::Fetching => None,
                     Gate::Unknown => {
                         o.robots = Gate::Fetching;
                         state.gate_fetches += 1;
-                        true
+                        Some(gate_route(shared, &mut state, &origin, &host, None))
                     }
                 }
             };
-            if fetch {
-                check_robots(shared.clone(), origin.clone()).await;
+            if let Some(route) = fetch {
+                check_robots(shared.clone(), origin.clone(), route).await;
             } else {
-                // ponytail: another fetch of it is under way; polled, as
+                // Known limit: another fetch of it is under way; polled, as
                 // this is one request's wait, not the scheduler's.
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -1930,16 +2317,16 @@ async fn refusal_of(shared: &Arc<Shared>, url: &str) -> Option<DropReason> {
                         return Some(DropReason::TdmReserved);
                     }
                     Gate::Ready(_) => break,
-                    Gate::Fetching => false,
+                    Gate::Fetching => None,
                     Gate::Unknown => {
                         o.tdm = Gate::Fetching;
                         state.gate_fetches += 1;
-                        true
+                        Some(gate_route(shared, &mut state, &origin, &host, None))
                     }
                 }
             };
-            if fetch {
-                check_tdm(shared.clone(), origin.clone()).await;
+            if let Some(route) = fetch {
+                check_tdm(shared.clone(), origin.clone(), route).await;
             } else {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -1967,16 +2354,43 @@ async fn content(page: &netweir_browser::Page) -> Result<String, FetchError> {
 
 /// How to start Chrome for this crawl: through the crawl's proxy, login
 /// and all, so the cookies Chrome earns come from the address the HTTP
-/// client uses.
+/// client uses. With per_request or per_host rotation there's no crawl
+/// proxy, and Chrome takes the next healthy one of `proxies`: it has one
+/// proxy for all its pages, so rotation stops at its door.
 fn browser_launch(shared: &Shared) -> LaunchOptions {
     let mut launch = shared.settings.browser_launch.clone();
+    let mut state = shared.lock();
     if launch.proxy.is_none() {
-        launch.proxy = shared.options.proxy.clone();
+        launch.proxy = match shared.settings.proxy_rotation {
+            ProxyRotation::OnBlock => shared.options.proxy.clone(),
+            ProxyRotation::PerRequest | ProxyRotation::PerHost => {
+                let picked = pick_where(shared, &mut state, None, chrome_can_use);
+                if picked.is_none() && !state.warned_chrome_proxy {
+                    state.warned_chrome_proxy = true;
+                    let message = "Chrome can't log in to a SOCKS proxy, and every one of \
+                                   proxies is one with a login, so Chrome goes out without a proxy"
+                        .to_string();
+                    shared.push_event(&mut state, Event::Warning { message });
+                }
+                picked
+            }
+        };
     }
+    state.chrome_proxy = launch.proxy.clone();
+    drop(state);
     if launch.brands.is_none() {
         launch.brands = Some(Arc::new(Profile::chrome_brands));
     }
     launch
+}
+
+/// Whether Chrome can go through `proxy`: it can't log in to a SOCKS one.
+fn chrome_can_use(proxy: &str) -> bool {
+    let socks = proxy.to_ascii_lowercase().starts_with("socks");
+    let login = proxy
+        .split_once("://")
+        .is_some_and(|(_, rest)| rest.contains('@'));
+    !(socks && login)
 }
 
 /// A Response for a page Chrome rendered: the document's status and
@@ -2077,9 +2491,18 @@ fn hand_back(
             None => {}
         }
     }
-    if let (Ok(fetcher), Some(h)) = (Fetcher::new(options), state.hosts.get_mut(host)) {
+    // The cookies are tied to the address Chrome went out from.
+    options.proxy = state.chrome_proxy.clone();
+    let pooled = state
+        .chrome_proxy
+        .clone()
+        .filter(|p| state.proxies.pooled(p));
+    if let (Ok(fetcher), Some(h)) = (Fetcher::new(options.clone()), state.hosts.get_mut(host)) {
         fetcher.add_cookies(cookies);
         h.session = Some(fetcher);
+        h.options = Some(options);
+        h.proxy = pooled;
+        h.via.clear();
         state.stats.sessions_replaced += 1;
     }
     warning
@@ -2161,21 +2584,223 @@ fn slow_down(
     h.next_at = h.next_at.max(Instant::now() + wait);
 }
 
-/// Replaces the host's session: a fresh cookie jar, and the next proxy if
-/// there are several.
-fn new_session(shared: &Shared, state: &mut State, host: &str) {
-    let mut options = shared.options.clone();
-    let proxies = &shared.settings.proxies;
-    if !proxies.is_empty() {
-        let turn = shared
-            .proxy_turn
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        options.proxy = Some(proxies[turn % proxies.len()].clone());
+/// Replaces the host's session: a fresh cookie jar, through the next
+/// healthy proxy (another than the host had, if there is one) when there
+/// are proxies. With per_request rotation, the host's cookies leave the
+/// crawl's jar instead, and its requests go back to the rotation.
+fn new_session(shared: &Shared, state: &mut State, host: &str) -> Result<(), FetchError> {
+    new_session_through(shared, state, host, None)
+}
+
+/// `new_session`, through `proxy` when it's given.
+fn new_session_through(
+    shared: &Shared,
+    state: &mut State,
+    host: &str,
+    proxy: Option<String>,
+) -> Result<(), FetchError> {
+    let mode = shared.settings.proxy_rotation;
+    let Some(h) = state.hosts.get_mut(host) else {
+        return Ok(());
+    };
+    if mode == ProxyRotation::PerRequest {
+        shared.fetcher.forget(host);
+        h.session = None;
+        h.proxy = None;
+        h.options = None;
+        h.via.clear();
+        state.stats.sessions_replaced += 1;
+        return Ok(());
     }
-    if let (Ok(fetcher), Some(h)) = (Fetcher::new(options), state.hosts.get_mut(host)) {
+    // A host's first session, with per_host, replaces nothing.
+    let replacing = h.session.is_some() || mode == ProxyRotation::OnBlock;
+    let current = h.proxy.clone();
+    let proxy = proxy.or_else(|| pick(shared, state, current.as_deref()));
+    let mut options = shared.options.clone();
+    if proxy.is_some() {
+        options.proxy = proxy.clone();
+    }
+    let fetcher = Fetcher::new(options.clone())?;
+    if let Some(h) = state.hosts.get_mut(host) {
         h.session = Some(fetcher);
+        h.proxy = proxy;
+        h.options = Some(options);
+        h.via.clear();
+    }
+    if replacing {
         state.stats.sessions_replaced += 1;
     }
+    Ok(())
+}
+
+/// The session and proxy a request to host `name` goes out with; `wanted`
+/// is the request's own proxy. A host whose proxy is benched moves to a
+/// healthy one first, if there is one, and with per_host a host's first
+/// request gets it its proxy.
+fn route(shared: &Shared, state: &mut State, name: &str, wanted: Option<&str>) -> Route {
+    let mode = shared.settings.proxy_rotation;
+    let Some(h) = state.hosts.get(name) else {
+        // A site Chrome went to on its own: no session to keep to.
+        return match mode {
+            ProxyRotation::OnBlock => (Ok(shared.fetcher.clone()), None),
+            _ => rotate(shared, state),
+        };
+    };
+    let now = Instant::now();
+    let benched = h
+        .proxy
+        .as_deref()
+        .is_some_and(|p| state.proxies.benched(p, now));
+    // Off a benched proxy: to a healthy one, or with every one benched, to
+    // the one back soonest, if that's another.
+    let moving = benched
+        && (state.proxies.any_healthy(now) || state.proxies.soonest() != h.proxy.as_deref());
+    // A per_host site gets its proxy when a request first takes the
+    // rotation; one whose requests name their own never does.
+    let unassigned = mode == ProxyRotation::PerHost && h.session.is_none() && wanted.is_none();
+    if (moving || unassigned)
+        && let Err(e) = new_session(shared, state, name)
+    {
+        return (Err(e), None);
+    }
+    let h = state.hosts.get_mut(name).expect("looked up above");
+    if let Some(proxy) = wanted {
+        let fetcher = match (h.session.clone(), h.via.get(proxy)) {
+            (Some(_), Some(fetcher)) => Ok(fetcher),
+            (Some(session), None) => {
+                let options = h.options.clone().unwrap_or_else(|| shared.options.clone());
+                let made = Fetcher::sharing_cookies(with_proxy(options, proxy), &session);
+                if let Ok(fetcher) = &made {
+                    h.via.insert(proxy, fetcher.clone());
+                }
+                made
+            }
+            (None, _) => through(shared, state, proxy),
+        };
+        // An empty proxy is no proxy at all, which has no stats.
+        return (fetcher, Some(proxy.to_string()).filter(|p| !p.is_empty()));
+    }
+    if let Some(session) = &h.session {
+        return (Ok(session.clone()), h.proxy.clone());
+    }
+    match mode {
+        ProxyRotation::PerRequest => rotate(shared, state),
+        // Never without a session: it would go out with no proxy at all.
+        ProxyRotation::PerHost => (
+            Err(FetchError::invalid(
+                "the host has no session through a proxy",
+            )),
+            None,
+        ),
+        ProxyRotation::OnBlock => (Ok(shared.fetcher.clone()), None),
+    }
+}
+
+/// The crawl's cookies, through the next healthy proxy.
+fn rotate(shared: &Shared, state: &mut State) -> Route {
+    match pick(shared, state, None) {
+        Some(proxy) => (through(shared, state, &proxy), Some(proxy)),
+        None => (
+            Err(FetchError::invalid("no proxies to rotate through")),
+            None,
+        ),
+    }
+}
+
+/// The crawl's cookies, through `proxy`.
+fn through(shared: &Shared, state: &mut State, proxy: &str) -> Result<Fetcher, FetchError> {
+    if let Some(fetcher) = state.via.get(proxy) {
+        return Ok(fetcher);
+    }
+    let options = with_proxy(shared.options.clone(), proxy);
+    let fetcher = Fetcher::sharing_cookies(options, &shared.fetcher)?;
+    state.via.insert(proxy, fetcher.clone());
+    Ok(fetcher)
+}
+
+/// `options` through `proxy`; an empty one is none at all, not even the
+/// crawl's own.
+fn with_proxy(mut options: FetchOptions, proxy: &str) -> FetchOptions {
+    options.proxy = Some(proxy.to_string()).filter(|p| !p.is_empty());
+    options
+}
+
+/// The next healthy proxy in turn, another than `avoid` if there is one.
+/// When every proxy is benched, the one back soonest, and a warning (once,
+/// until one is healthy again): the crawl slows, but doesn't stall. None
+/// without proxies.
+fn pick(shared: &Shared, state: &mut State, avoid: Option<&str>) -> Option<String> {
+    pick_where(shared, state, avoid, |_| true)
+}
+
+/// `pick`, among the proxies `usable` takes.
+fn pick_where(
+    shared: &Shared,
+    state: &mut State,
+    avoid: Option<&str>,
+    usable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let (url, warn) = match state.proxies.pick(Instant::now(), avoid, usable) {
+        Picked::Healthy(url) => return Some(url),
+        Picked::Soonest(url, warn) => (url, warn),
+        Picked::None => return None,
+    };
+    if warn {
+        let message = format!(
+            "every proxy is benched; requests go through {}, the first back, until one is healthy",
+            masked(&url)
+        );
+        shared.push_event(state, Event::Warning { message });
+    }
+    Some(url)
+}
+
+/// Counts a request through `proxy`. One of the pool that has failed
+/// `proxy_failures` times in a row is benched for `proxy_cooldown`, twice
+/// that each time after, until a success clears its record.
+fn record(shared: &Shared, state: &mut State, proxy: &str, failed: bool) {
+    let settings = &shared.settings;
+    let now = Instant::now();
+    let pool = &mut state.proxies;
+    let k = pool.entry(proxy);
+    let pooled = k < pool.pooled;
+    let e = &mut pool.entries[k];
+    e.stats.requests += 1;
+    if !failed {
+        e.run = 0;
+        e.level = 0;
+        e.until = None;
+        return;
+    }
+    e.stats.failures += 1;
+    e.run += 1;
+    // One back from the bench goes straight back on it if it fails again.
+    if !pooled || e.run < settings.proxy_failures || e.benched(now) {
+        return;
+    }
+    let cooldown = settings
+        .proxy_cooldown
+        .saturating_mul(1 << e.level.min(20))
+        .min(MAX_COOLDOWN.max(settings.proxy_cooldown));
+    e.level += 1;
+    e.until = Some(now + cooldown);
+    e.stats.benched += 1;
+    let failed = match e.run {
+        1 => "once".to_string(),
+        n => format!("{n} times in a row"),
+    };
+    let message = format!(
+        "proxy {} failed {failed}; benched for {cooldown:?}",
+        masked(proxy)
+    );
+    state.stats.proxies_benched += 1;
+    shared.push_event(state, Event::Warning { message });
+}
+
+/// Whether a failed request counts against the proxy it went through;
+/// see `FetchError::proxy_at_fault`.
+fn proxy_trouble(error: &FetchError) -> bool {
+    error.proxy_at_fault()
 }
 
 /// Responses the breaker needs to have seen from a host before it judges.
@@ -2253,13 +2878,19 @@ fn adjust_delay(
     next.clamp(s.min_delay, s.max_delay)
 }
 
-async fn check_robots(shared: Arc<Shared>, origin: String) {
-    let (fetcher, url) = (shared.clone(), format!("{origin}/robots.txt"));
+async fn check_robots(shared: Arc<Shared>, origin: String, route: Route) {
+    let url = format!("{origin}/robots.txt");
+    let Some(got) = gate_get(&shared, &origin, url, route, |o| &mut o.robots).await else {
+        return;
+    };
     let robots = guarded(
         async move {
-            match fetcher.fetcher.get(&url, &[]).await {
+            match got {
                 // The parser reads at most robots::MAX_BYTES of it.
                 Ok(r) if (200..300).contains(&r.status) => Robots::parse(&r.text()),
+                // A proxy wanting a login isn't the site's answer: as good
+                // as no answer, like a network error.
+                Ok(r) if r.status == 407 => Robots::disallow_all(),
                 // RFC 9309: an unavailable file (4xx) means no rules.
                 Ok(r) if (400..500).contains(&r.status) => Robots::allow_all(),
                 // An unreachable file (5xx, or no answer) means everything
@@ -2276,12 +2907,17 @@ async fn check_robots(shared: Arc<Shared>, origin: String) {
     gate_done(&shared, state, &origin);
 }
 
-async fn check_tdm(shared: Arc<Shared>, origin: String) {
-    let (fetcher, url) = (shared.clone(), format!("{origin}/.well-known/tdmrep.json"));
+async fn check_tdm(shared: Arc<Shared>, origin: String, route: Route) {
+    let url = format!("{origin}/.well-known/tdmrep.json");
+    let Some(got) = gate_get(&shared, &origin, url, route, |o| &mut o.tdm).await else {
+        return;
+    };
     let file = guarded(
         async move {
-            match fetcher.fetcher.get(&url, &[]).await {
+            match got {
                 Ok(r) if r.status == 200 => TdmFile::parse(&r.text()),
+                // Anything else, a network error or a proxy's 407 among
+                // them, is no file.
                 _ => None,
             }
         },
@@ -2291,6 +2927,95 @@ async fn check_tdm(shared: Arc<Shared>, origin: String) {
     let mut state = shared.lock();
     state.origins.entry(origin.clone()).or_default().tdm = Gate::Ready(file);
     gate_done(&shared, state, &origin);
+}
+
+/// GETs a robots.txt or tdmrep.json, and counts it toward its proxy's
+/// health. None if a proxy of the pool failed and there's a healthy one
+/// that hasn't failed this origin yet: the file is then fetched again
+/// through it, whatever `retries` says, since a dead proxy mustn't decide
+/// what a whole site allows. A host with a session of its own moves to
+/// that proxy, as its pages would have gone through the dead one too.
+async fn gate_get<T>(
+    shared: &Arc<Shared>,
+    origin: &str,
+    url: String,
+    (fetcher, proxy): Route,
+    gate: impl FnOnce(&mut Origin) -> &mut Gate<T>,
+) -> Option<Result<Response, FetchError>> {
+    let got = match fetcher {
+        Ok(fetcher) => {
+            guarded(async move { fetcher.get(&url, &[]).await }, |why| {
+                Err(FetchError {
+                    kind: FetchErrorKind::Other,
+                    message: format!("the fetch failed inside netweir: {why}"),
+                })
+            })
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    let Some(proxy) = proxy else {
+        return Some(got);
+    };
+    let failed = match &got {
+        Err(e) => proxy_trouble(e),
+        Ok(r) => r.status == 407,
+    };
+    let mut state = shared.lock();
+    record(shared, &mut state, &proxy, failed);
+    if !failed || !state.proxies.pooled(&proxy) {
+        return Some(got);
+    }
+    let o = state.origins.entry(origin.to_string()).or_default();
+    o.failed_proxies.push(proxy);
+    let failed_here = o.failed_proxies.clone();
+    let next = state
+        .proxies
+        .choose(Instant::now(), |p| !failed_here.iter().any(|f| f == p))
+        .filter(|(_, healthy)| *healthy)
+        .map(|(k, _)| state.proxies.entries[k].url.clone());
+    let Some(next) = next else {
+        return Some(got);
+    };
+    let host = Url::parse(origin)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_default();
+    let has_session = state.hosts.get(&host).is_some_and(|h| h.session.is_some());
+    if has_session && shared.settings.proxy_rotation != ProxyRotation::PerRequest {
+        // Moving it may fail only as building any client may; the next
+        // try then goes as the host's requests would.
+        let _ = new_session_through(shared, &mut state, &host, Some(next));
+    } else {
+        state
+            .origins
+            .entry(origin.to_string())
+            .or_default()
+            .retry_through = Some(next);
+    }
+    *gate(state.origins.entry(origin.to_string()).or_default()) = Gate::Unknown;
+    gate_done(shared, state, origin);
+    None
+}
+
+/// The way a robots.txt or tdmrep.json fetch for `origin`, on behalf of
+/// host `name`, goes: through the proxy a failed try picked, or as the
+/// request waiting for it would (`wanted` being its own proxy).
+fn gate_route(
+    shared: &Shared,
+    state: &mut State,
+    origin: &str,
+    name: &str,
+    wanted: Option<&str>,
+) -> Route {
+    let again = state
+        .origins
+        .get_mut(origin)
+        .and_then(|o| o.retry_through.take());
+    match again {
+        Some(proxy) => (through(shared, state, &proxy), Some(proxy)),
+        None => route(shared, state, name, wanted),
+    }
 }
 
 /// A gate fetch finished: the hosts waiting on it may go on.
@@ -2312,6 +3037,73 @@ fn gate_done(shared: &Shared, mut state: std::sync::MutexGuard<'_, State>, origi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxies_requests_name_beyond_the_cap_are_counted_together() {
+        let mut pool = Pool::new(&["http://pool:1".to_string()]);
+        for i in 0..MAX_OTHER_PROXIES + 50 {
+            pool.entry(&format!("http://u{i}:p@gateway:8000"));
+        }
+        assert_eq!(pool.entries.len(), 1 + MAX_OTHER_PROXIES + 1);
+        assert_eq!(pool.entries.last().unwrap().url, OTHER_PROXIES);
+        let k = pool.entry("http://late:p@gateway:8000");
+        assert_eq!(pool.entries[k].url, OTHER_PROXIES);
+        assert_eq!(pool.entry("http://u3:p@gateway:8000"), 4, "still its own");
+    }
+
+    #[test]
+    fn the_client_maps_keep_their_most_recently_used() {
+        let mut lru = Lru::new(2);
+        lru.insert("a", 1);
+        lru.insert("b", 2);
+        assert_eq!(lru.get("a"), Some(1));
+        lru.insert("c", 3);
+        assert_eq!(
+            (lru.get("a"), lru.get("b"), lru.get("c")),
+            (Some(1), None, Some(3))
+        );
+    }
+
+    #[test]
+    fn a_pool_exhausted_only_for_chrome_isnt_called_exhausted() {
+        let mut pool = Pool::new(&[
+            "socks5://ann:secret@10.0.0.1:1080".to_string(),
+            "http://10.0.0.2:8080".to_string(),
+        ]);
+        let now = Instant::now();
+        pool.entries[1].until = Some(now + Duration::from_secs(60));
+        // The one Chrome can use is benched; the other is healthy.
+        assert_eq!(
+            pool.pick(now, None, chrome_can_use),
+            Picked::Soonest("http://10.0.0.2:8080".into(), false)
+        );
+        assert!(!pool.warned_exhausted);
+        // With every proxy benched, it is exhausted, and says so once.
+        pool.entries[0].until = Some(now + Duration::from_secs(90));
+        assert_eq!(
+            pool.pick(now, None, |_| true),
+            Picked::Soonest("http://10.0.0.2:8080".into(), true)
+        );
+        assert_eq!(
+            pool.pick(now, None, |_| true),
+            Picked::Soonest("http://10.0.0.2:8080".into(), false)
+        );
+    }
+
+    #[test]
+    fn chrome_is_given_no_socks_proxy_with_a_login() {
+        assert!(!chrome_can_use("socks5://ann:secret@10.0.0.1:1080"));
+        assert!(chrome_can_use("socks5://10.0.0.1:1080"));
+        assert!(chrome_can_use("http://ann:secret@10.0.0.1:8080"));
+        let pool = Pool::new(&[
+            "socks5://ann:secret@10.0.0.1:1080".to_string(),
+            "http://10.0.0.2:8080".to_string(),
+        ]);
+        let now = Instant::now();
+        assert_eq!(pool.choose(now, chrome_can_use), Some((1, true)));
+        let socks = Pool::new(&["socks5h://ann:secret@10.0.0.1:1080".to_string()]);
+        assert_eq!(socks.choose(now, chrome_can_use), None);
+    }
 
     #[test]
     fn throttle_moves_halfway_to_the_target_and_only_success_lowers_it() {
@@ -2370,6 +3162,7 @@ mod tests {
                 browser: false,
                 outgoing: Outgoing::navigate(),
                 retry_post: false,
+                proxy: None,
             },
             host: String::new(),
             origin: String::new(),
