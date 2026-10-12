@@ -34,11 +34,15 @@ fn proxy(site: &Site) -> String {
     format!("http://127.0.0.1:{}", site.port)
 }
 
-/// A proxy nothing answers at: every connection is refused.
+/// A proxy nothing answers at: every connection is refused. A port below
+/// 1024, where nothing listens on a test machine and which the OS never
+/// hands to a server binding port 0: a port borrowed from that range and
+/// let go of could be given to another test's site while this one runs,
+/// which would then answer as the proxy. Each call gets its own.
 async fn dead() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+    let port = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    assert!(port < 1024);
     format!("http://127.0.0.1:{port}")
 }
 
