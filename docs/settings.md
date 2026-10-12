@@ -47,6 +47,8 @@ error, not ignored. Times are in seconds.
 | `max_pages` | `None` | send no more than this many requests, a retry counting as one, then stop |
 | `max_errors` | `None` | stop the crawl after this many errors in callbacks and pipelines |
 | `max_time` | `None` | stop the crawl after this many seconds |
+| `max_memory` | `None` | stop the crawl once it has used this many MiB of memory at its peak, worker processes included |
+| `memory_warning` | `None` | log a warning, once, when the crawl has used this many MiB of memory |
 
 ## Recovery
 

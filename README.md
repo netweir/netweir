@@ -44,8 +44,8 @@ Working today:
   pipelines with `open_spider`/`close_spider` work as Scrapy's do, so
   simple Scrapy pipelines and middlewares carry over as they are.
   `allowed_domains` keeps a crawl on the sites you meant; `max_items`,
-  `max_pages`, `max_errors` and `max_time` stop it when you've seen
-  enough.
+  `max_pages`, `max_errors`, `max_time` and `max_memory` stop it when
+  you've seen enough.
 - `netweir shell URL`, `fetch` and `view`: the page netweir gets, at a
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).

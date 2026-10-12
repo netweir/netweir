@@ -25,7 +25,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _monitor, _track
+from netweir import _memory, _monitor, _track
 from netweir._fetch import Page, _pairs
 from netweir._native import Crawler, TrackStore, _robots_sitemaps, fingerprint
 from netweir._native import _sitemap as _parse_sitemap
@@ -72,6 +72,11 @@ class Settings:
     max_pages: int | None = None
     max_errors: int | None = None
     max_time: float | None = None
+    #: The crawl stops once this process, with its worker processes, has
+    #: used this many MiB of memory at its peak; at memory_warning MiB it
+    #: logs a warning, once. Read at most once a second.
+    max_memory: int | None = None
+    memory_warning: int | None = None
     #: Further tries after a server error, a network error, throttling or
     #: a block. Retry n waits a random time up to backoff_base * 2**n
     #: seconds, capped at backoff_max.
@@ -133,6 +138,10 @@ class Settings:
                 raise ValueError(f"{field} must be at least 1")
         if self.max_time is not None and self.max_time <= 0:
             raise ValueError("max_time must be positive")
+        for name in ("max_memory", "memory_warning"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} is in MiB and must be positive")
         if self.cache_expiry is not None and self.cache_expiry <= 0:
             raise ValueError("cache_expiry must be positive")
         if self.retries < 0 or self.breaker_window < 0:
@@ -563,6 +572,12 @@ class _Run:
         spider.invalid_fields = {}
         #: When the crawl started, for max_time.
         self.started = time.monotonic()
+        #: For max_memory: each worker's peak memory as it last reported
+        #: it, by process id, and when to read memory use next.
+        self.worker_peaks: dict[int, int] = {}
+        self.next_memory_check = 0.0
+        self.memory_warned = False
+        self.memory_unknown = False
         #: Repairs to ask for once the crawl is done, one per site and name.
         self.repair_jobs: list[Any] = []
         self.repair_asked: set[tuple[str, str]] = set()
@@ -738,6 +753,40 @@ class _Run:
             raise _Stop("max_errors")
         if settings.max_time is not None and self.time_left() <= 0:
             raise _Stop("max_time")
+        if settings.max_memory is not None or settings.memory_warning is not None:
+            self.check_memory()
+
+    def check_memory(self) -> None:
+        """The memory limits, read at most once a second: the peak resident
+        memory of this process plus each worker's, as each last said."""
+        now = time.monotonic()
+        if now < self.next_memory_check:
+            return
+        self.next_memory_check = now + 1.0
+        own = _memory.peak()
+        if own is None:
+            if not self.memory_unknown:
+                self.memory_unknown = True
+                log.warning("can't read memory use here: max_memory and memory_warning do nothing")
+            return
+        used = (own + sum(self.worker_peaks.values())) // (1024 * 1024)
+        settings = self.settings
+        if (
+            settings.memory_warning is not None
+            and used >= settings.memory_warning
+            and not self.memory_warned
+        ):
+            self.memory_warned = True
+            log.warning(
+                "memory use has reached %d MiB (memory_warning is %d)",
+                used,
+                settings.memory_warning,
+            )
+        if settings.max_memory is not None and used >= settings.max_memory:
+            log.warning(
+                "memory use has reached %d MiB (max_memory is %d)", used, settings.max_memory
+            )
+            raise _Stop("max_memory")
 
     def time_left(self) -> float | None:
         if self.settings.max_time is None:
@@ -745,15 +794,28 @@ class _Run:
         return self.settings.max_time - (time.monotonic() - self.started)
 
     async def next_events(self) -> list[tuple]:
-        """The next batch, waiting no longer than max_time allows."""
-        left = self.time_left()
-        if left is None:
+        """The next batch, waiting no longer than max_time allows, and
+        reading memory use every second while it waits, so slow pages don't
+        keep max_memory from being seen."""
+        watching = self.settings.max_memory is not None or self.settings.memory_warning is not None
+        if self.time_left() is None and not watching:
             return await self.engine.next(256)
+        task = asyncio.ensure_future(self.engine.next(256))
         try:
-            return await asyncio.wait_for(self.engine.next(256), max(left, 0))
-        # Not the builtin TimeoutError before Python 3.11.
-        except asyncio.TimeoutError:
-            raise _Stop("max_time") from None
+            while True:
+                left = self.time_left()
+                timeout = 1.0 if watching else left
+                if left is not None:
+                    timeout = min(timeout, max(left, 0))
+                done, _ = await asyncio.wait({task}, timeout=timeout)
+                if done:
+                    return task.result()
+                if left is not None and self.time_left() <= 0:
+                    raise _Stop("max_time")
+                self.check_memory()
+        except BaseException:
+            task.cancel()
+            raise
 
     async def crawl(self) -> dict[str, int]:
         started = self.started
@@ -1303,11 +1365,13 @@ class _Run:
         self.page = None
         self.position = 0
         try:
-            outputs, reports, repairs, error = await job
+            outputs, reports, repairs, error, (pid, peak) = await job
         except BrokenProcessPool:
             # One page's callback killed its worker (os._exit, out of
             # memory): the pool is broken, and the crawl with it.
             raise _worker_died(name, request.url) from None
+        if peak is not None:
+            self.worker_peaks[pid] = peak
         for report in reports:
             _track.report(*report)
         for repair in repairs:

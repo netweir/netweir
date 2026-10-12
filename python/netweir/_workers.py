@@ -24,7 +24,7 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
-from netweir import _track
+from netweir import _memory, _track
 from netweir._native import TrackStore
 from netweir._request import Request
 
@@ -173,7 +173,8 @@ def run(name: str, response: Any, request: Request) -> tuple:
             pickle.loads(pickle.dumps(error[0]))
         except Exception:  # noqa: BLE001 - not every exception travels
             error = (RuntimeError(f"{type(error[0]).__name__}: {error[0]}"), error[1])
-    return sendable, reports, repairs, error
+    # The worker's peak memory, for max_memory in the main process.
+    return sendable, reports, repairs, error, (os.getpid(), _memory.peak())
 
 
 async def _drain(results: Any, into: list[Any]) -> None:
