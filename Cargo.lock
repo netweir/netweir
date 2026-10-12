@@ -1188,7 +1188,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "netweir-browser"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "btls",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brotli",
  "btls",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-dom"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cc",
  "memchr",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-fingerprint"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fluke-hpack",
  "rcgen",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-py"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csv",
  "netweir-browser",
