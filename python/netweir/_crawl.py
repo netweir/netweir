@@ -8,7 +8,9 @@ runs your callbacks and pipelines on them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
+import functools
 import hashlib
 import inspect
 import itertools
@@ -17,6 +19,7 @@ import logging
 import os
 import re
 import time
+import weakref
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
@@ -219,9 +222,18 @@ class Spider:
     #: rules and Items runs no Python per page.
     rules: list[Follow] = []
     settings: Settings = Settings()
-    #: Callables applied to every item in order, sync or async. Each returns
-    #: the item (changed or not), or None to drop it.
-    pipelines: list[Callable[[Any], Any]] = []
+    #: Stages applied to every item in order, sync or async: functions of
+    #: the item, or objects with ``process_item(item, spider)``. Each returns
+    #: the item (changed or not), or None to drop it. An object may also
+    #: have ``open_spider(spider)`` and ``close_spider(spider)``.
+    pipelines: list[Any] = []
+    #: Objects with any of ``process_request(request, spider)``,
+    #: ``process_response(request, page, spider)`` and
+    #: ``process_exception(request, error, spider)``, sync or async; see
+    #: docs/crawling.md. They, and pipeline objects, also get the signals
+    #: they have methods for: ``spider_opened``, ``spider_closed``,
+    #: ``item_scraped``, ``item_dropped`` and ``request_dropped``.
+    middlewares: list[Any] = []
     #: Domains the crawl may go to, each with its subdomains; a domain with
     #: a port allows only that port. Requests elsewhere are dropped (and
     #: counted as "offsite") unless they have dont_filter=True. Empty for
@@ -284,6 +296,21 @@ class Spider:
     def parse(self, page: Page) -> Any:
         raise NotImplementedError(f"{type(self).__name__} needs a parse(self, page) method")
 
+    @property
+    def logger(self) -> logging.Logger:
+        """A logger named after the spider, as Scrapy's ``spider.logger``."""
+        return logging.getLogger(f"netweir.{self.name or type(self).__name__}")
+
+    def opened(self) -> Any:
+        """Called before the first request is queued, after the middlewares
+        and pipelines have been told. Sync or async; an exception here stops
+        the crawl before anything is fetched."""
+
+    def closed(self, reason: str) -> Any:
+        """Called once the crawl has ended, however it ended: ``reason`` is
+        ``finish_reason``, ``"error"`` after an exception or
+        ``"interrupted"`` after Ctrl-C. Sync or async."""
+
     def on_block(self, request: Request, page: Page) -> Any:
         """Called when bot protection still blocked ``request`` after every
         retry, each with a new session. ``page.blocked`` names the vendor.
@@ -307,12 +334,16 @@ class Spider:
         # can't start leaves its output files as they were.
         run = _Run(self, pipelines)
         started: list[export._Exporter] = []
+        reason = "error"
         try:
             # None, or the state of the output files when items were last
             # recorded: a resumed run cuts each file back to its recorded
             # length, dropping anything half-written or not recorded (which
             # the run makes again), and adds to it.
             state = run.resume()
+            # Before any output file is touched: a pipeline that can't open
+            # leaves them as they were.
+            await run.open()
             files = (state or {}).get("files", {})
             for stage in pipelines:
                 if not isinstance(stage, export._Exporter):
@@ -329,11 +360,16 @@ class Spider:
                             f.truncate(size)
                     stage.start(append=size is not None)
                 started.append(stage)
+            run.outputs_ready = True
             stats = await run.go()
             # Stopped by a limit part way through a batch: the batch is
             # fetched again by a resumed run.
             run.completed = self.finish_reason == "finished"
+            reason = self.finish_reason or "finished"
             return stats
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            reason = "interrupted"
+            raise
         finally:
             await run.engine.close_browser()
             for stage in pipelines:
@@ -342,6 +378,9 @@ class Spider:
                 close = getattr(stage, "close", None)
                 if callable(close):
                     close()
+            # After the exporters: closed() and close_spider find the output
+            # files complete.
+            await run.close(reason)
             run.finish()
 
 
@@ -372,6 +411,22 @@ class _Run:
         self.spider = spider
         self.pipelines = pipelines
         self.settings = spider.settings
+        middlewares = list(spider.middlewares)
+        # process_request in order; process_response and process_exception
+        # in reverse, the first middleware being nearest the spider.
+        self.on_request = _methods(middlewares, "process_request")
+        self.on_response = _methods(middlewares[::-1], "process_response")
+        self.on_exception = _methods(middlewares[::-1], "process_exception")
+        #: What gets signals: middlewares, then pipeline stages.
+        self.listeners = [*middlewares, *pipelines]
+        #: Pipeline stages whose open_spider worked, for close_spider.
+        self.opened: list[Any] = []
+        #: Whether open() got as far as spider_opened, and the spider's
+        #: opened(): who is told spider_closed and closed().
+        self.signalled = False
+        self.spider_opened = False
+        #: Set once the output files are cut back and started; see finish().
+        self.outputs_ready = False
         self.engine = self.settings._engine(spider.allowed_domains)
         #: Worker processes for callbacks, with Settings.workers > 1.
         self.pool: Any = None
@@ -407,6 +462,8 @@ class _Run:
         self.warned: set[str] = set()
         #: Depth of requests the running callback yields.
         self.depth = 0
+        #: The page the running callback was given, for item signals.
+        self.page: Page | None = None
         # Tracked selectors keep fingerprints in the checkpoint file, or in
         # the default store.
         state = self.settings._checkpoint_file()
@@ -423,6 +480,8 @@ class _Run:
         self.counts = {
             "items": 0,
             "items_dropped": 0,
+            "requests_dropped": 0,
+            "responses_dropped": 0,
             "callback_errors": 0,
             "invalid_urls": 0,
             "pages_ignored": 0,
@@ -621,10 +680,10 @@ class _Run:
             start = self.spider.start()
             if inspect.isasyncgen(start):
                 async for request in start:
-                    self.submit(request)
+                    await self.queue(request)
             else:
                 for request in start:
-                    self.submit(request)
+                    await self.queue(request)
             try:
                 while True:
                     self.check_limits()
@@ -635,10 +694,18 @@ class _Run:
                         if self.engine.stats()["queued"]:
                             raise _Stop("max_pages")
                         break
-                    # With workers, the batch's callbacks all start now; their
-                    # results are dealt with below, in the batch's order.
-                    jobs = [self.send(event) for event in events]
-                    await self.dispatch_batch(events, jobs)
+                    if self.pool is None:
+                        # Each page goes through the middlewares as its turn
+                        # comes, so a limit reached part way through the
+                        # batch leaves the rest untouched.
+                        await self.dispatch_batch(events, [None] * len(events), respond=True)
+                    else:
+                        # The middlewares run here, before a page goes to a
+                        # worker; then the batch's callbacks all start, and
+                        # their results are dealt with in the batch's order.
+                        events = [e for e in [await self.respond(e) for e in events] if e]
+                        jobs = [self.send(event) for event in events]
+                        await self.dispatch_batch(events, jobs)
                     self.settle()
                 self.spider.finish_reason = "finished"
                 abandoned = False
@@ -720,7 +787,10 @@ class _Run:
         from netweir import export
 
         try:
-            if self.saving:
+            # Only once the output files were cut back to their recorded
+            # lengths: a crawl that failed before that (a pipeline that
+            # couldn't open) mustn't record a half-written tail as kept.
+            if self.saving and self.outputs_ready:
                 self.record()
             if self.completed:
                 self.engine.ack()
@@ -736,11 +806,13 @@ class _Run:
             if isinstance(stage, export.parquet):
                 stage.publish()
 
-    async def dispatch_batch(self, events: list[tuple], jobs: list[Any]) -> None:
+    async def dispatch_batch(
+        self, events: list[tuple], jobs: list[Any], respond: bool = False
+    ) -> None:
         """Deals with a batch's events in order. With fail_fast, a worker's
         error stops the crawl when it happens, not when its page's turn
         comes behind slower callbacks."""
-        dispatching = asyncio.ensure_future(self._dispatch_all(events, jobs))
+        dispatching = asyncio.ensure_future(self._dispatch_all(events, jobs, respond))
         pending = [job for job in jobs if job is not None]
         if not (self.settings.fail_fast and pending):
             await dispatching
@@ -765,9 +837,12 @@ class _Run:
         self.counts["callback_errors"] += 1
         raise failed.result()
 
-    async def _dispatch_all(self, events: list[tuple], jobs: list[Any]) -> None:
+    async def _dispatch_all(self, events: list[tuple], jobs: list[Any], respond: bool) -> None:
         for event, job in zip(events, jobs, strict=True):
-            await self.dispatch(event, job)
+            if respond:
+                event = await self.respond(event)
+            if event is not None:
+                await self.dispatch(event, job)
             self.check_limits()
 
     def send(self, event: tuple) -> Any:
@@ -777,7 +852,7 @@ class _Run:
         if self.pool is None or event[0] not in ("fetched", "ruled"):
             return None
         if event[0] == "fetched":
-            _, rid, response, _root, live = event
+            _, rid, response, _root, live = event[:5]
             if live is not None:
                 return None  # a live Chrome page can't leave this process
             request = self.waiting.get(rid)
@@ -785,7 +860,7 @@ class _Run:
                 return None
             callback, default = request.callback, "parse"
         else:
-            _, rule, url, response, _root, depth = event
+            _, rule, url, response, _root, depth = event[:6]
             callback, default = self.rules[rule].callback, None
             request = Request(url, callback=callback, depth=depth)
         try:
@@ -817,15 +892,16 @@ class _Run:
             # Its own namespace: the page's callback numbers its items from 0
             # too.
             self.source, self.position = f"rule{rule}:{url}", 0
+            self.page = None
             await self.handle(item_class._finish(item, self.warned))
         elif kind == "ruled":
-            _, rule, url, response, root, depth = event
+            _, rule, url, response, root, depth = event[:6]
             callback = self.rules[rule].callback
             request = Request(url, callback=callback, depth=depth)
             if job is not None:
                 await self.collect(job, callback, request, response.url)
                 return
-            page = Page(response, request, root)
+            page = event[6] if len(event) > 6 else Page(response, request, root)
             await self.run_callback(callback, None, (page,), url)
         elif kind == "rule_failed":
             _, _, url, error = event
@@ -864,8 +940,11 @@ class _Run:
                 _warn_if_priced(Page(detail, request))
                 await self.collect(job, request.callback or "parse", request, detail.url)
             elif kind == "fetched":
-                page = Page(detail, request, rest[0])
-                page.browser = rest[1]
+                if len(rest) > 2:
+                    page = rest[2]  # as the middlewares returned it
+                else:
+                    page = Page(detail, request, rest[0])
+                    page.browser = rest[1]
                 _warn_if_priced(page)
                 try:
                     await self.run_callback(request.callback, "parse", (page,), request.url)
@@ -874,12 +953,175 @@ class _Run:
                     if page.browser is not None:
                         await page.browser.close()
             elif kind == "failed":
+                for process in self.on_exception:
+                    instead = await self.guarded(
+                        process, request, detail, self.spider, allowed=(Request,)
+                    )
+                    if instead is _IGNORED:
+                        self.counts["requests_dropped"] += 1
+                        await self.signal("request_dropped", request=request, spider=self.spider)
+                        return
+                    if isinstance(instead, Request):
+                        instead.depth = request.depth
+                        await self.queue(instead)
+                        return
+                    # None, or an error (already logged): on to the next.
                 if request.errback is None:
                     log.warning("%s: %s", request.url, detail)
                 else:
                     await self.run_callback(request.errback, None, (request, detail), request.url)
             else:
                 log.info("skipped %s: %s", request.url, _why(detail))
+
+    async def open(self) -> None:
+        """As Scrapy opens a crawl: every pipeline's open_spider, then the
+        spider_opened signal, then the spider's opened(). An exception stops
+        the crawl: nothing has been fetched or written yet."""
+        for stage in self.pipelines:
+            open_spider = self._pipeline_hook(stage, "open_spider")
+            if open_spider is not None:
+                await _result(open_spider(self.spider))
+            self.opened.append(stage)
+        self.signalled = True
+        for listener in self.listeners:
+            spider_opened = getattr(listener, "spider_opened", None)
+            if callable(spider_opened):
+                await _result(_by_name(spider_opened, spider=self.spider))
+        self.spider_opened = True
+        await _result(self.spider.opened())
+
+    async def close(self, reason: str) -> None:
+        """The other end of open(), for whatever it reached, in Scrapy's
+        order: close_spider, spider_closed, closed(). An exception here is
+        logged: the crawl is over either way."""
+        calls: list[tuple[Any, Callable[[], Any]]] = []
+        for stage in self.opened:
+            close_spider = self._pipeline_hook(stage, "close_spider")
+            if close_spider is not None:
+                calls.append((stage, functools.partial(close_spider, self.spider)))
+        if self.signalled:
+            for listener in self.listeners:
+                closed = getattr(listener, "spider_closed", None)
+                if callable(closed):
+                    call = functools.partial(_by_name, closed, spider=self.spider, reason=reason)
+                    calls.append((listener, call))
+        if self.spider_opened:
+            calls.append((self.spider, functools.partial(self.spider.closed, reason)))
+        for listener, call in calls:
+            try:
+                await _result(call())
+            except Exception:  # noqa: BLE001 - closing never hides the crawl's outcome
+                log.exception("error closing %r", listener)
+
+    def _pipeline_hook(self, listener: Any, name: str) -> Callable[..., Any] | None:
+        """open_spider or close_spider, which only pipeline stages have."""
+        if not any(listener is stage for stage in self.pipelines):
+            return None
+        method = getattr(listener, name, None)
+        return method if callable(method) else None
+
+    async def signal(self, name: str, **arguments: Any) -> None:
+        """Tells every middleware and pipeline with a method called
+        ``name``, giving it the arguments it names, as Scrapy does: a handler
+        written as ``item_scraped(self, item, response, spider)`` and one
+        written as ``item_scraped(self, item)`` both work. An exception there
+        is logged, not raised."""
+        for listener in self.listeners:
+            method = getattr(listener, name, None)
+            if not callable(method):
+                continue
+            try:
+                await _result(_by_name(method, **arguments))
+            except Exception:  # noqa: BLE001 - a signal handler never stops the crawl
+                log.exception("error in %s of %r", name, listener)
+
+    async def guarded(self, method: Callable[..., Any], *args: Any, allowed: tuple) -> Any:
+        """A middleware method's result: None, or an instance of ``allowed``.
+        IgnoreRequest (netweir's or Scrapy's) gives _IGNORED. Any other
+        exception, or a result of another type, counts as a callback error
+        (fail_fast stops the crawl) and gives _FAILED."""
+        try:
+            result = await _result(method(*args))
+            if result is None or isinstance(result, allowed):
+                return result
+            names = " or ".join(t.__name__ for t in allowed)
+            raise TypeError(f"returned a {type(result).__name__}, not {names} or None")
+        except Exception as e:
+            if _named(e, "IgnoreRequest"):
+                return _IGNORED
+            self.counts["callback_errors"] += 1
+            if self.settings.fail_fast:
+                raise
+            log.exception("error in %s", getattr(method, "__qualname__", method))
+            return _FAILED
+
+    async def queue(self, request: Request) -> None:
+        """Submits a request the spider's code made, through the middlewares'
+        process_request: None goes on with the request as it is, a Request
+        goes on in its place, IgnoreRequest (or an error) drops it."""
+        if self.on_request and request.headers is None:
+            # So `request.headers["User-Agent"] = ...` works, as in Scrapy.
+            request.headers = {}
+        for process in self.on_request:
+            result = await self.guarded(process, request, self.spider, allowed=(Request,))
+            if result is _IGNORED or result is _FAILED:
+                self.counts["requests_dropped"] += 1
+                await self.signal("request_dropped", request=request, spider=self.spider)
+                return
+            if result is not None and result is not request:
+                result.depth = request.depth
+                request = result
+        self.submit(request)
+
+    async def respond(self, event: tuple) -> tuple | None:
+        """A fetched page, after the middlewares' process_response: the event
+        as it was, the event with the page they gave instead, or None when
+        they dropped it or asked for a request in its place."""
+        if not self.on_response or event[0] not in ("fetched", "ruled"):
+            return event
+        if event[0] == "fetched":
+            _, rid, response, root, live = event
+            request = self.waiting[rid]
+        else:
+            _, rule, url, response, root, depth = event
+            request = Request(url, callback=self.rules[rule].callback, depth=depth)
+            live = None
+        page = Page(response, request, root)
+        page.browser = live
+        for process in self.on_response:
+            result = await self.guarded(
+                process, request, page, self.spider, allowed=(Page, Request)
+            )
+            if result is None:
+                continue
+            if isinstance(result, Page):
+                if result is not page:
+                    # Another page answers this request: its depth and meta
+                    # are the request's, so max_depth still counts from here.
+                    # A copy, so a page a middleware hands out twice keeps
+                    # its own request.
+                    replacement = Page(result._response, request, result._root)
+                    replacement.browser = result.browser
+                    result = replacement
+                page = result
+                continue
+            if event[0] == "fetched":
+                self.waiting.pop(rid)
+            if live is not None:
+                await live.close()
+            if isinstance(result, Request):
+                result.depth = request.depth
+                await self.queue(result)
+            else:
+                self.counts["responses_dropped"] += 1
+            return None
+        if live is not None and page.browser is not live:
+            await live.close()  # replaced: its place goes to the next request
+        # The page itself rides along, so the callback gets the very object
+        # the middlewares returned; a worker gets its response.
+        if event[0] == "fetched":
+            return ("fetched", rid, page._response, page._root, page.browser, page)
+        return ("ruled", rule, url, page._response, page._root, depth, page)
 
     async def run_callback(
         self, fn: Callable[..., Any] | str | None, default: str | None, args: tuple, url: str
@@ -889,6 +1131,7 @@ class _Run:
         source = args[0]
         self.depth = (source.depth if isinstance(source, (Page, Request)) else 0) + 1
         self.source = source.url if isinstance(source, (Page, Request)) else url
+        self.page = source if isinstance(source, Page) else None
         self.position = 0
         try:
             fn = self.resolve(fn, default)
@@ -915,6 +1158,8 @@ class _Run:
         name = fn if isinstance(fn, str) else getattr(fn, "__name__", "parse")
         self.depth = request.depth + 1
         self.source = page_url
+        # The page stayed in the worker.
+        self.page = None
         self.position = 0
         try:
             outputs, reports, repairs, error = await job
@@ -945,7 +1190,7 @@ class _Run:
             return
         if isinstance(out, Request):
             out.depth = self.depth
-            self.submit(out)
+            await self.queue(out)
             return
         if isinstance(out, _NOT_ITEMS):
             raise TypeError(
@@ -965,18 +1210,104 @@ class _Run:
             if isinstance(item, dict):
                 item.setdefault("_id", item_id)
         for stage in self.pipelines:
-            item = stage(item)
-            if inspect.isawaitable(item):
-                item = await item
+            given = item
+            process = getattr(stage, "process_item", None)
+            dropped = None
+            try:
+                item = await _result(process(item, self.spider) if process else stage(item))
+            except Exception as e:
+                # netweir's DropItem, or Scrapy's, from a pipeline written
+                # for Scrapy (subclasses too): a drop, not an error.
+                if not _named(e, "DropItem"):
+                    raise
+                log.debug("item dropped by %r: %s", stage, e)
+                item, dropped = None, e
             if item is None:
                 self.counts["items_dropped"] += 1
+                await self.signal(
+                    "item_dropped",
+                    item=given,
+                    response=self.page,
+                    exception=dropped,
+                    spider=self.spider,
+                )
                 return
         self.counts["items"] += 1
+        await self.signal("item_scraped", item=item, response=self.page, spider=self.spider)
         if item_id is not None:
             self.delivered.add(item_id)
             self.unrecorded.append(item_id)
         if self.settings.max_items is not None and self.counts["items"] >= self.settings.max_items:
             raise _Stop("max_items")
+
+
+#: What guarded() gives for a middleware that raised IgnoreRequest, and for
+#: one that failed.
+_IGNORED = object()
+_FAILED = object()
+
+
+def _named(error: BaseException, name: str) -> bool:
+    """``error`` is of a class called ``name``, or a subclass of one: netweir's
+    DropItem or IgnoreRequest, or Scrapy's, which a ported pipeline or
+    middleware raises without importing netweir's."""
+    return any(cls.__name__ == name for cls in type(error).__mro__)
+
+
+def _by_name(method: Callable[..., Any], **arguments: Any) -> Any:
+    """Calls ``method`` with the arguments its parameters name, as Scrapy
+    calls signal handlers; all of them if it takes ``**kwargs``."""
+    parameters = _parameters(getattr(method, "__func__", method), method)
+    if parameters is None:
+        return method(**arguments)
+    given = [(name, by_position) for name, by_position in parameters if name in arguments]
+    positional = [arguments[name] for name, by_position in given if by_position]
+    named = {name: arguments[name] for name, by_position in given if not by_position}
+    return method(*positional, **named)
+
+
+#: A handler's function, to the parameters _by_name gives it, read once.
+#: Weak, so a handler that goes away doesn't stay here.
+_PARAMETERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _parameters(key: Any, method: Callable[..., Any]) -> list[tuple[str, bool]] | None:
+    """(name, positional only) for each parameter a signal can fill, in
+    order, or None for a handler that takes ``**kwargs`` or can't be read.
+    A bound method is a new object each time, so its function is the key."""
+    try:
+        return _PARAMETERS[key]
+    except (KeyError, TypeError):
+        pass
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        found = None
+    else:
+        values = signature.parameters.values()
+        if any(p.kind is p.VAR_KEYWORD for p in values):
+            found = None
+        else:
+            found = [
+                (p.name, p.kind is p.POSITIONAL_ONLY) for p in values if p.name in _SIGNAL_ARGUMENTS
+            ]
+    # Not every callable can be held weakly: those are read each time.
+    with contextlib.suppress(TypeError):
+        _PARAMETERS[key] = found
+    return found
+
+
+#: Every argument a signal gives.
+_SIGNAL_ARGUMENTS = frozenset({"spider", "reason", "item", "response", "exception", "request"})
+
+
+def _methods(objects: list[Any], name: str) -> list[Callable[..., Any]]:
+    return [getattr(o, name) for o in objects if callable(getattr(o, name, None))]
+
+
+async def _result(value: Any) -> Any:
+    """``value``, awaited if it's awaitable: for hooks that may be async."""
+    return await value if inspect.isawaitable(value) else value
 
 
 #: Iterable, but one result rather than many.

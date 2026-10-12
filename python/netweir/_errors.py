@@ -12,6 +12,17 @@ class FetchError(Exception):
         self.kind = kind
 
 
+class DropItem(Exception):
+    """Raised in a pipeline to drop the item, as returning None does. Scrapy
+    pipelines drop items this way; Scrapy's own DropItem works too."""
+
+
+class IgnoreRequest(Exception):
+    """Raised in a middleware to drop the request or page it was given.
+    Scrapy middlewares drop requests this way; Scrapy's own IgnoreRequest
+    works too."""
+
+
 class Blocked(Exception):
     """Bot protection turned the request away.
 

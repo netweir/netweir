@@ -65,6 +65,10 @@ class Request:
         if self.browser and (self.method != "GET" or self.body is not None):
             raise ValueError("only a GET can be fetched in Chrome (browser=True)")
 
+    def replace(self, **changes: Any) -> Request:
+        """A copy with ``changes``, as Scrapy's ``Request.replace``."""
+        return dataclasses.replace(self, **changes)
+
     @classmethod
     def from_form(
         cls,

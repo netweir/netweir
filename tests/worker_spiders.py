@@ -108,3 +108,13 @@ class StartFails(netweir.Spider):
     async def start(self):
         raise RuntimeError("start broke")
         yield
+
+
+class Linked(netweir.Spider):
+    """An item per page, following every link."""
+
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        yield {"url": page.url}
+        yield from page.follow_all(page.css("a::attr(href)"))
