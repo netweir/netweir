@@ -65,12 +65,24 @@ async fn bad_input_is_invalid() {
         .unwrap_err();
     assert_eq!(err.kind, FetchErrorKind::Invalid);
 
-    let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
-    options.proxy = Some("not a proxy".into());
-    assert_eq!(
-        Fetcher::new(options).err().unwrap().kind,
-        FetchErrorKind::Invalid
-    );
+    // A scheme the client doesn't proxy with used to be accepted, and every
+    // request then went out directly, past the proxy.
+    for proxy in ["not a proxy", "bogus://127.0.0.1:9", "ftp://127.0.0.1:9"] {
+        let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+        options.proxy = Some(proxy.into());
+        let err = Fetcher::new(options).err().expect(proxy);
+        assert_eq!(err.kind, FetchErrorKind::Invalid, "{proxy}: {err}");
+    }
+    for proxy in [
+        "http://127.0.0.1:9",
+        "HTTPS://u:p@127.0.0.1:9",
+        "socks5://127.0.0.1:9",
+        "socks5h://127.0.0.1:9",
+    ] {
+        let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+        options.proxy = Some(proxy.into());
+        assert!(Fetcher::new(options).is_ok(), "{proxy}");
+    }
 }
 
 /// Serves `head` and `body` once, as raw HTTP/1.1, and returns the URL.

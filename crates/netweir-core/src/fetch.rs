@@ -142,8 +142,8 @@ pub struct Response {
     /// The final URL, after redirects.
     pub url: String,
     pub status: u16,
-    /// "HTTP/1.1", "HTTP/2" and so on, or "browser" for a page Chrome
-    /// rendered.
+    /// "HTTP/1.1", "HTTP/2" and so on, "browser" for a page Chrome
+    /// rendered, or "file" for one the shell read from a file.
     pub version: &'static str,
     /// In the order received. Names are lowercase.
     pub headers: Vec<(String, String)>,
@@ -600,6 +600,17 @@ impl Fetcher {
                 .redirect(redirect::Policy::none())
                 .tls_cert_verification(options.verify_certificates);
             if let Some(proxy) = &options.proxy {
+                // The client treats a scheme it doesn't know as no proxy at
+                // all, which would send every request out directly.
+                let scheme = proxy.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+                if !matches!(
+                    scheme.as_deref(),
+                    Some("http" | "https" | "socks5" | "socks5h")
+                ) {
+                    return Err(FetchError::invalid(format!(
+                        "a proxy is an http://, https://, socks5:// or socks5h:// URL, not {proxy:?}"
+                    )));
+                }
                 builder = builder.proxy(
                     Proxy::all(proxy.as_str()).map_err(|e| FetchError::invalid(e.to_string()))?,
                 );
