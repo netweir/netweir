@@ -1,17 +1,30 @@
 """The ``netweir`` command.
 
 netweir crawl spider.py -o items.jsonl -s concurrency=32
+netweir fetch https://example.com/ --headers
+netweir view https://example.com/
+netweir shell https://example.com/
 netweir install chrome
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import code
 import dataclasses
+import html
 import importlib.util
 import inspect
 import logging
+import os
+import re
 import sys
+import tempfile
+import traceback
+import urllib.parse
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 
@@ -93,6 +106,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     crawl.add_argument("--spider", help="which Spider, when the file has several")
     crawl.add_argument("-q", "--quiet", action="store_true", help="only warnings and errors")
+    fetch = commands.add_parser("fetch", help="fetch a page and write its body to stdout")
+    fetch.add_argument("url")
+    fetch.add_argument(
+        "--headers", action="store_true", help="the status line and headers instead of the body"
+    )
+    _fetch_options(fetch, browser=True)
+    view = commands.add_parser("view", help="open the page netweir gets in your browser")
+    view.add_argument("url")
+    _fetch_options(view, browser=True)
+    shell = commands.add_parser("shell", help="a Python prompt with a fetched page in `page`")
+    shell.add_argument("url", nargs="?", help="a URL to fetch, or an HTML file to read")
+    shell.add_argument("-c", dest="code", help="evaluate one expression, print it and exit")
+    _fetch_options(shell, browser=False)
     install = commands.add_parser("install", help="download a browser for netweir to drive")
     install.add_argument("browser", choices=["chrome"])
     install.add_argument(
@@ -103,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "install":
         return _install(args)
+    if args.command in ("fetch", "view", "shell"):
+        return _page_command(args)
 
     logging.basicConfig(
         level=logging.WARNING if args.quiet else logging.INFO, format="%(levelname)s %(message)s"
@@ -149,3 +177,264 @@ def _prepare(args):
     spider.settings = settings
     output = export.to_path(args.output) if args.output else None
     return spider, output
+
+
+# --- fetch, view and shell --------------------------------------------------
+
+
+def _fetch_options(parser: argparse.ArgumentParser, browser: bool) -> None:
+    parser.add_argument("--profile", help="the browser to look like (default chrome)")
+    parser.add_argument("--proxy", help="send the request through this proxy")
+    parser.add_argument("--timeout", type=float, default=30.0, help="seconds (default 30)")
+    parser.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="'NAME: VALUE'",
+        help="add a request header",
+    )
+    if browser:
+        parser.add_argument(
+            "--browser", action="store_true", help="load the page in Chrome and take its HTML"
+        )
+
+
+def _page_command(args) -> int:
+    from netweir import BrowserError, FetchError
+
+    try:
+        session = _Session(args)
+        if args.command == "shell":
+            status = _shell(args, session)
+        else:
+            page = session.first(args.url)
+            if args.command == "fetch":
+                _write(page, args.headers)
+            else:
+                _view(page)
+            status = 1 if page.blocked else 0
+        # Flushed here, where a closed pipe is caught, rather than as
+        # Python exits, where it isn't.
+        sys.stdout.flush()
+        return status
+    except KeyboardInterrupt:
+        print("netweir: interrupted", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        # Whatever read stdout stopped early (`| head`): not an error, but
+        # Python would complain on exit unless stdout goes somewhere.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
+    except FetchError as e:
+        # A URL or header that can't be sent is a command-line mistake.
+        print(f"netweir: {e}", file=sys.stderr)
+        return 2 if e.kind == "invalid" else 1
+    except (_Usage, ValueError) as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 2
+    except (BrowserError, OSError) as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 1
+
+
+def _write(page, headers: bool) -> None:
+    if headers:
+        print(f"{page.version} {page.status}")
+        for name, value in page.raw_headers:
+            print(f"{name}: {value}")
+        sys.stdout.flush()
+    else:
+        sys.stdout.buffer.write(page.body)
+        sys.stdout.buffer.flush()
+
+
+# "example.com", "localhost:8000/path" or "127.0.0.1": a host without a
+# scheme. A name ending in a file's extension ("page.html" that isn't
+# there) is a missing file, not a host.
+_HOST = re.compile(r"(localhost|[\w-]+(\.[\w-]+)+)(:\d+)?([/?#].*)?")
+_FILE_ENDING = re.compile(r"\.(html?|xhtml|xml|json|txt|csv|md|py|js|css)$", re.I)
+
+
+class _Session:
+    """What fetch, view and shell fetch with: one Fetcher, so the shell's
+    pages share cookies, plus the headers given on the command line."""
+
+    def __init__(self, args):
+        from netweir._native import Fetcher
+
+        self.args = args
+        self.browser = getattr(args, "browser", False)
+        self.headers = []
+        for header in args.header:
+            name, sep, value = header.partition(":")
+            if not sep or not name.strip():
+                raise _Usage(f"a header is 'Name: value', not {header!r}")
+            self.headers.append((name.strip(), value.strip()))
+        if self.browser and (args.profile or self.headers):
+            raise _Usage("--browser fetches as Chrome itself: --profile and --header don't apply")
+        # Made now, so a bad profile or timeout is a command-line mistake.
+        self.fetcher = Fetcher(args.profile or "chrome", args.proxy, args.timeout)
+
+    def first(self, target: str):
+        """The page the command was given: a URL, a file (a path or a
+        file: URL), or a host without a scheme, which gets https://."""
+        from netweir import Page
+        from netweir._native import _response
+
+        if target.lower().startswith("file:"):
+            path = Path(urllib.request.url2pathname(urllib.parse.urlparse(target).path))
+            if not path.is_file():
+                raise _Usage(f"no such file: {path}")
+        elif "://" in target:
+            path = None
+        elif Path(target).is_file():
+            path = Path(target)
+        elif _HOST.fullmatch(target) and not _FILE_ENDING.search(target):
+            path, target = None, "https://" + target
+        elif _FILE_ENDING.search(target):
+            raise _Usage(f"no such file: {target}")
+        else:
+            raise _Usage(f"not a URL or a file: {target}")
+        if self.browser:
+            url = path.resolve().as_uri() if path else target
+            return _say_if_blocked(Page(asyncio.run(self._in_chrome(url))))
+        if path:
+            # As if fetched from its file: URL, so it decodes and resolves
+            # links as a fetched page would.
+            response = _response(path.resolve().as_uri(), 200, "file", [], path.read_bytes())
+            return Page(response)
+        return self.send(target)
+
+    def send(
+        self, url, method="GET", *, form=None, json=None, body=None, headers=None, referer=None
+    ):
+        from netweir import Page
+        from netweir._fetch import _pairs, payload
+
+        how = payload(method, form, json, body)
+        response = self.fetcher.send_blocking(
+            url, headers=self.headers + _pairs(headers), referer=referer, **how
+        )
+        return _say_if_blocked(Page(response))
+
+    def submit(self, form, headers=None):
+        from netweir import Page
+        from netweir._fetch import _from_form, _pairs
+
+        url, how = _from_form(form)
+        response = self.fetcher.send_blocking(
+            url, headers=self.headers + _pairs(headers), referer=form.referer, **how
+        )
+        return _say_if_blocked(Page(response))
+
+    async def _in_chrome(self, url):
+        import netweir
+        from netweir._native import _response
+
+        async with netweir.browser(proxy=self.args.proxy, timeout=self.args.timeout) as browser:
+            tab = await browser.new_page()
+            response = await tab.goto(url)
+            content = (await tab.content()).encode()
+            return _response(tab.url, response.status, "browser", response.headers, content)
+
+
+def _say_if_blocked(page):
+    if page.blocked:
+        kind = page._classified()[2] or "block"
+        print(
+            f"netweir: blocked by {page.blocked} ({kind}): this is its page, not the site's",
+            file=sys.stderr,
+        )
+    return page
+
+
+# What may come before <html> and <head>: a byte order mark, whitespace, a
+# doctype, an XML declaration and comments, then <html> and <head>
+# themselves. Tags go after these, so a page without <head> keeps its
+# doctype first and isn't shown in quirks mode, and a "<head>" further on,
+# in a script say, isn't mistaken for the real one.
+_PROLOGUE = re.compile(
+    r"\A(?:\ufeff|\s+|<!--.*?-->|<!doctype[^>]*>|<\?xml[^>]*\?>)*"
+    r"(?:<html\b[^>]*>)?(?:\s*<head\b[^>]*>)?",
+    re.I | re.S,
+)
+
+
+def _view(page) -> Path:
+    """Saves the page, as text in UTF-8, with a charset and a <base> naming
+    where it came from at the top of <head>, and opens it in the browser.
+
+    Both go first because the first of each wins: a <base href="/"> of the
+    page's own would point at the root of the disk, and the charset the
+    server sent in its Content-Type header doesn't travel with the file.
+    The <base> is the page's own base resolved against its URL, so links
+    resolve as they did on the site."""
+    # Chrome's HTML was a string, kept as UTF-8 whatever the headers say.
+    text = page.body.decode("utf-8", "replace") if page.version == "browser" else page.text
+    tags = f'<meta charset="utf-8"><base href="{html.escape(page.urljoin(""))}">'
+    # The file gets a byte order mark of its own, below.
+    text = text.removeprefix("\ufeff")
+    at = _PROLOGUE.match(text).end()
+    with tempfile.NamedTemporaryFile(prefix="netweir-", suffix=".html", delete=False) as f:
+        # A byte order mark outranks every other charset signal, including
+        # a <meta charset> a browser would miss past its first 1024 bytes.
+        f.write(b"\xef\xbb\xbf" + (text[:at] + tags + text[at:]).encode("utf-8"))
+    path = Path(f.name)
+    webbrowser.open(path.as_uri())
+    print(path)
+    return path
+
+
+_BANNER = """netweir {version} shell
+  page              the page{what}
+  fetch(url)        fetch another page into `page` (method=, form=, json=, body=, headers=, referer=)
+  submit(form)      submit page.form(...) and make the answer `page`
+  view(page=None)   open `page`, or the one given, in your browser
+  netweir           the module"""
+
+
+def _shell(args, session: _Session) -> int:
+    import netweir
+
+    ns: dict = {"netweir": netweir, "page": None}
+
+    def fetch(url, method="GET", **kwargs):
+        ns["page"] = session.send(url, method, **kwargs)
+        return ns["page"]
+
+    def submit(form, headers=None):
+        ns["page"] = session.submit(form, headers)
+        return ns["page"]
+
+    def view(page=None):
+        page = page if page is not None else ns["page"]
+        if page is None:
+            raise ValueError("no page to view: fetch(url) first")
+        _view(page)
+
+    ns.update(fetch=fetch, submit=submit, view=view)
+    if args.url:
+        ns["page"] = session.first(args.url)
+    if args.code is not None:
+        try:
+            result = eval(compile(args.code, "<-c>", "eval"), ns)
+        except Exception:
+            traceback.print_exc()
+            return 1
+        # As Scrapy's shell -c prints it: a string without quotes.
+        print(result)
+        return 0
+    what = f": {ns['page']!r}" if ns["page"] is not None else ", none yet"
+    banner = _BANNER.format(version=netweir.__version__, what=what)
+    try:
+        from IPython import start_ipython
+    except ImportError:
+        start_ipython = None
+    # Started outside the except, or every error typed at the prompt would
+    # be shown chained to the missing IPython.
+    if start_ipython is None:
+        code.interact(banner=banner, local=ns, exitmsg="")
+    else:
+        print(banner)
+        start_ipython(argv=["--no-banner"], user_ns=ns)
+    return 0

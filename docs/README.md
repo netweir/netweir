@@ -2,6 +2,7 @@
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries.
+- [Trying a page](shell.md): the page netweir gets, on stdout, in your browser or at a Python prompt.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
 - [Crawling](crawling.md): spiders, requests, pipelines, exporters and the command line.
 - [Declarative spiders](declarative.md): items and rules that run in Rust.
@@ -11,5 +12,6 @@
 
 The design behind it all is in [design/v0.1.md](design/v0.1.md), the
 browser driver's in [design/browser.md](design/browser.md), requests
-other than GETs in [design/requests.md](design/requests.md), and the
-development cache in [design/cache.md](design/cache.md).
+other than GETs in [design/requests.md](design/requests.md), the
+development cache in [design/cache.md](design/cache.md), and the fetch,
+view and shell commands in [design/shell.md](design/shell.md).

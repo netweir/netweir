@@ -143,8 +143,7 @@ impl Fetcher {
     ) -> PyResult<Response> {
         let outgoing = outgoing(method, kind, body, content_type, referer)?;
         let headers = headers.unwrap_or_default();
-        let runtime = pyo3_async_runtimes::tokio::get_runtime();
-        py.detach(|| runtime.block_on(self.inner.send(&url, &outgoing, &headers)))
+        wait(py, self.inner.send(&url, &outgoing, &headers))?
             .map(Response::from)
             .map_err(fetch_error)
     }
@@ -158,10 +157,33 @@ impl Fetcher {
         headers: Option<Vec<(String, String)>>,
     ) -> PyResult<Response> {
         let headers = headers.unwrap_or_default();
-        let runtime = pyo3_async_runtimes::tokio::get_runtime();
-        py.detach(|| runtime.block_on(self.inner.get(&url, &headers)))
+        wait(py, self.inner.get(&url, &headers))?
             .map(Response::from)
             .map_err(fetch_error)
+    }
+}
+
+/// Runs `future` to completion with the GIL released, stopping every tenth
+/// of a second to let Python handle signals. Without the stops, Ctrl-C did
+/// nothing until the server answered, and a request that never got an
+/// answer couldn't be interrupted at all. A signal handler that raises
+/// (KeyboardInterrupt) drops the future, which cancels the request.
+fn wait<F>(py: Python<'_>, future: F) -> PyResult<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    let runtime = pyo3_async_runtimes::tokio::get_runtime();
+    let mut future = std::pin::pin!(future);
+    loop {
+        let slice = std::time::Duration::from_millis(100);
+        let done = py.detach(|| {
+            runtime.block_on(async { tokio::time::timeout(slice, future.as_mut()).await.ok() })
+        });
+        if let Some(output) = done {
+            return Ok(output);
+        }
+        py.check_signals()?;
     }
 }
 
@@ -195,7 +217,8 @@ fn outgoing(
     })
 }
 
-/// A response from its parts, as a worker process gets one.
+/// A response from its parts, as a worker process gets one, or as the
+/// shell makes one for a page read from a file.
 #[pyfunction]
 pub(crate) fn _response(
     url: String,
@@ -206,7 +229,7 @@ pub(crate) fn _response(
 ) -> Response {
     // Only these are ever made; anything else reads as HTTP/1.1.
     let version = [
-        "HTTP/0.9", "HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/3", "browser",
+        "HTTP/0.9", "HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/3", "browser", "file",
     ]
     .into_iter()
     .find(|v| *v == version)

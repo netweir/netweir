@@ -80,6 +80,9 @@ the file `books.csv` or `books.parquet` to get that format instead.
 
 ## Where next
 
+- [Trying a page](shell.md): `netweir shell URL` gives you a Python prompt
+  with the page netweir got, for trying selectors before they go in a
+  spider.
 - [Crawling](crawling.md): requests, callbacks, pipelines, exporters and
   the command line.
 - [Declarative spiders](declarative.md): describe items and links, and let

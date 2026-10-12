@@ -19,5 +19,5 @@ pyo3 = { version = "0.29", features = ["abi3-py310", "extension-module", "multip
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 url = "2"

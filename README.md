@@ -42,6 +42,9 @@ Working today:
   written to JSON Lines, CSV or Parquet. `allowed_domains` keeps a crawl
   on the sites you meant; `max_items`, `max_pages`, `max_errors` and
   `max_time` stop it when you've seen enough.
+- `netweir shell URL`, `fetch` and `view`: the page netweir gets, at a
+  Python prompt, on stdout or in your browser, for trying selectors before
+  they go in a spider. See [docs/shell.md](docs/shell.md).
 - A response cache for the days you spend writing a spider: run it thirty
   times and the site serves its pages once. See
   [docs/crawling.md](docs/crawling.md#caching-while-you-develop).
