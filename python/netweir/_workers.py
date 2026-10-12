@@ -249,7 +249,7 @@ class Pool:
         """Waits for the workers to finish, or, abandoning the crawl (an
         error with fail_fast, an interrupt), stops them where they are."""
         if abandon:
-            # ponytail: the executor has no public way to stop running
+            # Known limit: the executor has no public way to stop running
             # work; its processes are terminated directly.
             for process in list(getattr(self._executor, "_processes", {}).values()):
                 process.terminate()

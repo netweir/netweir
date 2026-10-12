@@ -38,7 +38,7 @@ impl Document {
     /// them takes seconds. Browsers cap the depth; lexbor does not. A crawler
     /// fetching pages it does not control should parse with a budget.
     pub fn parse_within(html: &str, budget: Duration) -> Result<Document, ParseTimeout> {
-        // ponytail: the budget is checked between 16 KB chunks, so a parse can
+        // Known limit: the budget is checked between 16 KB chunks, so a parse can
         // overrun it by the time one chunk takes. It bounds time, not memory:
         // a crafted page of distinct formatting tags makes the HTML5 adoption
         // agency clone thousands of elements per paragraph (64 KB reached

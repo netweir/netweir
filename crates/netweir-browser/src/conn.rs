@@ -306,7 +306,7 @@ fn read_loop(mut input: impl BufRead, shared: &Shared) {
         if message.last() == Some(&0) {
             message.pop();
         }
-        // ponytail: a message that isn't JSON is dropped; Chrome only sends
+        // Known limit: a message that isn't JSON is dropped; Chrome only sends
         // JSON, and one bad message shouldn't end the session.
         if let Ok(value) = serde_json::from_slice::<Value>(&message) {
             shared.deliver(value);

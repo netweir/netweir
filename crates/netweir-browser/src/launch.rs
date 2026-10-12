@@ -325,7 +325,7 @@ fn hand_over(
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
 
-    // ponytail: start() keeps netweir's own launches apart, but a process
+    // Known limit: start() keeps netweir's own launches apart, but a process
     // started elsewhere in the program during the launch would still
     // inherit these. PROC_THREAD_ATTRIBUTE_HANDLE_LIST would make it exact.
     for handle in [reads.as_raw_handle(), writes.as_raw_handle()] {
