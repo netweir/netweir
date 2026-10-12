@@ -209,7 +209,8 @@ def test_checks_that_fail_say_why(base, caplog):
     ]
 
     def item(n):
-        return {"title": "t", "price": 1} if n < 2 else {"title": "t"}
+        # No price anywhere: which pages come first can't change the share.
+        return {"title": "t"}
 
     Shop = shop(base, item, checks=checks)
     Shop.settings = netweir.Settings(**{**vars(FAST), "max_items": 4})
@@ -218,7 +219,7 @@ def test_checks_that_fail_say_why(base, caplog):
     assert stats["checks_failed"] == 3
     joined = " | ".join(spider.check_failures)
     assert "4 items, fewer than 10" in joined
-    assert "price in 50.0% of items, less than 90.0%" in joined
+    assert "price in 0.0% of items, less than 90.0%" in joined
     assert "max_items" in joined
     assert caplog.text.count("check failed") == 3
 
