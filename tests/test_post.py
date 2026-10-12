@@ -32,6 +32,15 @@ FORM_PAGE = """<!doctype html><html><body>
   <input name="title" value="A book">
   <input name="body" value="text">
 </form>
+<form id="upload" action="/echo" method="post" enctype="multipart/form-data">
+  <input name="title" value="A book">
+  <input type="file" name="cover">
+  <input name="after" value="x">
+</form>
+<form id="plain" action="/echo" method="post">
+  <input type="file" name="doc">
+  <input name="q" value="y">
+</form>
 </body></html>"""
 
 
@@ -237,6 +246,132 @@ def test_a_multipart_form_is_sent_as_multipart(base):
         in got["body"]
     )
     assert got["body"].endswith(f"--{boundary}--\r\n")
+
+
+def parts(got):
+    """The parts of a multipart body, as (headers, data)."""
+    boundary = got["headers"]["content-type"].split("boundary=")[1]
+    assert got["body"].endswith(f"--{boundary}--\r\n")
+    chunks = got["body"].split(f"--{boundary}")[1:-1]
+    out = []
+    for chunk in chunks:
+        head, _, data = chunk.removeprefix("\r\n").partition("\r\n\r\n")
+        out.append((head, data.removesuffix("\r\n")))
+    return out
+
+
+def test_an_empty_file_input_is_sent_as_a_browser_sends_it(base):
+    page = netweir.get(f"{base}/form")
+    got = parts(seen(netweir.submit(page.form("#upload"))))
+    assert got == [
+        ('Content-Disposition: form-data; name="title"', "A book"),
+        (
+            'Content-Disposition: form-data; name="cover"; filename=""\r\n'
+            "Content-Type: application/octet-stream",
+            "",
+        ),
+        ('Content-Disposition: form-data; name="after"', "x"),
+    ]
+
+
+def test_a_file_from_disk_goes_where_its_input_is(base, tmp_path):
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"\x89PNG\r\n\x00\xff")
+    page = netweir.get(f"{base}/form")
+    got = parts(seen(netweir.submit(page.form("#upload", files={"cover": cover}))))
+    assert got[1] == (
+        'Content-Disposition: form-data; name="cover"; filename="cover.png"\r\n'
+        "Content-Type: image/png",
+        "\x89PNG\r\n\x00\xff",
+    )
+    assert [p[1] for p in got] == ["A book", "\x89PNG\r\n\x00\xff", "x"]
+
+
+def test_a_file_can_be_given_as_bytes_with_its_name_and_type(base):
+    page = netweir.get(f"{base}/form")
+    form = page.form(
+        "#upload",
+        files={"cover": [("a.bin", b"\x00\x01"), ('b "q".txt', b"hi", "text/x-thing")]},
+    )
+    got = parts(seen(netweir.submit(form)))
+    assert got[1:3] == [
+        (
+            'Content-Disposition: form-data; name="cover"; filename="a.bin"\r\n'
+            "Content-Type: application/octet-stream",
+            "\x00\x01",
+        ),
+        (
+            'Content-Disposition: form-data; name="cover"; filename="b %22q%22.txt"\r\n'
+            "Content-Type: text/x-thing",
+            "hi",
+        ),
+    ]
+
+
+def test_a_form_that_isn_t_multipart_sends_only_the_file_s_name(base):
+    page = netweir.get(f"{base}/form")
+    got = seen(netweir.submit(page.form("#plain", files={"doc": ("notes.txt", b"secret")})))
+    assert parse_qsl(got["body"], keep_blank_values=True) == [("doc", "notes.txt"), ("q", "y")]
+    assert "secret" not in got["body"]
+
+
+def test_from_form_takes_files_too(base):
+    page = netweir.get(f"{base}/form")
+    request = netweir.Request.from_form(page, "#upload", files={"cover": ("c.txt", b"data")})
+    assert b'filename="c.txt"' in request.body
+
+
+def test_a_content_type_a_browser_wouldn_t_send_is_sent_as_octet_stream(base):
+    page = netweir.get(f"{base}/form")
+    form = page.form("#upload", files={"cover": ("x.txt", b"d", "text/plain\r\nX-Evil: 1")})
+    got = parts(seen(netweir.submit(form)))
+    assert got[1][0].endswith("Content-Type: application/octet-stream")
+    assert "X-Evil" not in got[1][0]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("a.tar.gz", "application/gzip"),
+        ("notes.txt.gz", "application/gzip"),
+        ("data:x.png", "image/png"),
+        ("README", "application/octet-stream"),
+    ],
+)
+def test_a_content_type_comes_from_the_last_extension(filename, content_type):
+    file = netweir._form._file("f", (filename, b""))
+    assert file.content_type == content_type
+
+
+def test_an_empty_list_of_files_sends_the_input_empty(base):
+    page = netweir.get(f"{base}/form")
+    got = parts(seen(netweir.submit(page.form("#upload", files={"cover": []}))))
+    assert 'name="cover"; filename=""' in got[1][0]
+
+
+def test_bytes_like_data_and_a_file_are_taken(base):
+    page = netweir.get(f"{base}/form")
+    form = page.form(
+        "#upload",
+        files={
+            "cover": [
+                ("a", bytearray(b"1")),
+                ("b", memoryview(b"2")),
+                netweir.File("c", b"3", "text/plain"),
+            ]
+        },
+    )
+    assert [p[1] for p in parts(seen(netweir.submit(form)))[1:4]] == ["1", "2", "3"]
+
+
+def test_a_file_that_isn_t_a_path_or_a_tuple_is_refused(base):
+    page = netweir.get(f"{base}/form")
+    with pytest.raises(TypeError, match="cover"):
+        page.form("#upload", files={"cover": b"no name"})
+    with pytest.raises(TypeError, match="data must be bytes"):
+        page.form("#upload", files={"cover": ("x", "text, not bytes")})
+    with pytest.raises(TypeError, match="filename must be a str"):
+        page.form("#upload", files={"cover": (None, b"x")})
 
 
 FAST = netweir.Settings(

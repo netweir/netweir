@@ -13,7 +13,7 @@ from netweir._errors import (
     QueueError,
 )
 from netweir._fetch import Client, Page, get, post, request, submit
-from netweir._form import Form
+from netweir._form import File, Form
 from netweir._helpers import Price, parse_date, parse_price
 from netweir._monitor import Checks, validate
 from netweir._native import (
@@ -46,6 +46,7 @@ __all__ = [
     "Client",
     "DropItem",
     "Follow",
+    "File",
     "Form",
     "IgnoreRequest",
     "Item",

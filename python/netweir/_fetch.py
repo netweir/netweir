@@ -8,7 +8,7 @@ from urllib.parse import urlencode, urljoin
 
 from netweir import _track
 from netweir._errors import Blocked
-from netweir._form import Form, read_form
+from netweir._form import Files, Form, read_form
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
 from netweir._request import Request
 
@@ -222,6 +222,7 @@ class Page:
         query: str | None = None,
         *,
         data: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
+        files: Files | None = None,
         click: str | bool | None = None,
         formid: str | None = None,
         formname: str | None = None,
@@ -233,7 +234,9 @@ class Page:
         ``formname`` or ``formnumber``; the first form otherwise. Its fields
         are what the browser would send: named, enabled controls, checked
         boxes and radios, selected options. ``data`` replaces or adds
-        fields. ``click`` names the submit button pressed (the first, by
+        fields, and ``files`` does the same for file inputs: a path, a
+        ``(filename, bytes)`` or ``(filename, bytes, content_type)`` tuple,
+        or a list of them. ``click`` names the submit button pressed (the first, by
         default; ``False`` for none)."""
         return read_form(
             self.root,
@@ -241,6 +244,7 @@ class Page:
             self.urljoin(""),
             query,
             data=data,
+            files=files,
             click=click,
             formid=formid,
             formname=formname,

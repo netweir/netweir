@@ -86,8 +86,37 @@ form.method, form.action, form.enctype, form.fields
 ```
 
 A GET form puts its fields in the query string. A `multipart/form-data`
-form is sent as multipart, with a boundary shaped as Chrome's; file uploads
-aren't supported yet.
+form is sent as multipart, with a boundary shaped as Chrome's.
+
+## Uploading files
+
+`files=` fills a form's file inputs, the way `data=` fills the rest:
+
+```python
+form = page.form("#upload", files={"cover": "cover.png"})
+form = page.form("#upload", files={"cover": ("report.csv", csv_bytes)})
+form = page.form("#upload", files={"photos": ["a.jpg", "b.jpg"]})
+```
+
+Give a path and netweir reads the file and names it as a browser would,
+from the path's last part. Give a `(filename, bytes)` tuple when the file
+isn't on disk, or `(filename, bytes, content_type)` to say what it is. A
+list fills an input that takes several, and an empty one leaves the input
+empty. Otherwise the content type comes from the file's last extension,
+as a browser's does (`.tar.gz` is `application/gzip`), and is
+`application/octet-stream` when the extension says nothing. A file is
+read into memory whole, so keep uploads to sizes that fit.
+
+Each file goes in the body where its input is in the form. A file input
+you don't fill is sent anyway, with no name and no data, because that's
+what a browser sends. And a form that isn't `multipart/form-data` sends
+only the file's name, as a browser would: if a site's upload form gets
+the name and not the file, check its `enctype`.
+
+In `form.fields`, a file is a `netweir.File`, with its `filename`, `data`
+and `content_type`, and `files=` takes one of those too. A content type
+with anything in it but printable ASCII goes as `application/octet-stream`,
+as a browser sends it.
 
 ## In a crawl
 

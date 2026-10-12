@@ -84,6 +84,7 @@ class Request:
         query: str | None = None,
         *,
         data: Any = None,
+        files: Any = None,
         click: str | bool | None = None,
         formid: str | None = None,
         formname: str | None = None,
@@ -97,6 +98,7 @@ class Request:
         form = page.form(
             query,
             data=data,
+            files=files,
             click=click,
             formid=formid,
             formname=formname,
