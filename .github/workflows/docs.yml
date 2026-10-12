@@ -1,0 +1,30 @@
+name: docs
+
+# docs.netweir.com is built from this repository's docs/ folder, but by
+# the website's Cloudflare Pages project, which only builds when the
+# website changes. A change to the docs here asks it to build again
+# through a deploy hook, whose URL is the DOCS_DEPLOY_HOOK secret.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "!docs/design/**"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask Cloudflare Pages to rebuild docs.netweir.com
+        env:
+          HOOK: ${{ secrets.DOCS_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error::DOCS_DEPLOY_HOOK isn't set; the docs site won't rebuild"
+            exit 1
+          fi
+          curl --fail --silent --show-error --retry 3 -X POST "$HOOK" > /dev/null
