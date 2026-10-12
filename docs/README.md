@@ -16,4 +16,5 @@ other than GETs in [design/requests.md](design/requests.md), the
 development cache in [design/cache.md](design/cache.md), and the fetch,
 view and shell commands in [design/shell.md](design/shell.md), and
 middlewares, signals and pipeline lifecycles in
-[design/hooks.md](design/hooks.md).
+[design/hooks.md](design/hooks.md), and the JSON, XML, cloud and batch
+exporters in [design/exports.md](design/exports.md).

@@ -462,10 +462,67 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
 | | File | Notes |
 |---|---|---|
 | `netweir.export.jsonl(path)` | `.jsonl`, `.jl` | one JSON object per line, keys in the item's order |
+| `netweir.export.json(path)` | `.json` | one JSON array, an item a line, as Scrapy writes it |
+| `netweir.export.xml(path, root="items", item="item")` | `.xml` | Scrapy's layout: an `<item>` per item inside `<items>` |
 | `netweir.export.csv(path, fields=None)` | `.csv` | columns are `fields`, or the first item's keys; others are left out with one warning |
 | `netweir.export.parquet(path)` | `.parquet` | column types from the first 1,000 items; values that don't fit are stored as null, with a warning |
 
 Dates become ISO 8601 strings, `Decimal`s and integers too big for 64 bits
 become strings, and NaN becomes null. Each run writes the file afresh,
 except a run that [resumes from a checkpoint](self-healing.md#checkpoints),
-which adds to it.
+which adds to it, a JSON or XML file included: the new items go after the
+last one and the file stays valid.
+
+In XML, a dict's keys become elements and a list's values become `<value>`
+elements, as in Scrapy, and `None` is an empty element. Booleans are
+written `true` and `false`. A key that isn't a valid element name has
+each character a name can't hold replaced with `_`, and `_` put in front
+if it starts with a digit: `"unit price"` is written `<unit_price>`. The
+names keep to the stricter, older XML rules, so every XML parser reads
+the file.
+Characters XML can't hold at all, such as most control characters, are
+left out.
+
+### Cloud storage
+
+Give any exporter, or `-o`, a URL such as `s3://bucket/books.jsonl` or
+`gs://bucket/books.parquet`, and the file goes there. It's written on
+your disk as the crawl goes and uploaded once it's finished, through
+[fsspec](https://filesystem-spec.readthedocs.io/), which you install with
+the package for your storage:
+
+```
+pip install fsspec s3fs     # Amazon S3
+pip install fsspec gcsfs    # Google Cloud Storage
+```
+
+Credentials come from where those packages look for them, such as
+`AWS_PROFILE` or `GOOGLE_APPLICATION_CREDENTIALS`. A missing package or a
+scheme fsspec doesn't know is an error when the exporter is made, before
+the crawl starts. If the upload fails, the error names the local file,
+which is kept. A crawl with a checkpoint can't write to cloud storage,
+since resuming adds to the output file; write to a local file and upload
+it when the crawl is done.
+
+### Batches
+
+`batch=N` starts a new file every `N` items. Put `{batch}` (1, 2, 3 ...)
+in the path to name each one, and if you like `{time}` too, for the time
+the batch began, in UTC (`2026-10-12T03-04-05Z`). Any other braces in the
+path are written twice, `{{` and `}}`:
+
+```python
+class Books(netweir.Spider):
+    pipelines = [netweir.export.jsonl("books-{batch}.jsonl", batch=1000)]
+```
+
+```
+netweir crawl books.py -o "books-{batch}.jsonl" --batch 1000
+```
+
+Each batch is finished, and uploaded if it goes to cloud storage, as soon
+as it's full, so the files appear while the crawl runs. A crawl with no
+items still writes the first batch, empty. Each run numbers its batches
+from 1 again, so files a longer earlier run left with higher numbers stay
+beside the new ones; add `{time}`, or clear the folder first, to keep
+runs apart. Batches can't be combined with a checkpoint.

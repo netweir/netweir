@@ -7,17 +7,47 @@ Serialising happens in Rust. A crawl opens its exporters when it starts
 and closes them when it ends; each run writes the file afresh, except a run
 that resumes from a checkpoint, which adds to it. Used on its own, an
 exporter opens its file at the first item; close it to finish the file.
+
+A path such as ``s3://bucket/books.jsonl`` is written locally and uploaded
+through fsspec when the file is finished. ``batch=N`` starts a new file
+every N items, named by ``{batch}`` (and ``{time}``) in the path.
 """
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
+import shutil
+import string
+import tempfile
+import urllib.parse
+import urllib.request
 from typing import Any
 
-from netweir._native import CsvWriter, JsonlWriter, ParquetWriter
+from netweir._native import CsvWriter, JsonlWriter, JsonWriter, ParquetWriter, XmlWriter
 
 log = logging.getLogger("netweir")
+
+#: The package each common filesystem needs alongside fsspec.
+_FS_PACKAGES = {"s3": "s3fs", "gs": "gcsfs", "gcs": "gcsfs", "az": "adlfs", "abfs": "adlfs"}
+
+
+def _remote(path: str) -> bool:
+    return "://" in path and not path.lower().startswith("file://")
+
+
+def _fsspec(path: str) -> Any:
+    try:
+        import fsspec
+    except ImportError:
+        scheme = path.split("://", 1)[0].lower()
+        extra = f" {_FS_PACKAGES[scheme]}" if scheme in _FS_PACKAGES else ""
+        raise ImportError(
+            f"writing to {path} needs fsspec and the filesystem's package: "
+            f"pip install fsspec{extra}"
+        ) from None
+    return fsspec
 
 
 class _Exporter:
@@ -25,28 +55,103 @@ class _Exporter:
     calls it) or at the first item, so defining an exporter doesn't touch
     the file. Closing finishes it; the next start begins it afresh."""
 
-    def __init__(self, path: str):
-        directory = os.path.dirname(os.path.abspath(path))
-        if not os.path.isdir(directory):
-            raise ValueError(f"can't write {path}: {directory} is not a directory")
+    def __init__(self, path: str, batch: int | None = None):
+        if path.lower().startswith("file://"):
+            path = urllib.request.url2pathname(urllib.parse.urlparse(path).path)
+        self.remote = _remote(path)
+        if self.remote:
+            # The filesystem's own package and the scheme are found now, so a
+            # missing s3fs fails before the crawl, not after it.
+            fsspec = _fsspec(path)
+            try:
+                fsspec.core.url_to_fs(path)
+            except ImportError as e:
+                raise ImportError(f"writing to {path}: {e}") from None
+            except ValueError as e:
+                raise ValueError(f"can't write to {path}: {e}") from None
+        else:
+            directory = os.path.dirname(os.path.abspath(path))
+            if not os.path.isdir(directory):
+                raise ValueError(f"can't write {path}: {directory} is not a directory")
+        if batch is not None:
+            if batch < 1:
+                raise ValueError(f"batch is how many items go in each file, 1 or more, not {batch}")
+            try:
+                fields = {f for _, f, _, _ in string.Formatter().parse(path) if f is not None}
+                path.format(batch=1, time="")
+            except (KeyError, IndexError, ValueError):
+                fields = None
+            if fields is None or not fields <= {"batch", "time"}:
+                raise ValueError(
+                    f"{path!r}: with batch=, only {{batch}} and {{time}} may be in braces;"
+                    " write other braces twice ({{ and }})"
+                )
+            if "batch" not in fields:
+                raise ValueError(
+                    f"with batch=, put {{batch}} in the path ({path!r}), "
+                    "or every batch overwrites the last"
+                )
         self.path = path
+        self.batch = batch
         self._append = False
         self._writer: Any = None
+        #: Closed since it was last started: closing again does nothing.
+        self._done = False
+        #: Batches begun so far, and items in the one being written.
+        self._number = 0
+        self._count = 0
+        #: Where the file being written ends up, and where it's written.
+        self._target = ""
+        self._file = ""
 
     def start(self, append: bool = False) -> None:
         """Opens the file: emptied, or with ``append`` added to."""
         if self._writer is not None:
             self.close()
         self._append = append
-        self._writer = self._open()
+        self._number = 0
+        self._done = False
+        self._writer = self._begin()
+
+    def _begin(self) -> Any:
+        """Opens the next file: this batch's, or the only one."""
+        self._number += 1
+        self._count = 0
+        self._target = self.path
+        if self.batch is not None:
+            started = datetime.datetime.now(datetime.timezone.utc)
+            self._target = self.path.format(
+                batch=self._number, time=started.strftime("%Y-%m-%dT%H-%M-%SZ")
+            )
+        if self.remote:
+            # Written here, in Rust, and uploaded when finished.
+            suffix = os.path.splitext(urllib.parse.urlparse(self._target).path)[1]
+            handle, self._file = tempfile.mkstemp(prefix="netweir-", suffix=suffix)
+            os.close(handle)
+        else:
+            self._file = self._target
+        return self._open()
 
     def _open(self) -> Any:
+        """The writer for ``self._file``."""
         raise NotImplementedError
 
+    def _head(self) -> bytes:
+        """How every file of this format starts, if they all start alike:
+        a resumed crawl checks it before cutting the file back."""
+        return b""
+
     def _write(self, item: Any) -> Any:
+        self._done = False
         if self._writer is None:
-            self._writer = self._open()
-        return self._writer.write(item)
+            self._writer = self._begin()
+        result = self._writer.write(item)
+        self._count += 1
+        if self.batch is not None and self._count >= self.batch:
+            # Full: finished now, so files appear as the crawl goes.
+            writer, self._writer = self._writer, None
+            self._finish(writer)
+        return result
 
     def __call__(self, item: Any) -> Any:
         self._write(item)
@@ -61,32 +166,93 @@ class _Exporter:
 
     def close(self) -> None:
         """Finishes the file; one that never got an item is written empty
-        (a CSV with ``fields`` gets its header)."""
-        writer, self._writer = self._writer or self._open(), None
+        (a CSV with ``fields`` gets its header). With batches, a crawl with
+        no items still gets the first batch, empty."""
+        writer, self._writer = self._writer, None
+        if self._done:
+            return  # closed already: closing again mustn't empty the file
+        self._done = True
+        if writer is None:
+            if self._number and self.batch is not None:
+                return  # the last batch was full, and is finished
+            writer = self._begin()
+        self._finish(writer)
+
+    def _finish(self, writer: Any) -> None:
         self._closed(writer.close())
+        self._finished()
 
     def _closed(self, report: Any) -> None:
         pass
+
+    def _finished(self) -> None:
+        """The file is complete: uploaded, if it goes somewhere remote."""
+        if self.remote:
+            self._upload(self._file)
+
+    def _upload(self, local: str) -> None:
+        fsspec = _fsspec(self.path)
+        try:
+            with open(local, "rb") as source, fsspec.open(self._target, "wb") as target:
+                shutil.copyfileobj(source, target)
+        except Exception as e:
+            # The local copy is all there is: kept, and said where.
+            raise OSError(
+                f"uploading to {self._target} failed ({e}); the file is at {local}"
+            ) from e
+        os.remove(local)
+        log.info("uploaded %s", self._target)
 
 
 class jsonl(_Exporter):  # noqa: N801 - reads as a function in a pipeline list
     """One JSON object per line."""
 
     def _open(self) -> JsonlWriter:
-        return JsonlWriter(self.path, self._append)
+        return JsonlWriter(self._file, self._append)
+
+
+class json(_Exporter):  # noqa: N801
+    """One JSON array, an item a line, as Scrapy writes it. Valid once
+    closed; a resumed crawl goes on after the last item."""
+
+    def _open(self) -> JsonWriter:
+        return JsonWriter(self._file, self._append)
+
+    def _head(self) -> bytes:
+        return b"["
+
+
+class xml(_Exporter):  # noqa: N801
+    """An XML document laid out as Scrapy's: an ``item`` element per item,
+    inside a ``root`` element. A dict's keys are elements, a list's values
+    ``<value>`` elements; a key that isn't a valid element name has the
+    characters a name can't hold replaced with ``_``."""
+
+    def __init__(
+        self, path: str, root: str = "items", item: str = "item", batch: int | None = None
+    ):
+        self.root = root
+        self.item = item
+        super().__init__(path, batch)
+
+    def _open(self) -> XmlWriter:
+        return XmlWriter(self._file, self.root, self.item, self._append)
+
+    def _head(self) -> bytes:
+        return b'<?xml version="1.0" encoding="utf-8"?>\n<'
 
 
 class csv(_Exporter):  # noqa: N801
     """A CSV file. Columns are ``fields`` if given, otherwise the first
     item's keys; keys outside them are left out, with one warning."""
 
-    def __init__(self, path: str, fields: list[str] | None = None):
+    def __init__(self, path: str, fields: list[str] | None = None, batch: int | None = None):
         self.fields = fields
-        super().__init__(path)
+        super().__init__(path, batch)
 
     def _open(self) -> CsvWriter:
         self._warned: set[str] = set()
-        return CsvWriter(self.path, self.fields, self._append)
+        return CsvWriter(self._file, self.fields, self._append)
 
     def __call__(self, item: Any) -> Any:
         # A checkpoint's _id is only a column if fields= asks for it.
@@ -118,31 +284,31 @@ class parquet(_Exporter):  # noqa: N801
     #: The finished file's name once closed and not yet published.
     pending: str | None = None
 
-    def _target(self) -> str:
-        """Where this run's file goes: the path, or with ``append`` and the
+    def _part(self, path: str) -> str:
+        """Where this run's file goes: ``path``, or with ``append`` and the
         path taken, the next free part (books.1.parquet, books.2.parquet ...),
         which readers such as pyarrow take together as one dataset."""
-        path = self.path
         if self._append and os.path.exists(path) and os.path.getsize(path) > 0:
             stem = path[: -len(".parquet")] if path.endswith(".parquet") else path
             n = 1
             while os.path.exists(f"{stem}.{n}.parquet"):
                 n += 1
+            log.info("%s exists: this run's items go to %s", path, f"{stem}.{n}.parquet")
             path = f"{stem}.{n}.parquet"
-            log.info("%s exists: this run's items go to %s", self.path, path)
         return path
 
     def _open(self) -> ParquetWriter:
         # Written under a temporary name, so a file half-written when the
         # process died is never mistaken for a finished one.
-        self._final = self._target()
+        self._final = self._part(self._file)
         return ParquetWriter(self._final + ".partial")
 
-    def close(self) -> None:
-        super().close()
+    def _finished(self) -> None:
         self.pending = self._final
         if not self.hold:
             self.publish()
+        if self.remote:
+            self._upload(self._final)
 
     def publish(self) -> None:
         """Gives the closed file its real name."""
@@ -166,14 +332,19 @@ class parquet(_Exporter):  # noqa: N801
                 )
 
 
-def to_path(path: str):
-    """The exporter for a file name's extension: .jsonl/.jl, .csv or
-    .parquet."""
+def to_path(path: str, batch: int | None = None):
+    """The exporter for a file name's extension: .jsonl/.jl, .json, .xml,
+    .csv or .parquet."""
     lower = path.lower()
-    if lower.endswith((".jsonl", ".jl")):
-        return jsonl(path)
-    if lower.endswith(".csv"):
-        return csv(path)
-    if lower.endswith(".parquet"):
-        return parquet(path)
-    raise ValueError(f"can't tell the format of {path!r}: use .jsonl, .csv or .parquet")
+    for endings, exporter in [
+        ((".jsonl", ".jl"), jsonl),
+        ((".json",), json),
+        ((".xml",), xml),
+        ((".csv",), csv),
+        ((".parquet",), parquet),
+    ]:
+        if lower.endswith(endings):
+            return exporter(path, batch=batch)
+    raise ValueError(
+        f"can't tell the format of {path!r}: use .jsonl, .json, .xml, .csv or .parquet"
+    )

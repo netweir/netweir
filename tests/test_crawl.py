@@ -108,8 +108,8 @@ def test_output_files_by_extension(base, tmp_path):
     assert rows[0] == {"title": "Book 1-0", "price": "£1.00"} and len(rows) == 9
     assert out.read_text(encoding="utf-8").startswith("title,price\n")
 
-    with pytest.raises(ValueError, match="xml"):
-        spider.run(output=str(tmp_path / "books.xml"))
+    with pytest.raises(ValueError, match="txt"):
+        spider.run(output=str(tmp_path / "books.txt"))
 
 
 def test_robots_txt_keeps_the_spider_out(base):
@@ -557,7 +557,7 @@ def test_settings_on_the_command_line_get_their_types():
     [
         (["-s", "profile=netscape"], "netscape"),
         (["-o", "/nonexistent/dir/x.jsonl"], "nonexistent"),
-        (["-o", "out.xml"], "xml"),
+        (["-o", "out.txt"], "txt"),
         (["-s", "max_depth=deep"], "max_depth takes a whole number"),
         (["-s", "timeout=soon"], "timeout takes a number"),
     ],

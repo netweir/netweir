@@ -100,7 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     crawl = commands.add_parser("crawl", help="run a spider")
     crawl.add_argument("file", help="a Python file defining a Spider subclass")
-    crawl.add_argument("-o", "--output", help="write items to a .jsonl, .csv or .parquet file")
+    crawl.add_argument(
+        "-o", "--output", help="write items to a .jsonl, .json, .xml, .csv or .parquet file"
+    )
+    crawl.add_argument(
+        "--batch",
+        type=int,
+        metavar="N",
+        help="start a new output file every N items; name them with {batch} in -o",
+    )
     crawl.add_argument(
         "-s", "--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting"
     )
@@ -167,15 +175,21 @@ def _prepare(args):
     """The spider and output the command line asks for, checked before the
     crawl starts, so a typo costs one line rather than a traceback."""
     from netweir import Settings, export
+    from netweir._crawl import _check_outputs
 
     spider_cls = _load_spider(args.file, args.spider)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
     settings = dataclasses.replace(spider_cls.settings, **overrides)
+    if args.batch is not None and not args.output:
+        raise _Usage("--batch goes with -o")
+    output = export.to_path(args.output, batch=args.batch) if args.output else None
+    # Before the engine is made (it opens the checkpoint), so a checkpoint
+    # with batches or a cloud path is one line and leaves nothing behind.
+    _check_outputs(settings, [*spider_cls.pipelines, *([output] if output else [])])
     settings._engine()  # the profile, proxy and limits are valid
     spider = spider_cls()
     spider.settings = settings
-    output = export.to_path(args.output) if args.output else None
     return spider, output
 
 

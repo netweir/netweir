@@ -39,11 +39,13 @@ Working today:
 - Structured data: `page.metadata()` reads a page's JSON-LD, microdata,
   Open Graph, Twitter cards and Dublin Core in one call, in Rust.
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
-  written to JSON Lines, CSV or Parquet. Middlewares, signals and
+  written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
+  storage, in one file or in batches. Middlewares, signals and
   pipelines with `open_spider`/`close_spider` work as Scrapy's do, so
-  simple Scrapy pipelines and middlewares carry over as they are. `allowed_domains` keeps a crawl
-  on the sites you meant; `max_items`, `max_pages`, `max_errors` and
-  `max_time` stop it when you've seen enough.
+  simple Scrapy pipelines and middlewares carry over as they are.
+  `allowed_domains` keeps a crawl on the sites you meant; `max_items`,
+  `max_pages`, `max_errors` and `max_time` stop it when you've seen
+  enough.
 - `netweir shell URL`, `fetch` and `view`: the page netweir gets, at a
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).

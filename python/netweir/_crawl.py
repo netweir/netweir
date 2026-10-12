@@ -321,7 +321,8 @@ class Spider:
 
     def run(self, output: Any = None) -> dict[str, int]:
         """Crawls to the end and returns the stats. ``output`` writes every
-        item to a .jsonl, .csv or .parquet file (or is an exporter)."""
+        item to a .jsonl, .json, .xml, .csv or .parquet file, local or a
+        cloud URL (or is an exporter)."""
         return asyncio.run(self.crawl(output))
 
     async def crawl(self, output: Any = None) -> dict[str, int]:
@@ -330,11 +331,16 @@ class Spider:
         pipelines = list(self.pipelines)
         if output is not None:
             pipelines.append(export.to_path(output) if isinstance(output, str) else output)
+        _check_outputs(self.settings, pipelines)
         # Nothing is opened or written until this has worked: a crawl that
         # can't start leaves its output files as they were.
         run = _Run(self, pipelines)
         started: list[export._Exporter] = []
         reason = "error"
+        #: Set when the crawl itself is raising, so a failure closing an
+        #: exporter doesn't replace that error (sys.exc_info() can't tell:
+        #: it also sees an exception the caller is handling).
+        raising = False
         try:
             # None, or the state of the output files when items were last
             # recorded: a resumed run cuts each file back to its recorded
@@ -356,6 +362,7 @@ class Spider:
                 else:
                     size = files.get(os.path.abspath(stage.path))
                     if size is not None and os.path.exists(stage.path):
+                        _check_resumable(stage, size)
                         with open(stage.path, "r+b") as f:
                             f.truncate(size)
                     stage.start(append=size is not None)
@@ -369,19 +376,78 @@ class Spider:
             return stats
         except (KeyboardInterrupt, asyncio.CancelledError):
             reason = "interrupted"
+            raising = True
+            raise
+        except BaseException:
+            raising = True
             raise
         finally:
             await run.engine.close_browser()
+            # Each stage is closed even if one before it fails (an upload,
+            # say); the first failure is raised once the crawl is wound up.
+            failure: BaseException | None = None
             for stage in pipelines:
                 if isinstance(stage, export._Exporter) and not any(stage is s for s in started):
                     continue
                 close = getattr(stage, "close", None)
                 if callable(close):
-                    close()
+                    try:
+                        close()
+                    except Exception as e:  # noqa: BLE001 - raised below
+                        log.error("closing %r failed: %s", stage, e)
+                        failure = failure or e
             # After the exporters: closed() and close_spider find the output
             # files complete.
             await run.close(reason)
             run.finish()
+            if failure is not None and not raising:
+                raise failure
+
+
+def _check_outputs(settings: Settings, pipelines: list[Any]) -> None:
+    """Refuses exporters a crawl with a checkpoint can't resume: resuming
+    cuts the output file back and adds to it, which neither an object in a
+    bucket nor a run of batches allows."""
+    from netweir import export
+
+    if settings.checkpoint is None:
+        return
+    for stage in pipelines:
+        if not isinstance(stage, export._Exporter):
+            continue
+        if stage.remote:
+            raise ValueError(
+                f"a crawl with a checkpoint can't write to {stage.path}: write to"
+                " a local file and upload it once the crawl is done"
+            )
+        if stage.batch is not None:
+            raise ValueError(
+                f"a crawl with a checkpoint can't write {stage.path} in batches:"
+                " drop batch= or the checkpoint"
+            )
+
+
+def _check_resumable(stage: Any, size: int) -> None:
+    """Before a resumed crawl cuts ``stage``'s file back to ``size``: the
+    file must still be the one it wrote, at least that long and starting as
+    the format starts. Otherwise the cut would lose someone else's file, or
+    pad it with zero bytes."""
+    path = stage.path
+    actual = os.path.getsize(path)
+    if actual < size:
+        raise ValueError(
+            f"{path} is shorter ({actual} bytes) than this crawl recorded ({size}):"
+            " it was changed since; move it away, or start the crawl afresh"
+        )
+    head = stage._head()
+    if head:
+        with open(path, "rb") as f:
+            start = f.read(len(head))
+        if start != head[: len(start)] or len(start) < min(len(head), size):
+            raise ValueError(
+                f"{path} doesn't start as this crawl's file did: it was replaced since;"
+                " move it away, or start the crawl afresh"
+            )
 
 
 class _Stop(BaseException):
