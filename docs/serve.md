@@ -102,12 +102,13 @@ curl http://127.0.0.1:6800/schedule.json \
   can't be anything `netweir.Spider` already has (`settings`,
   `pipelines`, `allowed_domains`, `parse` and the rest): an argument
   gives the spider data, not a new way to behave.
-- `checkpoint` and `cache` name a directory, so a job can't put one
-  just anywhere. Each is a relative path inside the project's own data
-  directory, `DIR/data/PROJECT`: `-d setting=checkpoint=books` keeps the
-  checkpoint in `DIR/data/shop/books`, and every job of the project that
-  names `books` shares it, so a cancelled crawl scheduled again carries
-  on. An absolute path, `..`, a URL such as `s3://`, or a symlink in there
+- `checkpoint`, `cache`, `deltafetch`, `warc` and `har` name a file or
+  directory, so a job can't put one just anywhere. Each is a relative
+  path inside the project's own data directory, `DIR/data/PROJECT`:
+  `-d setting=checkpoint=books` keeps the checkpoint in
+  `DIR/data/shop/books`, and every job of the project that names `books`
+  shares it, so a cancelled crawl scheduled again carries on. The same
+  goes for `deltafetch=seen`: each run skips what the last one found. An absolute path, `..`, a URL such as `s3://`, or a symlink in there
   that points outside is refused, with an error saying which.
 - `jobid=NAME` names the job yourself; otherwise it gets a random hex id.
   Job ids, like project names, ignore case: `Job1` and `job1` are the

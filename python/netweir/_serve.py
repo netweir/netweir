@@ -26,6 +26,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -45,9 +46,9 @@ GRACE = 30.0
 LISTING_TIMEOUT = 60.0
 #: The most a POST body may be: parameters, never files.
 MAX_BODY = 1 << 20
-#: Settings that name a directory the crawl writes to. A job may only
-#: name one inside its project's data directory, DIR/data/PROJECT.
-PATH_SETTINGS = ("checkpoint", "cache")
+#: Settings that name a file or directory the crawl writes to. A job may
+#: only name one inside its project's data directory, DIR/data/PROJECT.
+PATH_SETTINGS = ("checkpoint", "cache", "deltafetch", "warc", "har")
 #: A connection has REQUEST_DEADLINE seconds from being accepted to send
 #: its whole request, and may pause at most REQUEST_TIMEOUT seconds in
 #: it; one client address may hold PER_CLIENT connections at once, and
@@ -462,7 +463,7 @@ class Service:
         return {"pending": 0, "running": 0, "finished": 0, **dict(rows)}  # type: ignore[arg-type]
 
     def data_path(self, project: str, key: str, value: str) -> Path:
-        """Where a checkpoint or cache directory of `project` goes: `value`
+        """Where a checkpoint, cache, deltafetch, warc or har of `project` goes: `value`
         is a relative path inside DIR/data/PROJECT, so the same name in two
         jobs is the same directory, and a later job resumes from it."""
         base = (self.dir / "data" / project).resolve()
@@ -993,12 +994,22 @@ def _print_spiders(request: dict[str, Any]) -> None:
             fields = {f.name: f for f in dataclasses.fields(Settings)}
             try:
                 parsed = dict(_parse_setting(text, fields) for text in settings)
-                # Over the spider's own, as `netweir crawl -s` does. Not the
-                # directories: making the engine would create them.
-                built = dataclasses.replace(
-                    classes[spider][0].settings, **{**parsed, "checkpoint": None, "cache": None}
-                )
-                built._engine()
+                # Over the spider's own, as `netweir crawl -s` does. The
+                # paths, the spider's own too, go in a directory thrown
+                # away after: making the engine creates some of them. One
+                # path named twice stays one, so that mistake is caught.
+                own = classes[spider][0].settings
+                with tempfile.TemporaryDirectory() as scratch:
+                    stand_ins: dict[str, str] = {}
+                    for key in PATH_SETTINGS:
+                        value = parsed[key] if key in parsed else getattr(own, key)
+                        if value is not None:
+                            parsed[key] = stand_ins.setdefault(
+                                os.path.realpath(value).casefold(),
+                                os.path.join(scratch, str(len(stand_ins)), os.path.basename(value)),
+                            )
+                            os.makedirs(os.path.dirname(parsed[key]), exist_ok=True)
+                    dataclasses.replace(own, **parsed)._engine()
             except Exception as e:  # noqa: BLE001 - reported, whatever it is
                 settings_error = str(e)
     json.dump({"spiders": found, "errors": errors, "settings_error": settings_error}, out)

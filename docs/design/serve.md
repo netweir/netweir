@@ -99,16 +99,16 @@ auth a 401, a refused origin or host a 403, a body too big a 413.
   `proxy_rotation`) is refused too. The service checks each value's
   type; the child process that lists the spiders, which already has the
   spider's class, applies them over the spider's own settings, as
-  `netweir crawl -s` does, and makes the engine, with `checkpoint` and
-  `cache` left out so nothing is created. Scrapy's setting names aren't
-  translated.
-- `checkpoint` and `cache`, the settings that name a directory, must be
-  relative paths without `..`, `:` (a URL or a drive) or a backslash.
-  They're resolved inside the project's data directory, `DIR/data/P`,
-  and refused if a symlink takes them outside it; checked when the job
-  is scheduled and again when it starts. A project-wide directory, not a
-  per-job one, so a cancelled job scheduled again with the same
-  checkpoint resumes.
+  `netweir crawl -s` does, and makes the engine, with every path setting
+  moved into a scratch directory thrown away after, so nothing is
+  created. Scrapy's setting names aren't translated.
+- `checkpoint`, `cache`, `deltafetch`, `warc` and `har`, the settings
+  that name a file or directory, must be relative paths without `..`,
+  `:` (a URL or a drive) or a backslash. They're resolved inside the
+  project's data directory, `DIR/data/P`, and refused if a symlink takes
+  them outside it; checked when the job is scheduled and again when it
+  starts. A project-wide directory, not a per-job one, so a cancelled job
+  scheduled again with the same checkpoint resumes.
 - Every other parameter, except `_version` (ignored, as there are no
   versions), is a spider argument, as `-a name=value`: the spider gets it
   as a string attribute, as Scrapy's spiders do. A name must be a Python

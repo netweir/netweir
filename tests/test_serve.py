@@ -553,7 +553,7 @@ def test_a_failing_job_is_failed(tmp_path, project, site):
         assert "RuntimeError: no" in log
 
 
-@pytest.mark.parametrize("key", ["checkpoint", "cache"])
+@pytest.mark.parametrize("key", ["checkpoint", "cache", "deltafetch", "warc", "har"])
 @pytest.mark.parametrize(
     "value",
     [
@@ -596,6 +596,55 @@ def test_a_checkpoint_goes_in_the_project_s_data(tmp_path, project, site):
         assert finished(base, jobid)["outcome"] == "finished"
         assert (tmp_path / "serve" / "data" / "shop" / "state" / "books").is_dir()
         assert not (project / "state").exists()
+
+
+def test_deltafetch_and_archives_go_in_the_project_s_data(tmp_path, project, site):
+    with serving(tmp_path, project) as base:
+        jobid = schedule(
+            base,
+            "Books",
+            site,
+            setting=["deltafetch=seen", "warc=kept/run.warc.gz", "har=kept/run.har"],
+        )
+        assert finished(base, jobid)["outcome"] == "finished"
+    data = tmp_path / "serve" / "data" / "shop"
+    assert (data / "seen" / "deltafetch.sqlite3").is_file()
+    assert (data / "kept" / "run.warc.gz").stat().st_size > 0
+    assert (data / "kept" / "run.har").stat().st_size > 0
+    # Checking the settings when the job was scheduled made nothing.
+    assert not (project / "seen").exists() and not (project / "kept").exists()
+
+
+def test_checking_a_spider_s_own_path_settings_makes_nothing(tmp_path, project):
+    own = "class Books(netweir.Spider):\n    settings = dataclasses.replace(FAST, deltafetch='own')"
+    (project / "spiders.py").write_text(
+        SPIDERS.replace("class Books(netweir.Spider):\n    settings = FAST", own).replace(
+            "import netweir\n", "import dataclasses\nimport netweir\n", 1
+        ),
+        encoding="utf-8",
+    )
+    # No job runs: only scheduling's check of the settings.
+    with serving(tmp_path, project, max_jobs=0) as base:
+        status, answer = call(
+            f"{base}/schedule.json", {"project": "shop", "spider": "Books", "setting": "har=x.har"}
+        )
+        assert status == 200, answer
+    assert not (project / "own").exists()
+
+
+def test_a_path_setting_s_own_mistakes_are_caught_when_scheduled(tmp_path, project):
+    with serving(tmp_path, project) as base:
+        status, answer = call(
+            f"{base}/schedule.json",
+            {"project": "shop", "spider": "Books", "setting": "warc=kept/run.txt"},
+        )
+        assert status == 400 and ".warc.gz" in answer["message"], answer
+        status, answer = call(
+            f"{base}/schedule.json",
+            {"project": "shop", "spider": "Books", "setting": ["warc=a.warc", "har=A.WARC"]},
+        )
+        assert status == 400 and "file of its own" in answer["message"], answer
+    assert not (tmp_path / "serve" / "data" / "shop").exists()
 
 
 def raw(base, request: bytes) -> bytes:
