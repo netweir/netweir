@@ -15,6 +15,7 @@ pub mod deltafetch;
 mod fetch;
 pub mod install;
 mod profile;
+pub mod queue;
 pub mod robots;
 pub mod sitemap;
 pub mod tdmrep;

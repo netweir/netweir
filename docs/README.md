@@ -7,6 +7,7 @@
 - [Crawling](crawling.md): spiders, requests, pipelines, middlewares, signals, exporters and the command line.
 - [Declarative spiders](declarative.md): items and rules that run in Rust.
 - [Self-healing](self-healing.md): blocks, checkpoints, tracked selectors and repair proposals.
+- [One crawl, many machines](distributed.md): processes on several machines sharing one queue in Redis.
 - [Browser](browser.md): drive Chrome for pages that need JavaScript.
 - [Settings](settings.md): every setting and its default.
 
@@ -25,3 +26,4 @@ The designs behind it, for anyone working on netweir:
 - [design/scrapy.md](design/scrapy.md): netweir as Scrapy's download handler.
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
+- [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.

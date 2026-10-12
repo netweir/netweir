@@ -85,3 +85,12 @@ error, not ignored. Times are in seconds.
 | `track_threshold` | `0.75` | how similar an element must be to count as a tracked selector's element |
 | `fail_fast` | `False` | stop the crawl at the first exception in a callback or pipeline |
 | `workers` | `1` | processes to run callbacks in; see [Crawling](crawling.md#callbacks-in-worker-processes) |
+
+## Sharing a crawl
+
+| Setting | Default | Does |
+|---|---|---|
+| `queue` | `None` | a Redis URL (`redis://host:6379/0`) whose queue and duplicate filter the crawl shares with its other processes; see [One crawl, many machines](distributed.md). Refuses `checkpoint` and `deltafetch` |
+| `queue_key` | `None` | the crawl's name in Redis; `None` uses the spider's `name`, or its class name |
+| `queue_lease` | `60.0` | seconds after a process's last heartbeat before the requests it held go back to the queue |
+| `queue_idle` | `30.0` | seconds the queue must stay empty, every process idle, before a process ends; `None` waits for more until stopped |

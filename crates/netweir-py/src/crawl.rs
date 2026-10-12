@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use netweir_core::checkpoint::Pending;
+use netweir_core::queue::{ConnectError, Queue};
 use netweir_core::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler as CoreCrawler, DropReason, Event,
     FetchError, ProxyRotation, Submitted,
@@ -29,6 +31,38 @@ fn seconds(name: &str, value: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value).map_err(|_| {
         PyValueError::new_err(format!("{name} must be a non-negative number of seconds"))
     })
+}
+
+fn positive(name: &str, value: f64) -> PyResult<Duration> {
+    if value.is_nan() || value <= 0.0 {
+        return Err(PyValueError::new_err(format!("{name} must be positive")));
+    }
+    seconds(name, value)
+}
+
+/// Connects to a crawl's shared queue, without the GIL while it waits. A
+/// URL, key or lease that can't work is a ValueError; a server that can't
+/// be reached, a `netweir.QueueError`.
+fn connect(py: Python<'_>, url: &str, key: &str, lease: Duration) -> PyResult<Queue> {
+    py.detach(|| {
+        pyo3_async_runtimes::tokio::get_runtime().block_on(Queue::connect(url, key, lease))
+    })
+    .map_err(|e| match e {
+        ConnectError::Invalid(m) => PyValueError::new_err(m),
+        ConnectError::Unreachable(m) => queue_error(py, m),
+    })
+}
+
+/// `netweir.QueueError(message)`.
+pub(crate) fn queue_error(py: Python<'_>, message: String) -> PyErr {
+    match py
+        .import("netweir._errors")
+        .and_then(|m| m.getattr("QueueError"))
+        .and_then(|class| class.call1((message,)))
+    {
+        Ok(error) => PyErr::from_value(error),
+        Err(e) => e,
+    }
 }
 
 /// Ids from here up belong to requests the rules made; Python's count from 0.
@@ -161,6 +195,62 @@ enum Out {
         host: String,
         seconds: f64,
     },
+    /// A request of Python's leased from the shared queue, with its row.
+    Leased {
+        request: Box<Pending>,
+    },
+    Fatal {
+        message: String,
+    },
+}
+
+/// The rule a saved or leased request was made by, if it still exists.
+fn rule_of(rules: &[Arc<Rule>], p: &Pending) -> Option<usize> {
+    serde_json::from_str::<serde_json::Value>(&p.payload)
+        .ok()
+        .and_then(|v| v.get("rule").and_then(serde_json::Value::as_u64))
+        .map(|r| r as usize)
+        .filter(|r| *r < rules.len())
+}
+
+/// A request of Python's as `resume()` and the "leased" event give it:
+/// (row, url, priority, headers, dont_filter, depth, payload) and
+/// (method, kind, body, content_type, referer, retry_post, proxy).
+type PendingPy = (
+    (i64, String, i32, Vec<(String, String)>, bool, u32, String),
+    (
+        String,
+        String,
+        Option<Py<PyBytes>>,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
+    ),
+);
+
+fn pending_py(py: Python<'_>, p: Pending) -> PendingPy {
+    let body = p.body.map(|b| PyBytes::new(py, &b).unbind());
+    (
+        (
+            p.row,
+            p.url,
+            p.priority,
+            p.headers,
+            p.dont_filter,
+            p.depth,
+            p.payload,
+        ),
+        (
+            p.method,
+            p.kind,
+            body,
+            p.content_type,
+            p.referer,
+            p.retry_post,
+            p.proxy,
+        ),
+    )
 }
 
 struct Engine {
@@ -216,6 +306,39 @@ impl Engine {
             if self.core.submit_with(request, &payload) != Submitted::Queued {
                 self.tags().remove(&id);
             }
+        }
+    }
+
+    /// Queues again a request rule `at` made, saved in the checkpoint or
+    /// leased from the shared queue under `row`.
+    fn resubmit_ruled(&self, rules: &[Arc<Rule>], at: usize, p: Pending, row: i64) {
+        let rule = &rules[at];
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.tags().insert(
+            id,
+            Tag {
+                rule: Some(at),
+                apply_rules: rule.follow,
+                to_python: rule.to_python,
+                url: p.url.clone(),
+                depth: p.depth,
+            },
+        );
+        let request = CrawlRequest {
+            id,
+            url: p.url,
+            priority: p.priority,
+            headers: p.headers,
+            dont_filter: p.dont_filter,
+            depth: p.depth,
+            browser: false,
+            outgoing: netweir_core::Outgoing::navigate(),
+            retry_post: false,
+            proxy: p.proxy,
+            delta_key: Default::default(),
+        };
+        if self.core.resubmit(request, row) != Submitted::Queued {
+            self.tags().remove(&id);
         }
     }
 
@@ -349,7 +472,10 @@ impl Engine {
                     | Event::Failed { id, .. }
                     | Event::Dropped { id, .. }
                     | Event::Blocked { id, .. } => Some(*id),
-                    Event::Paused { .. } | Event::Warning { .. } => None,
+                    Event::Paused { .. }
+                    | Event::Warning { .. }
+                    | Event::Leased { .. }
+                    | Event::Fatal { .. } => None,
                 })
                 .collect();
             let mut out = Vec::new();
@@ -426,6 +552,16 @@ impl Engine {
                         seconds: pause.as_secs_f64(),
                     }),
                     Event::Warning { message } => out.push(Out::Warning { message }),
+                    Event::Fatal { message } => out.push(Out::Fatal { message }),
+                    // A rule's request is the rules' again here; Python's
+                    // goes back to Python to be made a Request.
+                    Event::Leased { row, mut request } => match rule_of(&rules, &request) {
+                        Some(at) => self.resubmit_ruled(&rules, at, *request, row),
+                        None => {
+                            request.row = row;
+                            out.push(Out::Leased { request });
+                        }
+                    },
                 }
             }
             for (id, tag, job) in work {
@@ -655,6 +791,18 @@ fn out_py<'py>(py: Python<'py>, engine: &Engine, event: Out) -> PyResult<Bound<'
         Out::PageError { url, message } => {
             tuple(py, vec![s("page_error")?, s(&url)?, s(&message)?])
         }
+        Out::Leased { request } => {
+            let (head, sent) = pending_py(py, *request);
+            tuple(
+                py,
+                vec![
+                    s("leased")?,
+                    head.into_pyobject(py)?.into_any(),
+                    sent.into_pyobject(py)?.into_any(),
+                ],
+            )
+        }
+        Out::Fatal { message } => tuple(py, vec![s("fatal")?, s(&message)?]),
     }
 }
 
@@ -671,7 +819,7 @@ impl Crawler {
         breaker_window=50, breaker_ratio=0.3, breaker_pause=300.0, checkpoint=None,
         browser="off", browser_pages=4, max_response_size=None, allowed_domains=None,
         cache=None, cache_expiry=None, deltafetch=None, deltafetch_reset=false,
-        warc=None, har=None,
+        warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -713,6 +861,11 @@ impl Crawler {
         deltafetch_reset: bool,
         warc: Option<std::path::PathBuf>,
         har: Option<std::path::PathBuf>,
+        queue: Option<String>,
+        queue_key: Option<String>,
+        queue_lease: f64,
+        queue_idle: Option<f64>,
+        py: Python<'_>,
     ) -> PyResult<Crawler> {
         let allowed_domains = netweir_core::allowed_domains(&allowed_domains.unwrap_or_default())
             .map_err(PyValueError::new_err)?;
@@ -808,9 +961,21 @@ impl Crawler {
         let mut options = fetch_options(profile, proxy, timeout, verify)?;
         options.max_body = max_response_size;
         // The scheduler runs on the shared runtime.
-        let _runtime = pyo3_async_runtimes::tokio::get_runtime().enter();
-        let core =
-            CoreCrawler::new(options, settings).map_err(|e| PyValueError::new_err(e.message))?;
+        let core = match queue {
+            Some(url) => {
+                let key = queue_key.unwrap_or_default();
+                let lease = positive("queue_lease", queue_lease)?;
+                let idle = queue_idle.map(|s| positive("queue_idle", s)).transpose()?;
+                let queue = connect(py, &url, &key, lease)?;
+                let _runtime = pyo3_async_runtimes::tokio::get_runtime().enter();
+                CoreCrawler::distributed(options, settings, queue, idle)
+            }
+            None => {
+                let _runtime = pyo3_async_runtimes::tokio::get_runtime().enter();
+                CoreCrawler::new(options, settings)
+            }
+        }
+        .map_err(|e| PyValueError::new_err(e.message))?;
         Ok(Crawler {
             engine: Arc::new(Engine {
                 core,
@@ -967,7 +1132,19 @@ impl Crawler {
             Submitted::Offsite => "offsite",
             Submitted::BadProxy => "bad_proxy",
             Submitted::Delta => "delta",
+            Submitted::Pushed => "pushed",
         })
+    }
+
+    /// Gives up a request of a "leased" event without submitting it: it's
+    /// finished, as far as the shared queue is concerned.
+    fn release(&self, row: i64) {
+        self.engine.core.release(row);
+    }
+
+    /// Whether max_pages requests have been sent.
+    fn capped(&self) -> bool {
+        self.engine.core.capped()
     }
 
     /// Awaits up to `max` events, as tuples:
@@ -986,6 +1163,10 @@ impl Crawler {
     /// - ("page_error", url, message)
     /// - ("paused", host, seconds)
     /// - ("warning", message)
+    /// - ("leased", (row, url, ...), (method, ...)): a request of Python's
+    ///   from the shared queue, as `resume()` gives them, to submit with
+    ///   `row` or give up with `release(row)`
+    /// - ("fatal", message): the shared queue is lost; the crawl can't go on
     ///
     /// An empty list means the crawl is finished.
     #[pyo3(signature = (max=256))]
@@ -1021,61 +1202,12 @@ impl Crawler {
             .clone();
         let mut python = Vec::new();
         for p in saved.pending {
-            let rule = serde_json::from_str::<serde_json::Value>(&p.payload)
-                .ok()
-                .and_then(|v| v.get("rule").and_then(serde_json::Value::as_u64))
-                .map(|r| r as usize);
-            let Some(at) = rule.filter(|r| *r < rules.len()) else {
-                let body = p.body.map(|b| PyBytes::new(py, &b).unbind());
-                python.push((
-                    (
-                        p.row,
-                        p.url,
-                        p.priority,
-                        p.headers,
-                        p.dont_filter,
-                        p.depth,
-                        p.payload,
-                    ),
-                    (
-                        p.method,
-                        p.kind,
-                        body,
-                        p.content_type,
-                        p.referer,
-                        p.retry_post,
-                        p.proxy,
-                    ),
-                ));
-                continue;
-            };
-            let rule = &rules[at];
-            let id = self.engine.next_id.fetch_add(1, Ordering::Relaxed);
-            self.engine.tags().insert(
-                id,
-                Tag {
-                    rule: Some(at),
-                    apply_rules: rule.follow,
-                    to_python: rule.to_python,
-                    url: p.url.clone(),
-                    depth: p.depth,
-                },
-            );
-            let request = CrawlRequest {
-                id,
-                url: p.url,
-                priority: p.priority,
-                headers: p.headers,
-                dont_filter: p.dont_filter,
-                depth: p.depth,
-                browser: false,
-                outgoing: netweir_core::Outgoing::navigate(),
-                retry_post: false,
-                proxy: p.proxy,
-                delta_key: Default::default(),
-            };
-            if self.engine.core.resubmit(request, p.row) != Submitted::Queued {
-                self.engine.tags().remove(&id);
+            match rule_of(&rules, &p) {
+                Some(at) => {
+                    let row = p.row;
+                    self.engine.resubmit_ruled(&rules, at, p, row);
+                }
+                None => python.push(pending_py(py, p)),
             }
         }
         let out = PyDict::new(py);
@@ -1233,6 +1365,12 @@ impl Crawler {
         d.set_item("cache_stores", s.cache_stores)?;
         d.set_item("proxies_benched", s.proxies_benched)?;
         d.set_item("archive_errors", s.archive_errors)?;
+        if self.engine.core.has_queue() {
+            d.set_item("pushed", s.pushed)?;
+            d.set_item("leased", s.leased)?;
+            d.set_item("leases_reclaimed", s.leases_reclaimed)?;
+            d.set_item("queue_bad", s.queue_bad)?;
+        }
         Ok(d)
     }
 
@@ -1251,6 +1389,107 @@ impl Crawler {
     }
 }
 
+/// A crawl's shared queue in Redis, from outside the crawl: to feed it
+/// URLs, see how it stands, or clear it.
+#[pyclass(frozen, module = "netweir", name = "Queue")]
+pub struct QueueHandle {
+    queue: Queue,
+    runtime: &'static tokio::runtime::Runtime,
+}
+
+#[pymethods]
+impl QueueHandle {
+    /// Connects to the Redis at `url` (``redis://host:6379/0``) for the
+    /// crawl `key`. Raises ValueError for a URL or key that can't work, and
+    /// netweir.QueueError if the server can't be reached.
+    #[new]
+    fn new(py: Python<'_>, url: &str, key: &str) -> PyResult<Self> {
+        // A lease is only taken by a crawl, never from here.
+        let queue = connect(py, url, key, Duration::from_secs(60))?;
+        Ok(QueueHandle {
+            queue,
+            runtime: pyo3_async_runtimes::tokio::get_runtime(),
+        })
+    }
+
+    /// Queues each URL as a start request: depth 0, the spider's default
+    /// callback, and through the spider's middlewares in the process that
+    /// takes it. One seen before is left out unless `dont_filter`. Returns
+    /// how many were queued.
+    #[pyo3(signature = (urls, priority=0, dont_filter=false))]
+    fn push(
+        &self,
+        py: Python<'_>,
+        urls: Vec<String>,
+        priority: i32,
+        dont_filter: bool,
+    ) -> PyResult<usize> {
+        let mut batch = Vec::new();
+        for url in urls {
+            let Some(fp) = netweir_core::canonical::fingerprint("GET", &url) else {
+                return Err(PyValueError::new_err(format!(
+                    "not an http(s) URL: {url:?}"
+                )));
+            };
+            batch.push((
+                fp,
+                Pending {
+                    row: 0,
+                    url,
+                    priority,
+                    headers: Vec::new(),
+                    dont_filter,
+                    depth: 0,
+                    payload: r#"{"pushed": true}"#.into(),
+                    method: "GET".into(),
+                    kind: "navigate".into(),
+                    body: None,
+                    content_type: None,
+                    referer: None,
+                    retry_post: false,
+                    proxy: None,
+                },
+            ));
+        }
+        let queued = py
+            .detach(|| self.runtime.block_on(self.queue.push(&batch)))
+            .map_err(|e| queue_error(py, e))?;
+        Ok(queued.into_iter().filter(|q| *q).count())
+    }
+
+    /// {"waiting", "held", "processes", "seen", "queued"}: requests
+    /// waiting, leased and not finished, processes on record, fingerprints
+    /// seen, and requests ever queued.
+    fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = py
+            .detach(|| self.runtime.block_on(self.queue.status()))
+            .map_err(|e| queue_error(py, e))?;
+        let d = PyDict::new(py);
+        d.set_item("waiting", s.waiting)?;
+        d.set_item("held", s.held)?;
+        d.set_item("processes", s.processes)?;
+        d.set_item("seen", s.seen)?;
+        d.set_item("queued", s.queued)?;
+        Ok(d)
+    }
+
+    /// Deletes the crawl's keys: its queue, what processes hold, and its
+    /// seen set, so the next crawl under the key starts afresh.
+    fn clear(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.runtime.block_on(self.queue.clear()))
+            .map_err(|e| queue_error(py, e))
+    }
+}
+
+/// Raises ValueError if `url` isn't a queue URL the client can use; it
+/// doesn't connect.
+#[pyfunction]
+fn _check_queue_url(url: &str) -> PyResult<()> {
+    netweir_core::queue::check_url(url).map_err(PyValueError::new_err)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Crawler>()
+    m.add_class::<Crawler>()?;
+    m.add_class::<QueueHandle>()?;
+    m.add_function(wrap_pyfunction!(_check_queue_url, m)?)
 }

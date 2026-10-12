@@ -5,6 +5,7 @@ netweir fetch https://example.com/ --headers
 netweir view https://example.com/
 netweir shell https://example.com/
 netweir install chrome
+netweir queue push redis://localhost:6379/0 books https://books.toscrape.com/
 """
 
 from __future__ import annotations
@@ -113,7 +114,24 @@ def main(argv: list[str] | None = None) -> int:
         "-s", "--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting"
     )
     crawl.add_argument("--spider", help="which Spider, when the file has several")
+    crawl.add_argument(
+        "--queue",
+        metavar="REDIS_URL",
+        help="share the crawl with other processes through this Redis (redis://host:6379/0)",
+    )
+    crawl.add_argument(
+        "--queue-key", metavar="KEY", help="the crawl's name in Redis (default: the spider's)"
+    )
     crawl.add_argument("-q", "--quiet", action="store_true", help="only warnings and errors")
+    queue = commands.add_parser("queue", help="feed, look at or clear a crawl's shared queue")
+    queue.add_argument("action", choices=["push", "status", "clear"])
+    queue.add_argument("redis", metavar="REDIS_URL", help="redis://host:6379/0")
+    queue.add_argument("key", help="the crawl's queue_key")
+    queue.add_argument("urls", nargs="*", metavar="URL", help="for push: URLs, or - to read stdin")
+    queue.add_argument("--priority", type=int, default=0, help="for push: higher goes first")
+    queue.add_argument(
+        "--dont-filter", action="store_true", help="for push: queue URLs even if seen before"
+    )
     fetch = commands.add_parser("fetch", help="fetch a page and write its body to stdout")
     fetch.add_argument("url")
     fetch.add_argument(
@@ -139,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
         return _install(args)
     if args.command in ("fetch", "view", "shell"):
         return _page_command(args)
+    if args.command == "queue":
+        return _queue(args)
 
     logging.basicConfig(
         level=logging.WARNING if args.quiet else logging.INFO, format="%(levelname)s %(message)s"
@@ -148,13 +168,60 @@ def main(argv: list[str] | None = None) -> int:
     except (_Usage, ValueError, OSError) as e:
         print(f"netweir: {e}", file=sys.stderr)
         return 2
+    from netweir import QueueError
+
     try:
         spider.run(output=output)
     except KeyboardInterrupt:
         print("netweir: interrupted", file=sys.stderr)
         return 130
+    except QueueError as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 1
     # A failed check is a failed crawl, for a scheduler or CI job.
     return 1 if spider.check_failures else 0
+
+
+def _queue(args) -> int:
+    from netweir import Queue, QueueError
+
+    if args.action != "push" and args.urls:
+        print(f"netweir: queue {args.action} takes no URLs", file=sys.stderr)
+        return 2
+    try:
+        queue = Queue(args.redis, args.key)
+        if args.action == "push":
+            sent = queued = 0
+            # Read and sent a thousand at a time, so a long list from
+            # standard input never sits in memory whole.
+            lines = (line.strip() for line in sys.stdin) if args.urls == ["-"] else args.urls
+            for chunk in _chunks((url for url in lines if url), 1000):
+                queued += queue.push(chunk, priority=args.priority, dont_filter=args.dont_filter)
+                sent += len(chunk)
+            print(f"{queued} queued, {sent - queued} seen before")
+        elif args.action == "status":
+            for name, value in queue.status().items():
+                print(f"{name}: {value}")
+        else:
+            queue.clear()
+    except ValueError as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 2
+    except QueueError as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _chunks(items, size: int):
+    chunk = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) == size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 def _install(args) -> int:
@@ -181,6 +248,10 @@ def _prepare(args):
     spider_cls = _load_spider(args.file, args.spider)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
+    if args.queue is not None:
+        overrides["queue"] = args.queue
+    if args.queue_key is not None:
+        overrides["queue_key"] = args.queue_key
     settings = dataclasses.replace(spider_cls.settings, **overrides)
     if args.batch is not None and not args.output:
         raise _Usage("--batch goes with -o")
@@ -188,7 +259,9 @@ def _prepare(args):
     # Before the engine is made (it opens the checkpoint), so a checkpoint
     # with batches or a cloud path is one line and leaves nothing behind.
     _check_outputs(settings, [*spider_cls.pipelines, *([output] if output else [])])
-    settings._engine()  # the profile, proxy and limits are valid
+    # The profile, proxy and limits are valid. Not the queue: an engine
+    # with one would join the crawl, if only for a moment.
+    dataclasses.replace(settings, queue=None)._engine()
     spider = spider_cls()
     spider.settings = settings
     return spider, output

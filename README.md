@@ -77,6 +77,10 @@ Working today:
 - Callbacks in worker processes, for spiders whose own Python is the slow
   part: `workers=4` ran a heavy spider 3.1 times faster, with the same
   output.
+- One crawl on many machines: processes share a request queue and a
+  duplicate filter in Redis, as with scrapy-redis, and a process that
+  dies has its requests picked up by the others. Feed a running crawl
+  with `netweir queue push`. See [docs/distributed.md](docs/distributed.md).
 - Self-healing: block pages recognised and recovered from, crawls that
   resume after a crash, and selectors that find their element again after
   a redesign.

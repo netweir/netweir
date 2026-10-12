@@ -148,7 +148,9 @@ netweir crawl quotes.py -o quotes.jsonl -s concurrency=16 -s max_depth=3
 ```
 
 `-s` sets any [setting](settings.md); `--spider NAME` picks one when the file
-defines several; `-q` shows only warnings and errors. A mistake on the
+defines several; `--queue redis://host:6379/0` shares the crawl with
+processes on other machines ([One crawl, many machines](distributed.md));
+`-q` shows only warnings and errors. A mistake on the
 command line (an unknown setting, a bad value, a path that can't be
 written) exits with status 2 and one line saying why.
 
@@ -861,8 +863,10 @@ Credentials come from where those packages look for them, such as
 scheme fsspec doesn't know is an error when the exporter is made, before
 the crawl starts. If the upload fails, the error names the local file,
 which is kept. A crawl with a checkpoint can't write to cloud storage,
-since resuming adds to the output file; write to a local file and upload
-it when the crawl is done.
+since resuming adds to the output file; nor can one sharing a
+[queue](distributed.md#your-items), since a process killed before the
+upload would lose items the queue has as done. Write to a local file and
+upload it when the crawl is done.
 
 ### Batches
 

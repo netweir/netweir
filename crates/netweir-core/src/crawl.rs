@@ -4,6 +4,7 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use crate::fetch::{
     FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Outgoing, Response, check_proxy, masked,
 };
 use crate::profile::Profile;
+use crate::queue::{BATCH, Prepared, Queue};
 use crate::robots::Robots;
 use crate::tdmrep::{self, Reservation, TdmFile};
 use crate::traps;
@@ -300,6 +302,9 @@ pub enum Submitted {
     BadProxy,
     /// Its page gave items in an earlier crawl (`deltafetch`).
     Delta,
+    /// Sent to the shared queue, from which this process or another
+    /// leases it (`Event::Leased`).
+    Pushed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -340,6 +345,18 @@ pub enum Event {
     },
     /// Something the caller should hear about, once.
     Warning {
+        message: String,
+    },
+    /// A request this process took from the shared queue. The caller
+    /// queues it with `resubmit(request, row)`, or gives it up with
+    /// `release(row)`; `done` releases it in the queue.
+    Leased {
+        row: i64,
+        request: Box<Pending>,
+    },
+    /// The shared queue couldn't be reached for longer than a lease: the
+    /// crawl can't go on.
+    Fatal {
         message: String,
     },
 }
@@ -442,6 +459,14 @@ pub struct Stats {
     /// Responses that didn't reach the WARC or HAR file they should have,
     /// once for each file.
     pub archive_errors: u64,
+    /// Requests sent to the shared queue (not counting those it already
+    /// had), taken from it, and taken back from processes that died.
+    pub pushed: u64,
+    pub leased: u64,
+    pub leases_reclaimed: u64,
+    /// Members of the shared queue that weren't requests netweir could
+    /// read, dropped.
+    pub queue_bad: u64,
 }
 
 /// What one proxy did in a crawl.
@@ -465,6 +490,8 @@ pub struct Crawler {
 struct Shared {
     fetcher: Fetcher,
     checkpoint: Option<Checkpoint>,
+    /// The queue shared with the crawl's other processes, if any.
+    queue: Option<Linked>,
     cache: Option<Arc<Cache>>,
     delta: Option<Record>,
     /// What the checkpoint held at the start, until the caller takes it.
@@ -533,6 +560,31 @@ struct State {
     chrome_proxy: Option<String>,
     /// Whether the crawl was told no proxy of the pool suits Chrome.
     warned_chrome_proxy: bool,
+    /// Requests leased from the shared queue and not yet released, by
+    /// row, with the member that releases them.
+    held: HashMap<i64, Vec<u8>>,
+    /// Leased requests the caller hasn't queued or given up yet.
+    transit: usize,
+    /// The shared queue has been empty for its grace period: the crawl
+    /// is over once this process is idle.
+    queue_over: bool,
+}
+
+/// The shared queue, and the way to its task.
+struct Linked {
+    queue: Queue,
+    /// How long the queue must stay empty before the crawl ends; None to
+    /// wait for more for good.
+    idle: Option<Duration>,
+    ops: tokio::sync::mpsc::UnboundedSender<QueueOp>,
+}
+
+/// What the queue's task sends to Redis, in the order it's given.
+enum QueueOp {
+    Push(Fingerprint, Box<Pending>),
+    Release(i64),
+    /// Give back what's still held, leave the crawl, and say so.
+    Close(Option<std::sync::mpsc::Sender<()>>),
 }
 
 /// The crawl's proxies and how each is doing, in `proxies` order; then
@@ -774,7 +826,39 @@ impl Crawler {
     /// Starts the scheduler on the current tokio runtime. The WARC and
     /// HAR files are checked here, and opened by `start_archive` or the
     /// first `next`.
-    pub fn new(mut fetch: FetchOptions, settings: CrawlSettings) -> Result<Crawler, FetchError> {
+    pub fn new(fetch: FetchOptions, settings: CrawlSettings) -> Result<Crawler, FetchError> {
+        Crawler::start(fetch, settings, None)
+    }
+
+    /// A crawl that shares `queue` with its other processes: what's
+    /// submitted goes there, and what's fetched is leased from there. It
+    /// ends once the queue and every process's leases have been empty for
+    /// `idle`; with None, it waits for more until it's stopped.
+    pub fn distributed(
+        fetch: FetchOptions,
+        settings: CrawlSettings,
+        queue: Queue,
+        idle: Option<Duration>,
+    ) -> Result<Crawler, FetchError> {
+        if settings.checkpoint.is_some() {
+            return Err(FetchError::invalid(
+                "a crawl with a queue can't have a checkpoint too: the queue is its saved state",
+            ));
+        }
+        if settings.deltafetch.is_some() {
+            return Err(FetchError::invalid(
+                "a crawl with a queue can't have deltafetch too: its record is one \
+                 machine's, and the queue's seen set already outlasts the crawl",
+            ));
+        }
+        Crawler::start(fetch, settings, Some((queue, idle)))
+    }
+
+    fn start(
+        mut fetch: FetchOptions,
+        settings: CrawlSettings,
+        queue: Option<(Queue, Option<Duration>)>,
+    ) -> Result<Crawler, FetchError> {
         check_proxies(&fetch, &settings)?;
         let mut state = State {
             proxies: Pool::new(&settings.proxies),
@@ -824,9 +908,17 @@ impl Crawler {
             None => None,
         };
         let settings_pages = settings.browser_pages.max(1);
+        let (queue, inbox) = match queue {
+            Some((queue, idle)) => {
+                let (ops, inbox) = tokio::sync::mpsc::unbounded_channel();
+                (Some(Linked { queue, idle, ops }), Some(inbox))
+            }
+            None => (None, None),
+        };
         let shared = Arc::new(Shared {
             fetcher: Fetcher::new(fetch.clone())?,
             checkpoint,
+            queue,
             cache,
             delta,
             saved: Mutex::new(saved),
@@ -840,6 +932,9 @@ impl Crawler {
             runtime: tokio::runtime::Handle::current(),
         });
         tokio::spawn(schedule_loop(shared.clone()));
+        if let Some(inbox) = inbox {
+            spawn_queue(shared.clone(), inbox);
+        }
         Ok(Crawler { shared })
     }
 
@@ -853,10 +948,39 @@ impl Crawler {
         self.admit(request, Persist::New(payload))
     }
 
-    /// Queues a request read back from the checkpoint (`saved().pending`).
-    /// It was accepted before, so it isn't checked again.
+    /// Queues a request read back from the checkpoint (`saved().pending`),
+    /// or leased from the shared queue (`Event::Leased`). It was accepted
+    /// before, so it isn't checked for duplicates again. A leased request
+    /// refused here is released at once.
     pub fn resubmit(&self, request: CrawlRequest, row: i64) -> Submitted {
-        self.admit(request, Persist::Restored(row))
+        let outcome = self.admit(request, Persist::Restored(row));
+        if self.shared.queue.is_some() {
+            let mut state = self.shared.lock();
+            state.transit = state.transit.saturating_sub(1);
+            drop(state);
+            if outcome != Submitted::Queued {
+                self.shared.release(row);
+            }
+        }
+        outcome
+    }
+
+    /// Gives up a leased request without queueing it: it's finished.
+    pub fn release(&self, row: i64) {
+        let mut state = self.shared.lock();
+        state.transit = state.transit.saturating_sub(1);
+        drop(state);
+        self.shared.release(row);
+    }
+
+    /// Whether the crawl shares a queue with other processes.
+    pub fn has_queue(&self) -> bool {
+        self.shared.queue.is_some()
+    }
+
+    /// Whether `max_pages` requests have been sent.
+    pub fn capped(&self) -> bool {
+        self.shared.lock().capped(&self.shared.settings)
     }
 
     /// What the checkpoint held when the crawl started; once.
@@ -871,13 +995,13 @@ impl Crawler {
     /// The caller has finished with these requests' events: they are done
     /// for good, and a resumed crawl won't fetch them again.
     pub fn done(&self, ids: &[u64]) {
-        let Some(cp) = &self.shared.checkpoint else {
-            return;
-        };
         let mut state = self.shared.lock();
         for id in ids {
             if let Some(row) = state.rows.remove(id) {
-                cp.done(row);
+                if let Some(cp) = &self.shared.checkpoint {
+                    cp.done(row);
+                }
+                self.shared.release(row);
             }
         }
     }
@@ -973,6 +1097,15 @@ impl Crawler {
     /// and HAR files, for when the crawl is over. Checkpoint writes after
     /// this are dropped.
     pub fn close(&self) -> Result<(), String> {
+        if let Some(link) = &self.shared.queue {
+            // What's queued for Redis goes first, then what's still held
+            // goes back for the other processes. Not waited for past a
+            // while: a Redis that's gone can't hold the process up.
+            let (tx, rx) = std::sync::mpsc::channel();
+            if link.ops.send(QueueOp::Close(Some(tx))).is_ok() {
+                let _ = rx.recv_timeout(Duration::from_secs(15));
+            }
+        }
         let mut flushed = self.flush();
         if let Some(archive) = &self.shared.options.archive {
             flushed = flushed.and(archive.close());
@@ -1071,6 +1204,13 @@ impl Crawler {
                 return Submitted::Delta;
             }
         }
+        if let (Some(link), Persist::New(payload)) = (&self.shared.queue, &persist) {
+            // The queue's own duplicate filter has the last word, and
+            // max_pages_per_domain counts what each process leases.
+            let pending = Box::new(pending_of(&request, payload, 0));
+            let _ = link.ops.send(QueueOp::Push(fp, pending));
+            return Submitted::Pushed;
+        }
         let host = parsed.host_str().unwrap_or_default();
         let accepted = state.hosts.get(host).map_or(0, |h| h.accepted);
         if settings
@@ -1101,30 +1241,17 @@ impl Crawler {
                 Persist::New(payload) => {
                     let row = state.next_row;
                     state.next_row += 1;
-                    cp.request(
-                        fp,
-                        Pending {
-                            row,
-                            url: request.url.clone(),
-                            priority: request.priority,
-                            headers: request.headers.clone(),
-                            dont_filter: request.dont_filter,
-                            depth: request.depth,
-                            payload: payload.to_string(),
-                            method: request.outgoing.method.clone(),
-                            kind: request.outgoing.kind.as_str().to_string(),
-                            body: request.outgoing.body.clone(),
-                            content_type: request.outgoing.content_type.clone(),
-                            referer: request.outgoing.referer.clone(),
-                            retry_post: request.retry_post,
-                            proxy: request.proxy.clone(),
-                        },
-                    );
+                    cp.request(fp, pending_of(&request, payload, row));
                     row
                 }
             };
             (request.id, row)
         });
+        // A leased request is released by its row when it's done.
+        let saving = match (saving, &self.shared.queue, persist) {
+            (None, Some(_), Persist::Restored(row)) => Some((request.id, row)),
+            (saving, ..) => saving,
+        };
         if !enqueue(settings, &mut state, request, &url, 0, keep, hit) {
             return Submitted::Invalid;
         }
@@ -1241,7 +1368,9 @@ async fn next_events(shared: Arc<Shared>, max: usize) -> Vec<Event> {
                 return batch;
             }
             let idle = state.stats.in_flight == 0 && state.gate_fetches == 0 && !state.serving;
-            if idle && (state.stats.queued == 0 || state.capped(&shared.settings)) {
+            // With a shared queue, this process running out isn't the end.
+            let over = shared.queue.is_none() || (state.queue_over && state.transit == 0);
+            if idle && ((state.stats.queued == 0 && over) || state.capped(&shared.settings)) {
                 return Vec::new();
             }
         }
@@ -1257,6 +1386,9 @@ impl Drop for Crawler {
         // closed has no one to tell if that fails.
         if let Some(archive) = &self.shared.options.archive {
             let _ = archive.close();
+        }
+        if let Some(link) = &self.shared.queue {
+            let _ = link.ops.send(QueueOp::Close(None));
         }
         // The scheduler keeps the shared state alive a while longer; the
         // checkpoint file shouldn't stay open with it.
@@ -1298,10 +1430,22 @@ impl Shared {
                 reason: DropReason::TdmReserved,
                 ..
             } => state.stats.dropped_tdm += 1,
-            Event::Blocked { .. } | Event::Paused { .. } | Event::Warning { .. } => {}
+            Event::Blocked { .. }
+            | Event::Paused { .. }
+            | Event::Warning { .. }
+            | Event::Leased { .. }
+            | Event::Fatal { .. } => {}
         }
         state.events.push_back(event);
         self.events.notify_waiters();
+    }
+
+    /// Releases a leased request in the shared queue, once what it led to
+    /// is there; nothing without a queue.
+    fn release(&self, row: i64) {
+        if let Some(link) = &self.queue {
+            let _ = link.ops.send(QueueOp::Release(row));
+        }
     }
 }
 
@@ -1357,10 +1501,330 @@ pub fn offsite(url: &Url, allowed: &[String]) -> bool {
     })
 }
 
-/// Whether a submitted request is new to the checkpoint or read back from it.
+/// Whether a submitted request is new, or read back from the checkpoint or
+/// leased from the shared queue.
 enum Persist<'a> {
     New(&'a str),
     Restored(i64),
+}
+
+/// `request` as the checkpoint and the shared queue keep it.
+fn pending_of(request: &CrawlRequest, payload: &str, row: i64) -> Pending {
+    Pending {
+        row,
+        url: request.url.clone(),
+        priority: request.priority,
+        headers: request.headers.clone(),
+        dont_filter: request.dont_filter,
+        depth: request.depth,
+        payload: payload.to_string(),
+        method: request.outgoing.method.clone(),
+        kind: request.outgoing.kind.as_str().to_string(),
+        body: request.outgoing.body.clone(),
+        content_type: request.outgoing.content_type.clone(),
+        referer: request.outgoing.referer.clone(),
+        retry_post: request.retry_post,
+        proxy: request.proxy.clone(),
+    }
+}
+
+/// How often the queue's task looks for work when it found none.
+const QUEUE_POLL: Duration = Duration::from_millis(250);
+
+/// Starts the queue's task, and turns a panic in it into the end of the
+/// crawl rather than a silent stop.
+fn spawn_queue(s: Arc<Shared>, inbox: tokio::sync::mpsc::UnboundedReceiver<QueueOp>) {
+    spawn_watched(s.clone(), queue_loop(s, inbox));
+}
+
+/// Runs `work` as a task, and if it panics, says so with a fatal event.
+fn spawn_watched(s: Arc<Shared>, work: impl Future<Output = ()> + Send + 'static) {
+    let task = tokio::spawn(work);
+    tokio::spawn(async move {
+        if let Err(e) = task.await
+            && e.is_panic()
+        {
+            let panic = e.into_panic();
+            let why = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("a panic");
+            let message = format!("the shared queue's task failed ({why}), so this process stops");
+            let mut state = s.lock();
+            s.push_event(&mut state, Event::Fatal { message });
+        }
+    });
+}
+
+/// Runs until the crawl closes: sends what the crawl queues and finishes
+/// to Redis, in order; leases requests while there's room; beats; and
+/// says when the shared queue has stayed empty long enough to end.
+async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedReceiver<QueueOp>) {
+    let Some(link) = &s.queue else {
+        return;
+    };
+    let q = &link.queue;
+    let mut ops = VecDeque::new();
+    // The run of pushes being sent, numbered once, so sending it again
+    // after a lost reply can't queue a second copy.
+    let mut pushing: Option<Vec<Prepared>> = None;
+    let mut beat = Beat {
+        next: Instant::now(),
+        last: Instant::now(),
+    };
+    // A lease failed: its reply may have been lost after Redis applied it.
+    let mut unsure = false;
+    // Since when the queue has looked empty, and how many requests had
+    // been queued then: one more since, and it wasn't.
+    let mut quiet: Option<(Instant, i64)> = None;
+    // Since when every turn has failed.
+    let mut failing: Option<Instant> = None;
+    loop {
+        while let Ok(op) = inbox.try_recv() {
+            ops.push_back(op);
+        }
+        let turn = async {
+            if let Some(reply) = send_ops(&s, q, &mut ops, &mut pushing, &mut beat).await? {
+                // What's held and not finished is for others now. If Redis
+                // can't be told, the leases run out instead.
+                let _ = q.give_back().await;
+                return Ok::<_, String>(Turn::Closed(reply));
+            }
+            if unsure {
+                q.reconcile().await?;
+                unsure = false;
+            }
+            beat.if_due(&s, q).await?;
+            let room = {
+                let state = s.lock();
+                if state.closed || state.capped(&s.settings) {
+                    0
+                } else {
+                    s.settings
+                        .concurrency
+                        .saturating_sub(state.stats.queued + state.transit)
+                }
+            };
+            let (leased, unreadable) = q.lease(room).await.inspect_err(|_| unsure = true)?;
+            let full = room > 0 && leased.len() as u64 + unreadable == room as u64;
+            if unreadable > 0 {
+                let mut state = s.lock();
+                state.stats.queue_bad += unreadable;
+                let message = format!(
+                    "{unreadable} member(s) of the shared queue weren't requests netweir can \
+                     read, and were dropped"
+                );
+                s.push_event(&mut state, Event::Warning { message });
+            }
+            if !leased.is_empty() {
+                quiet = None;
+                let mut state = s.lock();
+                // Not over after all: the end waits for a whole grace of
+                // quiet after this work too.
+                state.queue_over = false;
+                for (member, request) in leased {
+                    let row = state.next_row;
+                    state.next_row += 1;
+                    state.held.insert(row, member);
+                    state.transit += 1;
+                    state.stats.leased += 1;
+                    s.push_event(
+                        &mut state,
+                        Event::Leased {
+                            row,
+                            request: Box::new(request),
+                        },
+                    );
+                }
+            }
+            let idle = {
+                let state = s.lock();
+                state.stats.queued == 0
+                    && state.stats.in_flight == 0
+                    && state.gate_fetches == 0
+                    && !state.serving
+                    && state.events.is_empty()
+                    && state.transit == 0
+                    && state.held.is_empty()
+            } && ops.is_empty()
+                && inbox.is_empty();
+            match (link.idle, idle) {
+                (Some(grace), true) => {
+                    let status = q.status().await?;
+                    let empty = status.waiting == 0 && status.held == 0;
+                    quiet = match quiet {
+                        Some((since, queued)) if empty && queued == status.queued => {
+                            Some((since, queued))
+                        }
+                        _ if empty => Some((Instant::now(), status.queued)),
+                        _ => None,
+                    };
+                    if quiet.is_some_and(|(since, _)| since.elapsed() >= grace) {
+                        s.lock().queue_over = true;
+                        s.events.notify_waiters();
+                    }
+                }
+                _ => quiet = None,
+            }
+            Ok(if full { Turn::Busy } else { Turn::Waiting })
+        };
+        let pause = match turn.await {
+            Ok(Turn::Closed(reply)) => {
+                if let Some(reply) = reply {
+                    let _ = reply.send(());
+                }
+                return;
+            }
+            Ok(turn) => {
+                failing = None;
+                if matches!(turn, Turn::Busy) {
+                    Duration::ZERO
+                } else {
+                    QUEUE_POLL
+                }
+            }
+            Err(e) => {
+                let mut state = s.lock();
+                let first = failing.is_none();
+                let since = *failing.get_or_insert_with(Instant::now);
+                // No heartbeat for a lease: the other processes have taken
+                // this one for dead, and what it holds is being fetched by
+                // them by now. Or a step has failed for a whole lease while
+                // heartbeats got through: it isn't going to work.
+                if beat.last.elapsed() >= q.lease_time() || since.elapsed() >= q.lease_time() {
+                    let message = format!(
+                        "the queue failed for longer than queue_lease ({} s), so this process \
+                         stops: {e}",
+                        q.lease_time().as_secs_f64()
+                    );
+                    s.push_event(&mut state, Event::Fatal { message });
+                    return;
+                }
+                if first {
+                    let message = format!("{e}; trying again");
+                    s.push_event(&mut state, Event::Warning { message });
+                }
+                (q.lease_time() / 6).min(Duration::from_secs(1))
+            }
+        };
+        tokio::select! {
+            op = inbox.recv() => ops.extend(op),
+            _ = tokio::time::sleep(pause) => {}
+        }
+    }
+}
+
+/// How a turn of the queue's task went.
+enum Turn {
+    /// It leased all it had room for: there may be more at once.
+    Busy,
+    /// Nothing more to do until something happens.
+    Waiting,
+    /// The crawl closed, and here is who to tell when it's done.
+    Closed(Option<std::sync::mpsc::Sender<()>>),
+}
+
+/// When this process last told Redis it's alive, and when it next must.
+struct Beat {
+    next: Instant,
+    /// When the last heartbeat that got through was sent: the other
+    /// processes count this one's lease from about then.
+    last: Instant,
+}
+
+impl Beat {
+    /// Sends a heartbeat if one is due.
+    async fn if_due(&mut self, s: &Shared, q: &Queue) -> Result<(), String> {
+        if Instant::now() < self.next {
+            return Ok(());
+        }
+        // Taken before the call: the deadline it sets is counted from
+        // about then, not from after any reaping it does.
+        let sent = Instant::now();
+        let reclaimed = q.heartbeat().await?;
+        s.lock().stats.leases_reclaimed += reclaimed;
+        self.last = sent;
+        self.next = sent + q.lease_time() / 3;
+        Ok(())
+    }
+}
+
+/// Sends the queued operations to Redis in order, a run of pushes or
+/// releases at a time; each run leaves `ops` only once Redis has it. A run
+/// of pushes is numbered once, in `pushing`, and sent as it is until it
+/// gets through. Heartbeats go between runs, so a long backlog doesn't get
+/// a live process taken for dead. On a close, returns its reply channel,
+/// with what came before it sent.
+async fn send_ops(
+    s: &Shared,
+    q: &Queue,
+    ops: &mut VecDeque<QueueOp>,
+    pushing: &mut Option<Vec<Prepared>>,
+    beat: &mut Beat,
+) -> Result<Option<Option<std::sync::mpsc::Sender<()>>>, String> {
+    while let Some(op) = ops.front() {
+        beat.if_due(s, q).await?;
+        match op {
+            QueueOp::Push(..) => {
+                let prepared = match pushing.take() {
+                    Some(prepared) => prepared,
+                    None => {
+                        let batch: Vec<(Fingerprint, &Pending)> = ops
+                            .iter()
+                            .take(BATCH)
+                            .map_while(|op| match op {
+                                QueueOp::Push(fp, p) => Some((*fp, &**p)),
+                                _ => None,
+                            })
+                            .collect();
+                        q.prepare(&batch).await?
+                    }
+                };
+                let queued = match q.enqueue(&prepared).await {
+                    Ok(queued) => queued,
+                    Err(e) => {
+                        *pushing = Some(prepared);
+                        return Err(e);
+                    }
+                };
+                ops.drain(..prepared.len());
+                let pushed = queued.iter().filter(|q| **q).count() as u64;
+                let mut state = s.lock();
+                state.stats.pushed += pushed;
+                state.stats.duplicates += queued.len() as u64 - pushed;
+            }
+            QueueOp::Release(_) => {
+                let rows: Vec<i64> = ops
+                    .iter()
+                    .take(BATCH)
+                    .map_while(|op| match op {
+                        QueueOp::Release(row) => Some(*row),
+                        _ => None,
+                    })
+                    .collect();
+                let members: Vec<Vec<u8>> = {
+                    let state = s.lock();
+                    rows.iter()
+                        .filter_map(|row| state.held.get(row).cloned())
+                        .collect()
+                };
+                q.release(&members).await?;
+                ops.drain(..rows.len());
+                let mut state = s.lock();
+                for row in rows {
+                    state.held.remove(&row);
+                }
+            }
+            QueueOp::Close(_) => {
+                let Some(QueueOp::Close(reply)) = ops.pop_front() else {
+                    unreachable!("the front is a close");
+                };
+                return Ok(Some(reply));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The session a request goes out with, and the proxy of the pool or
@@ -3203,6 +3667,100 @@ fn gate_done(shared: &Shared, mut state: std::sync::MutexGuard<'_, State>, origi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn work_that_arrives_after_the_queue_went_quiet_gets_a_fresh_grace() {
+        use crate::queue::tests::{Fake, fake_queue};
+        let fake = Arc::new(Fake::default());
+        let lease = Duration::from_secs(5);
+        let grace = Duration::from_millis(600);
+        let settings = CrawlSettings {
+            obey_robots: false,
+            obey_tdmrep: false,
+            retries: 0,
+            ..CrawlSettings::default()
+        };
+        let crawler = Crawler::distributed(
+            FetchOptions::new(Profile::named("chrome").unwrap()),
+            settings,
+            fake_queue(&fake, "books", lease),
+            Some(grace),
+        )
+        .unwrap();
+        // Nothing to do: the crawl is over once the grace has gone by.
+        let ended = tokio::time::timeout(Duration::from_secs(10), crawler.next(10)).await;
+        assert!(ended.unwrap().is_empty());
+        // Then a request arrives, and this process leases it.
+        let url = "http://127.0.0.1:1/late";
+        let pending = pending_of(&request(url), "{}", 0);
+        let fp = crate::canonical::fingerprint("GET", url).unwrap();
+        fake_queue(&fake, "books", lease)
+            .push(&[(fp, pending)])
+            .await
+            .unwrap();
+        // The task looks four times a second: by now it has leased it.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let events = tokio::time::timeout(Duration::from_secs(10), crawler.next(10))
+            .await
+            .unwrap();
+        let [Event::Leased { row, .. }] = events[..] else {
+            panic!("{events:?}");
+        };
+        // Leased, not yet queued here: the crawl isn't over meanwhile.
+        let waited = tokio::time::timeout(Duration::from_millis(400), crawler.next(10)).await;
+        assert!(waited.is_err(), "{waited:?}");
+        assert_eq!(crawler.resubmit(request(url), row), Submitted::Queued);
+        let failed = tokio::time::timeout(Duration::from_secs(10), crawler.next(10))
+            .await
+            .unwrap();
+        assert!(matches!(failed[..], [Event::Failed { .. }]), "{failed:?}");
+        crawler.done(&[7]);
+        // The page could have led to more: the crawl ends only after a
+        // whole grace of quiet again.
+        let started = Instant::now();
+        let ended = tokio::time::timeout(Duration::from_secs(10), crawler.next(10)).await;
+        assert!(ended.unwrap().is_empty());
+        assert!(started.elapsed() >= grace / 2, "{:?}", started.elapsed());
+    }
+
+    fn request(url: &str) -> CrawlRequest {
+        CrawlRequest {
+            id: 7,
+            url: url.into(),
+            priority: 0,
+            headers: Vec::new(),
+            dont_filter: false,
+            depth: 0,
+            browser: false,
+            outgoing: Outgoing::navigate(),
+            retry_post: false,
+            proxy: None,
+            delta_key: Default::default(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_panic_in_a_watched_task_ends_the_crawl_with_a_fatal_event() {
+        let crawler = Crawler::new(
+            FetchOptions::new(Profile::named("chrome").unwrap()),
+            CrawlSettings::default(),
+        )
+        .unwrap();
+        spawn_watched(crawler.shared.clone(), async { panic!("a bad member") });
+        // Nothing is queued, so `next` says so at once until the event is in.
+        let mut events = Vec::new();
+        for _ in 0..500 {
+            events = crawler.next(10).await;
+            if !events.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        match &events[..] {
+            [Event::Fatal { message }] => assert!(message.contains("a bad member"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn proxies_requests_name_beyond_the_cap_are_counted_together() {

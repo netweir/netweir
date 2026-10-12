@@ -43,6 +43,13 @@ allow = ["AGPL-3.0-only"]
 crate = "tiny-keccak"
 allow = ["CC0-1.0"]
 
+# A hash the Redis client needs. The Boost licence is permissive, asks
+# for no notice in binaries and allows commercial use; allowed for this
+# crate only, as it's the only one under it.
+[[licenses.exceptions]]
+crate = "xxhash-rust"
+allow = ["BSL-1.0"]
+
 [bans]
 multiple-versions = "warn"
 

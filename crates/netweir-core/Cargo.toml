@@ -33,6 +33,10 @@ zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 psl = "2.1"
 http-body-util = "0.1"
 quick-xml = "0.42"
+# The shared queue.
+# Known limit: plain TCP only. netweir's TLS is BoringSSL, and a second
+# TLS stack for this alone isn't worth it yet.
+redis = { version = "1.7.1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

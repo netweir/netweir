@@ -10,6 +10,7 @@ from netweir._errors import (
     DropItem,
     FetchError,
     IgnoreRequest,
+    QueueError,
 )
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._form import Form
@@ -22,6 +23,7 @@ from netweir._native import (
     BrowserResponse,
     Node,
     ParseTimeout,
+    Queue,
     Selection,
     SelectorError,
     XPathError,
@@ -55,6 +57,8 @@ __all__ = [
     "Page",
     "ParseTimeout",
     "Price",
+    "Queue",
+    "QueueError",
     "Selection",
     "SelectorError",
     "XPathError",

@@ -26,8 +26,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from netweir import _memory, _monitor, _track
+from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs
-from netweir._native import Crawler, TrackStore, _robots_sitemaps, fingerprint
+from netweir._native import Crawler, TrackStore, _check_queue_url, _robots_sitemaps, fingerprint
 from netweir._native import _sitemap as _parse_sitemap
 from netweir._request import Request
 from netweir._rules import Follow, _warn_invalid
@@ -106,6 +107,18 @@ class Settings:
     #: again, and items carry an ``_id`` so none is written twice. Delete
     #: the directory to start over.
     checkpoint: str | None = None
+    #: A Redis URL ("redis://host:6379/0") holding a queue this crawl
+    #: shares with its other processes, on this machine or others: each
+    #: request is fetched by one of them, once. ``queue_key`` names the
+    #: crawl there; by default, the spider's ``name`` or class name. A
+    #: process's requests go back to the queue ``queue_lease`` seconds
+    #: after it stops sending heartbeats. A process ends once the queue
+    #: has been empty for ``queue_idle`` seconds, or with None waits for
+    #: more until stopped. See docs/distributed.md.
+    queue: str | None = None
+    queue_key: str | None = None
+    queue_lease: float = 60.0
+    queue_idle: float | None = 30.0
     #: A directory to keep responses in while you write a spider: run it
     #: again and pages it already has come from there, with no request to
     #: the site and no delay. Blocks, throttling, server errors and pages
@@ -228,8 +241,41 @@ class Settings:
             raise ValueError("proxy_failures must be at least 1")
         if self.proxy_cooldown <= 0:
             raise ValueError("proxy_cooldown must be positive")
+        self._check_queue()
 
-    def _engine(self, allowed_domains: Iterable[str] = ()) -> Crawler:
+    def _check_queue(self) -> None:
+        if self.queue is None:
+            return
+        scheme = self.queue.partition("://")[0].lower()
+        if scheme == "rediss":
+            raise ValueError(
+                "queue: TLS to Redis (rediss://) isn't supported; use redis:// on a private"
+                " network, or a TLS tunnel to the server"
+            )
+        if scheme not in ("redis", "redis+unix", "unix"):
+            raise ValueError(f"queue must be a redis:// URL, not a {scheme or 'plain'} one")
+        # The whole URL, as the client reads it (a port that isn't a
+        # number, say), without connecting.
+        _check_queue_url(self.queue)
+        if self.checkpoint is not None:
+            raise ValueError(
+                "a crawl with a queue can't have a checkpoint too: the queue in Redis is the"
+                " crawl's saved state, shared by every process; drop the checkpoint"
+            )
+        if self.deltafetch is not None:
+            raise ValueError(
+                "a crawl with a queue can't have deltafetch too: its record is one machine's,"
+                " and the queue's seen set already skips what an earlier crawl under the"
+                " same queue_key queued; drop deltafetch"
+            )
+        if self.queue_key == "":
+            raise ValueError("queue_key can't be empty")
+        if self.queue_lease <= 0:
+            raise ValueError("queue_lease must be positive")
+        if self.queue_idle is not None and self.queue_idle <= 0:
+            raise ValueError("queue_idle must be positive, or None to wait for more for good")
+
+    def _engine(self, allowed_domains: Iterable[str] = (), queue_key: str = "") -> Crawler:
         return Crawler(
             allowed_domains=list(allowed_domains),
             profile=self.profile,
@@ -270,6 +316,10 @@ class Settings:
             deltafetch_reset=self.deltafetch_reset,
             warc=self.warc,
             har=self.har,
+            queue=self.queue,
+            queue_key=self.queue_key or queue_key,
+            queue_lease=self.queue_lease,
+            queue_idle=self.queue_idle,
         )
 
     def _checkpoint_file(self) -> str | None:
@@ -541,9 +591,19 @@ class Spider:
 def _check_outputs(settings: Settings, pipelines: list[Any]) -> None:
     """Refuses exporters a crawl with a checkpoint can't resume: resuming
     cuts the output file back and adds to it, which neither an object in a
-    bucket nor a run of batches allows."""
+    bucket nor a run of batches allows. And remote ones with a shared queue:
+    they're uploaded only at the end, so a process killed before then loses
+    items whose pages the queue has as done."""
     from netweir import export
 
+    if settings.queue is not None:
+        for stage in pipelines:
+            if isinstance(stage, export._Exporter) and stage.remote:
+                raise ValueError(
+                    f"a crawl with a queue can't write to {stage.path}: a process killed"
+                    " before the upload would lose items the queue has as done; write to a"
+                    " local file, or send items to a shared store from a pipeline"
+                )
     if settings.deltafetch is not None:
         for stage in pipelines:
             if not isinstance(stage, export._Exporter):
@@ -670,7 +730,9 @@ class _Run:
         self.spider_opened = False
         #: Set once the output files are cut back and started; see finish().
         self.outputs_ready = False
-        self.engine = self.settings._engine(spider.allowed_domains)
+        self.engine = self.settings._engine(
+            spider.allowed_domains, spider.name or type(spider).__name__
+        )
         #: Worker processes for callbacks, with Settings.workers > 1.
         self.pool: Any = None
         self.ids = itertools.count()
@@ -694,6 +756,11 @@ class _Run:
         #: Items already delivered by an earlier run of this crawl, by _id.
         self.delivered: set[str] = set()
         self.saving = self.settings.checkpoint is not None
+        #: Requests leave this process as data, callbacks by name: for a
+        #: checkpoint, or for the shared queue.
+        self.by_name = self.saving or self.settings.queue is not None
+        #: Requests from the shared queue that couldn't be made Requests.
+        self.queue_bad = 0
         #: Ids of items delivered but not yet recorded as such.
         self.unrecorded: list[str] = []
         self.delta = self.settings.deltafetch is not None
@@ -773,28 +840,8 @@ class _Run:
             # No checkpoint, or one this crawl has just created.
             return None
         self.delivered = set(saved["items"])
-        for (row, url, priority, headers, dont_filter, depth, payload), sent in saved["pending"]:
-            method, kind, body, content_type, referer, retry_post, proxy = sent
-            data = json.loads(payload)
-            request = Request(
-                url,
-                callback=data.get("callback"),
-                priority=priority,
-                headers=headers,
-                meta=data.get("meta", {}),
-                dont_filter=dont_filter,
-                errback=data.get("errback"),
-                depth=depth,
-                browser=data.get("browser", False),
-                method=method,
-                body=body,
-                referer=referer,
-                retry_post=retry_post,
-                proxy=proxy,
-                kind=kind,
-                content_type=content_type,
-            )
-            self.submit(request, row=row)
+        for head, sent in saved["pending"]:
+            self.submit(_restored(head, sent)[0], row=head[0])
         if saved["pending"] or self.delivered:
             log.info(
                 "resuming: %d requests left, %d items already written",
@@ -806,14 +853,14 @@ class _Run:
         return state
 
     def payload(self, request: Request) -> str:
-        """The request's own part, saved in the checkpoint as JSON:
-        callbacks by name, and meta."""
-        if not self.saving:
+        """The request's own part, saved in the checkpoint or sent to the
+        shared queue as JSON: callbacks by name, and meta."""
+        if not self.by_name:
             return "{}"
         try:
             meta = json.dumps(request.meta)
         except TypeError as e:
-            raise TypeError(f"with a checkpoint, meta must be JSON: {e}") from None
+            raise TypeError(f"with a {self.keeper}, meta must be JSON: {e}") from None
         callback = json.dumps(self.method_name(request.callback))
         errback = json.dumps(self.method_name(request.errback))
         browser = json.dumps(request.browser)
@@ -829,9 +876,14 @@ class _Run:
         if name is not None and getattr(self.spider, name, None) == fn:
             return name
         raise TypeError(
-            f"with a checkpoint, callbacks are saved by name, so {fn!r} must be a"
+            f"with a {self.keeper}, callbacks are saved by name, so {fn!r} must be a"
             " method of the spider"
         )
+
+    @property
+    def keeper(self) -> str:
+        """What keeps requests as data: for messages."""
+        return "checkpoint" if self.saving else "queue"
 
     def submit(self, request: Request, row: int | None = None) -> None:
         payload = self.payload(request) if row is None else "{}"
@@ -1041,8 +1093,11 @@ class _Run:
                     events = await self.next_events()
                     if not events:
                         # The engine stops sending at max_pages, and ends
-                        # the crawl with requests still queued.
-                        if self.engine.stats()["queued"]:
+                        # the crawl with requests still queued (here, or
+                        # in the shared queue, for all this process knows).
+                        if self.engine.stats()["queued"] or (
+                            self.settings.queue is not None and self.engine.capped()
+                        ):
                             raise _Stop("max_pages")
                         break
                     if self.pool is None:
@@ -1071,6 +1126,10 @@ class _Run:
                 self.pool = None
         await self.run_repairs()
         stats = {**self.engine.stats(), **self.counts}
+        if "queue_bad" in stats:
+            # The engine counts the members it couldn't read; this, those
+            # it could but that weren't requests.
+            stats["queue_bad"] += self.queue_bad
         stats.pop("queued", None)
         stats.pop("in_flight", None)
         log.info(
@@ -1086,14 +1145,19 @@ class _Run:
         requests as done, in that order, so a crash never loses an item:
         at worst, a resume writes one again. deltafetch's pages are
         recorded then too, so a page is never skipped for an item that
-        didn't reach the file."""
-        delta = self.delta and (self.produced or self.counts["items"] != self.delta_items)
-        if not (self.saving or delta):
-            self.engine.ack()
-            return
+        didn't reach the file. With a shared queue, the requests are
+        released once their items are in the files; Parquet's stay in
+        memory until the end."""
         from netweir import export
 
         exporters = [s for s in self.pipelines if isinstance(s, export._Exporter)]
+        delta = self.delta and (self.produced or self.counts["items"] != self.delta_items)
+        if not (self.saving or delta):
+            if self.settings.queue is not None:
+                for stage in exporters:
+                    stage.flush()
+            self.engine.ack()
+            return
         # Not final until closed: Parquet is readable only then, and a file
         # bound for cloud storage (never with a checkpoint) is uploaded then.
         if not all(stage.flush() for stage in exporters) or any(s.remote for s in exporters):
@@ -1461,6 +1525,27 @@ class _Run:
             await self.run_callback(self.spider.on_block, None, (request, page), url)
         elif kind == "warning":
             log.warning("%s", event[1])
+        elif kind == "leased":
+            _, head, sent = event
+            try:
+                request, data = _restored(head, sent)
+                if data.get("pushed"):
+                    # Pushed from outside: a start request, which the
+                    # middlewares haven't seen yet.
+                    await self.queue(request, row=head[0])
+                else:
+                    self.submit(request, row=head[0])
+            except Exception as e:  # noqa: BLE001 - anyone can write to the queue
+                # Whatever wrote it, it can't be crawled: it goes (neither
+                # submit nor a middleware had queued it), so it can't stop
+                # this process, or the next to take it.
+                self.queue_bad += 1
+                self.engine.release(head[0])
+                log.warning("%r from the shared queue can't be made a request: %s", head[1], e)
+                if self.settings.fail_fast:
+                    raise
+        elif kind == "fatal":
+            raise QueueError(event[1])
         elif kind == "paused":
             _, host, seconds = event
             log.warning(
@@ -1638,10 +1723,11 @@ class _Run:
             log.exception("error in %s", getattr(method, "__qualname__", method))
             return _FAILED
 
-    async def queue(self, request: Request) -> None:
+    async def queue(self, request: Request, row: int | None = None) -> None:
         """Submits a request the spider's code made, through the middlewares'
         process_request: None goes on with the request as it is, a Request
-        goes on in its place, IgnoreRequest (or an error) drops it."""
+        goes on in its place, IgnoreRequest (or an error) drops it. ``row``
+        is a URL pushed to the shared queue from outside, leased under it."""
         if self.on_request and request.headers is None:
             # So `request.headers["User-Agent"] = ...` works, as in Scrapy.
             request.headers = {}
@@ -1649,12 +1735,14 @@ class _Run:
             result = await self.guarded(process, request, self.spider, allowed=(Request,))
             if result is _IGNORED or result is _FAILED:
                 self.counts["requests_dropped"] += 1
+                if row is not None:
+                    self.engine.release(row)
                 await self.signal("request_dropped", request=request, spider=self.spider)
                 return
             if result is not None and result is not request:
                 result.depth = request.depth
                 request = result
-        self.submit(request)
+        self.submit(request, row=row)
 
     async def respond(self, event: tuple) -> tuple | None:
         """A fetched page, after the middlewares' process_response: the event
@@ -1901,6 +1989,37 @@ def _delta_meta(meta: dict[str, Any]) -> tuple[bool, bytes | None] | None:
 #: one that failed.
 _IGNORED = object()
 _FAILED = object()
+
+
+def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
+    """A Request again from what the checkpoint or the shared queue kept of
+    it, with its payload."""
+    _row, url, priority, headers, dont_filter, depth, payload = head
+    method, kind, body, content_type, referer, retry_post, proxy = sent
+    if kind not in ("navigate", "form", "fetch"):
+        raise ValueError(f"unknown kind of request {kind!r}")
+    data = json.loads(payload)
+    request = Request(
+        url,
+        callback=data.get("callback"),
+        priority=priority,
+        # None when there were none, so a middleware can set some as on a
+        # new request.
+        headers=headers or None,
+        meta=data.get("meta", {}),
+        dont_filter=dont_filter,
+        errback=data.get("errback"),
+        depth=depth,
+        browser=data.get("browser", False),
+        method=method,
+        body=body,
+        referer=referer,
+        retry_post=retry_post,
+        proxy=proxy,
+        kind=kind,
+        content_type=content_type,
+    )
+    return request, data
 
 
 def _named(error: BaseException, name: str) -> bool:

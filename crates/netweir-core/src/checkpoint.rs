@@ -24,9 +24,11 @@ use crate::canonical::Fingerprint;
 /// ones are refused.
 pub const FORMAT: i64 = 3;
 
-/// A request that was saved and not finished.
-#[derive(Debug, Clone, PartialEq)]
+/// A request that was saved and not finished. A shared queue keeps the
+/// same fields, as JSON, without the row.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pending {
+    #[serde(skip)]
     pub row: i64,
     pub url: String,
     pub priority: i32,
@@ -38,12 +40,45 @@ pub struct Pending {
     /// body type and the page it came from. Format 1 had only GETs.
     pub method: String,
     pub kind: String,
+    #[serde(with = "hex_body")]
     pub body: Option<Vec<u8>>,
     pub content_type: Option<String>,
     pub referer: Option<String>,
     pub retry_post: bool,
     /// The proxy the request asked for, if any. Formats 1 and 2 had none.
     pub proxy: Option<String>,
+}
+
+/// A body as hex in JSON, which has no bytes.
+mod hex_body {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(body: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match body {
+            Some(b) => s.serialize_str(&b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let Some(hex) = Option::<String>::deserialize(d)? else {
+            return Ok(None);
+        };
+        // By bytes: a string sliced by characters panics on one that isn't
+        // ASCII, and a queue's members can be anything.
+        let digit = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+        if hex.len() % 2 != 0 {
+            return Err(D::Error::custom("odd-length hex body"));
+        }
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| match (digit(pair[0]), digit(pair[1])) {
+                (Some(high), Some(low)) => Ok(high << 4 | low),
+                _ => Err(D::Error::custom("a body that isn't hex")),
+            })
+            .collect::<Result<Vec<u8>, _>>()
+            .map(Some)
+    }
 }
 
 /// What a checkpoint held when it was opened.

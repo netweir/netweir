@@ -12,6 +12,11 @@ class FetchError(Exception):
         self.kind = kind
 
 
+class QueueError(ConnectionError):
+    """A crawl's shared queue in Redis couldn't be reached, or answered
+    with an error, or was lost for longer than ``queue_lease``."""
+
+
 class DropItem(Exception):
     """Raised in a pipeline to drop the item, as returning None does. Scrapy
     pipelines drop items this way; Scrapy's own DropItem works too."""

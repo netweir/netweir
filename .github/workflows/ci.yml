@@ -47,6 +47,8 @@ jobs:
     env:
       # Chrome is installed below, so the browser tests run, not skip.
       NETWEIR_REQUIRE_CHROME: "1"
+      # And redis-server, but not on Windows, which has no build of it.
+      NETWEIR_REQUIRE_REDIS: ${{ matrix.os != 'windows-latest' && '1' || '' }}
       # The macOS runners are virtual machines whose GPU now and then hangs
       # on Chrome's work, until the kernel stops taking any from it and
       # Chrome waits for good. Software rendering never touches it.
@@ -74,6 +76,11 @@ jobs:
       # installs one. This keeps the sandbox on (see docs/browser.md).
       - if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # For the queue's tests against a real Redis; each starts its own.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends redis-server
+      - if: runner.os == 'macOS'
+        run: brew install redis
       # A hung test fails the step, which keeps its log; cancelling the
       # run instead loses it.
       - run: cargo test --workspace --exclude netweir-py
