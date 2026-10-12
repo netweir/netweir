@@ -100,6 +100,9 @@ block page. Everything else is the site's doing, not the proxy's:
   couldn't reach the site, and which netweir can't tell from a refusal
   for the proxy's own reasons;
 - a TLS error with the site at the far end of a tunnel;
+- a proxy hanging up on a plain `http://` request before it answers,
+  which reads exactly like an idle connection it let go of; on the way
+  to an `https://` site, the same hang-up breaks the tunnel, and counts;
 - a timeout, which looks the same whether the proxy or the site was the
   slow one.
 

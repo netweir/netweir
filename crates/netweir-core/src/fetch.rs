@@ -341,6 +341,10 @@ impl FetchError {
     /// keeps no status to tell those from a refusal of its own. Nor is a
     /// timeout, which looks the same whether the proxy or the site was
     /// slow, nor a TLS error with the site through an open tunnel.
+    // Known limit: nor a plain-HTTP request the proxy closed the connection
+    // on before answering. That error reads the same as a kept-alive
+    // connection the proxy let go of while idle, and blaming the proxy
+    // for it would bench healthy ones; through a tunnel it's caught.
     // Known limit: read from the error's text, as the client's tunnel errors
     // aren't public; a wreq upgrade that rewords them needs this checked
     // (the proxy tests in tests/proxies.rs would fail).
