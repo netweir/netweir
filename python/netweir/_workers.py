@@ -90,6 +90,7 @@ def _start(
     track_path: str,
     threshold: float,
     repairing: bool,
+    arguments: dict[str, str],
 ) -> None:
     """Sets a worker up: its logging goes to the main process, and it has
     its own spider and the crawl's track store."""
@@ -105,6 +106,9 @@ def _start(
     _repairing = repairing
     _spider = _load(spec)()
     _spider.settings = settings
+    # What `netweir crawl -a` set on the main process's spider.
+    for name, value in arguments.items():
+        setattr(_spider, name, value)
     _track._crawl.set((TrackStore(track_path), threshold))
 
 
@@ -234,6 +238,7 @@ class Pool:
                 track_path,
                 settings.track_threshold,
                 repairing,
+                getattr(spider, "_arguments", {}),
             ),
         )
         self._jobs: set[asyncio.Future] = set()

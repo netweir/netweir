@@ -395,6 +395,9 @@ class Spider:
     #: After a run: for each proxy of Settings.proxies, then each other
     #: proxy a request named, {"requests": n, "failures": n, "benched": n}.
     proxy_stats: dict[str, dict[str, int]] = {}
+    #: After a run: the stats run() returns, or, for a run that was
+    #: interrupted or raised, those it had got to.
+    stats: dict[str, int] = {}
 
     async def start(self) -> AsyncIterator[Request]:
         """The first requests. An async generator by default; a plain
@@ -580,6 +583,8 @@ class Spider:
             if stats is not None and not raising:
                 self.check_failures = await _monitor.run_checks(self.checks, stats, self)
                 stats["checks_failed"] = len(self.check_failures)
+            # However the crawl ended, what it had done.
+            self.stats = stats if stats is not None else run.stats()
             # After the exporters: closed() and close_spider find the output
             # files complete.
             await run.close(reason)
@@ -1125,6 +1130,15 @@ class _Run:
                 self.pool.close(abandon=abandoned)
                 self.pool = None
         await self.run_repairs()
+        stats = self.stats()
+        log.info(
+            "crawl finished in %.1fs: %s",
+            time.monotonic() - started,
+            ", ".join(f"{k} {v}" for k, v in stats.items()),
+        )
+        return stats
+
+    def stats(self) -> dict[str, int]:
         stats = {**self.engine.stats(), **self.counts}
         if "queue_bad" in stats:
             # The engine counts the members it couldn't read; this, those
@@ -1132,11 +1146,6 @@ class _Run:
             stats["queue_bad"] += self.queue_bad
         stats.pop("queued", None)
         stats.pop("in_flight", None)
-        log.info(
-            "crawl finished in %.1fs: %s",
-            time.monotonic() - started,
-            ", ".join(f"{k} {v}" for k, v in stats.items()),
-        )
         return stats
 
     def settle(self) -> None:

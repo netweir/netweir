@@ -9,6 +9,7 @@
 - [Self-healing](self-healing.md): blocks, checkpoints, tracked selectors and repair proposals.
 - [One crawl, many machines](distributed.md): processes on several machines sharing one queue in Redis.
 - [Browser](browser.md): drive Chrome for pages that need JavaScript.
+- [Running spiders as a service](serve.md): `netweir serve`, jobs scheduled, watched and cancelled over HTTP, as with scrapyd.
 - [Settings](settings.md): every setting and its default.
 
 The designs behind it, for anyone working on netweir:
@@ -27,3 +28,4 @@ The designs behind it, for anyone working on netweir:
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
 - [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.
+- [design/serve.md](design/serve.md): the job service.

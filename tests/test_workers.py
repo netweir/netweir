@@ -1,5 +1,6 @@
 """Callbacks in worker processes: Settings(workers=N)."""
 
+import json
 import logging
 import os
 import pickle
@@ -169,6 +170,31 @@ def test_a_spider_defined_in_a_function_is_refused_with_workers(base):
 def test_workers_must_be_at_least_one():
     with pytest.raises(ValueError, match="workers"):
         netweir.Settings(workers=0)
+
+
+def test_spider_arguments_reach_the_workers(base, tmp_path):
+    script = tmp_path / "spider.py"
+    script.write_text(
+        "import netweir\n\n"
+        "class Args(netweir.Spider):\n"
+        f"    start_urls = ['{base}/']\n"
+        "    def parse(self, page):\n"
+        "        for href in page.css('a.item::attr(href)').getall():\n"
+        "            yield page.follow(href, callback='item')\n"
+        "    def item(self, page):\n"
+        "        yield {'colour': self.colour}\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "items.jsonl"
+    done = subprocess.run(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "-q", "-o", str(out),
+         "-a", "colour=blue", "-s", "workers=2", "-s", "throttle=false", "-s", "start_delay=0",
+         "-s", "obey_robots=false", "-s", "obey_tdmrep=false"],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == ITEMS and {r["colour"] for r in rows} == {"blue"}
 
 
 def test_the_command_runs_a_files_spider_in_workers(base, tmp_path):

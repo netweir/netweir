@@ -52,6 +52,9 @@ Working today:
   `allowed_domains` keeps a crawl on the sites you meant; `max_items`,
   `max_pages`, `max_errors`, `max_time` and `max_memory` stop it when
   you've seen enough.
+- `netweir serve`: spiders run as jobs you schedule, watch and cancel
+  over HTTP, with their logs, items and stats kept, like scrapyd and
+  speaking much of its API. See [docs/serve.md](docs/serve.md).
 - `netweir shell URL`, `fetch` and `view`: the page netweir gets, at a
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).

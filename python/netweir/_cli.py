@@ -1,6 +1,7 @@
 """The ``netweir`` command.
 
 netweir crawl spider.py -o items.jsonl -s concurrency=32
+netweir serve --project books=spiders/
 netweir fetch https://example.com/ --headers
 netweir view https://example.com/
 netweir shell https://example.com/
@@ -17,11 +18,14 @@ import dataclasses
 import html
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import re
+import signal
 import sys
 import tempfile
+import threading
 import traceback
 import urllib.parse
 import urllib.request
@@ -34,6 +38,19 @@ class _Usage(Exception):
 
 
 def _load_spider(path: str, name: str | None):
+    spiders = _spiders_in(path)
+    if name:
+        spiders = [s for s in spiders if s.__name__ == name or s.name == name]
+    if len(spiders) != 1:
+        found = ", ".join(s.__name__ for s in spiders) or "none"
+        raise _Usage(
+            f"{path}: expected one Spider{' named ' + name if name else ''}, found {found}"
+        )
+    return spiders[0]
+
+
+def _spiders_in(path: str) -> list:
+    """The Spider classes a file defines (not those it imports)."""
     from netweir import Spider
 
     if not Path(path).is_file():
@@ -48,7 +65,7 @@ def _load_spider(path: str, name: str | None):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    spiders = [
+    return [
         obj
         for obj in vars(module).values()
         if inspect.isclass(obj)
@@ -56,14 +73,6 @@ def _load_spider(path: str, name: str | None):
         and obj is not Spider
         and obj.__module__ == module.__name__
     ]
-    if name:
-        spiders = [s for s in spiders if s.__name__ == name or s.name == name]
-    if len(spiders) != 1:
-        found = ", ".join(s.__name__ for s in spiders) or "none"
-        raise _Usage(
-            f"{path}: expected one Spider{' named ' + name if name else ''}, found {found}"
-        )
-    return spiders[0]
 
 
 def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
@@ -113,6 +122,15 @@ def main(argv: list[str] | None = None) -> int:
     crawl.add_argument(
         "-s", "--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting"
     )
+    crawl.add_argument(
+        "-a",
+        dest="arguments",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="set an attribute of the spider, as a string",
+    )
+    crawl.add_argument("--stats", metavar="FILE", help="write the stats to FILE as JSON at the end")
     crawl.add_argument("--spider", help="which Spider, when the file has several")
     crawl.add_argument(
         "--queue",
@@ -152,7 +170,47 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="chrome-headless-shell instead: lighter, but easier to tell from a real browser",
     )
+    serve = commands.add_parser(
+        "serve", help="run spiders as jobs over an HTTP API, as scrapyd does"
+    )
+    serve.add_argument(
+        "--project",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="a spider file, or a directory of them, to serve as project NAME",
+    )
+    serve.add_argument("--bind", default="127.0.0.1", help="the address to listen on (127.0.0.1)")
+    serve.add_argument("--port", type=int, default=6800, help="the port to listen on (6800)")
+    serve.add_argument(
+        "--dir", default="netweir-serve", help="where jobs, logs and items are kept (netweir-serve)"
+    )
+    serve.add_argument(
+        "--max-jobs", type=int, metavar="N", help="jobs to run at once (one per CPU)"
+    )
+    serve.add_argument(
+        "--keep", type=int, default=100, metavar="N", help="finished jobs to remember (100)"
+    )
+    serve.add_argument(
+        "--username",
+        default=os.environ.get("NETWEIR_SERVE_USERNAME"),
+        help="require HTTP basic auth (or NETWEIR_SERVE_USERNAME)",
+    )
+    serve.add_argument(
+        "--password",
+        default=os.environ.get("NETWEIR_SERVE_PASSWORD"),
+        help="the password for --username (or NETWEIR_SERVE_PASSWORD)",
+    )
+    serve.add_argument(
+        "--insecure-no-auth",
+        action="store_true",
+        help="allow --bind to a non-loopback address without a username and password",
+    )
     args = parser.parse_args(argv)
+    if args.command == "serve":
+        from netweir import _serve
+
+        return _serve.main(args)
     if args.command == "install":
         return _install(args)
     if args.command in ("fetch", "view", "shell"):
@@ -170,14 +228,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     from netweir import QueueError
 
+    # A service manager's stop, or `kill`, ends the crawl as Ctrl-C does,
+    # with the output files closed and the checkpoint saved.
+    main_thread = threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGTERM, _interrupt) if main_thread else None
+    reason = "error"
     try:
         spider.run(output=output)
+        reason = spider.finish_reason
     except KeyboardInterrupt:
+        reason = "interrupted"
         print("netweir: interrupted", file=sys.stderr)
         return 130
     except QueueError as e:
         print(f"netweir: {e}", file=sys.stderr)
         return 1
+    finally:
+        # None for a handler that wasn't set from Python, which can't be put back.
+        if main_thread and previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+        if args.stats:
+            with open(args.stats, "w", encoding="utf-8") as f:
+                json.dump({**spider.stats, "finish_reason": reason}, f, indent=2)
     # A failed check is a failed crawl, for a scheduler or CI job.
     return 1 if spider.check_failures else 0
 
@@ -224,6 +296,16 @@ def _chunks(items, size: int):
         yield chunk
 
 
+def _interrupt(signum, frame) -> None:
+    """Handles SIGTERM as whatever handles SIGINT now would: asyncio's
+    handler, while a crawl runs, which cancels it cleanly."""
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        # SIGINT ignored, as in a job started with `nohup ... &`.
+        raise KeyboardInterrupt
+    handler(signal.SIGINT, frame)
+
+
 def _install(args) -> int:
     from netweir._errors import BrowserError
     from netweir._native import install_chrome
@@ -256,6 +338,9 @@ def _prepare(args):
     if args.batch is not None and not args.output:
         raise _Usage("--batch goes with -o")
     output = export.to_path(args.output, batch=args.batch) if args.output else None
+    if args.stats and not Path(args.stats).resolve().parent.is_dir():
+        raise _Usage(f"no such directory for --stats: {Path(args.stats).parent}")
+    arguments = dict(_parse_argument(a) for a in args.arguments)
     # Before the engine is made (it opens the checkpoint), so a checkpoint
     # with batches or a cloud path is one line and leaves nothing behind.
     _check_outputs(settings, [*spider_cls.pipelines, *([output] if output else [])])
@@ -264,7 +349,22 @@ def _prepare(args):
     dataclasses.replace(settings, queue=None)._engine()
     spider = spider_cls()
     spider.settings = settings
+    for name, value in arguments.items():
+        setattr(spider, name, value)
+    # Worker processes build their own spider, and set these on it too.
+    spider._arguments = arguments
     return spider, output
+
+
+def _parse_argument(text: str) -> tuple[str, str]:
+    name, sep, value = text.partition("=")
+    if not sep:
+        raise _Usage(f"-a takes NAME=VALUE, not {text!r}")
+    if not name.isidentifier():
+        raise _Usage(f"-a {name!r}: a spider argument's name must be a Python identifier")
+    if name == "settings":
+        raise _Usage("-a settings: use -s for settings")
+    return name, value
 
 
 # --- fetch, view and shell --------------------------------------------------

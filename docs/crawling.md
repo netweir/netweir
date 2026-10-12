@@ -154,6 +154,21 @@ processes on other machines ([One crawl, many machines](distributed.md));
 command line (an unknown setting, a bad value, a path that can't be
 written) exits with status 2 and one line saying why.
 
+`-a NAME=VALUE` sets an attribute of the spider, as a string, the way
+Scrapy's spider arguments do: with `-a category=fiction`, `self.category`
+is `"fiction"`, in worker processes too. `--stats stats.json` writes the
+crawl's stats to a file when it ends, however it ends, with
+`finish_reason` among them.
+
+Ctrl-C stops a crawl cleanly: the items so far are closed off in the
+output file, a checkpoint records where it got to, and the command exits
+with status 130. SIGTERM, which `kill` and service managers send, does the
+same. After a run in Python, `spider.stats` holds the stats too, including
+those of a run that was interrupted or raised.
+
+To run spiders as jobs that you schedule, watch and cancel over HTTP, as
+scrapyd does for Scrapy, see [Running spiders as a service](serve.md).
+
 ### Stopping early
 
 A crawl that should end before it runs out of pages takes a limit:
@@ -638,7 +653,8 @@ They come in Scrapy's order: every pipeline's `open_spider`, then
 `close_spider`, then `spider_closed`. The spider itself can define
 `opened()` and `closed(reason)`, called after the others. `reason` is
 `spider.finish_reason` (`"finished"`, or the limit that stopped the crawl),
-`"error"` when an exception ended it, or `"interrupted"` after Ctrl-C.
+`"error"` when an exception ended it, or `"interrupted"` after Ctrl-C (or
+SIGTERM, under `netweir crawl`).
 
 ```python
 class Counter:

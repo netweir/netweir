@@ -4,9 +4,11 @@ import asyncio
 import csv
 import json
 import logging
+import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -52,6 +54,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, f"<h1>{p.rsplit('/', 1)[1]}</h1>")
         elif p == "/based":
             self.send(200, '<head><base href="/book/"></head><a href="y">y</a>')
+        elif p.startswith("/slow/"):
+            # An endless chain of pages, each a moment late.
+            time.sleep(0.2)
+            n = int(p.rsplit("/", 1)[1])
+            self.send(200, f'<h1>{n}</h1><a href="/slow/{n + 1}">next</a>')
         elif p == "/boom":
             self.send(500, "<h1>error</h1>")
         else:
@@ -612,3 +619,126 @@ def test_max_pages_per_domain(base):
     spider.start_urls = [f"{base}/page/1"]
     stats = spider.run()
     assert stats["fetched"] == 2 and stats["skipped_domain_full"] == 1
+
+
+def test_command_line_spider_arguments(base, tmp_path):
+    script = tmp_path / "args.py"
+    script.write_text(
+        "import netweir\n"
+        "class Args(netweir.Spider):\n"
+        "    colour = 'red'\n"
+        f"    start_urls = ['{base}/book/x']\n"
+        "    def parse(self, page):\n"
+        "        yield {'colour': self.colour, 'size': self.size}\n"
+    )
+    out = tmp_path / "out.jsonl"
+    done = subprocess.run(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "-o", str(out),
+         "-a", "colour=blue", "-a", "size=a=b", "-s", "throttle=false", "-s", "start_delay=0"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == {"colour": "blue", "size": "a=b"}
+
+
+@pytest.mark.parametrize(
+    "arg, message",
+    [("colour", "NAME=VALUE"), ("not-a-name=1", "not-a-name"), ("settings=x", "use -s")],
+)
+def test_command_line_spider_argument_mistakes(tmp_path, arg, message):
+    script = tmp_path / "s.py"
+    script.write_text("import netweir\nclass S(netweir.Spider):\n    start_urls = []\n")
+    done = subprocess.run(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "-a", arg],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 2, done.stderr
+    assert message in done.stderr and "Traceback" not in done.stderr
+
+
+def test_command_line_stats_file(base, tmp_path):
+    script = tmp_path / "books.py"
+    script.write_text(
+        "import netweir\n"
+        "class Books(netweir.Spider):\n"
+        f"    start_urls = ['{base}/page/1']\n"
+        "    def parse(self, page):\n"
+        "        yield {'url': page.url}\n"
+    )
+    stats = tmp_path / "stats.json"
+    done = subprocess.run(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "--stats", str(stats),
+         "-s", "throttle=false", "-s", "start_delay=0"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    saved = json.loads(stats.read_text(encoding="utf-8"))
+    assert saved["finish_reason"] == "finished"
+    assert saved["items"] == 1 and saved["fetched"] == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_sigterm_stops_a_crawl_as_ctrl_c_does(base, tmp_path):
+    script = tmp_path / "slow.py"
+    script.write_text(
+        "import netweir\n"
+        "class Slow(netweir.Spider):\n"
+        f"    start_urls = ['{base}/slow/1']\n"
+        "    def parse(self, page):\n"
+        "        yield {'n': page.css('h1::text').get()}\n"
+        "        yield page.follow(page.css('a::attr(href)').get())\n"
+    )
+    out, stats = tmp_path / "out.jsonl", tmp_path / "stats.json"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "-o", str(out),
+         "--stats", str(stats), "-s", "throttle=false", "-s", "start_delay=0"],
+        stderr=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    time.sleep(2)  # pages come every 0.2 s
+    proc.send_signal(signal.SIGTERM)
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 130, err
+    assert "netweir: interrupted" in err and "Traceback" not in err
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) >= 3
+    saved = json.loads(stats.read_text(encoding="utf-8"))
+    assert saved["finish_reason"] == "interrupted"
+    assert saved["items"] == len(rows)
+
+
+def test_stats_are_kept_when_a_crawl_raises(base):
+    class Raises(netweir.Spider):
+        settings = netweir.Settings(throttle=False, start_delay=0, fail_fast=True)
+        start_urls = [f"{base}/book/x"]
+
+        def parse(self, page):
+            raise RuntimeError("no")
+
+    spider = Raises()
+    with pytest.raises(RuntimeError):
+        spider.run()
+    assert spider.stats["fetched"] == 1
+
+
+def test_the_command_runs_in_a_thread_and_leaves_sigterm_alone(base, tmp_path):
+    from netweir import _cli
+
+    script = tmp_path / "one.py"
+    script.write_text(
+        "import netweir\n"
+        "class One(netweir.Spider):\n"
+        f"    start_urls = ['{base}/book/x']\n"
+        "    def parse(self, page):\n"
+        "        yield {'url': page.url}\n"
+    )
+    argv = ["crawl", str(script), "-q", "-s", "throttle=false", "-s", "start_delay=0"]
+    before = signal.getsignal(signal.SIGTERM)
+    results = []
+    thread = threading.Thread(target=lambda: results.append(_cli.main(argv)))
+    thread.start()
+    thread.join(60)
+    assert results == [0]
+    assert _cli.main(argv) == 0
+    assert signal.getsignal(signal.SIGTERM) is before
