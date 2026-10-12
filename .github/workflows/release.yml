@@ -123,7 +123,8 @@ jobs:
         run: |
           uv venv
           uv pip install --no-index --find-links dist netweir
-          uv pip install pytest pytest-asyncio pyarrow
+          # Everything the tests import, from the same list CI uses.
+          uv pip install --group dev
           rm -rf python
           uv run --no-project pytest -q tests
         shell: bash
