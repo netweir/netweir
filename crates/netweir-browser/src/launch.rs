@@ -442,15 +442,13 @@ pub(crate) struct Started {
 /// closes its pages and then runs on with nothing to drive it, for good.
 /// See [`tie`].
 pub(crate) struct Lifeline {
-    #[cfg(unix)]
+    /// The pipe the watcher reads, written by nothing.
     end: Option<PipeWriter>,
-    #[cfg(unix)]
     watcher: Option<Child>,
     #[cfg(windows)]
     _job: Option<std::os::windows::io::OwnedHandle>,
 }
 
-#[cfg(unix)]
 impl Drop for Lifeline {
     fn drop(&mut self) {
         drop(self.end.take());
@@ -536,6 +534,10 @@ impl Said {
     }
 }
 
+/// Taken while a process is started with handles made inheritable for it
+/// (see start).
+static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     if !executable.is_file() {
         return Err(Error::Launch(format!(
@@ -558,7 +560,6 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     // dropped, and any child started meanwhile would get them too; then a
     // browser's reader would never see its Chrome exit. Launches here take
     // turns through that window.
-    static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // In a group of its own, which its helpers join: what the watcher
     // ends (see tie).
     #[cfg(unix)]
@@ -652,9 +653,9 @@ fn untied(why: &str) {
 }
 
 /// Ties Chrome to a [`Lifeline`]: a job that ends every process in it
-/// when its last handle closes, and netweir holds the only one. Chrome is
-/// still suspended, so every helper it starts joins the job too. A Chrome
-/// that can't be put in one runs untied, with a warning.
+/// when its last handle closes. Chrome is still suspended, so every helper
+/// it starts joins the job too. A Chrome that can't be put in one runs
+/// untied, with a warning. See [`watch`] for who holds the handles.
 #[cfg(windows)]
 fn tie(child: &Child) -> Lifeline {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -689,10 +690,74 @@ fn tie(child: &Child) -> Lifeline {
             }
         }
     };
-    let job = job
-        .map_err(|e| untied(&format!("it couldn't be put in a job: {e}")))
-        .ok();
-    Lifeline { _job: job }
+    let job = match job {
+        Ok(job) => job,
+        Err(e) => {
+            untied(&format!("it couldn't be put in a job: {e}"));
+            return Lifeline {
+                end: None,
+                watcher: None,
+                _job: None,
+            };
+        }
+    };
+    // Without a watcher, netweir's is the only handle, and Chrome is
+    // ended at once rather than given its time.
+    let (end, watcher) = match watch(&job) {
+        Ok((end, watcher)) => (Some(end), Some(watcher)),
+        Err(_) => (None, None),
+    };
+    Lifeline {
+        end,
+        watcher,
+        _job: Some(job),
+    }
+}
+
+/// Starts Chrome's watcher, which holds a handle to its job too, so the
+/// job outlives netweir by the time Chrome is given to quit: `cmd`,
+/// reading a pipe whose only writer is netweir. Nothing is written, so
+/// the read returns only when the writer closes, on drop or on the
+/// program's death, which also closes Chrome's DevTools pipe, and Chrome
+/// quits on that, writing out its profile as it goes. Ten seconds later
+/// (`ping`'s wait: `timeout` wants a console), the watcher exits, the
+/// job's last handle closes, and whatever is left is ended. `cmd` and
+/// `ping` are on every Windows; the watcher runs with a console of its
+/// own, hidden, so a Ctrl+C meant for the program doesn't end it early.
+#[cfg(windows)]
+fn watch(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<(PipeWriter, Child)> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let (held, end) = std::io::pipe()?;
+    let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+    let mut command = Command::new(shell);
+    command
+        .raw_arg(r#"/d /q /c "set /p _= & %SystemRoot%\System32\PING.EXE -n 11 127.0.0.1 >nul""#)
+        .stdin(held)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+    // The watcher's copy of the job handle is inherited, so it's made
+    // inheritable only while it starts, taking turns as start() does.
+    let inherited = job.try_clone()?;
+    let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the handle is ours and open.
+    if unsafe {
+        SetHandleInformation(
+            inherited.as_raw_handle() as _,
+            HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let watcher = command.spawn()?;
+    drop(inherited);
+    Ok((end, watcher))
 }
 
 /// Lets a Chrome started suspended run.

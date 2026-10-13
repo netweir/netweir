@@ -115,9 +115,18 @@ lifeline the driver holds, and is ended when that's let go.
   launch says so through the warning hook.
 - **Windows.** Chrome starts suspended, goes into a job object that
   kills everything in it when its last handle closes, and is then
-  resumed, so every helper it starts is in the job too. The driver holds
-  the only handle. A Chrome that can't be put in a job runs untied, with
-  a warning; one that can't be resumed is killed and the launch fails.
+  resumed, so every helper it starts is in the job too. Killing at once
+  would lose what Chrome hadn't written out, so a watcher holds the
+  job's other handle: `cmd`, with a hidden console of its own, reading a
+  pipe only the driver writes to. When the driver goes, Chrome sees its
+  DevTools pipe close and quits, writing out its profile; the watcher's
+  read returns too, and ten seconds of `ping` later it exits, closing
+  the job on whatever is left. `ping` because `timeout` wants a console;
+  `cmd` and `ping` are on every Windows, and nothing else could be run:
+  the driver may be a Python extension, with no executable of its own to
+  start. Without the watcher, Chrome is ended at once, as before. A
+  Chrome that can't be put in a job runs untied, with a warning; one that
+  can't be resumed is killed and the launch fails.
 
 A Chrome the driver connected to is never tied: it isn't the driver's to
 end. Known limit: a child forked without exec after the launch (Python's

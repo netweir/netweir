@@ -95,10 +95,9 @@ The options:
 Use it with `async with`, or `await` it and call `await browser.close()`
 yourself. Each browser Netweir starts gets a fresh profile, deleted when it
 closes. A program that ends without closing it, even one that crashes or
-is killed, still takes Chrome with it within a few seconds. On macOS and
-Linux, Chrome is asked to quit first, so a `user_data_dir` keeps cookies
-it hadn't saved yet; on Windows it's ended at once, so call `close()`
-when the profile matters. The temporary profile stays behind, as a
+is killed, still takes Chrome with it within a few seconds. Chrome is
+given the time to quit properly first, so a `user_data_dir` keeps
+cookies it hadn't saved yet. The temporary profile stays behind, as a
 `netweir-chrome-*` folder in the temporary directory, until the next
 browser Netweir starts clears it away. A browser you `connect` to is
 never ended this way: Netweir didn't start it.
