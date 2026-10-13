@@ -593,7 +593,8 @@ fn framed() -> common::Server {
             html(
                 r#"<!DOCTYPE html><script>
   window.pic = true;
-  document.write(`<a id=out target=_top href="http://127.0.0.1:${location.port}/refused">out</a>`);
+  document.write(`<a id=out target=_top onclick="window.clicked = true"
+    href="http://127.0.0.1:${location.port}/refused">out</a>`);
 </script>"#,
             ),
         ),
@@ -932,10 +933,28 @@ async fn a_frame_from_another_site_cant_take_the_page_past_the_guard() {
         .iter()
         .any(|u| u.ends_with("/refused"))
     {
+        // Either way, the page never fetched what the guard refuses: a
+        // navigation that went round the guard would show here first.
+        let seen: Vec<String> = server
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _)| p.clone())
+            .collect();
         assert!(
-            std::time::Instant::now() < deadline,
-            "the guard was never asked about /refused"
+            !seen.iter().any(|p| p == "/refused"),
+            "fetched unguarded: {seen:?}"
         );
+        if std::time::Instant::now() >= deadline {
+            let clicked = frame.evaluate("window.clicked === true").await;
+            panic!(
+                "the guard was never asked about /refused; it was asked about {:?}, the server \
+                 saw {seen:?}, the page is at {}, and the link heard a click: {clicked:?}",
+                asked.lock().unwrap(),
+                page.url()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(times_seen(&server, "/refused"), 0);

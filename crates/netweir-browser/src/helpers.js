@@ -71,8 +71,6 @@
       return { x: b[0] + b[2] / 2, y: b[1] + b[3] / 2 };
     },
 
-    // Whether the element `selector` finds is under the mouse as the page
-    // sees it, waiting a few frames for a move it hasn't handled yet.
     // A point just outside the element `selector` finds, in view, where
     // the mouse can come onto it from; none if it fills the window.
     beside(selector) {

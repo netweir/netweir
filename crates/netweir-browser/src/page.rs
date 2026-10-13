@@ -952,9 +952,8 @@ impl Page {
         Ok(())
     }
 
-    /// Moves the mouse to (x, y) and clicks the left button there.
-    pub(crate) async fn mouse_click(&self, x: f64, y: f64) -> Result<()> {
-        self.mouse_move(x, y).await?;
+    /// Clicks the left button at (x, y), where the mouse already is.
+    pub(crate) async fn mouse_press(&self, x: f64, y: f64) -> Result<()> {
         for kind in ["mousePressed", "mouseReleased"] {
             self.call(
                 "Input.dispatchMouseEvent",

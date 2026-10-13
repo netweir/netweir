@@ -494,10 +494,15 @@ impl Frame {
             "enabled",
             "receives events",
         ];
-        let (x, y) = self
-            .actionable(action, selector, &checks, true, timeout)
-            .await?;
-        self.page.mouse_click(x, y).await
+        // The button goes down only once the page has seen the mouse come
+        // over the element. The checks ask the frame's own renderer, but
+        // Chrome's browser process decides which frame gets the mouse, and
+        // for a frame from another site it goes by what the page around
+        // the frame last drew: a click there could land on that page
+        // instead, return, and do nothing.
+        let deadline = Instant::now() + self.page.timeout(timeout);
+        let (x, y) = self.over(action, selector, &checks, deadline).await?;
+        self.page.mouse_press(x, y).await
     }
 
     /// Moves the mouse to the element's centre, once it's visible, still
@@ -505,29 +510,41 @@ impl Frame {
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
         let checks = ["attached", "visible", "stable", "receives events"];
         let deadline = Instant::now() + self.page.timeout(timeout);
+        self.over("hover", selector, &checks, deadline).await?;
+        Ok(())
+    }
+
+    /// Moves the mouse to the element's centre once it passes `checks`,
+    /// and returns that point once the page has sent mouseover for it,
+    /// heard from netweir's world. A move to where the mouse already is
+    /// sends nothing, and the page may not have noticed it there (after a
+    /// scroll, or the element coming back under it), so a move that
+    /// brings no mouseover is tried again from just outside, as a person
+    /// moves off and back on.
+    async fn over(
+        &self,
+        action: &str,
+        selector: &str,
+        checks: &[&str],
+        deadline: Instant,
+    ) -> Result<(f64, f64)> {
         let sel = Value::from(selector);
-        // Done once the page has sent mouseover for it, heard from
-        // netweir's world. A move to where the mouse already is sends
-        // nothing, and the page may not have noticed it there (after a
-        // scroll, or the element coming back under it), so a move that
-        // brings no mouseover is tried again from just outside, as a
-        // person moves off and back on.
         let mut from_outside = false;
         loop {
             let (x, y) = self
-                .actionable("hover", selector, &checks, true, left(deadline))
+                .actionable(action, selector, checks, true, left(deadline))
                 .await?;
             self.helper(&format!("__netweir.armOver({sel})")).await?;
             if from_outside {
-                self.come_from_beside(selector, deadline).await?;
+                self.come_from_beside(action, selector, deadline).await?;
             }
             self.page.mouse_move(x, y).await?;
             if self.helper("__netweir.overSeen()").await? == true {
-                return Ok(());
+                return Ok((x, y));
             }
             if Instant::now() >= deadline {
                 return Err(Error::Timeout(format!(
-                    "hover {selector}: the page never sent mouseover for it"
+                    "{action} {selector}: the page never sent mouseover for it"
                 )));
             }
             from_outside = true;
@@ -536,11 +553,16 @@ impl Frame {
 
     /// Moves the mouse to just outside the element, unless it fills the
     /// window, and listens again for it coming over.
-    async fn come_from_beside(&self, selector: &str, deadline: Instant) -> Result<()> {
+    async fn come_from_beside(
+        &self,
+        action: &str,
+        selector: &str,
+        deadline: Instant,
+    ) -> Result<()> {
         let sel = Value::from(selector);
         let beside = self
             .attempt(
-                "hover",
+                action,
                 selector,
                 &format!("__netweir.beside({sel})"),
                 Some(false),

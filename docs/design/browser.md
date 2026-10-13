@@ -165,7 +165,16 @@ failed:
 | receives events | the element, or one inside it, is what's at the click point | click |
 
 A click scrolls the element into view, moves the mouse to its centre and
-presses and releases the left button. `fill` focuses the element, selects
+presses and releases the left button. The button goes down only once the
+page has sent `mouseover` for the element, the way `hover` waits (see
+Hovering): the checks run in the element's own renderer, but Chrome's
+browser process decides which frame gets the mouse, by what the page
+around a frame from another site last drew, so a click could land on
+that page instead and do nothing. (Windows CI once clicked a
+`target=_top` link in such a frame and no navigation followed; 800
+clicks in freshly loaded frames under load on macOS never missed, so
+that one is unexplained, and the test now says what the link, the guard
+and the server saw.) `fill` focuses the element, selects
 what's in it and inserts the text with `Input.insertText`, which fires the
 same input events typing does. `press` sends a key down and up, with the
 key's code and text for the common keys.
