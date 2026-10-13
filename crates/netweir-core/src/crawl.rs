@@ -1690,12 +1690,13 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
     // Since when the queue has looked empty, and how many requests had
     // been queued then: one more since, and it wasn't.
     let mut quiet: Option<(Instant, i64)> = None;
-    // Since when every turn has failed.
+    // Since when every step has failed.
     let mut failing: Option<Instant> = None;
     loop {
         while let Ok(op) = inbox.try_recv() {
             ops.push_back(op);
         }
+        let backlog = ops.len();
         let turn = async {
             if let Some(reply) = send_ops(&s, q, &mut ops, &mut pushing, &mut beat).await? {
                 // What's held and not finished is for others now. If Redis
@@ -1797,6 +1798,13 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
                 }
             }
             Err(e) => {
+                // Some of the backlog got through first: whatever failed
+                // since is a new failure, not the old one going on, or a
+                // backlog whose batches each fail once would stop the
+                // process however well it was getting on.
+                if ops.len() < backlog {
+                    failing = None;
+                }
                 let mut state = s.lock();
                 let first = failing.is_none();
                 let since = *failing.get_or_insert_with(Instant::now);

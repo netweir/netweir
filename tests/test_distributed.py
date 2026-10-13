@@ -486,6 +486,22 @@ def test_a_long_backlog_of_pushes_doesnt_starve_the_heartbeat(fake):
     assert max(gaps) < 2.0, gaps
 
 
+def test_a_backlog_whose_every_batch_fails_once_still_gets_through(fake):
+    class Many(netweir.Spider):
+        def start(self):
+            for n in range(5000):
+                yield netweir.Request(f"http://127.0.0.1:1/{n}")
+
+    spider = Many()
+    spider.settings = settings(fake.url, queue_lease=2.0, max_pages=1, retries=0)
+    # Each batch's first try takes longer than a call may (0.67 s), and
+    # its second gets through: about a second a batch, five seconds of
+    # failing now and then, and never one step failing for a lease.
+    fake.push_delays = [0.8, 0.0] * 5
+    finishes(spider)
+    assert fake.scripts["-- netweir push"] >= 10
+
+
 def test_a_step_that_keeps_failing_while_heartbeats_get_through_stops_the_process(fake):
     class One(netweir.Spider):
         def start(self):

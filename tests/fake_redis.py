@@ -38,6 +38,8 @@ class FakeRedis:
         #: Seconds each push script's answer is held back, as a slow or
         #: distant server would.
         self.push_delay = 0.0
+        #: Delays for the next pushes, one each, before ``push_delay``.
+        self.push_delays: list[float] = []
         self.connections: set = set()
         fake = self
 
@@ -77,7 +79,7 @@ class FakeRedis:
                     if fake.lost(applied, replies):
                         return  # applied, and the reply never sent
                     if any(b"-- netweir push" in arg for c in applied for arg in c):
-                        time.sleep(fake.push_delay)
+                        time.sleep(fake.push_delays.pop(0) if fake.push_delays else fake.push_delay)
                     self.wfile.write(_encode(reply))
 
         self.server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
