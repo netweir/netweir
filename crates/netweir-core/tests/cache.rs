@@ -141,16 +141,18 @@ async fn a_hit_waits_for_no_delay() {
     let slow = || CrawlSettings {
         obey_robots: false,
         obey_tdmrep: false,
-        min_delay: Duration::from_secs(3),
-        max_delay: Duration::from_secs(3),
+        min_delay: Duration::from_secs(6),
+        max_delay: Duration::from_secs(6),
         ..settings(&dir)
     };
     run(slow(), &site, &["/a", "/b"]).await;
     let started = std::time::Instant::now();
     let (second, _) = run(slow(), &site, &["/a", "/b"]).await;
     assert_eq!(second.len(), 2);
+    // A crawl with no wait took 2.2 s on a loaded Windows runner: the
+    // bound leaves room for that, and a hit that waited would take 6 s.
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(4),
         "{:?}",
         started.elapsed()
     );
