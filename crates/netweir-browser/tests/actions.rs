@@ -745,7 +745,10 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
             r#"<!DOCTYPE html><div id=feed style="height: 3000px"></div>
 <script>
   addEventListener('scroll', () => {
-    if (scrollY + innerHeight > document.documentElement.scrollHeight - 20) {
+    // Near the end as the page itself scrolls it, with room to spare:
+    // Windows stops a few pixels short of what heights alone say.
+    const s = document.scrollingElement;
+    if (scrollY > s.scrollHeight - s.clientHeight - 100) {
       setTimeout(() => feed.style.height = (feed.offsetHeight + 2000) + 'px', 50);
     }
   });
@@ -757,11 +760,11 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
     // Two notches from the bottom, so the first round is a moment's work
     // however slow the machine, and every round after it a long way down:
     // the time runs out with at least one round done.
-    page.evaluate("scrollTo(0, document.documentElement.scrollHeight - innerHeight - 200)")
+    page.evaluate("scrollTo(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight - 200)")
         .await
         .unwrap();
     let started = std::time::Instant::now();
-    let err = page
+    let outcome = page
         .scroll(
             None,
             0.0,
@@ -770,8 +773,14 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
             Duration::from_secs(2),
             Some(Duration::from_secs(3)),
         )
-        .await
-        .unwrap_err();
+        .await;
+    let err = match outcome {
+        Ok(rounds) => panic!(
+            "finished after {rounds} rounds, though the page never ends: {}",
+            scroll_state(&page).await
+        ),
+        Err(e) => e,
+    };
     assert!(
         matches!(&err, Error::ScrollTimeout { message, rounds } if message.contains("bottom") && *rounds >= 1),
         "{err}"
@@ -838,7 +847,14 @@ async fn checking_waits_for_the_box_and_says_to_use_its_label() {
 /// to go further and seeing it doesn't, not by arithmetic on heights a
 /// platform may count differently.
 async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
-    let state = page
+    let state = scroll_state(page).await;
+    assert_eq!(state["at_bottom"], json!(true), "rounds {rounds}: {state}");
+}
+
+/// Where the page is scrolled to and every height that says how far it
+/// can go; `at_bottom` is whether the browser takes it no further.
+async fn scroll_state(page: &netweir_browser::Page) -> serde_json::Value {
+    page
         .evaluate(
             "(() => { const s = document.scrollingElement, d = document.documentElement, b = document.body; \
              const box = document.querySelector('#box, [style*=contain]'); const before = scrollY; \
@@ -850,8 +866,7 @@ async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
              box: box && {scrollTop: box.scrollTop, max: box.scrollHeight - box.clientHeight, rect: box.getBoundingClientRect().toJSON()}}; })()",
         )
         .await
-        .unwrap();
-    assert_eq!(state["at_bottom"], json!(true), "rounds {rounds}: {state}");
+        .unwrap()
 }
 
 #[tokio::test]

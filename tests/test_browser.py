@@ -75,7 +75,8 @@ PAGES = {
     "/endless": b"""<!DOCTYPE html><div id=feed style="height: 3000px"></div>
 <script>
   addEventListener('scroll', () => {
-    if (scrollY + innerHeight > document.documentElement.scrollHeight - 20) {
+    const s = document.scrollingElement;
+    if (scrollY > s.scrollHeight - s.clientHeight - 100) {
       setTimeout(() => feed.style.height = (feed.offsetHeight + 2000) + 'px', 50);
     }
   });
@@ -511,7 +512,9 @@ async def test_a_feed_still_growing_when_time_runs_out_says_how_far_it_got(brows
     await page.goto(base + "/endless")
     # A turn of the wheel from the bottom, so the first round is done in
     # moments however slow the machine; the next is a long way down.
-    await page.evaluate("scrollTo(0, document.documentElement.scrollHeight - innerHeight - 200)")
+    await page.evaluate(
+        "scrollTo(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight - 200)"
+    )
     with pytest.raises(netweir.BrowserTimeout, match="scrolling to the bottom") as stopped:
         await page.scroll(timeout=2)
     assert stopped.value.rounds >= 1
