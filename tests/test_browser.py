@@ -75,7 +75,7 @@ PAGES = {
     "/endless": b"""<!DOCTYPE html><div id=feed style="height: 3000px"></div>
 <script>
   addEventListener('scroll', () => {
-    if (scrollY + innerHeight > document.documentElement.scrollHeight - 300) {
+    if (scrollY + innerHeight > document.documentElement.scrollHeight - 20) {
       setTimeout(() => feed.style.height = (feed.offsetHeight + 2000) + 'px', 50);
     }
   });
@@ -480,15 +480,20 @@ async def test_a_profile_given_to_the_browser_keeps_its_cookies_and_stays(base, 
 
 
 async def test_a_profile_under_home_is_found_there(tmp_path, monkeypatch):
+    from netweir._native import find_chrome
+
+    # The Chrome is found before home moves: netweir's own install is
+    # found through home, and this is about the profile, not the Chrome.
+    try:
+        executable = find_chrome()
+    except netweir.BrowserError as e:
+        if not os.environ.get("NETWEIR_REQUIRE_CHROME"):
+            pytest.skip(str(e))
+        raise
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    try:
-        b = await netweir.browser(user_data_dir="~/kept-profile")
-    except netweir.BrowserError as e:
-        if "no Chrome found" in str(e) and not os.environ.get("NETWEIR_REQUIRE_CHROME"):
-            pytest.skip(str(e))
-        raise
+    b = await netweir.browser(executable, user_data_dir="~/kept-profile")
     await b.close()
     assert (tmp_path / "kept-profile").is_dir()
     assert not (tmp_path / "~").exists()
@@ -504,6 +509,9 @@ async def test_a_directory_isnt_a_file_to_upload(browser, base, tmp_path):
 async def test_a_feed_still_growing_when_time_runs_out_says_how_far_it_got(browser, base):
     page = await browser.new_page()
     await page.goto(base + "/endless")
+    # A turn of the wheel from the bottom, so the first round is done in
+    # moments however slow the machine; the next is a long way down.
+    await page.evaluate("scrollTo(0, document.documentElement.scrollHeight - innerHeight - 200)")
     with pytest.raises(netweir.BrowserTimeout, match="scrolling to the bottom") as stopped:
         await page.scroll(timeout=2)
     assert stopped.value.rounds >= 1
