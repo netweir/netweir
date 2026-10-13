@@ -22,6 +22,25 @@ pub use network::{Continue, NetworkEvent, Request, Route, glob_match, resource_t
 pub use page::{Cookie, Page, Response, WaitUntil};
 
 use std::fmt;
+use std::sync::OnceLock;
+
+type Warn = Box<dyn Fn(&str) + Send + Sync>;
+
+static WARN: OnceLock<Warn> = OnceLock::new();
+
+/// Where netweir's warnings go: things that went wrong, which it carried
+/// on past rather than fail or hang over. Standard error until this is
+/// called; only the first call counts.
+pub fn on_warning(f: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = WARN.set(Box::new(f));
+}
+
+pub(crate) fn warn(message: &str) {
+    match WARN.get() {
+        Some(f) => f(message),
+        None => eprintln!("netweir: {message}"),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {

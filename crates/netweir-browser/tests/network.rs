@@ -511,3 +511,435 @@ async fn a_decided_route_leaves_no_timer_behind() {
     );
     browser.close().await.unwrap();
 }
+
+fn script(body: &str) -> Reply {
+    Reply {
+        status: 200,
+        headers: vec![("Content-Type", "application/javascript".into())],
+        body: body.to_string(),
+    }
+}
+
+/// A frame's page: an image, and an API its tests fetch from the frame.
+const CHILD: &str = r#"<!DOCTYPE html><title>child</title>
+<img src="/secret.png" onload="window.pic = 'done'" onerror="window.pic = 'done'">"#;
+
+/// Pages whose frames come from another site, which Chrome runs in
+/// processes of their own: 127.0.0.1 and localhost are different sites.
+fn framed() -> common::Server {
+    serve(vec![
+        (
+            "/framed",
+            html(
+                r#"<!DOCTYPE html><script>
+  document.write(`<iframe name=child src="http://localhost:${location.port}/child"></iframe>`);
+</script>"#,
+            ),
+        ),
+        (
+            "/nested",
+            html(
+                r#"<!DOCTYPE html><script>
+  document.write(`<iframe name=middle src="http://localhost:${location.port}/middle"></iframe>`);
+</script>"#,
+            ),
+        ),
+        (
+            "/middle",
+            html(
+                r#"<!DOCTYPE html><script>
+  document.write(`<iframe name=inner src="http://127.0.0.1:${location.port}/child"></iframe>`);
+</script>"#,
+            ),
+        ),
+        (
+            "/moving",
+            html(r#"<!DOCTYPE html><iframe name=child src="/child"></iframe>"#),
+        ),
+        ("/child", html(CHILD)),
+        ("/secret.png", png()),
+        ("/secret-api", json_reply(r#"{"word": "secret"}"#)),
+        ("/api", json_reply(r#"{"word": "tea"}"#)),
+        (
+            "/worker",
+            html(
+                r#"<!DOCTYPE html><script>
+  window.said = new Promise(r => { new Worker('/worker.js').onmessage = e => r(e.data) });
+</script>"#,
+            ),
+        ),
+        (
+            "/worker.js",
+            script(
+                "fetch('/secret-api').then(() => postMessage('loaded'), () => postMessage('failed'))",
+            ),
+        ),
+        // A worker that starts a worker, and passes on what it says.
+        (
+            "/outer.js",
+            script("new Worker('/worker.js').onmessage = e => postMessage(e.data)"),
+        ),
+        (
+            "/guarded",
+            html(
+                r#"<!DOCTYPE html><script>
+  document.write(`<iframe name=child src="http://localhost:${location.port}/leaving"></iframe>`);
+</script>"#,
+            ),
+        ),
+        // A frame with a link that takes the whole page somewhere else.
+        (
+            "/leaving",
+            html(
+                r#"<!DOCTYPE html><script>
+  window.pic = true;
+  document.write(`<a id=out target=_top href="http://127.0.0.1:${location.port}/refused">out</a>`);
+</script>"#,
+            ),
+        ),
+        ("/refused", html("<title>refused</title>")),
+        (
+            "/audio.js",
+            script(
+                "registerProcessor('quiet', class extends AudioWorkletProcessor { process() { return true } })",
+            ),
+        ),
+        (
+            "/paint.js",
+            script("registerPaint('plain', class { paint() {} })"),
+        ),
+    ])
+}
+
+/// The frame named `name` once it shows `path` from a host starting
+/// `host`, with its image done loading or failing.
+async fn frame_at(
+    page: &netweir_browser::Page,
+    name: &str,
+    host: &str,
+    path: &str,
+) -> netweir_browser::Frame {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let frame = loop {
+        let frames = page.frames().await.unwrap();
+        if let Some(f) = frames
+            .into_iter()
+            .find(|f| f.name() == name && f.url().starts_with(host) && f.url().ends_with(path))
+        {
+            break f;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the frame never got to {host}...{path}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let done = frame
+        .evaluate(
+            "new Promise(r => { const t = () => window.pic ? r(true) : setTimeout(t, 20); t() })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(done, json!(true));
+    frame
+}
+
+/// What a fetch of `path` from `frame` came to: "loaded" or "failed".
+async fn fetch_from(frame: &netweir_browser::Frame, path: &str) -> serde_json::Value {
+    frame
+        .evaluate(&format!(
+            "fetch('{path}').then(() => 'loaded', () => 'failed')"
+        ))
+        .await
+        .unwrap()
+}
+
+fn times_seen(server: &common::Server, path: &str) -> usize {
+    server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == path)
+        .count()
+}
+
+/// Aborts what's under /secret, lets the rest go, and keeps each URL.
+fn abort_secrets(
+    mut routes: tokio::sync::mpsc::UnboundedReceiver<netweir_browser::Route>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    let routed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = routed.clone();
+    tokio::spawn(async move {
+        while let Some(route) = routes.recv().await {
+            let url = route.request().url.clone();
+            log.lock().unwrap().push(url.clone());
+            if url.contains("/secret") {
+                route.abort().await.unwrap();
+            }
+        }
+    });
+    routed
+}
+
+#[tokio::test]
+async fn a_frame_from_another_site_is_routed_and_heard() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    let mut events = page.listen();
+    let routed = abort_secrets(page.route().await.unwrap());
+    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret.png"), 0);
+    assert_eq!(times_seen(&server, "/secret-api"), 0);
+    let routed = routed.lock().unwrap().clone();
+    assert!(
+        routed
+            .iter()
+            .any(|u| u.starts_with("http://localhost:") && u.ends_with("/secret.png")),
+        "{routed:?}"
+    );
+
+    // Its responses reach listeners, and their bodies can be read.
+    let word = frame
+        .evaluate("fetch('/api').then(r => r.json()).then(d => d.word)")
+        .await
+        .unwrap();
+    assert_eq!(word, json!("tea"));
+    let mut asked = false;
+    let api = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match events.recv().await {
+                Some(NetworkEvent::Request(r)) if r.url.ends_with("/api") => asked = true,
+                Some(NetworkEvent::Response(r)) if r.url.ends_with("/api") => return r,
+                Some(_) => {}
+                None => panic!("the page stopped telling before /api"),
+            }
+        }
+    })
+    .await
+    .expect("no response came");
+    assert!(asked, "the request for /api wasn't heard");
+    assert!(api.url.starts_with("http://localhost:"), "{}", api.url);
+    let body: serde_json::Value = serde_json::from_slice(&page.body(&api).await.unwrap()).unwrap();
+    assert_eq!(body, json!({"word": "tea"}));
+
+    // Without routes, the frame's requests go straight through again.
+    page.unroute().await.unwrap();
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("loaded"));
+    assert_eq!(times_seen(&server, "/secret-api"), 1);
+
+    let sent = browser.methods_sent();
+    for forbidden in ["Runtime.enable", "Console.enable", "Log.enable"] {
+        assert!(!sent.iter().any(|m| m == forbidden), "{sent:?}");
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn block_stops_a_frame_from_another_site_too() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    page.block(&["image"], &[]).await.unwrap();
+    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    assert_eq!(times_seen(&server, "/secret.png"), 0);
+    // Blocking more once the frame is there reaches it too.
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("loaded"));
+    page.block(&[], &["**/secret-api".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret-api"), 1);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_route_added_later_reaches_a_frame_already_there() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    assert_eq!(times_seen(&server, "/secret.png"), 1);
+    abort_secrets(page.route().await.unwrap());
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret-api"), 0);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_frame_that_moves_to_another_site_is_still_routed() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    abort_secrets(page.route().await.unwrap());
+    page.goto(&format!("{}/moving", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    frame_at(&page, "child", "http://127.0.0.1:", "/child").await;
+    page.evaluate(
+        "document.querySelector('iframe').src = `http://localhost:${location.port}/child`",
+    )
+    .await
+    .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    assert_eq!(fetch_from(&frame, "/secret-api").await, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret.png"), 0);
+    assert_eq!(times_seen(&server, "/secret-api"), 0);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_frame_inside_a_frame_from_another_site_is_routed() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    let routed = abort_secrets(page.route().await.unwrap());
+    page.goto(&format!("{}/nested", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let inner = frame_at(&page, "inner", "http://127.0.0.1:", "/child").await;
+    assert_eq!(fetch_from(&inner, "/secret-api").await, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret.png"), 0);
+    assert_eq!(times_seen(&server, "/secret-api"), 0);
+    let routed = routed.lock().unwrap().clone();
+    assert!(routed.iter().any(|u| u.ends_with("/middle")), "{routed:?}");
+    browser.close().await.unwrap();
+}
+
+/// A dedicated worker's requests are paused by its frame's session and
+/// reported by its own, which is held until it's set up: a worker that
+/// was never let go would hang here.
+#[tokio::test]
+async fn a_workers_requests_are_routed_and_heard() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    let mut events = page.listen();
+    let routed = abort_secrets(page.route().await.unwrap());
+    page.goto(&format!("{}/worker", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    assert_eq!(page.evaluate("window.said").await.unwrap(), json!("failed"));
+    // And one started by a worker.
+    let said = page
+        .evaluate("new Promise(r => { new Worker('/outer.js').onmessage = e => r(e.data) })")
+        .await
+        .unwrap();
+    assert_eq!(said, json!("failed"));
+    assert_eq!(times_seen(&server, "/secret-api"), 0);
+    let routed = routed.lock().unwrap().clone();
+    assert_eq!(
+        routed.iter().filter(|u| u.ends_with("/secret-api")).count(),
+        2,
+        "{routed:?}"
+    );
+    // Counted up to a request made after both, so one heard twice fails.
+    page.evaluate("fetch('/api')").await.unwrap();
+    let heard = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut heard = 0;
+        while let Some(event) = events.recv().await {
+            match event {
+                NetworkEvent::Request(r) if r.url.ends_with("/secret-api") => heard += 1,
+                NetworkEvent::Request(r) if r.url.ends_with("/api") => return heard,
+                _ => {}
+            }
+        }
+        heard
+    })
+    .await;
+    assert_eq!(heard, Ok(2));
+    browser.close().await.unwrap();
+}
+
+/// Chrome holds every kind of target it attaches while it waits for a
+/// debugger, worklets included: each must be let go, or it never runs.
+#[tokio::test]
+async fn worklets_still_load_in_the_page_and_in_a_frame_from_another_site() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    let audio = "new OfflineAudioContext(1, 1, 44100).audioWorklet.addModule('/audio.js')\
+                 .then(() => 'loaded', e => String(e))";
+    // Paint worklets may not exist headless: then there's nothing to load.
+    let paint = "'paintWorklet' in CSS ? CSS.paintWorklet.addModule('/paint.js')\
+                 .then(() => 'loaded', e => String(e)) : 'loaded'";
+    for script in [audio, paint] {
+        let on_page = tokio::time::timeout(Duration::from_secs(20), page.evaluate(script)).await;
+        assert_eq!(on_page.map(Result::unwrap), Ok(json!("loaded")), "{script}");
+        let in_frame = tokio::time::timeout(Duration::from_secs(20), frame.evaluate(script)).await;
+        assert_eq!(
+            in_frame.map(Result::unwrap),
+            Ok(json!("loaded")),
+            "{script}"
+        );
+    }
+    browser.close().await.unwrap();
+}
+
+/// The guard sees only the page's own documents, but a frame from another
+/// site can't take the page anywhere the guard hasn't seen.
+#[tokio::test]
+async fn a_frame_from_another_site_cant_take_the_page_past_the_guard() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = framed();
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = asked.clone();
+    let guard: netweir_browser::Guard = std::sync::Arc::new(move |url: String| {
+        log.lock().unwrap().push(url.clone());
+        Box::pin(async move { !url.ends_with("/refused") })
+    });
+    let page = browser.new_guarded_page(guard).await.unwrap();
+    page.goto(&format!("{}/guarded", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frame = frame_at(&page, "child", "http://localhost:", "/leaving").await;
+    frame.click("#out", None).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !asked
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|u| u.ends_with("/refused"))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the guard was never asked about /refused"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(times_seen(&server, "/refused"), 0);
+    // Refused, the page shows Chrome's error page, as after a refused goto.
+    assert!(!page.url().ends_with("/refused"), "{}", page.url());
+    browser.close().await.unwrap();
+}

@@ -238,12 +238,9 @@ impl Route {
             .call_within(inner.timeout, &inner.session, method, params);
         let outcome = match answer.await {
             Ok(_) => Ok(()),
-            // The page, or the browser, closed under the request: there's
-            // nothing left to decide.
-            Err(Error::Closed) => Ok(()),
-            Err(Error::Protocol { message, .. }) if message.contains("Session with given id") => {
-                Ok(())
-            }
+            // The page, the frame or the browser closed under the
+            // request: there's nothing left to decide.
+            Err(e) if went_away(&e) => Ok(()),
             // Chrome refused it (a bad header, say): the request is still
             // waiting, and goes on unchanged when the route lets go.
             Err(e @ Error::Protocol { .. }) => {
@@ -278,6 +275,18 @@ impl RouteInner {
 impl Drop for RouteInner {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+/// Whether `e` says the session it was sent to has gone: the browser
+/// closed, or the page or frame went away before Chrome answered.
+pub(crate) fn went_away(e: &Error) -> bool {
+    match e {
+        Error::Closed | Error::PageClosed => true,
+        Error::Protocol { message, .. } => {
+            message.contains("Session with given id") || message.contains("session went away")
+        }
+        _ => false,
     }
 }
 
@@ -317,11 +326,13 @@ pub(crate) fn lock(rules: &SharedRules) -> std::sync::MutexGuard<'_, Rules> {
 
 /// Decides what happens to a request the Fetch domain paused, once the
 /// guard (if there is one) has let it through: blocked, handed to a
-/// route, or let go.
+/// route, or let go. One serves a page and every session it has: its
+/// own, and those of its frames from other sites.
 pub(crate) struct Decider {
     pub conn: Connection,
     /// The browser's timeout, which route handlers get to decide in.
     pub timeout: std::time::Duration,
+    /// The page's own session, whose main frame the guard sees.
     pub session: String,
     /// The page's own rules, then its context's.
     pub rules: Vec<SharedRules>,
@@ -330,10 +341,54 @@ pub(crate) struct Decider {
     /// The page's guard, and its main frame, whose documents it sees.
     pub guard: Option<crate::Guard>,
     pub frame: String,
+    /// Whether the proxy has a login, whose challenges Fetch answers.
+    pub login: bool,
+    /// Whether the Fetch domain is on, held while any of the page's
+    /// sessions has it changed, so none is left with patterns from
+    /// before the rules last changed.
+    pub fetching: tokio::sync::Mutex<bool>,
 }
 
 impl Decider {
-    pub(crate) fn decide(&self, params: &Value) {
+    /// What the Fetch domain has to pause for the page's rules, its
+    /// context's, its guard and its proxy's login, and nothing else: no
+    /// patterns at all when nothing needs it. Every session of the page
+    /// gets the same.
+    pub(crate) fn patterns(&self) -> Vec<Value> {
+        let mut all = self.login;
+        let mut types: Vec<&str> = Vec::new();
+        if self.guard.is_some() {
+            types.push("Document");
+        }
+        for rules in &self.rules {
+            let rules = lock(rules);
+            all |= rules.pauses_all();
+            types.extend(rules.types.iter().copied());
+        }
+        types.sort_unstable();
+        types.dedup();
+        // To answer the proxy's challenges, Chrome has every request
+        // paused, each released as it comes: a round trip per request,
+        // only for a proxy with a login. Routes and blocked URLs need
+        // every request paused too; a guard and blocked resource types
+        // only their own.
+        if all {
+            vec![json!({"urlPattern": "*"})]
+        } else {
+            types
+                .iter()
+                .map(|t| json!({"urlPattern": "*", "resourceType": t}))
+                .collect()
+        }
+    }
+
+    /// `Fetch.enable` with `patterns`, as each session gets it.
+    pub(crate) fn enable(&self, patterns: Vec<Value>) -> Value {
+        json!({"handleAuthRequests": self.login, "patterns": patterns})
+    }
+
+    /// Decides about a request `session` paused.
+    pub(crate) fn decide(&self, session: &str, params: &Value) {
         let paused = str_of(params, "requestId");
         let chrome_type = params["resourceType"].as_str().unwrap_or("Other");
         let id = params["networkId"]
@@ -345,7 +400,7 @@ impl Decider {
             let rules = lock(rules);
             if rules.blocks(&request, chrome_type) {
                 self.conn.send(
-                    &self.session,
+                    session,
                     "Fetch.failRequest",
                     json!({"requestId": paused, "errorReason": "BlockedByClient"}),
                 );
@@ -355,7 +410,11 @@ impl Decider {
                 routes = rules.routes.clone().filter(|tx| !tx.is_closed());
             }
         }
-        let guarded = chrome_type == "Document" && params["frameId"] == self.frame.as_str();
+        // Only the page's own session has its main frame: a frame from
+        // another site never fetches a document for it.
+        let guarded = session == self.session
+            && chrome_type == "Document"
+            && params["frameId"] == self.frame.as_str();
         let settled = Arc::new(tokio::sync::Notify::new());
         let route = Route {
             inner: Arc::new(RouteInner {
@@ -363,7 +422,7 @@ impl Decider {
                 request,
                 conn: self.conn.clone(),
                 timeout: self.timeout,
-                session: self.session.clone(),
+                session: session.to_string(),
                 decided: AtomicBool::new(false),
                 guard: self.guard.clone().filter(|_| guarded),
                 settled: settled.clone(),

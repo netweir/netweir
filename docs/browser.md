@@ -323,11 +323,18 @@ Once the frame loads a different page, from this site or another (a
 payment or sign-in frame often does), its actions work on the new one;
 once the frame is removed they raise `netweir.BrowserError`.
 
-One thing frames from other sites don't share: their requests. Chrome
-runs those frames in processes of their own, and their requests aren't
-seen by `on_request`, `on_response` or the `wait_for_`/`expect_` methods,
-and aren't blocked or routed by `block()` and `route()`. A frame from the
-page's own site is covered like the page.
+A frame's requests count as the page's, whichever site it's from.
+`on_request`, `on_response` and the `wait_for_`/`expect_` methods hear
+them, `block()` and `route()` apply to them, and a response's `body()`
+works the same. That includes a route you add after the frame has
+loaded. So if a payment frame from another site fetches its JSON, you
+can still wait for it:
+
+```python
+async with page.expect_response("**/api/quote*") as info:
+    await frame.click("#refresh")
+quote = await (await info.value).json()
+```
 
 ## Running JavaScript
 
@@ -507,9 +514,13 @@ TDMRep rules out is refused before any route is asked, and no route can
 answer for it. Nor can a route send a page elsewhere to get round them:
 `continue_(url=...)` on a page the crawl checked has the new URL checked
 too, and one ruled out fails with `ERR_BLOCKED_BY_CLIENT`, exactly as a
-refused page does, without being fetched. Requests from service workers, from workers, and from
-frames that load from another site go out unrouted and unheard, since
-Chrome runs those in processes of their own. A redirect's own response
+refused page does, without being fetched. Requests from frames, other
+sites' included, and from the page's workers are heard and routed like
+the page's own. What service workers and shared workers fetch for
+themselves isn't: Chrome runs those for the browser, not the page. Nor
+is the script of a worker started by another worker, though what that
+worker fetches afterwards is. A worklet's module (`audioWorklet`,
+`CSS.paintWorklet`) is routed and blocked, but listeners don't hear it. A redirect's own response
 isn't reported to listeners: you hear about the response the redirects
 end at.
 

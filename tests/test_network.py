@@ -31,6 +31,22 @@ PAGES = {
     "/robots.txt": ("text/plain", b"User-agent: *\nDisallow: /private\n"),
     "/private": ("text/html", b"<title>private</title>"),
     "/ok": ("text/html", b"<title>ok</title>"),
+    # A frame from another site, which Chrome runs in a process of its own:
+    # 127.0.0.1 and localhost are different sites.
+    "/framed": (
+        "text/html",
+        b"""<!DOCTYPE html><script>
+  document.write(`<iframe name=child src="http://localhost:${location.port}/child"></iframe>`);
+</script>""",
+    ),
+    "/child": (
+        "text/html",
+        b"""<!DOCTYPE html><title>child</title>
+<img src="/secret.png" onload="window.pic = true" onerror="window.pic = true">""",
+    ),
+    "/secret.png": ("image/png", b"not really a png"),
+    "/secret-api": ("application/json", b'{"word": "secret"}'),
+    "/word": ("application/json", b'{"word": "tea"}'),
 }
 
 
@@ -263,6 +279,57 @@ async def test_nothing_sent_is_something_a_page_can_see(browser, base):
     await (await info.value).body()
     sent = browser.methods_sent()
     assert not {"Runtime.enable", "Console.enable", "Log.enable"} & set(sent), sent
+
+
+async def _child(page):
+    """The frame from another site, once its image has loaded or failed."""
+    frame = await page.frame("child")
+    assert frame is not None and frame.url.startswith("http://localhost:")
+    await frame.evaluate(
+        "new Promise(r => { const t = () => window.pic ? r() : setTimeout(t, 20); t() })"
+    )
+    return frame
+
+
+FETCH = "fetch('{}').then(() => 'loaded', () => 'failed')"
+
+
+async def test_a_frame_from_another_site_is_routed_heard_and_read(browser, base):
+    page = await browser.new_page()
+    requests, responses = [], []
+    page.on_request(lambda r: requests.append(r.url))
+    page.on_response(lambda r: responses.append(r.url))
+    await page.route("**/secret*", lambda route: route.abort())
+    await page.goto(base + "/framed")
+    frame = await _child(page)
+    assert await frame.evaluate(FETCH.format("/secret-api")) == "failed"
+    assert "/secret.png" not in paths() and "/secret-api" not in paths()
+
+    async with page.expect_response("**/word") as info:
+        await frame.evaluate("fetch('/word')")
+    response = await info.value
+    assert response.url.startswith("http://localhost:")
+    assert await response.json() == {"word": "tea"}
+    assert response.url in requests and response.url in responses
+
+    # Without the route, the frame's requests go straight through again.
+    await page.unroute("**/secret*")
+    assert await frame.evaluate(FETCH.format("/secret-api")) == "loaded"
+    assert paths().count("/secret-api") == 1
+    sent = browser.methods_sent()
+    assert not {"Runtime.enable", "Console.enable", "Log.enable"} & set(sent), sent
+
+
+async def test_block_stops_a_frame_from_another_site_s_images(browser, base):
+    page = await browser.new_page()
+    await page.block()
+    await page.goto(base + "/framed")
+    frame = await _child(page)
+    assert "/child" in paths() and "/secret.png" not in paths()
+    # Blocking more once the frame is there reaches it too.
+    await page.block(resource_types=(), urls=["**/secret-api"])
+    assert await frame.evaluate(FETCH.format("/secret-api")) == "failed"
+    assert "/secret-api" not in paths()
 
 
 def _settings(**kw):

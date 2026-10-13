@@ -1671,6 +1671,17 @@ fn find_chrome() -> PyResult<PathBuf> {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // What the browser carries on past goes where the rest of netweir's
+    // warnings do. Called from Tokio's threads, which hold nothing the
+    // event loop waits on.
+    netweir_browser::on_warning(|message| {
+        Python::attach(|py| {
+            let _ = py
+                .import("logging")
+                .and_then(|l| l.call_method1("getLogger", ("netweir",)))
+                .and_then(|log| log.call_method1("warning", (message,)));
+        })
+    });
     m.add_function(wrap_pyfunction!(launch, m)?)?;
     m.add_function(wrap_pyfunction!(find_chrome, m)?)?;
     m.add_function(wrap_pyfunction!(install_chrome, m)?)?;

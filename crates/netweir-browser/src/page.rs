@@ -15,7 +15,7 @@ use crate::browser::{Inner, context_cookies, set_context_cookies, str_of};
 use crate::conn::{Connection, GONE, Handler};
 use crate::frame::Frame;
 use crate::network::{
-    Decider, NetworkEvent, Request, Route, SharedRules, chrome_type, headers_of, lock,
+    Decider, NetworkEvent, Request, Route, SharedRules, chrome_type, headers_of, lock, went_away,
 };
 use crate::{Error, Result};
 
@@ -67,6 +67,9 @@ pub struct Response {
     /// Chrome's id for the request, for [`Page::body`]; empty when there
     /// was no response.
     pub request_id: String,
+    /// The session that saw it, whose own the request id is: the page's,
+    /// or that of a frame from another site.
+    pub(crate) session: String,
     /// The request's method.
     pub method: String,
     /// "document", "xhr", "fetch", "image" and so on.
@@ -149,12 +152,8 @@ pub(crate) struct PageInner {
     closed: AtomicBool,
     /// What the page blocks and routes.
     rules: SharedRules,
-    /// What its context blocks and routes, for a shared context.
-    shared_context: Option<Arc<ContextRules>>,
-    /// Whether a guard sees the main frame's documents first.
-    guarded: bool,
-    /// Whether the Fetch domain is on, held while it's changed.
-    fetching: tokio::sync::Mutex<bool>,
+    /// What decides about its requests, and what Fetch pauses for it.
+    decider: Arc<Decider>,
 }
 
 /// The rules of a shared context, and its pages, to tell when they
@@ -195,13 +194,18 @@ pub(crate) struct State {
     /// Lifecycle events seen, by loader.
     events: HashMap<String, Vec<String>>,
     responses: HashMap<String, Response>,
-    /// Requests still loading, with their methods, by request id.
-    loading: HashMap<String, String>,
+    /// Requests still loading, with their methods, by session and request
+    /// id: each session numbers its requests its own way.
+    loading: HashMap<(String, String), String>,
     /// Where requests and responses go, while anyone listens.
     listeners: Vec<tokio::sync::mpsc::UnboundedSender<NetworkEvent>>,
     /// Frames Chrome runs in processes of their own (from other sites),
     /// each with a session: (session, frame id), in the order they came.
     pub(crate) children: Vec<(String, String)>,
+    /// Every session the page has besides its own, those frames', which
+    /// get the same Network and Fetch setup as its own. Unlike
+    /// `children`, a frame stays here until its session detaches.
+    sessions: Vec<String>,
     gone: bool,
 }
 
@@ -219,7 +223,9 @@ const KEPT: usize = 16;
 const LOADING: usize = 4096;
 
 impl State {
-    fn on(&mut self, method: &str, p: &Value) {
+    /// An event from `session`: the page's own, or one of its frames'
+    /// from other sites, which tell only of requests.
+    fn on(&mut self, session: &str, method: &str, p: &Value) {
         match method {
             "Page.lifecycleEvent" if p["frameId"] == self.frame.as_str() => {
                 let loader = str_of(p, "loaderId");
@@ -256,12 +262,13 @@ impl State {
                 if self.loading.len() >= LOADING {
                     self.loading.clear();
                 }
-                self.loading.insert(id, request.method.clone());
+                self.loading
+                    .insert((session.to_string(), id), request.method.clone());
                 self.tell(NetworkEvent::Request(request));
             }
             "Network.loadingFinished" | "Network.loadingFailed" => {
                 self.loading
-                    .remove(p["requestId"].as_str().unwrap_or_default());
+                    .remove(&(session.to_string(), str_of(p, "requestId")));
             }
             "Network.responseReceived" => {
                 let r = &p["response"];
@@ -273,10 +280,11 @@ impl State {
                     loader: str_of(p, "loaderId"),
                     method: self
                         .loading
-                        .get(&id)
+                        .get(&(session.to_string(), id.clone()))
                         .cloned()
                         .unwrap_or_else(|| "GET".into()),
                     request_id: id,
+                    session: session.to_string(),
                     resource_type: p["type"].as_str().unwrap_or("Other").to_ascii_lowercase(),
                 };
                 if p["type"] == "Document" && p["frameId"] == self.frame.as_str() {
@@ -361,7 +369,6 @@ impl Page {
             state: Mutex::new(State::default()),
             changed: Notify::new(),
         });
-        let watched = shared.clone();
         let rules = SharedRules::default();
         let mut all_rules = vec![rules.clone()];
         all_rules.extend(shared_context.as_ref().map(|c| c.rules.clone()));
@@ -375,8 +382,9 @@ impl Page {
             runtime: tokio::runtime::Handle::current(),
             guard: guard.clone(),
             frame: target.clone(),
+            login: browser.proxy_login.is_some(),
+            fetching: tokio::sync::Mutex::new(false),
         });
-        let is_guarded = guard.is_some();
         // Documents the guard must see first, answered on a task of their
         // own, since the guard is async and the reader thread can't wait.
         // What it lets through goes on to the page's rules, so no route
@@ -388,7 +396,7 @@ impl Page {
             tokio::spawn(async move {
                 while let Some(params) = rx.recv().await {
                     if guard(str_of(&params["request"], "url")).await {
-                        decider.decide(&params);
+                        decider.decide(&session, &params);
                     } else {
                         conn.send(
                             &session,
@@ -400,31 +408,24 @@ impl Page {
             });
             tx
         });
-        let intercept = Intercept {
-            conn: conn.clone(),
-            session: session.clone(),
-            credentials: browser.proxy_login.clone(),
-            guarded,
-            frame: target.clone(),
-            decider,
-        };
-        let adopting = (conn.clone(), shared.clone());
-        let handler: Handler = Arc::new(move |method, params| {
-            match method {
-                "Fetch.authRequired" => return intercept.answer(params),
-                "Fetch.requestPaused" => return intercept.release(params),
-                "Target.attachedToTarget" | "Target.detachedFromTarget" => {
-                    return children(&adopting.0, &adopting.1, method, params);
-                }
-                _ => {}
-            }
-            watched
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .on(method, params);
-            watched.changed.notify_waiters();
+        let identity = browser.identity.as_ref().map(|identity| {
+            json!({"userAgent": identity.user_agent, "userAgentMetadata": identity.metadata})
         });
+        let watch = Arc::new(Watch {
+            conn: conn.clone(),
+            shared: shared.clone(),
+            intercept: Intercept {
+                conn: conn.clone(),
+                session: session.clone(),
+                credentials: browser.proxy_login.clone(),
+                guarded,
+                frame: target.clone(),
+                decider: decider.clone(),
+            },
+            identity: identity.clone(),
+        });
+        let own = session.clone();
+        let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
         conn.on(&session, handler);
         let page = Page {
             inner: Arc::new(PageInner {
@@ -437,9 +438,7 @@ impl Page {
                 worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
                 rules,
-                shared_context: shared_context.clone(),
-                guarded: is_guarded,
-                fetching: tokio::sync::Mutex::new(false),
+                decider,
             }),
         };
         if let Some(c) = &shared_context {
@@ -457,12 +456,8 @@ impl Page {
             // Frames from other sites run in processes of their own, and
             // are reached through sessions of their own.
             page.call("Target.setAutoAttach", auto_attach()).await?;
-            if let Some(identity) = &browser.identity {
-                page.call(
-                    "Network.setUserAgentOverride",
-                    json!({"userAgent": identity.user_agent, "userAgentMetadata": identity.metadata}),
-                )
-                .await?;
+            if let Some(identity) = identity {
+                page.call("Network.setUserAgentOverride", identity).await?;
             }
             let tree = page.call("Page.getFrameTree", json!({})).await?;
             let frame = &tree["frameTree"]["frame"];
@@ -647,6 +642,7 @@ impl Page {
                 headers: Vec::new(),
                 loader: loader.to_string(),
                 request_id: String::new(),
+                session: String::new(),
                 method: "GET".into(),
                 resource_type: "document".into(),
             })
@@ -677,14 +673,22 @@ impl Page {
                 response.url
             )));
         }
+        let key = (response.session.clone(), id.clone());
         self.until(
             || format!("the body of {}", response.url),
             self.timeout(None),
-            |s| !s.loading.contains_key(id),
+            |s| !s.loading.contains_key(&key),
         )
         .await?;
+        // Asked of the session that saw it, which is the only one that has
+        // it: a frame's from another site, once it has gone, has taken its
+        // bodies with it.
         let r = match self
-            .call("Network.getResponseBody", json!({"requestId": id}))
+            .call_on(
+                &response.session,
+                "Network.getResponseBody",
+                json!({"requestId": id}),
+            )
             .await
         {
             Ok(r) => r,
@@ -743,50 +747,41 @@ impl Page {
     }
 
     /// Has the Fetch domain pause what the page's rules, its context's,
-    /// its guard and its proxy's login need, and nothing else; or turns
-    /// it off when nothing does. Page script can't see the Fetch domain.
+    /// its guard and its proxy's login need, and nothing else, in every
+    /// session the page has; or turns it off when nothing does. Page
+    /// script can't see the Fetch domain.
     pub(crate) async fn refresh_fetch(&self) -> Result<()> {
-        let mut on = self.inner.fetching.lock().await;
-        let login = self.inner.browser.proxy_login.is_some();
-        let mut all = login;
-        let mut types: Vec<&str> = Vec::new();
-        if self.inner.guarded {
-            types.push("Document");
-        }
-        let context = self.inner.shared_context.as_ref().map(|c| &c.rules);
-        for rules in std::iter::once(&self.inner.rules).chain(context) {
-            let rules = lock(rules);
-            all |= rules.pauses_all();
-            types.extend(rules.types.iter().copied());
-        }
-        types.sort_unstable();
-        types.dedup();
-        // To answer the proxy's challenges, Chrome has every request
-        // paused, each released as it comes: a round trip per request,
-        // only for a proxy with a login. Routes and blocked URLs need
-        // every request paused too; a guard and blocked resource types
-        // only their own.
-        let patterns: Vec<Value> = if all {
-            vec![json!({"urlPattern": "*"})]
+        let decider = &self.inner.decider;
+        let mut on = decider.fetching.lock().await;
+        let patterns = decider.patterns();
+        let (method, params) = if !patterns.is_empty() {
+            ("Fetch.enable", decider.enable(patterns))
+        } else if *on {
+            ("Fetch.disable", json!({}))
         } else {
-            types
-                .iter()
-                .map(|t| json!({"urlPattern": "*", "resourceType": t}))
-                .collect()
-        };
-        if patterns.is_empty() {
-            if *on {
-                self.call("Fetch.disable", json!({})).await?;
-                *on = false;
-            }
             return Ok(());
+        };
+        self.call(method, params.clone()).await?;
+        *on = method == "Fetch.enable";
+        // Its frames' sessions, all at once: one that's busy or on its way
+        // out holds up none of the others.
+        let sessions = self.state().sessions.clone();
+        let calls = sessions
+            .iter()
+            .map(|session| self.call_on(session, method, params.clone()));
+        for (session, r) in sessions
+            .iter()
+            .zip(futures_util::future::join_all(calls).await)
+        {
+            match r {
+                Err(e) if !went_away(&e) => crate::warn(&format!(
+                    "{method} on the session {session} of the page at {} failed, so its requests \
+                     may not be blocked or routed as the page's are: {e}",
+                    self.url()
+                )),
+                _ => {}
+            }
         }
-        self.call(
-            "Fetch.enable",
-            json!({"handleAuthRequests": login, "patterns": patterns}),
-        )
-        .await?;
-        *on = true;
         Ok(())
     }
 
@@ -1051,7 +1046,11 @@ impl Page {
         // Whoever takes the page's routes hears there are no more.
         lock(&self.inner.rules).routes = None;
         let conn = &self.inner.browser.conn;
-        let children = std::mem::take(&mut self.state().children);
+        let sessions = {
+            let mut state = self.state();
+            state.children.clear();
+            std::mem::take(&mut state.sessions)
+        };
         let closed = self
             .inner
             .browser
@@ -1062,7 +1061,7 @@ impl Page {
             )
             .await;
         conn.off(&self.inner.session);
-        for (session, _) in children {
+        for session in sessions {
             conn.off(&session);
         }
         if self.inner.owns_context
@@ -1101,12 +1100,14 @@ pub(crate) fn add_blocks(rules: &SharedRules, types: &[&str], urls: &[String]) -
     Ok(())
 }
 
-/// What the Fetch domain asks of a page. Authentication challenges are
-/// answered: a proxy's with the proxy's login, a site's by leaving it to
-/// Chrome. A wrong login isn't given again: Chrome stops asking after
-/// it's refused. Paused requests go to the guard, then to the rules.
+/// What the Fetch domain asks of a page, in any of its sessions.
+/// Authentication challenges are answered: a proxy's with the proxy's
+/// login, a site's by leaving it to Chrome. A wrong login isn't given
+/// again: Chrome stops asking after it's refused. Paused requests go to
+/// the guard, then to the rules.
 struct Intercept {
     conn: crate::conn::Connection,
+    /// The page's own session.
     session: String,
     credentials: Option<(String, String)>,
     /// Where the main frame's documents go to be guarded.
@@ -1117,7 +1118,7 @@ struct Intercept {
 }
 
 impl Intercept {
-    fn answer(&self, params: &Value) {
+    fn answer(&self, session: &str, params: &Value) {
         let response = match &self.credentials {
             Some((username, password)) if params["authChallenge"]["source"] == "Proxy" => {
                 json!({"response": "ProvideCredentials", "username": username, "password": password})
@@ -1125,19 +1126,21 @@ impl Intercept {
             _ => json!({"response": "Default"}),
         };
         self.conn.send(
-            &self.session,
+            session,
             "Fetch.continueWithAuth",
             json!({"requestId": str_of(params, "requestId"), "authChallengeResponse": response}),
         );
     }
-}
 
-impl Intercept {
     /// Puts a request Fetch paused to the guard first, if it's a document
     /// for the main frame and there's a guard; then to the rules, which
-    /// let it go on unchanged unless they block or route it.
-    fn release(&self, params: &Value) {
+    /// let it go on unchanged unless they block or route it. Only the
+    /// page's own session fetches the main frame's documents: one a frame
+    /// from another site sends the page to (`top.location`) is the main
+    /// frame's navigation, and Chrome pauses it there.
+    fn release(&self, session: &str, params: &Value) {
         if let Some(guarded) = &self.guarded
+            && session == self.session
             && params["resourceType"] == "Document"
             && params["frameId"] == self.frame.as_str()
         {
@@ -1145,56 +1148,202 @@ impl Intercept {
                 // The guard has gone (it panicked): nothing it would have
                 // been asked about goes through unasked.
                 self.conn.send(
-                    &self.session,
+                    session,
                     "Fetch.failRequest",
                     json!({"requestId": str_of(params, "requestId"), "errorReason": "BlockedByClient"}),
                 );
             }
             return;
         }
-        self.decider.decide(params);
+        self.decider.decide(session, params);
     }
 }
 
-/// What `Target.setAutoAttach` asks for: the sessions of frames Chrome
-/// runs in processes of their own, and nothing else (not workers). Nothing
-/// is held for it: a frame runs at once.
+/// What `Target.setAutoAttach` asks for: a session for every target the
+/// page or frame starts, each held before it runs anything until it's
+/// let go (see [`Watch::adopt`]). Frames from other sites and dedicated
+/// workers are set up first, so none of their requests can go out unheard
+/// or unrouted; anything else (worklets, and whatever kinds Chrome adds
+/// later) is let go and left at once. Every kind is attached because
+/// Chrome holds kinds the filter leaves out too (dedicated workers and
+/// worklets, with a filter of iframes alone), and a kind held but never
+/// attached would never run. Holding is what DevTools
+/// does when it's open: page script has nothing to see it by, beyond a
+/// frame or worker starting a round trip or two later.
 fn auto_attach() -> Value {
     json!({
         "autoAttach": true,
-        "waitForDebuggerOnStart": false,
+        "waitForDebuggerOnStart": true,
         "flatten": true,
-        "filter": [{"type": "iframe"}],
+        // Everything but the browser and tabs, which a page never starts.
+        "filter": [{"type": "browser", "exclude": true}, {"type": "tab", "exclude": true}, {}],
     })
 }
 
-/// Keeps track of the sessions of frames from other sites as they come
-/// and go, in a page's session or a frame's (for the frames inside it).
-/// Runs on the reader thread, so it sends without waiting.
-fn children(conn: &Connection, shared: &Arc<Shared>, method: &str, params: &Value) {
-    let session = str_of(params, "sessionId");
-    if method == "Target.detachedFromTarget" {
-        lock_state(shared).children.retain(|(s, _)| *s != session);
-        return;
-    }
-    if params["targetInfo"]["type"] != "iframe" {
-        return;
-    }
-    let (c, s) = (conn.clone(), shared.clone());
-    let handler: Handler = Arc::new(move |method, params| {
-        if matches!(
-            method,
-            "Target.attachedToTarget" | "Target.detachedFromTarget"
-        ) {
-            children(&c, &s, method, params);
+/// What the handlers of a page's sessions share: its own, and those of
+/// its frames from other sites and its workers, each told which session
+/// an event came from. They run on the reader thread, so they send
+/// without waiting.
+struct Watch {
+    conn: Connection,
+    shared: Arc<Shared>,
+    intercept: Intercept,
+    /// The user agent override the page's own session has, for the
+    /// others too.
+    identity: Option<Value>,
+}
+
+impl Watch {
+    fn hear(self: &Arc<Self>, session: &str, method: &str, params: &Value) {
+        match method {
+            "Fetch.authRequired" => return self.intercept.answer(session, params),
+            "Fetch.requestPaused" => return self.intercept.release(session, params),
+            "Target.attachedToTarget" | "Target.detachedFromTarget" => {
+                return self.adopt(session, method, params);
+            }
+            _ => {}
         }
-    });
-    conn.on(&session, handler);
-    conn.send(&session, "Target.setAutoAttach", auto_attach());
-    let frame = str_of(&params["targetInfo"], "targetId");
-    let mut state = lock_state(shared);
-    if !state.gone {
-        state.children.push((session, frame));
+        // From another session, only what it fetches is the page's
+        // business; its going away, say, isn't the page's.
+        if session != self.intercept.session && !method.starts_with("Network.") {
+            return;
+        }
+        lock_state(&self.shared).on(session, method, params);
+        self.shared.changed.notify_waiters();
+    }
+
+    /// Keeps track of the sessions of frames from other sites and of
+    /// workers as they come and go, in a page's session or a frame's or
+    /// worker's (for the frames and workers inside it), the `parent`.
+    fn adopt(self: &Arc<Self>, parent: &str, method: &str, params: &Value) {
+        let session = str_of(params, "sessionId");
+        if method == "Target.detachedFromTarget" {
+            let mut state = lock_state(&self.shared);
+            state.children.retain(|(s, _)| *s != session);
+            state.sessions.retain(|s| *s != session);
+            // Its requests will never finish now: a body waiting on one
+            // asks, and hears it's gone.
+            state.loading.retain(|(s, _), _| *s != session);
+            drop(state);
+            self.shared.changed.notify_waiters();
+            return;
+        }
+        let info = &params["targetInfo"];
+        // A worker has no Fetch domain: the frame that started it pauses
+        // its requests, so its own session only reports them. Any other
+        // kind isn't watched: it's let go, and its session left.
+        let frame = match info["type"].as_str() {
+            Some("iframe") => true,
+            Some("worker") => false,
+            _ => {
+                // Left only once it has been let go: a service worker
+                // left first stays held. Left at all, because Chrome keeps
+                // a service worker alive while anything is attached to it.
+                let (conn, parent) = (self.conn.clone(), parent.to_string());
+                self.intercept.decider.runtime.spawn(async move {
+                    let _ = conn
+                        .call(&session, "Runtime.runIfWaitingForDebugger", json!({}))
+                        .await;
+                    let _ = conn
+                        .call(
+                            &parent,
+                            "Target.detachFromTarget",
+                            json!({"sessionId": session}),
+                        )
+                        .await;
+                });
+                return;
+            }
+        };
+        let (watch, own) = (self.clone(), session.clone());
+        let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
+        self.conn.on(&session, handler);
+        if frame {
+            let mut state = lock_state(&self.shared);
+            if !state.gone {
+                state.sessions.push(session.clone());
+                state
+                    .children
+                    .push((session.clone(), str_of(info, "targetId")));
+            }
+        }
+        let (watch, url) = (self.clone(), str_of(info, "url"));
+        self.intercept
+            .decider
+            .runtime
+            .spawn(async move { watch.prepare(session, frame, url).await });
+    }
+
+    /// Sets up a frame's or worker's session as the page's own is, while
+    /// Chrome holds it before it runs anything, then lets it run. Known
+    /// limit: it runs however setup ends. One that hasn't finished within
+    /// the browser's timeout runs without it, with a warning, and its
+    /// requests may go out unheard and unrouted, rather than leave the
+    /// frame, and the page's load, waiting on it for ever.
+    async fn prepare(&self, session: String, frame: bool, url: String) {
+        let decider = &self.intercept.decider;
+        let call = |method: &'static str, params: Value| self.conn.call(&session, method, params);
+        let setup = async {
+            call("Network.enable", json!({})).await?;
+            if let Some(identity) = &self.identity {
+                call("Network.setUserAgentOverride", identity.clone()).await?;
+            }
+            if frame {
+                // Worked out and sent while the lock is held, so that what
+                // reaches this session last, this or `refresh_fetch`'s
+                // (which holds it too), has the newest rules: Chrome takes
+                // a session's commands in the order they're sent. The
+                // answer is waited for after, so frames being set up don't
+                // queue behind each other's round trips.
+                let enabling = {
+                    let mut on = decider.fetching.lock().await;
+                    let patterns = decider.patterns();
+                    if patterns.is_empty() {
+                        None
+                    } else {
+                        *on = true;
+                        let mut enable = Box::pin(call("Fetch.enable", decider.enable(patterns)));
+                        match futures_util::future::poll_immediate(&mut enable).await {
+                            Some(answer) => {
+                                answer?;
+                                None
+                            }
+                            None => Some(enable),
+                        }
+                    }
+                };
+                if let Some(enable) = enabling {
+                    enable.await?;
+                }
+            }
+            // The frames and workers inside it, the same way.
+            call("Target.setAutoAttach", auto_attach()).await?;
+            Ok::<_, Error>(())
+        };
+        let failed = match tokio::time::timeout(decider.timeout, setup).await {
+            Ok(Ok(())) => None,
+            // It went away while it was set up: there's nothing to run.
+            Ok(Err(e)) if went_away(&e) => return,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(_) => Some(format!(
+                "Chrome didn't finish setting it up within {}s",
+                decider.timeout.as_secs_f64()
+            )),
+        };
+        if let Some(why) = failed {
+            let kind = if frame { "frame" } else { "worker" };
+            // Chrome may attach a frame before it knows its URL.
+            let what = if url.is_empty() {
+                format!("a {kind}")
+            } else {
+                format!("the {kind} at {url}")
+            };
+            crate::warn(&format!(
+                "{what} runs without all its requests heard, blocked or routed: {why}"
+            ));
+        }
+        self.conn
+            .send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
     }
 }
 
