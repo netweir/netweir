@@ -90,8 +90,11 @@ fn granted_sids(dir: &std::path::Path) -> String {
         "(Get-Acl -LiteralPath '{}').Access | ForEach-Object {{ $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }}",
         dir.display()
     );
+    // Started from PowerShell 7 (as CI's steps are), Windows PowerShell
+    // inherits 7's module path and can't load its own Get-Acl.
     let out = std::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", script.as_str()])
+        .env_remove("PSModulePath")
         .output()
         .unwrap();
     assert!(
