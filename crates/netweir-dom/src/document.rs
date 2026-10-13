@@ -42,6 +42,10 @@ pub struct Document {
     turn_entries: AtomicU32,
     #[cfg(test)]
     most_turn_entries: AtomicU32,
+    /// Wake-ups sent, so a test can tell a sleep nobody woke from one that
+    /// outlasted a slow reader.
+    #[cfg(test)]
+    wakes: AtomicU32,
     /// Where a waiting edit sleeps until the last reader wakes it.
     gate: Mutex<()>,
     woken: Condvar,
@@ -299,18 +303,15 @@ impl Document {
             // in first cleared it, and then whoever leaves next (that edit,
             // or the last reader) wouldn't know to wake us.
             if self.access.fetch_or(WAITING, Ordering::Relaxed) & !WAITING != 0 {
+                #[cfg(test)]
+                let wakes = self.wakes.load(Ordering::Relaxed);
                 // The timeout only covers a wake-up this reasoning missed.
                 let (_gate, waited) = self
                     .woken
                     .wait_timeout(gate, Duration::from_millis(1))
                     .unwrap_or_else(|e| e.into_inner());
                 #[cfg(test)]
-                {
-                    tests::WAITS.fetch_add(1, Ordering::Relaxed);
-                    if waited.timed_out() {
-                        tests::TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
+                let _gate = self.check_wake(_gate, waited.timed_out(), wakes);
                 #[cfg(not(test))]
                 let _ = waited;
             }
@@ -347,12 +348,54 @@ impl Document {
         edit()
     }
 
+    /// After a sleep: counts it, and if it ran out, whether it was a lost
+    /// wake-up. A sleep outlasting a reader that holds the page is expected
+    /// (a busy machine deschedules readers). A lost one is a sleep that ran
+    /// out with the way clear (no reader in, no turn, no edit) and no wake
+    /// sent since it began. A reader that has just left may be waiting for
+    /// `gate` to send its wake, so the sleep is given 100 ms more for it
+    /// first.
+    #[cfg(test)]
+    fn check_wake<'g>(
+        &self,
+        mut gate: std::sync::MutexGuard<'g, ()>,
+        timed_out: bool,
+        wakes: u32,
+    ) -> std::sync::MutexGuard<'g, ()> {
+        tests::WAITS.fetch_add(1, Ordering::Relaxed);
+        if !timed_out {
+            return gate;
+        }
+        tests::TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+        let clear =
+            |d: &Document| d.access.load(Ordering::Relaxed) & (READERS | TURN | WRITING) == 0;
+        if !clear(self) || self.wakes.load(Ordering::Relaxed) != wakes {
+            return gate;
+        }
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while self.wakes.load(Ordering::Relaxed) == wakes {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                tests::LOST.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+            gate = self
+                .woken
+                .wait_timeout(gate, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        gate
+    }
+
     fn edits_done(&self) -> u32 {
         (self.queue.load(Ordering::Relaxed) >> 32) as u32
     }
 
     fn wake(&self) {
         let _gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        self.wakes.fetch_add(1, Ordering::Relaxed);
         self.woken.notify_all();
     }
 
@@ -675,6 +718,8 @@ fn parse_in_chunks(html: &str, budget: Duration, chunk: usize) -> Result<Documen
         turn_entries: AtomicU32::new(0),
         #[cfg(test)]
         most_turn_entries: AtomicU32::new(0),
+        #[cfg(test)]
+        wakes: AtomicU32::new(0),
         gate: Mutex::new(()),
         woken: Condvar::new(),
     };
@@ -1104,6 +1149,8 @@ mod tests {
     pub(super) static TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
     /// Edits that slept at all, so the test knows it tested something.
     pub(super) static WAITS: AtomicUsize = AtomicUsize::new(0);
+    /// Sleeps that ran out with the way clear and no wake-up ever sent.
+    pub(super) static LOST: AtomicUsize = AtomicUsize::new(0);
 
     /// Several edits waiting at once, against short and long reads: each
     /// must be woken, never left to sleep out its timeout.
@@ -1181,12 +1228,17 @@ mod tests {
                 t.join().unwrap();
             }
         }
-        let (waits, timeouts) = (
+        let (waits, timeouts, lost) = (
             WAITS.load(Ordering::Relaxed),
             TIMEOUTS.load(Ordering::Relaxed),
+            LOST.load(Ordering::Relaxed),
         );
+        // Sleeps that outlast a descheduled reader are fine (CI machines
+        // have fewer cores than this test has threads); one nobody woke
+        // isn't.
+        println!("{waits} sleeps, {timeouts} ran out, {lost} wake-ups lost");
         assert!(waits > 100, "edits never had to sleep");
-        assert_eq!(timeouts, 0, "{timeouts} of {waits} sleeps ran out");
+        assert_eq!(lost, 0, "{lost} of {waits} sleeps were never woken");
     }
 
     fn shape(doc: &Document) -> Vec<String> {
