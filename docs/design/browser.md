@@ -86,6 +86,62 @@ breaks one test, not a build.
 If Chrome exits or the pipe closes, every waiting command fails with an
 error that says so, and the browser is marked closed.
 
+### When the program goes first
+
+Chrome is meant to quit when its end of the pipe closes, which happens
+however the program driving it ends. It doesn't always: Google Chrome
+155, headless, closes its pages and then runs on with nothing to drive
+it, for good. Killed test runs left Chromes running for most of a day.
+So the driver doesn't rely on it; each Chrome it launches is tied to a
+lifeline the driver holds, and is ended when that's let go.
+
+- **macOS and Linux.** Chrome starts in a process group of its own,
+  which its helpers join. Right after it starts, the driver starts a
+  watcher into the same group: `/bin/sh` reading a pipe whose only
+  writer is the driver. Nothing is written, so the read returns only
+  when the writer closes, on drop or on the program's death. The shell
+  then sends Chrome SIGINT, as Ctrl+C in a terminal used to before Chrome
+  had a group of its own, waits up to ten seconds for it to go, and runs
+  `kill -9 0`, ending whatever is left of the group, itself included.
+  SIGINT because Chrome writes out a profile's unsaved cookies on it,
+  and on macOS doesn't on SIGTERM; a test kills a program with a cookie
+  just set and finds it in the profile after. While the watcher lives,
+  the group does, so neither its number nor Chrome's can have passed to
+  anything else. The driver reaps the watcher once it's let go, on a
+  thread of its own, so nothing waits on it. Linux's `PR_SET_PDEATHSIG`
+  was passed over: it fires when the thread that started Chrome ends,
+  not the program, and a runtime's threads come and go. Without
+  `/bin/sh` (a distroless image), Chrome runs untied, and the first
+  launch says so through the warning hook.
+- **Windows.** Chrome starts suspended, goes into a job object that
+  kills everything in it when its last handle closes, and is then
+  resumed, so every helper it starts is in the job too. The driver holds
+  the only handle. A Chrome that can't be put in a job runs untied, with
+  a warning; one that can't be resumed is killed and the launch fails.
+
+A Chrome the driver connected to is never tied: it isn't the driver's to
+end. Known limit: a child forked without exec after the launch (Python's
+`multiprocessing` with the `fork` start method, or `os.fork()`) holds a
+copy of the lifeline, so Chrome lasts until that child ends too. A child
+that execs another program (`subprocess`, the `spawn` start method)
+doesn't: the lifeline is closed on exec.
+
+Nothing is left running to remove the profile of a program that was
+killed, so each launch sweeps the temporary directory, on a blocking
+thread so a large profile doesn't hold the launch up. Each profile the
+driver makes has a lock file beside it, `netweir-chrome-<pid>-<n>-<nanos>.lock`,
+held for the browser's life: an `flock` on macOS and Linux, and on
+Windows the file open with no sharing. The system lets go of either when
+the process ends, however it ends. The lock is taken under another name
+and renamed into place before the folder is made, so a folder never
+exists with its lock untaken. The sweep removes a folder whose lock it
+can take, and a folder with no lock at all (one from before locks) once
+the process named in it has gone. Process ids alone would be wrong where
+containers share a temporary directory but not process ids, and a reused
+id would keep a folder forever; the lock is right in both. Only names
+the driver makes are looked at, links are never followed, and a profile
+the caller gave is never named that way, so it's never touched.
+
 ### Stealth rules
 
 These are rules of the driver, not options, and tests enforce them:
@@ -603,6 +659,14 @@ in scope.
   `<iframe>` from its own origin and one from `localhost` (another site,
   so another process) acts on both. A profile is launched twice and
   keeps a cookie.
+- A test runs its own binary, with a temporary directory of its own, as
+  a program that launches Chrome with a page open, kills it outright,
+  and checks Chrome, its helpers and (on macOS and Linux) the watcher are
+  gone within seconds, and that the next launch sweeps the profile it
+  left. Another kills one with a cookie just set in a profile to keep,
+  and finds the cookie there after. A third checks the sweep takes
+  folders with a free lock and old ones of gone processes, and leaves
+  folders in use, other names and links.
 - CI runs the browser tests on Linux, macOS and Windows with the runner's
   installed Chrome. Locally they're skipped, with a reason, if no Chrome
   is found.

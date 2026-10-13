@@ -212,3 +212,311 @@ async fn an_empty_profile_folder_is_refused() {
         );
     }
 }
+
+/// Whether anything of the Chrome started as `pid` with `profile` still
+/// runs: a process with the profile on its command line (Chrome or a
+/// helper; the path is unique to this test), or one left in its process
+/// group (the watcher too).
+#[cfg(unix)]
+fn running_with(profile: &std::path::Path, pid: u32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-axo", "command="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).contains(&*profile.to_string_lossy())
+        || unsafe { libc::kill(-(pid as libc::pid_t), 0) } == 0
+}
+
+/// Whether Chrome, or any of its helpers, still runs: a process other
+/// than the one asking with `profile` on its command line.
+#[cfg(windows)]
+fn running_with(profile: &std::path::Path, _pid: u32) -> bool {
+    let query = format!(
+        "@(Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne $PID -and \
+         $_.CommandLine -and $_.CommandLine.Contains('{}') }}).Count",
+        profile.display()
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim() != "0"
+}
+
+/// A program for the tests below, run as a process of its own: this test
+/// binary, with `env`.
+struct Controller(std::process::Child);
+
+impl Controller {
+    fn start(
+        temp: &std::path::Path,
+        env: &[(&str, &str)],
+    ) -> (Controller, std::sync::mpsc::Receiver<String>) {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "launches_chrome_for_the_orphan_test",
+                "--nocapture",
+            ])
+            .stdout(std::process::Stdio::piped());
+        // A temporary folder of its own, which no other launch sweeps.
+        for var in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(var, temp);
+        }
+        command.envs(env.iter().copied());
+        let mut child = command.spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(|l| l.ok())
+            {
+                if let Some(said) = line.strip_prefix("controller: ") {
+                    let _ = tx.send(said.to_string());
+                }
+            }
+        });
+        (Controller(child), rx)
+    }
+}
+
+/// Killed whatever happens, so a failed test doesn't leave it running.
+impl Drop for Controller {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Not a test of its own: run by the tests below as a process of its own.
+/// Launches Chrome (with `NETWEIR_ORPHAN_PROFILE` as its profile, if
+/// set), opens `NETWEIR_ORPHAN_URL` or a blank page, says which Chrome,
+/// and waits to be killed. With `NETWEIR_ORPHAN_CONTROLLER=close`, it
+/// closes it instead, and says once `NETWEIR_ORPHAN_GONE` is gone.
+#[tokio::test]
+async fn launches_chrome_for_the_orphan_test() {
+    let Some(mode) = std::env::var_os("NETWEIR_ORPHAN_CONTROLLER") else {
+        return;
+    };
+    let browser = Browser::launch(LaunchOptions {
+        executable: chrome(),
+        user_data_dir: std::env::var_os("NETWEIR_ORPHAN_PROFILE").map(Into::into),
+        ..LaunchOptions::default()
+    })
+    .await
+    .unwrap();
+    if mode == "close" {
+        browser.close().await.unwrap();
+        let gone = std::path::PathBuf::from(std::env::var_os("NETWEIR_ORPHAN_GONE").unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while gone.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        println!(
+            "controller: {}",
+            if gone.exists() { "kept" } else { "gone" }
+        );
+        return;
+    }
+    // Google Chrome 155 outlived its pipe with a page open, not without.
+    let page = browser.new_page().await.unwrap();
+    let url = std::env::var("NETWEIR_ORPHAN_URL").unwrap_or_else(|_| "about:blank".into());
+    page.goto(&url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    println!(
+        "controller: {} {}",
+        browser.pid().unwrap(),
+        browser.profile_dir().unwrap().display()
+    );
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(600));
+}
+
+/// A folder of the test's own, emptied first.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("netweir-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Kills `controller` outright, with no chance to close its browser, and
+/// waits for everything of its Chrome to go. Returns Chrome's profile.
+fn kill_and_wait(
+    mut controller: Controller,
+    said: &std::sync::mpsc::Receiver<String>,
+) -> std::path::PathBuf {
+    let said = said
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the controller never launched Chrome");
+    let (pid, profile) = said.split_once(' ').unwrap();
+    let (pid, profile): (u32, std::path::PathBuf) = (pid.parse().unwrap(), profile.into());
+    assert!(running_with(&profile, pid));
+    controller.0.kill().unwrap();
+    controller.0.wait().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while running_with(&profile, pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Chrome outlived the program that launched it"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    profile
+}
+
+/// A program killed outright takes Chrome with it: Chrome, and its
+/// helpers, are gone within seconds, and the profile it left is removed
+/// at the next launch.
+#[tokio::test]
+async fn chrome_goes_when_the_program_that_launched_it_is_killed() {
+    if chrome().is_none() {
+        return;
+    }
+    let _turn = common::turn();
+    let temp = scratch("orphan-temp");
+    let (controller, said) = Controller::start(&temp, &[("NETWEIR_ORPHAN_CONTROLLER", "1")]);
+    let profile = kill_and_wait(controller, &said);
+    // Nothing was left to remove the profile; the next launch does.
+    assert!(profile.exists());
+    let gone = profile.to_string_lossy().into_owned();
+    let (next, said) = Controller::start(
+        &temp,
+        &[
+            ("NETWEIR_ORPHAN_CONTROLLER", "close"),
+            ("NETWEIR_ORPHAN_GONE", &gone),
+        ],
+    );
+    assert_eq!(
+        said.recv_timeout(std::time::Duration::from_secs(60))
+            .as_deref(),
+        Ok("gone"),
+        "{} was left behind",
+        profile.display()
+    );
+    drop(next);
+    std::fs::remove_dir_all(&temp).unwrap();
+}
+
+/// Chrome is asked to end before it's made to, so a profile to keep has
+/// what Chrome hadn't yet written out, such as a cookie just set.
+#[tokio::test]
+async fn a_kept_profile_keeps_its_cookies_when_the_program_is_killed() {
+    let Some(executable) = chrome() else { return };
+    let server = common::serve(vec![(
+        "/",
+        common::Reply {
+            status: 200,
+            headers: vec![
+                ("Content-Type", "text/html".into()),
+                ("Set-Cookie", "kept=yes; Path=/; Max-Age=3600".into()),
+            ],
+            body: "<p>hi</p>".into(),
+        },
+    )]);
+    let temp = scratch("killed-profile");
+    let dir = temp.join("profile");
+    let turn = common::turn();
+    let (controller, said) = Controller::start(
+        &temp,
+        &[
+            ("NETWEIR_ORPHAN_CONTROLLER", "1"),
+            ("NETWEIR_ORPHAN_PROFILE", &dir.to_string_lossy()),
+            ("NETWEIR_ORPHAN_URL", &server.url),
+        ],
+    );
+    kill_and_wait(controller, &said);
+    drop(turn);
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        user_data_dir: Some(dir.clone()),
+        ..LaunchOptions::default()
+    })
+    .await;
+    let page = browser.new_page().await.unwrap();
+    let cookies = page.cookies().await.unwrap();
+    assert!(
+        cookies.iter().any(|c| c.name == "kept" && c.value == "yes"),
+        "{cookies:?}"
+    );
+    browser.close().await.unwrap();
+    drop(browser);
+    // Chrome's helpers can hold files a moment after it exits.
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&temp).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A profile whose lock nothing holds is removed at the next launch, and
+/// one from before there were locks, once its program has gone. One in
+/// use is left alone, and so is anything not named as netweir names its
+/// own, and anything reached through a link.
+#[tokio::test]
+async fn profiles_left_behind_are_swept_at_the_next_launch() {
+    let Some(executable) = chrome() else { return };
+    // A program that has certainly gone.
+    let mut gone = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    gone.wait().unwrap();
+    let temp = std::env::temp_dir();
+    let me = std::process::id();
+    let name = |n: &str| temp.join(format!("netweir-chrome-{n}"));
+    // Left with its lock, by a program that may still run elsewhere.
+    let unlocked = name(&format!("{me}-90-1"));
+    // One from before locks: its program has gone, or hasn't.
+    let old = name(&format!("{}-0-1", gone.id()));
+    let old_live = name(&format!("{me}-91-1"));
+    let other = name(&format!("{}-mine", gone.id()));
+    let mut dirs = vec![&unlocked, &old, &old_live, &other];
+    for dir in &dirs {
+        std::fs::create_dir_all(dir.join("Default")).unwrap();
+        std::fs::write(dir.join("Default").join("Preferences"), "{}").unwrap();
+    }
+    std::fs::write(name(&format!("{me}-90-1.lock")), "").unwrap();
+    // A link with a free lock, to a folder that isn't netweir's.
+    #[cfg(unix)]
+    let (target, link) = {
+        let target = scratch("sweep-target");
+        let link = name(&format!("{me}-92-1"));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        std::fs::write(name(&format!("{me}-92-1.lock")), "").unwrap();
+        (target, link)
+    };
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        ..LaunchOptions::default()
+    })
+    .await;
+    // The browser's own profile, in use, has a lock held.
+    let own = browser.profile_dir().unwrap().to_path_buf();
+    // The sweep runs on the side.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while unlocked.exists() || old.exists() {
+        assert!(std::time::Instant::now() < deadline, "not swept");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(own.exists() && old_live.exists() && other.exists());
+    #[cfg(unix)]
+    {
+        assert!(target.exists());
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&target).unwrap();
+    }
+    browser.close().await.unwrap();
+    assert!(!own.exists());
+    dirs.retain(|d| d.exists());
+    for dir in dirs {
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

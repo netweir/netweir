@@ -96,12 +96,16 @@ pub(crate) struct Inner {
     pub conn: Connection,
     /// The Chrome netweir launched; None for one it connected to.
     child: Mutex<Option<Child>>,
+    /// What ends the launched Chrome if netweir goes without closing it.
+    _lifeline: Option<launch::Lifeline>,
     /// The launched Chrome's profile, removed when it closes unless it's
     /// one the caller gave.
     profile: Option<PathBuf>,
     /// Whether the profile is the caller's, to keep: then pages open in
     /// its own context, the one whose cookies and storage Chrome saves.
     keep_profile: bool,
+    /// The lock on a profile netweir made, let go once it's removed.
+    profile_lock: Mutex<Option<launch::ProfileLock>>,
     /// Contexts netweir made, for closing a browser it connected to,
     /// whose other contexts aren't netweir's to close.
     contexts: Mutex<Vec<String>>,
@@ -157,9 +161,14 @@ impl Browser {
             ));
         }
         let keep_profile = options.user_data_dir.is_some();
-        let profile = match &options.user_data_dir {
-            Some(dir) => std::fs::create_dir_all(dir).map(|()| dir.clone()),
-            None => profile_dir(),
+        // Profiles left by programs that ended without closing their
+        // browser; on the side, since a big one takes a while to remove.
+        drop(tokio::task::spawn_blocking(|| {
+            launch::sweep_profiles(&std::env::temp_dir())
+        }));
+        let (profile, lock) = match &options.user_data_dir {
+            Some(dir) => std::fs::create_dir_all(dir).map(|()| (dir.clone(), None)),
+            None => profile_dir().map(|(dir, lock)| (dir, Some(lock))),
         }
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
         if let Err(e) = launch::turn_off_preloading(&profile, &options.args) {
@@ -219,8 +228,10 @@ impl Browser {
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
+            _lifeline: Some(started.lifeline),
             profile: Some(profile),
             keep_profile,
+            profile_lock: Mutex::new(lock),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -268,8 +279,10 @@ impl Browser {
         let inner = Inner {
             conn,
             child: Mutex::new(None),
+            _lifeline: None,
             profile: None,
             keep_profile: false,
+            profile_lock: Mutex::default(),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -596,10 +609,17 @@ impl Inner {
                 }
             }
         }
-        match &self.profile {
+        let removed = match &self.profile {
             Some(profile) if !self.keep_profile => remove_profile(profile),
             _ => Ok(()),
-        }
+        };
+        drop(
+            self.profile_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take(),
+        );
+        removed
     }
 }
 
@@ -650,7 +670,10 @@ const FOREGROUND: &[&str] = &[
     "--disable-background-timer-throttling",
 ];
 
-fn profile_dir() -> std::io::Result<PathBuf> {
+/// A fresh profile folder in the temporary directory, and the lock that
+/// says it's in use (see [`launch::sweep_profiles`]): taken first, so
+/// the folder never exists without it.
+fn profile_dir() -> std::io::Result<(PathBuf, launch::ProfileLock)> {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -661,8 +684,9 @@ fn profile_dir() -> std::io::Result<PathBuf> {
         std::process::id(),
         COUNT.fetch_add(1, Ordering::Relaxed)
     ));
+    let lock = launch::ProfileLock::take(&dir)?;
     std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    Ok((dir, lock))
 }
 
 /// What a headless Chrome at `executable` says it is: its user agent and
@@ -690,7 +714,7 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
     {
         return Ok(known.clone());
     }
-    let profile =
+    let (profile, lock) =
         profile_dir().map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
     // The caller's switches too: a Chrome that only starts with, say,
     // --no-sandbox must have it here as well.
@@ -714,8 +738,10 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
         inner: Arc::new(Inner {
             conn: Connection::new(started.replies, started.commands),
             child: Mutex::new(Some(started.child)),
+            _lifeline: Some(started.lifeline),
             profile: Some(profile),
             keep_profile: false,
+            profile_lock: Mutex::new(Some(lock)),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,

@@ -432,6 +432,38 @@ pub(crate) struct Started {
     pub commands: PipeWriter,
     pub replies: PipeReader,
     pub said: Said,
+    pub lifeline: Lifeline,
+}
+
+/// Chrome runs while netweir holds this, and is ended, helpers and all,
+/// once it's let go: when the browser is dropped, and when the program
+/// ends, however it ends. Chrome is meant to quit when its end of the
+/// DevTools pipe closes, but doesn't always: Google Chrome 155, headless,
+/// closes its pages and then runs on with nothing to drive it, for good.
+/// See [`tie`].
+pub(crate) struct Lifeline {
+    #[cfg(unix)]
+    end: Option<PipeWriter>,
+    #[cfg(unix)]
+    watcher: Option<Child>,
+    #[cfg(windows)]
+    _job: Option<std::os::windows::io::OwnedHandle>,
+}
+
+#[cfg(unix)]
+impl Drop for Lifeline {
+    fn drop(&mut self) {
+        drop(self.end.take());
+        // The watcher ends Chrome and then itself, which can take a few
+        // seconds; it's reaped when it does, without anyone waiting here.
+        if let Some(mut watcher) = self.watcher.take()
+            && !matches!(watcher.try_wait(), Ok(Some(_)))
+        {
+            let _ = std::thread::Builder::new()
+                .name("netweir-chrome-watcher".into())
+                .spawn(move || watcher.wait());
+        }
+    }
 }
 
 /// The last lines Chrome wrote to stderr, so an error can say why it
@@ -527,7 +559,17 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     // browser's reader would never see its Chrome exit. Launches here take
     // turns through that window.
     static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let child = {
+    // In a group of its own, which its helpers join: what the watcher
+    // ends (see tie).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    // Started suspended, so it's in its job before it can start a helper.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(
+        &mut command,
+        windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+    );
+    let mut child = {
         let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
         hand_over(&mut command, &chrome_reads, &chrome_writes).map_err(failed)?;
         let child = command.spawn().map_err(failed)?;
@@ -535,14 +577,140 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
         drop((chrome_reads, chrome_writes));
         child
     };
-    let mut child = child;
+    let lifeline = tie(&child);
+    #[cfg(windows)]
+    if let Err(e) = resume(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(failed(e));
+    }
     let said = child.stderr.take().map(Said::read).unwrap_or_default();
     Ok(Started {
         child,
         commands,
         replies,
         said,
+        lifeline,
     })
+}
+
+/// What Chrome's watcher runs, with Chrome's process id as `$1`. It waits
+/// for the lifeline to close, asks Chrome to quit as Ctrl+C would, gives
+/// it up to ten seconds to write out its profile and go, then kills
+/// whatever is left in the group, itself included. SIGINT, not SIGTERM:
+/// Chrome writes out cookies it hasn't yet on SIGINT, and on macOS
+/// doesn't on SIGTERM. Chrome's id can't have been given to anything
+/// else meanwhile: it names the group, which the watcher keeps alive.
+#[cfg(unix)]
+const WATCH: &str = "exec >/dev/null 2>&1; read _; kill -INT \"$1\"; n=0; \
+                     while [ $n -lt 10 ] && kill -0 \"$1\"; do sleep 1; n=$((n+1)); done; kill -9 0";
+
+/// Ties Chrome to a [`Lifeline`]: a watcher, started into Chrome's
+/// process group, a shell reading the far end of a pipe whose only
+/// writer is netweir. Nothing is ever written, so the read ends only when
+/// the writer closes, on drop or with the program, and then the shell
+/// ends the group (see [`WATCH`]). Without a shell, Chrome runs untied,
+/// with a warning.
+#[cfg(unix)]
+fn tie(chrome: &Child) -> Lifeline {
+    use std::os::unix::process::CommandExt;
+
+    let watcher = std::io::pipe().and_then(|(held, end)| {
+        let watcher = Command::new("/bin/sh")
+            .args(["-c", WATCH, "netweir-watch", &chrome.id().to_string()])
+            .stdin(held)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(chrome.id() as i32)
+            .spawn()?;
+        Ok((end, watcher))
+    });
+    match watcher {
+        Ok((end, watcher)) => Lifeline {
+            end: Some(end),
+            watcher: Some(watcher),
+        },
+        Err(e) => {
+            untied(&format!("/bin/sh, to watch it, can't be started: {e}"));
+            Lifeline {
+                end: None,
+                watcher: None,
+            }
+        }
+    }
+}
+
+/// Says, once, that Chrome runs untied, and why.
+fn untied(why: &str) {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| {
+        crate::warn(&format!(
+            "Chrome isn't tied to the program that launched it ({why}); a program \
+             that ends without closing the browser may leave Chrome running"
+        ))
+    });
+}
+
+/// Ties Chrome to a [`Lifeline`]: a job that ends every process in it
+/// when its last handle closes, and netweir holds the only one. Chrome is
+/// still suspended, so every helper it starts joins the job too. A Chrome
+/// that can't be put in one runs untied, with a warning.
+#[cfg(windows)]
+fn tie(child: &Child) -> Lifeline {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    // SAFETY: the handle is checked, owned from here on, and the limits
+    // passed are the size given.
+    let job = unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else {
+            let job = OwnedHandle::from_raw_handle(job as _);
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job.as_raw_handle() as _,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as _,
+                size_of_val(&limits) as u32,
+            ) == 0
+                || AssignProcessToJobObject(job.as_raw_handle() as _, child.as_raw_handle() as _)
+                    == 0
+            {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(job)
+            }
+        }
+    };
+    let job = job
+        .map_err(|e| untied(&format!("it couldn't be put in a job: {e}")))
+        .ok();
+    Lifeline { _job: job }
+}
+
+/// Lets a Chrome started suspended run.
+#[cfg(windows)]
+fn resume(child: &Child) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    #[link(name = "ntdll", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn NtResumeProcess(process: *mut std::ffi::c_void) -> i32;
+    }
+    // SAFETY: the handle is Chrome's, open while `child` is.
+    match unsafe { NtResumeProcess(child.as_raw_handle()) } {
+        0 => Ok(()),
+        status => Err(std::io::Error::other(format!(
+            "it couldn't be resumed (NTSTATUS {status:#x})"
+        ))),
+    }
 }
 
 /// Gives Chrome its ends of the pipe as file descriptors 3 and 4, where
@@ -603,6 +771,196 @@ fn hand_over(
         writes.as_raw_handle() as usize
     ));
     Ok(())
+}
+
+/// A lock on a profile netweir made, held while it's in use: a file
+/// beside the folder, named after it with `.lock`. On macOS and Linux
+/// it's an `flock`, which the system lets go of with the process, however
+/// it ends; on Windows, the file open with no sharing, which nothing else
+/// can open until the process lets go of it. Removed with the profile.
+pub(crate) struct ProfileLock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl ProfileLock {
+    /// Takes the lock for the profile `dir`, which doesn't exist yet. It
+    /// is made under another name and held before it's given its own,
+    /// so a sweep never finds it untaken.
+    pub(crate) fn take(dir: &Path) -> std::io::Result<ProfileLock> {
+        let path = lock_of(dir);
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let making = dir.with_extension("lock-new");
+            let made = (|| {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&making)?;
+                if !try_lock(&file) {
+                    return Err(std::io::Error::last_os_error());
+                }
+                std::fs::rename(&making, &path)?;
+                Ok(file)
+            })();
+            if made.is_err() {
+                let _ = std::fs::remove_file(&making);
+            }
+            made?
+        };
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(0)
+                .open(&path)?
+        };
+        Ok(ProfileLock { path, _file: file })
+    }
+}
+
+impl Drop for ProfileLock {
+    fn drop(&mut self) {
+        // Before the file closes, so no sweep takes it meanwhile; Windows
+        // deletes it once it closes.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The lock file for the profile `dir`.
+fn lock_of(dir: &Path) -> PathBuf {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Takes `file`'s lock if nothing holds it.
+#[cfg(unix)]
+fn try_lock(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: flock on a descriptor `file` owns.
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
+/// The lock file `path`, if nothing holds it: opened (never through a
+/// link) and locked.
+fn untaken(path: &Path) -> Option<std::fs::File> {
+    if !std::fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .ok()?;
+        try_lock(&file).then_some(file)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Fails while the profile's program holds it: it shares nothing.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .ok()
+    }
+}
+
+/// Removes the profiles in `temp` that programs ended without removing,
+/// as one killed or crashed can't. Only folders named as netweir names
+/// its own (`netweir-chrome-<pid>-<count>-<nanos>`) are looked at, and
+/// links are never followed, so a profile someone gave is never touched.
+/// One whose lock can be taken is no longer in use. One with no lock is
+/// from before there were any, and goes once the process that made it
+/// has: the only test there is, which is wrong where processes from more
+/// than one container share the folder, so a profile made since always
+/// has a lock.
+pub(crate) fn sweep_profiles(temp: &Path) {
+    let Ok(entries) = std::fs::read_dir(temp) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let path = entry.path();
+        if let Some(made) = name.strip_suffix(".lock").filter(|n| left_by(n).is_some()) {
+            let dir = temp.join(made);
+            let Some(lock) = untaken(&path) else { continue };
+            if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            if cfg!(windows) {
+                drop(lock);
+            }
+            let _ = std::fs::remove_file(&path);
+        } else if let Some(pid) = left_by(name) {
+            let old = std::fs::symlink_metadata(lock_of(&path)).is_err()
+                && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
+            if old && pid != std::process::id() && !running(pid) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+}
+
+/// The process that made a profile named `name`, if netweir named it:
+/// `netweir-chrome-<pid>-<count>-<nanos>`, all three numbers.
+fn left_by(name: &str) -> Option<u32> {
+    let parts: Vec<&str> = name.strip_prefix("netweir-chrome-")?.split('-').collect();
+    let [pid, count, nanos] = parts[..] else {
+        return None;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !(digits(count) && digits(nanos) && digits(pid)) {
+        return None;
+    }
+    pid.parse().ok().filter(|&pid| pid > 0)
+}
+
+/// Whether process `pid` runs. One netweir isn't allowed to look at
+/// counts as running.
+#[cfg(unix)]
+pub(crate) fn running(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks; pid is positive, so it names one
+    // process, never a group.
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
+/// Whether process `pid` runs. One netweir isn't allowed to look at
+/// counts as running.
+#[cfg(windows)]
+pub(crate) fn running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: the handle is checked and closed.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0;
+        let ok = GetExitCodeProcess(process, &mut code) != 0;
+        CloseHandle(process);
+        !ok || code == STILL_ACTIVE as u32
+    }
 }
 
 #[cfg(test)]
