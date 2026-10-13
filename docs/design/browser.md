@@ -398,7 +398,14 @@ step reads where the page really is.
   per platform, and on Windows it isn't the delta. When turns were cut
   to land exactly, Windows CI stopped 56 px short of the bottom with the
   box in the way never touched; whole notches, as a mouse wheel sends,
-  don't depend on that arithmetic. Growth starts another round; none ends it. Stopping at the
+  don't depend on that arithmetic.
+  The bottom is measured against the height the page scrolls in
+  (`scrollingElement.clientHeight`, which leaves out a horizontal
+  scrollbar), and a turn that moves nothing at any of the places tried
+  is taken as the bottom, whatever the arithmetic says: on Windows CI
+  the page went no further than 8 px short of `scrollHeight` minus the
+  window's height, by wheel or by script, so the browser's own limit is
+  what counts. Growth starts another round; none ends it. Stopping at the
   old bottom makes each round one trip, so `times=1` is exactly one
   batch from a feed that loads as you near the end, and the response
   that batch came in can be caught with `expect_response`. It returns

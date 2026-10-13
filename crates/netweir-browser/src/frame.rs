@@ -909,6 +909,10 @@ impl Frame {
                     }
                 }
                 if !moved {
+                    // As far as the browser will take the page, which is the
+                    // bottom whatever the heights say: Windows stopped 8 px
+                    // short of scrollHeight minus the window, by wheel and by
+                    // script alike.
                     // Known limit: a page that scrolls in a box of its own,
                     // not as a whole, isn't scrolled by this; wheel the box
                     // with a selector instead.

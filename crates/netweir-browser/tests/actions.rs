@@ -745,7 +745,7 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
             r#"<!DOCTYPE html><div id=feed style="height: 3000px"></div>
 <script>
   addEventListener('scroll', () => {
-    if (scrollY + innerHeight > document.documentElement.scrollHeight - 300) {
+    if (scrollY + innerHeight > document.documentElement.scrollHeight - 20) {
       setTimeout(() => feed.style.height = (feed.offsetHeight + 2000) + 'px', 50);
     }
   });
@@ -754,6 +754,12 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    // Two notches from the bottom, so the first round is a moment's work
+    // however slow the machine, and every round after it a long way down:
+    // the time runs out with at least one round done.
+    page.evaluate("scrollTo(0, document.documentElement.scrollHeight - innerHeight - 200)")
+        .await
+        .unwrap();
     let started = std::time::Instant::now();
     let err = page
         .scroll(
@@ -828,13 +834,19 @@ async fn checking_waits_for_the_box_and_says_to_use_its_label() {
 }
 
 /// Fails, saying where everything was, unless the page is scrolled to its
-/// bottom.
+/// bottom: as far as the browser itself will scroll it, found by asking it
+/// to go further and seeing it doesn't, not by arithmetic on heights a
+/// platform may count differently.
 async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
     let state = page
         .evaluate(
-            "(() => { const s = document.scrollingElement; const box = document.querySelector('#box, [style*=contain]'); \
-             return {at_bottom: scrollY + innerHeight >= s.scrollHeight - 1, scrollY, max: s.scrollHeight - innerHeight, \
-             innerWidth, innerHeight, clientWidth: s.clientWidth, clientHeight: s.clientHeight, dpr: devicePixelRatio, \
+            "(() => { const s = document.scrollingElement, d = document.documentElement, b = document.body; \
+             const box = document.querySelector('#box, [style*=contain]'); const before = scrollY; \
+             scrollTo(scrollX, 1e9); const after = scrollY; const cs = getComputedStyle(b); \
+             return {at_bottom: before === after, before, after, innerWidth, innerHeight, dpr: devicePixelRatio, \
+             scrolling: {scrollHeight: s.scrollHeight, clientHeight: s.clientHeight, clientWidth: s.clientWidth}, \
+             html: {scrollHeight: d.scrollHeight, offsetHeight: d.offsetHeight}, \
+             body: {scrollHeight: b.scrollHeight, offsetHeight: b.offsetHeight, marginTop: cs.marginTop, marginBottom: cs.marginBottom}, \
              box: box && {scrollTop: box.scrollTop, max: box.scrollHeight - box.clientHeight, rect: box.getBoundingClientRect().toJSON()}}; })()",
         )
         .await

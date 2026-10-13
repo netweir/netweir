@@ -147,10 +147,12 @@
       return [x, y];
     },
 
-    // How far the page has scrolled and how far it can.
+    // How far the page has scrolled and how far it can: against the height
+    // the page scrolls in, which, unlike innerHeight, leaves out a
+    // horizontal scrollbar.
     metrics() {
       const s = document.scrollingElement || document.documentElement;
-      return { y: scrollY, max: s.scrollHeight - innerHeight, height: s.scrollHeight, view: innerHeight };
+      return { y: scrollY, max: s.scrollHeight - s.clientHeight, height: s.scrollHeight, view: s.clientHeight };
     },
 
     // Where the page, the boxes under the wheel, and the element
