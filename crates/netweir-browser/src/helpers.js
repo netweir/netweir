@@ -71,6 +71,46 @@
       return { x: b[0] + b[2] / 2, y: b[1] + b[3] / 2 };
     },
 
+    // Whether the element `selector` finds is under the mouse as the page
+    // sees it, waiting a few frames for a move it hasn't handled yet.
+    // A point just outside the element `selector` finds, in view, where
+    // the mouse can come onto it from; none if it fills the window.
+    beside(selector) {
+      const el = document.querySelector(selector);
+      if (!el) return { failed: "attached" };
+      const r = el.getBoundingClientRect();
+      const [x, y] = [r.left + r.width / 2, r.top + r.height / 2];
+      if (r.top >= 3) return { x, y: r.top - 2 };
+      if (r.bottom <= innerHeight - 3) return { x, y: r.bottom + 2 };
+      if (r.left >= 3) return { x: r.left - 2, y };
+      if (r.right <= innerWidth - 3) return { x: r.right + 2, y };
+      return { none: true, x: 0, y: 0 };
+    },
+
+    // Listens, from here, where the page can't see it, for the mouse
+    // coming over the element `selector` finds or anything in it.
+    armOver(selector) {
+      if (this.disarm) this.disarm();
+      this.over = false;
+      const el = document.querySelector(selector);
+      if (!el) return;
+      const seen = () => {
+        this.over = true;
+      };
+      el.addEventListener("mouseover", seen, true);
+      this.disarm = () => {
+        el.removeEventListener("mouseover", seen, true);
+        this.disarm = null;
+      };
+    },
+
+    // Whether that mouseover has come, waiting a few frames for it.
+    async overSeen() {
+      for (let i = 0; i < 10 && !this.over; i++) await frame();
+      if (this.disarm) this.disarm();
+      return this.over;
+    },
+
     // "detached", "hidden" or "visible".
     state(selector) {
       const el = document.querySelector(selector);

@@ -344,7 +344,16 @@ is on a page and on a frame.
 receives events (not enabled: a disabled button still shows a tooltip),
 then sends one `mouseMoved` to the element's centre. Chrome moves its
 own pointer there, so the page gets `mouseover`, `mouseenter` and
-`:hover` exactly as it would from a mouse.
+`:hover` exactly as it would from a mouse. It returns once the page has
+sent `mouseover` for the element, heard by a listener netweir adds in
+its isolated world, which page script can't see; `:hover` can be set
+without one (Linux CI once had `hover` return with the page's handler
+not yet run). A move to where the mouse already is sends nothing, as
+when a scroll brought the element back under it, so a move that brings
+no `mouseover` within a few frames is made again from just outside the
+element, as a person moves off and back on, until the timeout. The page
+sees at least one `mouseover`; Chrome may send one of its own when a
+scroll puts the element under a still mouse.
 
 **Scrolling.** `scroll(selector=None, *, x=0, y=None, times=None,
 idle=2.0, timeout=None)` turns the mouse wheel: a `mouseMoved` to where

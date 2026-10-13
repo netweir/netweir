@@ -504,10 +504,59 @@ impl Frame {
     /// and not covered, so the page sees it come over the element.
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
         let checks = ["attached", "visible", "stable", "receives events"];
-        let (x, y) = self
-            .actionable("hover", selector, &checks, true, timeout)
+        let deadline = Instant::now() + self.page.timeout(timeout);
+        let sel = Value::from(selector);
+        // Done once the page has sent mouseover for it, heard from
+        // netweir's world. A move to where the mouse already is sends
+        // nothing, and the page may not have noticed it there (after a
+        // scroll, or the element coming back under it), so a move that
+        // brings no mouseover is tried again from just outside, as a
+        // person moves off and back on.
+        let mut from_outside = false;
+        loop {
+            let (x, y) = self
+                .actionable("hover", selector, &checks, true, left(deadline))
+                .await?;
+            self.helper(&format!("__netweir.armOver({sel})")).await?;
+            if from_outside {
+                self.come_from_beside(selector, deadline).await?;
+            }
+            self.page.mouse_move(x, y).await?;
+            if self.helper("__netweir.overSeen()").await? == true {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "hover {selector}: the page never sent mouseover for it"
+                )));
+            }
+            from_outside = true;
+        }
+    }
+
+    /// Moves the mouse to just outside the element, unless it fills the
+    /// window, and listens again for it coming over.
+    async fn come_from_beside(&self, selector: &str, deadline: Instant) -> Result<()> {
+        let sel = Value::from(selector);
+        let beside = self
+            .attempt(
+                "hover",
+                selector,
+                &format!("__netweir.beside({sel})"),
+                Some(false),
+                left(deadline),
+            )
             .await?;
-        self.page.mouse_move(x, y).await
+        if beside["none"] != true {
+            let (bx, by) = (
+                beside["x"].as_f64().unwrap_or(0.0),
+                beside["y"].as_f64().unwrap_or(0.0),
+            );
+            self.page.mouse_move(bx, by).await?;
+        }
+        // Listening starts again here, so only coming back on counts.
+        self.helper(&format!("__netweir.armOver({sel})")).await?;
+        Ok(())
     }
 
     /// Replaces the element's contents with `text`, as typing would.

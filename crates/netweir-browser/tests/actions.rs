@@ -1117,3 +1117,96 @@ async fn the_last_pixels_the_wheel_wont_take_are_scrolled_all_the_same() {
     assert_eq!(reached, json!(true));
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn hover_returns_once_the_page_has_seen_the_mouse_arrive() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // A page whose every frame is busy, so the mouse's arrival is handled
+    // late, as on a loaded machine.
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>#menu { width: 100px; height: 30px; }</style>
+<div style="height: 2000px"></div>
+<div id=menu onmouseover="window.over = (window.over || 0) + 1">menu</div>
+<script>
+  const spin = () => {
+    const t = performance.now();
+    while (performance.now() - t < 80) {}
+    requestAnimationFrame(spin);
+  };
+  requestAnimationFrame(spin);
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    for _ in 0..5 {
+        page.evaluate("window.over = 0").await.unwrap();
+        page.evaluate("scrollTo(0, 0)").await.unwrap();
+        page.hover("#menu", None).await.unwrap();
+        // At least one: the scroll that brings it back under the mouse can
+        // have Chrome send one of its own, as for a person whose mouse
+        // stays put while the page moves under it.
+        let over = page.evaluate("over").await.unwrap().as_u64().unwrap();
+        assert!(over >= 1, "{over}");
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn hover_reaches_a_disabled_control_that_needs_no_scrolling() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // A disabled control can still have a tooltip, though Chrome doesn't
+    // count it as under the mouse.
+    let server = serve(vec![(
+        "/",
+        html(r#"<button id=off disabled style="width: 100px; height: 40px">off</button>"#),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.hover("#off", SHORT).await.unwrap();
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn hover_sends_mouseover_even_with_the_mouse_already_on_the_spot() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>#menu { width: 100px; height: 30px; }</style>
+<div id=menu onmouseover="window.over = (window.over || 0) + 1">menu</div>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.hover("#menu", None).await.unwrap();
+    for _ in 0..3 {
+        // Away from under the mouse and back, without the mouse moving: the
+        // next hover lands where the mouse already is.
+        let frames = "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))";
+        page.evaluate(&format!(
+            "() => {{ menu.style.display = 'none'; return {frames}; }}"
+        ))
+        .await
+        .unwrap();
+        page.evaluate(&format!(
+            "() => {{ menu.style.display = ''; return {frames}; }}"
+        ))
+        .await
+        .unwrap();
+        page.evaluate("window.over = 0").await.unwrap();
+        page.hover("#menu", None).await.unwrap();
+        assert_eq!(page.evaluate("over").await.unwrap(), json!(1));
+    }
+    browser.close().await.unwrap();
+}
