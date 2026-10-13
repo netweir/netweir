@@ -77,7 +77,7 @@ def test_an_article_reads_its_fields():
     assert isinstance(a, netweir.Article)
     assert a.title == "Town flooded"
     assert a.byline == "Ada Lovelace"
-    assert a.published == datetime.datetime(2026, 10, 12, 9, 30, tzinfo=datetime.UTC)
+    assert a.published == datetime.datetime(2026, 10, 12, 9, 30, tzinfo=datetime.timezone.utc)
     assert a.image == "https://paper.example/2026/lead.jpg"
     assert a.language == "en"
     assert a.text.startswith("Town flooded\n\nBy Ada Lovelace")
