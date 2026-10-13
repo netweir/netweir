@@ -918,6 +918,10 @@ impl Frame {
             },
             rounds,
         };
+        let lines = &self.page.inner.scroll_trace;
+        let trace = |line: String| lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+        lines.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let num = |m: &Value, k: &str| m[k].as_f64().unwrap_or(0.0);
         let mut grew = 0;
         loop {
             let mut m = self.helper("__netweir.metrics()").await?;
@@ -929,11 +933,11 @@ impl Frame {
             // Turns in a row that moved something, but not the page: a box
             // or a frame under the wheel that won't pass the scroll on.
             let mut stalled = 0;
-            // Whether the last sliver has been scrolled by script.
-            let mut nudged = false;
+            trace(format!("round {grew}: from {} to {max}", num(&m, "y")));
             loop {
                 let at = m["y"].as_f64().unwrap_or(0.0);
                 if at >= max - 1.0 {
+                    trace(format!("reached {at} of {max}"));
                     break;
                 }
                 if past() {
@@ -954,37 +958,16 @@ impl Frame {
                 let mut moved = false;
                 for skip in 0..SPOTS {
                     let (x, y) = self.page_point(skip, deadline).await?;
-                    if self.wheel(None, x, y, 0.0, step).await? {
-                        moved = true;
+                    moved = self.wheel(None, x, y, 0.0, step).await?;
+                    trace(format!(
+                        "turn {step} at ({x:.0}, {y:.0}) from {at}: moved {moved}"
+                    ));
+                    if moved {
                         break;
                     }
                 }
                 if !moved {
-                    // The wheel may not take the page its last few pixels:
-                    // on Windows CI the last notch, with 8 px to go, moved
-                    // nothing, though a script took it the rest of the way.
-                    // Something waiting at the very bottom has to see the
-                    // page get there, so that sliver (less than a notch, as
-                    // far as the page really goes) is scrolled by script, as
-                    // click scrolls, which a page can tell apart. Once per
-                    // trip, after any scroll still running has finished, so
-                    // it can't carry the page back.
-                    m = self.helper("__netweir.metrics()").await?;
-                    let (now, end) = (
-                        m["y"].as_f64().unwrap_or(0.0),
-                        m["max"].as_f64().unwrap_or(0.0),
-                    );
-                    if !nudged && end - now > 0.5 && end - now < NOTCH {
-                        nudged = true;
-                        self.helper("__netweir.settle(null, __netweir.where(null))")
-                            .await?;
-                        self.helper("__netweir.toEnd()").await?;
-                        self.helper("__netweir.settle(null, __netweir.where(null))")
-                            .await?;
-                        m = self.helper("__netweir.metrics()").await?;
-                        continue;
-                    }
-                    // Otherwise as far as the browser will take the page.
+                    // As far as the wheel will take the page.
                     // Known limit: a page that scrolls in a box of its own,
                     // not as a whole, isn't scrolled by this; wheel the box
                     // with a selector instead.
@@ -996,9 +979,35 @@ impl Frame {
                 } else {
                     stalled += 1;
                     if stalled >= STALLED {
+                        trace(format!("stalled at {at}"));
                         break;
                     }
                 }
+            }
+            // The wheel may not take the page its last few pixels: on
+            // Windows CI the last notch, with 8 px to go, moved nothing,
+            // though a script took it the rest of the way. Something
+            // waiting at the very bottom has to see the page get there, so
+            // however the trip ended, a page left less than a notch short
+            // of as far as it really goes is scrolled there by script, as
+            // click scrolls, which a page can tell apart: once a trip,
+            // after any scroll still running has finished, so it can't
+            // carry the page back.
+            m = self.helper("__netweir.metrics()").await?;
+            let short = num(&m, "max") - num(&m, "y");
+            if short > 0.5 && short < NOTCH {
+                self.helper("__netweir.settle(null, __netweir.where(null))")
+                    .await?;
+                self.helper("__netweir.toEnd()").await?;
+                self.helper("__netweir.settle(null, __netweir.where(null))")
+                    .await?;
+                let was = num(&m, "y");
+                m = self.helper("__netweir.metrics()").await?;
+                trace(format!(
+                    "{short} short at {was}: by script to {} of {}",
+                    num(&m, "y"),
+                    num(&m, "max")
+                ));
             }
             // Waiting for what the page fetches as it comes into view: the
             // only sign there'll be no more is that none comes.

@@ -412,13 +412,18 @@ step reads where the page really is.
   (`scrollingElement.clientHeight`, which leaves out a horizontal
   scrollbar). On Windows CI the last notch, with 8 px to go, moved
   nothing, though a script then took the page the rest of the way. So
-  when a turn moves nothing with less than a notch left, that sliver is
-  scrolled by script, once per trip, after any scroll still running has
-  finished: a page that loads more at its very bottom has to see the
-  page get there. It's the one place scrolling to the bottom scrolls by
-  script, which a page can tell apart, as with click's fallback. A
-  page that doesn't move for that either has stopped. Growth starts another round; none ends it. Stopping at the
-  old bottom makes each round one trip, so `times=1` is exactly one
+  however a trip ends (a turn that moves nothing, the old bottom
+  reached, the stall limit), a page left less than a notch short of as
+  far as it really goes (`scrollHeight − clientHeight`, read then) is
+  scrolled there by script, `scrollTo(x, scrollHeight)`, once per trip,
+  after any scroll still running has finished: a page that loads more at
+  its very bottom has to see the page get there. Each trip records what
+  every turn did and how it ended, which the tests print when the page
+  isn't at the bottom. It's the one place scrolling to the bottom
+  scrolls by script, which a page can tell apart, as with click's
+  fallback. A page that doesn't move for that either has stopped. Growth
+  starts another round; none ends it. Stopping at the old bottom makes
+  each round one trip, so `times=1` is exactly one
   batch from a feed that loads as you near the end, and the response
   that batch came in can be caught with `expect_response`. It returns
   how many rounds the page grew in. There's no other sign a feed has

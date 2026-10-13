@@ -848,7 +848,12 @@ async fn checking_waits_for_the_box_and_says_to_use_its_label() {
 /// platform may count differently.
 async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
     let state = scroll_state(page).await;
-    assert_eq!(state["at_bottom"], json!(true), "rounds {rounds}: {state}");
+    assert_eq!(
+        state["at_bottom"],
+        json!(true),
+        "rounds {rounds}: {state}\ntrip:\n{}",
+        page.scroll_trace().join("\n")
+    );
 }
 
 /// Where the page is scrolled to and every height that says how far it

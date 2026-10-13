@@ -154,6 +154,8 @@ pub(crate) struct PageInner {
     rules: SharedRules,
     /// What decides about its requests, and what Fetch pauses for it.
     decider: Arc<Decider>,
+    /// What the last scroll to the bottom did, turn by turn.
+    pub(crate) scroll_trace: Mutex<Vec<String>>,
 }
 
 /// The rules of a shared context, and its pages, to tell when they
@@ -439,6 +441,7 @@ impl Page {
                 closed: AtomicBool::new(false),
                 rules,
                 decider,
+                scroll_trace: Mutex::default(),
             }),
         };
         if let Some(c) = &shared_context {
@@ -783,6 +786,18 @@ impl Page {
             }
         }
         Ok(())
+    }
+
+    /// What the last scroll to the bottom did, turn by turn: where each
+    /// turn went and what it moved, and how the trip ended. For tests to
+    /// show when a platform scrolls differently.
+    #[doc(hidden)]
+    pub fn scroll_trace(&self) -> Vec<String> {
+        self.inner
+            .scroll_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The browser's default limit, which waits and route handlers get.

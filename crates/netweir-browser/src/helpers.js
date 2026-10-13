@@ -195,10 +195,12 @@
       return { y: scrollY, max: s.scrollHeight - s.clientHeight, height: s.scrollHeight, view: s.clientHeight };
     },
 
-    // Scrolls the page by script to as far as it goes.
+    // Scrolls the page by script to as far as it goes: past it, for the
+    // browser to stop at the real end, and at once, whatever the page's
+    // scroll-behavior says.
     toEnd() {
       const s = document.scrollingElement || document.documentElement;
-      scrollTo({ left: scrollX, top: s.scrollHeight - s.clientHeight, behavior: "instant" });
+      scrollTo({ left: scrollX, top: s.scrollHeight, behavior: "instant" });
     },
 
     // Where the page, the boxes under the wheel, and the element
