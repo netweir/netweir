@@ -656,3 +656,71 @@ async fn a_redirect_chrome_follows_obeys_the_next_sites_tdmrep() {
     );
     assert!(!other.paths().iter().any(|p| p == "/reserved"));
 }
+
+/// A chrome-headless-shell `netweir install chrome --headless-shell` put
+/// in place, if there is one.
+fn headless_shell() -> Option<std::path::PathBuf> {
+    let platform = netweir_browser::cft_platform()?;
+    let mut found: Vec<_> = std::fs::read_dir(netweir_browser::netweir_home().join("chrome"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            e.path()
+                .join(netweir_browser::cft_executable(platform, true))
+        })
+        .filter(|p| p.is_file())
+        .collect();
+    found.sort();
+    let shell = found.pop();
+    if shell.is_none() {
+        eprintln!("skipped: no chrome-headless-shell installed");
+    }
+    shell
+}
+
+/// The shell preloads what a page's speculation rules name whatever its
+/// settings say, past the robots.txt guard, so a crawl that obeys
+/// robots.txt won't use it; one that doesn't still can.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawl_obeying_robots_txt_wont_use_chrome_headless_shell() {
+    let Some(shell) = headless_shell() else {
+        return;
+    };
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<title>x</title>"))]).await;
+    let launch = LaunchOptions {
+        executable: Some(shell),
+        ..LaunchOptions::default()
+    };
+    let c = crawler(CrawlSettings {
+        obey_robots: true,
+        browser_launch: launch.clone(),
+        ..settings(BrowserMode::Off)
+    });
+    c.submit(request(1, site.url("/"), true));
+    let events = drain(&c).await;
+    let Some(Event::Failed { error, .. }) = main(&events) else {
+        panic!("{events:?}");
+    };
+    for words in [
+        "chrome-headless-shell",
+        "netweir install chrome",
+        "obey_robots",
+    ] {
+        assert!(error.message.contains(words), "{}", error.message);
+    }
+    assert!(!site.paths().iter().any(|p| p == "/"), "fetched anyway");
+
+    let c = crawler(CrawlSettings {
+        browser_launch: launch,
+        ..settings(BrowserMode::Off)
+    });
+    c.submit(request(1, site.url("/"), true));
+    let events = drain(&c).await;
+    assert!(
+        matches!(main(&events), Some(Event::Fetched { .. })),
+        "{events:?}"
+    );
+}

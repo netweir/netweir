@@ -44,7 +44,8 @@ pub struct LaunchOptions {
     pub brands: Option<Brands>,
     /// A profile directory to use and keep, instead of a fresh one that's
     /// removed on close: cookies and storage survive to the next launch.
-    /// Pages from [`Browser::new_page`] then share it.
+    /// Pages from [`Browser::new_page`] then share it. Chrome's "Preload
+    /// pages" setting is turned off in it, and stays off.
     pub user_data_dir: Option<PathBuf>,
 }
 
@@ -122,12 +123,51 @@ impl Browser {
         };
         // An install from before netweir granted this is fixed in place.
         launch::grant_if_ours(&executable)?;
+        // A profile given as a switch is the one Chrome would use (the
+        // caller's switches come after netweir's, and Chrome takes the
+        // last), so it's the one to prepare, and keep, as if given as
+        // user_data_dir. Taken out of the switches, so the identity probe
+        // doesn't open it too.
+        let switched = launch::take_switches(&mut options.args, "user-data-dir")
+            .pop()
+            .map(PathBuf::from);
+        match (switched, &options.user_data_dir) {
+            (Some(switched), Some(given)) if switched != *given => {
+                return Err(Error::Launch(format!(
+                    "the profile is given twice, as user_data_dir ({}) and as --user-data-dir ({}); \
+                     give it once",
+                    given.display(),
+                    switched.display()
+                )));
+            }
+            (Some(switched), _) => options.user_data_dir = Some(switched),
+            (None, _) => {}
+        }
+        // Chrome reads an empty --user-data-dir as none at all and opens
+        // its own default profile, one netweir never prepared; and an
+        // empty folder would be the working directory here.
+        if options
+            .user_data_dir
+            .as_ref()
+            .is_some_and(|dir| dir.as_os_str().to_string_lossy().trim().is_empty())
+        {
+            return Err(Error::Launch(
+                "the profile folder (user_data_dir or --user-data-dir) is empty: name a folder"
+                    .into(),
+            ));
+        }
         let keep_profile = options.user_data_dir.is_some();
         let profile = match &options.user_data_dir {
             Some(dir) => std::fs::create_dir_all(dir).map(|()| dir.clone()),
             None => profile_dir(),
         }
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
+        if let Err(e) = launch::turn_off_preloading(&profile, &options.args) {
+            if !keep_profile {
+                let _ = std::fs::remove_dir_all(&profile);
+            }
+            return Err(e);
+        }
         let mut args = vec![
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".into(),
@@ -160,6 +200,10 @@ impl Browser {
             proxy_login = login;
         }
         args.extend(options.args.iter().cloned());
+        // Chrome's Preload pages setting, turned off above, leaves
+        // <link rel=prerender> fetching all the same; this holds that back
+        // as Chrome's own experiment does for some of its users.
+        let mut args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
         args.push("about:blank".into());
         let started = match launch::start(&executable, &args) {
             Ok(started) => started,
@@ -383,6 +427,16 @@ impl Browser {
     /// Chrome's product string, such as `Chrome/154.0.8037.98`.
     pub fn version(&self) -> &str {
         &self.inner.version
+    }
+
+    /// Whether this is chrome-headless-shell, which names itself
+    /// `HeadlessChrome/` in its product string (Chrome itself says
+    /// `Chrome/`, headless or not; a `--user-agent` switch doesn't change
+    /// it). The shell preloads what a page's speculation rules name
+    /// whatever its "Preload pages" setting says, outside every session
+    /// netweir has.
+    pub fn is_headless_shell(&self) -> bool {
+        self.inner.version.starts_with("HeadlessChrome/")
     }
 
     /// The launched Chrome's profile directory; None for a browser netweir

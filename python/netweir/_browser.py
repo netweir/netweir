@@ -37,6 +37,7 @@ class browser:
     ``user_data_dir`` is a profile directory to keep: cookies and storage
     survive to the next launch with the same directory, and it's never
     deleted. A leading ``~`` is your home directory. Pages from ``new_page()`` then share that profile.
+    Chrome's "Preload pages" setting is turned off in it, and stays off.
     """
 
     def __init__(

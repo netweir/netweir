@@ -2764,8 +2764,26 @@ async fn render(
             Some(Err((_, when))) => when.elapsed() > Duration::from_secs(60),
         };
         if start {
-            let launched = Browser::launch(browser_launch(&shared)).await;
-            *slot = Some(launched.map_err(|e| (e.to_string(), Instant::now())));
+            let mut launched = Browser::launch(browser_launch(&shared))
+                .await
+                .map_err(|e| e.to_string());
+            // The shell fetches pages ahead of time where the guard below
+            // never sees them, so a crawl that has to ask first can't use
+            // it.
+            if let Ok(browser) = &launched
+                && browser.is_headless_shell()
+                && (shared.settings.obey_robots || shared.settings.obey_tdmrep)
+            {
+                let _ = browser.close().await;
+                launched = Err(
+                    "chrome-headless-shell fetches the pages a page's speculation rules name \
+                     before robots.txt and TDMRep are checked, so a crawl that obeys them won't \
+                     use it: use Chrome (`netweir install chrome`, without --headless-shell), \
+                     or turn obey_robots and obey_tdmrep off if you mean to"
+                        .to_string(),
+                );
+            }
+            *slot = Some(launched.map_err(|e| (e, Instant::now())));
         }
         slot.clone().expect("set above").map_err(|(e, _)| e)
     }

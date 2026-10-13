@@ -180,3 +180,35 @@ async fn chrome_headless_shell_launches_and_says_what_it_is() {
     );
     browser.close().await.unwrap();
 }
+
+/// An empty profile folder is no folder: Chrome reads `--user-data-dir=`
+/// as unset and opens its own default profile, which netweir never
+/// prepared. Refused, in every form, before anything is written.
+#[tokio::test]
+async fn an_empty_profile_folder_is_refused() {
+    let cases = [
+        (vec!["--user-data-dir=".to_string()], None),
+        (vec!["-user-data-dir=  ".to_string()], None),
+        (vec![], Some(std::path::PathBuf::from(""))),
+        (vec![], Some(std::path::PathBuf::from(" "))),
+    ];
+    for (args, user_data_dir) in cases {
+        let err = Browser::launch(LaunchOptions {
+            executable: Some("/nonexistent/chrome".into()),
+            args: args.clone(),
+            user_data_dir: user_data_dir.clone(),
+            ..LaunchOptions::default()
+        })
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            err.to_string().contains("empty"),
+            "{args:?} {user_data_dir:?}: {err}"
+        );
+        assert!(
+            !std::path::Path::new("Default").exists(),
+            "written to the working directory"
+        );
+    }
+}

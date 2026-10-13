@@ -943,3 +943,273 @@ async fn a_frame_from_another_site_cant_take_the_page_past_the_guard() {
     assert!(!page.url().ends_with("/refused"), "{}", page.url());
     browser.close().await.unwrap();
 }
+
+/// A page that asks Chrome to fetch ahead every way it can: speculation
+/// rules that prerender /pre and prefetch /pf, `<link rel=prerender>` and
+/// `<link rel=prefetch>`, and a link to /pre to follow.
+fn speculating() -> common::Server {
+    serve(vec![
+        (
+            "/",
+            html(
+                r#"<!DOCTYPE html><title>start</title>
+<script type="speculationrules">{"prerender": [{"source": "list", "urls": ["/pre"]}],
+ "prefetch": [{"source": "list", "urls": ["/pf"]}]}</script>
+<link rel="prerender" href="/linkpre"><link rel="prefetch" href="/linkpf">
+<a id="go" href="/pre">go</a>"#,
+            ),
+        ),
+        ("/pre", html("<title>pre</title>")),
+        ("/pf", html("<title>pf</title>")),
+        ("/linkpre", html("<title>linkpre</title>")),
+        ("/linkpf", html("<title>linkpf</title>")),
+    ])
+}
+
+/// Waits for `path` to be asked for, then a while longer, about as long
+/// as Chrome takes to fetch ahead with preloading on (well under a
+/// second), so what it would fetch has had time to arrive.
+async fn settle(seen: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !seen() {
+        assert!(std::time::Instant::now() < deadline, "never asked for");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+}
+
+/// What Chrome would fetch ahead for a page, and show when a link to it
+/// is followed, goes past the guard no more than a navigation does: it's
+/// never fetched, and following the link asks the guard.
+#[tokio::test]
+async fn a_guarded_page_fetches_nothing_ahead_past_the_guard() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = speculating();
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = asked.clone();
+    let guard: netweir_browser::Guard = std::sync::Arc::new(move |url: String| {
+        log.lock().unwrap().push(url.clone());
+        let refused = ["/pre", "/pf", "/linkpre"].iter().any(|p| url.ends_with(p));
+        Box::pin(async move { !refused })
+    });
+    let page = browser.new_guarded_page(guard).await.unwrap();
+    page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    // A plain prefetch is the page's own request, as an image is.
+    settle(|| times_seen(&server, "/linkpf") == 1).await;
+    for path in ["/pre", "/pf", "/linkpre"] {
+        assert_eq!(times_seen(&server, path), 0, "{path} was fetched ahead");
+    }
+    // Nothing a page could check gives it away.
+    assert_eq!(
+        page.evaluate(
+            "[HTMLScriptElement.supports('speculationrules'), 'prerendering' in document, \
+              document.prerendering, document.createElement('link').relList.supports('prerender')]"
+        )
+        .await
+        .unwrap(),
+        json!([true, true, false, true])
+    );
+    page.click("#go", None).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !asked.lock().unwrap().iter().any(|u| u.ends_with("/pre")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the guard was never asked about /pre"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(times_seen(&server, "/pre"), 0);
+    assert!(!page.url().ends_with("/pre"), "{}", page.url());
+    let sent = browser.methods_sent();
+    for forbidden in ["Runtime.enable", "Console.enable", "Log.enable"] {
+        assert!(!sent.iter().any(|m| m == forbidden), "{sent:?}");
+    }
+    browser.close().await.unwrap();
+}
+
+/// A route decides about everything the page asks for ahead, as about
+/// anything else: Chrome fetches nothing ahead behind its back.
+#[tokio::test]
+async fn a_route_sees_what_a_page_asks_for_ahead() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = speculating();
+    let page = browser.new_page().await.unwrap();
+    let mut routes = page.route().await.unwrap();
+    let routed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = routed.clone();
+    tokio::spawn(async move {
+        while let Some(route) = routes.recv().await {
+            let url = route.request().url.clone();
+            log.lock().unwrap().push(url.clone());
+            if url.ends_with("/") {
+                route.continue_(Continue::default()).await.unwrap();
+            } else {
+                route.abort().await.unwrap();
+            }
+        }
+    });
+    page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let ended = |tail: &str| routed.lock().unwrap().iter().any(|u| u.ends_with(tail));
+    settle(|| ended("/linkpf")).await;
+    for path in ["/pre", "/pf", "/linkpre", "/linkpf"] {
+        assert_eq!(times_seen(&server, path), 0, "{path} was fetched");
+    }
+    // Following the link is a navigation the route aborts.
+    page.click("#go", None).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !ended("/pre") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "/pre was never routed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(times_seen(&server, "/pre"), 0);
+    browser.close().await.unwrap();
+}
+
+/// A profile of the caller's own gets the same: preloading off, and the
+/// rest of its preferences as they were.
+#[tokio::test]
+async fn a_kept_profile_fetches_nothing_ahead_either() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let server = speculating();
+    let dir = std::env::temp_dir().join(format!("netweir-preload-profile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let options = netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        user_data_dir: Some(dir.clone()),
+        timeout: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let first = common::launch(options.clone()).await;
+    first.close().await.unwrap();
+    drop(first);
+    // Someone turns preloading back on in it, and leaves a mark of their
+    // own.
+    let file = dir.join("Default").join("Preferences");
+    let mut prefs: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    prefs["net"]["network_prediction_options"] = json!(0);
+    prefs["netweir_test_mark"] = json!("kept");
+    std::fs::write(&file, prefs.to_string()).unwrap();
+
+    let second = common::launch(options).await;
+    let page = second.new_page().await.unwrap();
+    page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    settle(|| times_seen(&server, "/linkpf") == 1).await;
+    for path in ["/pre", "/pf", "/linkpre"] {
+        assert_eq!(times_seen(&server, path), 0, "{path} was fetched ahead");
+    }
+    second.close().await.unwrap();
+    drop(second);
+    let prefs: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(prefs["net"]["network_prediction_options"], 2);
+    assert_eq!(prefs["netweir_test_mark"], "kept");
+    // Chrome's helpers can hold files a moment after it exits.
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&dir).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// What a browser launched with `options` fetches ahead for a page that
+/// asks every way it can.
+async fn fetched_ahead(options: netweir_browser::LaunchOptions) -> Vec<&'static str> {
+    let server = speculating();
+    let browser = common::launch(options).await;
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    settle(|| times_seen(&server, "/linkpf") == 1).await;
+    browser.close().await.unwrap();
+    ["/pre", "/pf", "/linkpre"]
+        .into_iter()
+        .filter(|p| times_seen(&server, p) > 0)
+        .collect()
+}
+
+fn remove_profile(dir: &std::path::Path) {
+    // Chrome's helpers can hold files a moment after it exits.
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(dir).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Chrome opens the profile Local State says was used last, not Default,
+/// and that's the one whose setting is turned off.
+#[tokio::test]
+async fn a_kept_profile_last_used_under_another_name_fetches_nothing_ahead() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("netweir-last-used-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Profile 1")).unwrap();
+    std::fs::write(
+        dir.join("Local State"),
+        r#"{"profile":{"last_used":"Profile 1"}}"#,
+    )
+    .unwrap();
+    let file = dir.join("Profile 1").join("Preferences");
+    std::fs::write(&file, r#"{"net":{"network_prediction_options":0}}"#).unwrap();
+    let fetched = fetched_ahead(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        user_data_dir: Some(dir.clone()),
+        timeout: Duration::from_secs(30),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(fetched, Vec::<&str>::new());
+    let prefs: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(prefs["net"]["network_prediction_options"], 2);
+    remove_profile(&dir);
+}
+
+/// A profile given as a Chrome switch, as Chrome reads it, is the one
+/// prepared and kept, as if given as `user_data_dir`.
+#[tokio::test]
+async fn a_profile_given_as_a_switch_fetches_nothing_ahead() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("netweir-switch-profile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let options = netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        // One dash, as Chrome also reads it.
+        args: vec![format!("-user-data-dir={}", dir.display())],
+        timeout: Duration::from_secs(30),
+        ..Default::default()
+    };
+    assert_eq!(fetched_ahead(options.clone()).await, Vec::<&str>::new());
+    assert!(dir.join("Default").join("Preferences").is_file(), "kept");
+    // Given twice, two different ways, it's refused, not guessed at.
+    let err = netweir_browser::Browser::launch(netweir_browser::LaunchOptions {
+        user_data_dir: Some(dir.join("other")),
+        ..options
+    })
+    .await
+    .err()
+    .unwrap();
+    assert!(err.to_string().contains("--user-data-dir"), "{err}");
+    remove_profile(&dir);
+}

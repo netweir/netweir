@@ -47,6 +47,16 @@ PAGES = {
     "/secret.png": ("image/png", b"not really a png"),
     "/secret-api": ("application/json", b'{"word": "secret"}'),
     "/word": ("application/json", b'{"word": "tea"}'),
+    # Asks Chrome to fetch ahead every way it can, all of it where
+    # robots.txt refuses, but for a plain prefetch to show it was read.
+    "/speculating": (
+        "text/html",
+        b"""<!DOCTYPE html><title>speculating</title>
+<script type="speculationrules">{"prerender": [{"source": "list", "urls": ["/private"]}],
+ "prefetch": [{"source": "list", "urls": ["/private-pf"]}]}</script>
+<link rel="prerender" href="/private-link"><link rel="prefetch" href="/word">
+<a id="go" href="/private">go</a>""",
+    ),
 }
 
 
@@ -437,6 +447,42 @@ def test_a_route_can_t_send_a_crawl_s_page_where_robots_txt_refuses(base):
     spider.run()
     assert len(outcome) == 1 and "BLOCKED_BY_CLIENT" in outcome[0], outcome
     assert "/private" not in paths()
+
+
+def test_a_crawl_s_page_fetches_nothing_ahead_where_robots_txt_refuses(base):
+    """Speculation rules and <link rel=prerender> would have Chrome fetch,
+    and show, a page without the robots.txt guard seeing it."""
+    _chrome_or_skip()
+    with Handler.lock:
+        Handler.seen.clear()
+    outcome = []
+
+    class Shop(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/speculating", browser=True)
+
+        async def parse(self, page):
+            live = page.browser
+            for _ in range(1500):
+                if "/word" in paths():
+                    break
+                await asyncio.sleep(0.02)
+            # About as long again as Chrome takes to fetch ahead.
+            await asyncio.sleep(2)
+            outcome.append([p for p in paths() if p.startswith("/private")])
+            await live.click("#go")
+            for _ in range(1500):
+                if live.url != base + "/speculating":
+                    break
+                await asyncio.sleep(0.02)
+            outcome.append(live.url)
+
+    spider = Shop()
+    spider.settings = _settings(obey_robots=True)
+    spider.run()
+    assert outcome[0] == [], outcome
+    assert not outcome[1].endswith("/private"), outcome
+    assert not any(p.startswith("/private") for p in paths()), paths()
 
 
 def test_listeners_and_routes_go_with_the_event_loop_that_added_them(base):

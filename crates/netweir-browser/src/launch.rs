@@ -161,6 +161,188 @@ fn switches_from(value: Option<std::ffi::OsString>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The name and value (empty without `=`) of `arg`, if Chrome reads it as
+/// a switch: after `--` or `-`, or `/` on Windows, with the name in
+/// lower case on Windows, where Chrome lowers it, and as given elsewhere.
+/// Surrounding whitespace is trimmed first, as Chrome trims it.
+fn switch_in(arg: &str) -> Option<(String, &str)> {
+    let arg = arg.trim();
+    let prefixes: &[&str] = if cfg!(windows) {
+        &["--", "-", "/"]
+    } else {
+        &["--", "-"]
+    };
+    let rest = prefixes
+        .iter()
+        .find_map(|p| arg.strip_prefix(p))
+        .filter(|rest| !rest.is_empty())?;
+    let (name, value) = rest.split_once('=').unwrap_or((rest, ""));
+    let name = if cfg!(windows) {
+        name.to_ascii_lowercase()
+    } else {
+        name.to_string()
+    };
+    Some((name, value))
+}
+
+/// How many of `args` Chrome reads for switches: all of them, up to a
+/// bare `--`, after which nothing is a switch.
+fn switch_end(args: &[String]) -> usize {
+    args.iter()
+        .position(|a| a.trim() == "--")
+        .unwrap_or(args.len())
+}
+
+/// The value Chrome takes for the switch `name` (given without its
+/// prefix) in `args`: the last one's.
+pub(crate) fn last_switch(args: &[String], name: &str) -> Option<String> {
+    args[..switch_end(args)]
+        .iter()
+        .rev()
+        .filter_map(|a| switch_in(a))
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.to_string())
+}
+
+/// Takes every switch `name` out of `args`, returning their values in
+/// order.
+pub(crate) fn take_switches(args: &mut Vec<String>, name: &str) -> Vec<String> {
+    let end = switch_end(args);
+    let mut values = Vec::new();
+    let mut kept = Vec::with_capacity(args.len());
+    for (i, arg) in args.drain(..).enumerate() {
+        match switch_in(&arg) {
+            Some((n, v)) if i < end && n == name => values.push(v.to_string()),
+            _ => kept.push(arg),
+        }
+    }
+    *args = kept;
+    values
+}
+
+/// The profile Chrome opens in the user data directory `dir`, as Chrome
+/// picks it: `--profile-directory`, then the one Local State says was
+/// used last, then `Default`. A name that isn't a single folder inside
+/// `dir` (`..`, a path, an absolute one) is refused rather than followed
+/// outside it, as Local State from a profile someone else made could
+/// ask; Chrome itself wouldn't start with it either, and falling back to
+/// `Default` would prepare a profile Chrome doesn't open.
+pub(crate) fn profile_in(dir: &Path, args: &[String]) -> Result<String> {
+    let name = match last_switch(args, "profile-directory") {
+        Some(named) => named,
+        None => std::fs::read(dir.join("Local State"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|state| state["profile"]["last_used"].as_str().map(str::to_string))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Default".into()),
+    };
+    let mut parts = Path::new(&name).components();
+    let single = matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    if !single || name.contains(['/', '\\']) {
+        return Err(Error::Launch(format!(
+            "the profile {name:?} isn't a folder in {}: a profile is named by one folder \
+             inside the user data directory",
+            dir.display()
+        )));
+    }
+    Ok(name)
+}
+
+/// Turns off Chrome's own "Preload pages" setting (Settings > Performance)
+/// in the profile Chrome will open in `dir` (see [`profile_in`]). With it
+/// on, Chrome fetches the pages a page's speculation rules name, and can
+/// show one when a link to it is followed, outside every session netweir
+/// has: no route, block or guard would see the request. Off, a page can
+/// tell nothing from its own side: speculation rules are still supported,
+/// and a real person can have it off too. The rest of the profile's
+/// preferences are kept as they are; a file already set this way isn't
+/// written.
+pub(crate) fn turn_off_preloading(dir: &Path, args: &[String]) -> Result<()> {
+    let profile = dir.join(profile_in(dir, args)?);
+    let file = profile.join("Preferences");
+    let failed = |why: String| {
+        Error::Launch(format!(
+            "can't turn off preloading in {}: {why}",
+            file.display()
+        ))
+    };
+    let mut prefs = match std::fs::read(&file) {
+        // Chrome starts afresh from an empty file, as one cut short by a
+        // crash can be; anything else that isn't JSON is someone's to
+        // look at, not netweir's to replace.
+        Ok(bytes) if bytes.trim_ascii().is_empty() => serde_json::json!({}),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| failed(format!("it isn't valid JSON ({e})")))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(failed(e.to_string())),
+    };
+    let Some(net) = prefs
+        .as_object_mut()
+        .map(|p| p.entry("net").or_insert_with(|| serde_json::json!({})))
+        .and_then(|net| net.as_object_mut())
+    else {
+        return Err(failed("it isn't the preferences Chrome writes".into()));
+    };
+    // 2 is "never": what the setting saves when it's switched off.
+    let off = serde_json::json!(2);
+    if net.get("network_prediction_options") == Some(&off) {
+        return Ok(());
+    }
+    net.insert("network_prediction_options".into(), off);
+    std::fs::create_dir_all(&profile).map_err(|e| failed(e.to_string()))?;
+    replace(&file, prefs.to_string().as_bytes()).map_err(|e| failed(e.to_string()))
+}
+
+/// Puts `contents` in `file` whole, so Chrome never reads half of it: in a
+/// file beside it first, then renamed into place. A linked file is
+/// changed where it really is, and the link kept; the file keeps its
+/// permissions, and a new one is private, as Chrome makes it.
+fn replace(file: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let (target, permissions) = match std::fs::metadata(file) {
+        Ok(meta) => (std::fs::canonicalize(file)?, Some(meta.permissions())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (file.to_path_buf(), None),
+        Err(e) => return Err(e),
+    };
+    let partial = target.with_extension("netweir");
+    let written = (|| {
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        std::io::Write::write_all(&mut open.open(&partial)?, contents)?;
+        if let Some(permissions) = permissions {
+            std::fs::set_permissions(&partial, permissions)?;
+        }
+        std::fs::rename(&partial, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
+
+/// `args` with `features` added to Chrome's `--enable-features`: those
+/// already there, in whatever form Chrome reads, are gathered into one
+/// switch with them, since Chrome reads only the last. It goes before a
+/// bare `--`, after which Chrome reads no switches.
+pub(crate) fn enable_features(mut args: Vec<String>, features: &[&str]) -> Vec<String> {
+    let mut enabled: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+    for list in take_switches(&mut args, "enable-features") {
+        enabled.extend(
+            list.split(',')
+                .filter(|f| !f.is_empty())
+                .map(str::to_string),
+        );
+    }
+    let end = switch_end(&args);
+    args.insert(end, format!("--enable-features={}", enabled.join(",")));
+    args
+}
+
 /// The Chrome to launch: `$NETWEIR_CHROME`, then the newest one
 /// `netweir install chrome` installed, then the usual install paths
 /// (Chrome, Chrome for Testing, Chromium). The error lists where it
@@ -435,6 +617,216 @@ mod tests {
         );
         assert!(switches_from(Some("   ".into())).is_empty());
         assert!(switches_from(None).is_empty());
+    }
+
+    #[test]
+    fn features_join_those_already_asked_for() {
+        let args = enable_features(
+            vec![
+                "--enable-features=A,B".into(),
+                "--headless".into(),
+                "--enable-features=C".into(),
+            ],
+            &["Ours"],
+        );
+        assert_eq!(args, ["--headless", "--enable-features=Ours,A,B,C"]);
+        assert_eq!(
+            enable_features(vec![], &["Ours"]),
+            ["--enable-features=Ours"]
+        );
+        // A single dash is the same switch; after "--" nothing is one.
+        assert_eq!(
+            enable_features(strings(&["-enable-features=A", "--", "page"]), &["Ours"]),
+            ["--enable-features=Ours,A", "--", "page"]
+        );
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("netweir-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn prediction(file: &Path) -> serde_json::Value {
+        let prefs: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        prefs["net"]["network_prediction_options"].clone()
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn switches_are_read_as_chrome_reads_them() {
+        let args = strings(&[
+            "--profile-directory=A",
+            "-profile-directory=B",
+            " --other ",
+            "--",
+            "--profile-directory=after-the-end",
+        ]);
+        assert_eq!(
+            last_switch(&args, "profile-directory").as_deref(),
+            Some("B")
+        );
+        assert_eq!(last_switch(&args, "other").as_deref(), Some(""));
+        assert_eq!(last_switch(&args, "missing"), None);
+        let mut args = strings(&[
+            "-user-data-dir=a",
+            "x",
+            "--user-data-dir=b=c",
+            "--",
+            "-user-data-dir=d",
+        ]);
+        assert_eq!(take_switches(&mut args, "user-data-dir"), ["a", "b=c"]);
+        assert_eq!(args, ["x", "--", "-user-data-dir=d"]);
+        // A slash, and capitals, count on Windows only, as in Chrome.
+        let args = strings(&["/User-Data-Dir=w"]);
+        assert_eq!(last_switch(&args, "user-data-dir").is_some(), cfg!(windows));
+        let args = strings(&["--User-Data-Dir=w"]);
+        assert_eq!(last_switch(&args, "user-data-dir").is_some(), cfg!(windows));
+    }
+
+    #[test]
+    fn a_profile_name_must_be_a_folder_in_the_user_data_dir() {
+        let dir = scratch("bad-profile");
+        let mut bad = vec!["", ".", "..", "../outside", "a/b", "a\\b", "/abs"];
+        if cfg!(windows) {
+            bad.extend(["C:\\abs", "C:rel"]);
+        }
+        for name in bad {
+            let args = [format!("--profile-directory={name}")];
+            let err = profile_in(&dir, &args).unwrap_err().to_string();
+            assert!(err.contains("profile"), "{name}: {err}");
+            assert!(turn_off_preloading(&dir, &args).is_err(), "{name}");
+            std::fs::write(
+                dir.join("Local State"),
+                serde_json::json!({"profile": {"last_used": name}}).to_string(),
+            )
+            .unwrap();
+            // An empty name in Local State is Chrome's default.
+            assert_eq!(profile_in(&dir, &[]).is_err(), !name.is_empty(), "{name}");
+        }
+        std::fs::remove_file(dir.join("Local State")).unwrap();
+        // Nothing was written anywhere.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(!dir.parent().unwrap().join("outside").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_profile_is_the_one_chrome_opens() {
+        let dir = scratch("which-profile");
+        assert_eq!(profile_in(&dir, &[]).unwrap(), "Default");
+        std::fs::write(
+            dir.join("Local State"),
+            r#"{"profile":{"last_used":"Profile 1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(profile_in(&dir, &[]).unwrap(), "Profile 1");
+        let args = ["--profile-directory=Work".to_string()];
+        assert_eq!(profile_in(&dir, &args).unwrap(), "Work");
+        std::fs::write(dir.join("Local State"), "{not json").unwrap();
+        assert_eq!(profile_in(&dir, &[]).unwrap(), "Default");
+
+        std::fs::write(
+            dir.join("Local State"),
+            r#"{"profile":{"last_used":"Profile 1"}}"#,
+        )
+        .unwrap();
+        turn_off_preloading(&dir, &[]).unwrap();
+        assert_eq!(prediction(&dir.join("Profile 1/Preferences")), 2);
+        assert!(!dir.join("Default").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_preferences_file_is_chromes_to_recover() {
+        let dir = scratch("empty-prefs");
+        std::fs::create_dir_all(dir.join("Default")).unwrap();
+        let file = dir.join("Default/Preferences");
+        for empty in ["", " \n"] {
+            std::fs::write(&file, empty).unwrap();
+            turn_off_preloading(&dir, &[]).unwrap();
+            assert_eq!(prediction(&file), 2);
+        }
+        std::fs::write(&file, "{\"net\":").unwrap();
+        let err = turn_off_preloading(&dir, &[]).unwrap_err().to_string();
+        assert!(err.contains("isn't valid JSON"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_keeps_its_permissions_and_its_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("prefs-mode");
+        let file = dir.join("Default/Preferences");
+        // A new one is private, as Chrome makes it.
+        turn_off_preloading(&dir, &[]).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        turn_off_preloading(&dir, &[]).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        // A linked file is changed where it is, and stays linked.
+        let real = dir.join("elsewhere.json");
+        std::fs::write(&real, "{}").unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&real, &file).unwrap();
+        turn_off_preloading(&dir, &[]).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(prediction(&real), 2);
+        assert!(!dir.join("Default/Preferences.netweir").exists());
+        assert!(!dir.join("elsewhere.netweir").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preloading_is_turned_off_and_the_rest_kept() {
+        let dir = std::env::temp_dir().join(format!("netweir-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let read = |p: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(dir.join(p).join("Preferences")).unwrap())
+                .unwrap()
+        };
+        // A new profile.
+        turn_off_preloading(&dir, &[]).unwrap();
+        assert_eq!(read("Default")["net"]["network_prediction_options"], 2);
+        // Someone's own, with the setting on and more besides.
+        let own = dir.join("Work");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(
+            own.join("Preferences"),
+            r#"{"net":{"network_prediction_options":0,"other":1},"homepage":"x"}"#,
+        )
+        .unwrap();
+        let args = ["--profile-directory=Work".to_string()];
+        turn_off_preloading(&dir, &args).unwrap();
+        let prefs = read("Work");
+        assert_eq!(prefs["net"]["network_prediction_options"], 2);
+        assert_eq!(
+            (&prefs["net"]["other"], &prefs["homepage"]),
+            (&1.into(), &"x".into())
+        );
+        // One that isn't Chrome's is left alone.
+        std::fs::write(own.join("Preferences"), "[1]").unwrap();
+        assert!(turn_off_preloading(&dir, &args).is_err());
+        assert_eq!(std::fs::read(own.join("Preferences")).unwrap(), b"[1]");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

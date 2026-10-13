@@ -42,7 +42,8 @@ Chromium where Google Chrome adds its own name, so its pages present the
 brands of the Google Chrome version Netweir has a profile for, as the HTTP
 client does. `--headless-shell` installs `chrome-headless-shell` instead,
 which is lighter and faster but easier to tell from a real browser; pass
-its path as `executable` to use it.
+its path as `executable` to use it. A crawl that obeys robots.txt or
+TDMRep won't use it (see [In a crawl](#in-a-crawl)).
 
 On Windows, the install also lets Chrome's sandbox read the folder, as
 Chrome's own installer does: Chrome runs its network service and other
@@ -114,6 +115,20 @@ itself, so they share its cookies with each other; `new_context()` still
 gives you a context that's thrown away. Only one Chrome can use a profile
 at a time, so close the first before starting another with the same
 folder. Cookies that only last the session (no expiry date) aren't kept.
+Netweir turns off Chrome's "Preload pages" setting (Settings >
+Performance) in the folder before Chrome starts, and it stays off there:
+it changes that one value in the `Preferences` file of the profile Chrome
+opens and leaves the rest as it was (see
+[Blocking and changing requests](#blocking-and-changing-requests) for
+why). Point `user_data_dir` at your everyday Chrome folder and that
+setting is off for your own browsing in that profile too; turn it back
+on in Chrome's settings if you want it. A `--user-data-dir=` switch in
+`args` (or `-user-data-dir=`, which Chrome reads the same) counts as
+`user_data_dir`: that folder gets the same, and is kept. It's used as
+given, as Chrome uses it: a relative path is relative to the working
+directory, and `~` isn't expanded. A profile name, from
+`--profile-directory=` or the folder's Local State, has to be one folder
+inside it; anything else (`..`, a path) fails the launch.
 
 With `connect`, Netweir drives a Chrome that's already running, started
 with `--remote-debugging-port`, or anything else that speaks the DevTools
@@ -121,7 +136,8 @@ protocol. Pass the `ws://` URL Chrome prints, or `http://host:port` and
 Netweir asks it for the URL; Chrome only answers that when `host` is an IP
 address or `localhost`, so for one in Docker, say, use the `ws://` URL.
 Nothing is launched, so `executable`, `args`, `proxy` and `headless`
-don't apply. Closing the browser, or dropping it, closes the pages
+don't apply, and Netweir can't turn that Chrome's "Preload pages" setting
+off: turn it off yourself, or pages fetched ahead go past your routes. Closing the browser, or dropping it, closes the pages
 Netweir opened and leaves the browser running. A `wss://` URL works too:
 its certificate is checked against Chrome's own root store (not against
 certificates installed on the machine, such as a company's).
@@ -509,6 +525,15 @@ held in Chrome until Netweir has asked your Python code about it, which is
 a round trip each. `block()` with resource types only holds requests of
 those types, and decides them without asking Python.
 
+A page can ask Chrome to fetch pages before anyone follows a link to
+them, with speculation rules (`<script type="speculationrules">`) or
+`<link rel=prerender>`. Chrome would do that fetching itself, where no
+route sees it, so every Chrome Netweir starts has preloading turned off,
+as you can turn it off in Chrome's settings; it fetches none of them, and
+a page can't tell. Following such a link is then an ordinary navigation
+that your routes see. `<link rel=prefetch>` is the page's own request,
+routed like an image.
+
 Some things routes don't see. In a crawl, a page that robots.txt or
 TDMRep rules out is refused before any route is asked, and no route can
 answer for it. Nor can a route send a page elsewhere to get round them:
@@ -516,7 +541,12 @@ answer for it. Nor can a route send a page elsewhere to get round them:
 too, and one ruled out fails with `ERR_BLOCKED_BY_CLIENT`, exactly as a
 refused page does, without being fetched. Requests from frames, other
 sites' included, and from the page's workers are heard and routed like
-the page's own. What service workers and shared workers fetch for
+the page's own. Known limit: in a browser you `connect` to with
+preloading on, or in `chrome-headless-shell`, which ignores the setting,
+what a page's speculation rules ask Chrome to fetch ahead goes out
+unrouted. And
+if you pass `--disable-features=NoStatePrefetchHoldback`,
+`<link rel=prerender>` is fetched unrouted again. What service workers and shared workers fetch for
 themselves isn't: Chrome runs those for the browser, not the page. Nor
 is the script of a worker started by another worker, though what that
 worker fetches afterwards is. A worklet's module (`audioWorklet`,
@@ -549,7 +579,13 @@ turn like any other: robots.txt, each site's limits and its delay all
 apply. Chrome follows redirects, and a page's own scripts, by itself; each
 page it's about to load in the tab is checked against that site's
 robots.txt and TDMRep first, and one they rule out isn't fetched (the
-request is dropped, as over HTTP). The check stays on while your callback
+request is dropped, as over HTTP). Chrome fetches no page ahead of time
+for the crawl, so a page's speculation rules can't get one past the
+check either. `chrome-headless-shell` would, whatever its settings say,
+so a crawl with `obey_robots` or `obey_tdmrep` on refuses to start it:
+its browser requests fail with an error saying so. Use Chrome
+(`netweir install chrome`, without `--headless-shell`), or turn both
+off if you mean to crawl without them. The check stays on while your callback
 drives `page.browser`: navigating it somewhere ruled out fails with
 Chrome's `ERR_BLOCKED_BY_CLIENT`. `browser_pages` (4 by default) caps how many are
 open at once. `browser_block=("image", "font", "media")` has every page
