@@ -839,8 +839,10 @@ fn take_lock(dir: &Path) -> std::io::Result<Option<(PathBuf, std::fs::File)>> {
         if !try_lock(&file) {
             let e = std::io::Error::last_os_error();
             // Some network and FUSE filesystems have no flock.
+            // (ENOTSUP and EOPNOTSUPP are one on Linux, two on macOS.)
+            let unlockable = [libc::ENOLCK, libc::EOPNOTSUPP, libc::ENOTSUP, libc::ENOSYS];
             return match e.raw_os_error() {
-                Some(libc::ENOLCK | libc::EOPNOTSUPP | libc::ENOSYS) => Ok(None),
+                Some(code) if unlockable.contains(&code) => Ok(None),
                 _ => Err(e),
             };
         }

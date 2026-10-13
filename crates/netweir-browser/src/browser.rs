@@ -165,6 +165,9 @@ impl Browser {
         launch::sweep_soon();
         // A profile of netweir's own is removed if the launch fails, on
         // whichever line.
+        if let Some(dir) = &options.user_data_dir {
+            Quitting::wait_for(dir).await;
+        }
         let (profile, temp) = match &options.user_data_dir {
             Some(dir) => std::fs::create_dir_all(dir).map(|()| (dir.clone(), None)),
             None => launch::TempProfile::make().map(|t| (t.dir().to_path_buf(), Some(t))),
@@ -615,7 +618,9 @@ impl Drop for Inner {
         // it writes out what it hasn't yet, and is let go without waiting.
         // A thread waits for it, killing it after ten seconds, and only
         // then lets go of the lifeline; if the program ends first, the
-        // lifeline asks again, as gently as the system allows.
+        // lifeline asks again, as gently as the system allows. The writer
+        // is a thread, not a task, so the ask reaches Chrome with or
+        // without a runtime.
         if self.keep_profile
             && let Some(mut child) = self
                 .child
@@ -626,6 +631,7 @@ impl Drop for Inner {
             self.conn.send("", "Browser.close", json!({}));
             self.conn.shut();
             let lifeline = self.lifeline.take();
+            let quitting = Quitting::start(self.profile.as_deref().unwrap_or(Path::new("")));
             let _ = std::thread::Builder::new()
                 .name("netweir-chrome-quit".into())
                 .spawn(move || {
@@ -636,10 +642,53 @@ impl Drop for Inner {
                     let _ = child.kill();
                     let _ = child.wait();
                     drop(lifeline);
+                    drop(quitting);
                 });
             return;
         }
         let _ = self.shut_down(Duration::ZERO);
+    }
+}
+
+/// A kept profile whose Chrome, its browser dropped, is still quitting.
+/// A Chrome launched with it meanwhile would find the old one, hand its
+/// pages over to it and exit, so a launch waits for it first.
+struct Quitting(PathBuf);
+
+/// The profiles being quit, by the folder as the system names it, each as
+/// many times as Chromes quit with it.
+static QUITTING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+impl Quitting {
+    fn start(profile: &Path) -> Quitting {
+        let profile = std::fs::canonicalize(profile).unwrap_or_else(|_| profile.to_path_buf());
+        QUITTING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(profile.clone());
+        Quitting(profile)
+    }
+
+    /// Waits until no Chrome is quitting with `profile`: ten seconds at
+    /// most, as long as one is given before it's killed.
+    async fn wait_for(profile: &Path) {
+        let profile = std::fs::canonicalize(profile).unwrap_or_else(|_| profile.to_path_buf());
+        while QUITTING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&profile)
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+impl Drop for Quitting {
+    fn drop(&mut self) {
+        let mut quitting = QUITTING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = quitting.iter().position(|p| *p == self.0) {
+            quitting.remove(at);
+        }
     }
 }
 

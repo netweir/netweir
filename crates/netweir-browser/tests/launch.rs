@@ -448,13 +448,9 @@ async fn a_launch_that_fails_leaves_no_profile() {
     std::fs::remove_dir_all(&temp).unwrap();
 }
 
-/// Dropping a browser with a profile to keep, without closing it, asks
-/// Chrome to quit, so what it hadn't written out, such as a cookie just
-/// set, is kept.
-#[tokio::test]
-async fn a_kept_profile_keeps_its_cookies_when_the_browser_is_dropped() {
-    let Some(executable) = chrome() else { return };
-    let server = common::serve(vec![(
+/// A server that sets a cookie that lasts an hour.
+fn cookie_server() -> common::Server {
+    common::serve(vec![(
         "/",
         common::Reply {
             status: 200,
@@ -464,14 +460,52 @@ async fn a_kept_profile_keeps_its_cookies_when_the_browser_is_dropped() {
             ],
             body: "<p>hi</p>".into(),
         },
-    )]);
+    )])
+}
+
+/// Launches Chrome with the profile `dir` and checks it has the cookie
+/// [`cookie_server`] sets; then removes `temp`.
+async fn has_the_cookie(dir: std::path::PathBuf, temp: std::path::PathBuf) {
+    let browser = common::launch(LaunchOptions {
+        executable: chrome(),
+        user_data_dir: Some(dir),
+        ..LaunchOptions::default()
+    })
+    .await;
+    let page = browser.new_page().await.unwrap();
+    let cookies = page.cookies().await.unwrap();
+    assert!(
+        cookies.iter().any(|c| c.name == "kept" && c.value == "yes"),
+        "{cookies:?}"
+    );
+    browser.close().await.unwrap();
+    drop(browser);
+    // Chrome's helpers can hold files a moment after it exits.
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&temp).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Dropping a browser with a profile to keep, without closing it, asks
+/// Chrome to quit, so what it hadn't written out, such as a cookie just
+/// set, is kept; and a launch with the profile straight after waits for
+/// it to have quit, rather than finding it there.
+#[tokio::test]
+async fn a_kept_profile_keeps_its_cookies_when_the_browser_is_dropped() {
+    if chrome().is_none() {
+        return;
+    }
+    let server = cookie_server();
     let temp = scratch("dropped-profile");
-    let options = LaunchOptions {
-        executable: Some(executable),
+    let first = common::launch(LaunchOptions {
+        executable: chrome(),
         user_data_dir: Some(temp.join("profile")),
         ..LaunchOptions::default()
-    };
-    let first = common::launch(options.clone()).await;
+    })
+    .await;
     let pid = first.pid().unwrap();
     let page = first.new_page().await.unwrap();
     page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
@@ -479,26 +513,52 @@ async fn a_kept_profile_keeps_its_cookies_when_the_browser_is_dropped() {
         .unwrap();
     drop(page);
     drop(first);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while running_with(&temp.join("profile"), pid) {
-        assert!(std::time::Instant::now() < deadline, "Chrome didn't quit");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // Holds the old Chrome up for a moment, as a busy machine can, so the
+    // launch below starts while it's still quitting.
+    #[cfg(unix)]
+    {
+        let pid = pid as libc::pid_t;
+        unsafe { libc::kill(pid, libc::SIGSTOP) };
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            unsafe { libc::kill(pid, libc::SIGCONT) };
+        });
     }
-    let second = common::launch(options).await;
-    let page = second.new_page().await.unwrap();
-    let cookies = page.cookies().await.unwrap();
-    assert!(
-        cookies.iter().any(|c| c.name == "kept" && c.value == "yes"),
-        "{cookies:?}"
-    );
-    second.close().await.unwrap();
-    drop(second);
-    for _ in 0..100 {
-        if std::fs::remove_dir_all(&temp).is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = pid;
+    has_the_cookie(temp.join("profile"), temp).await;
+}
+
+/// The same when the browser outlives the runtime it was launched on, as
+/// one dropped as a program ends can.
+#[test]
+fn a_kept_profile_keeps_its_cookies_when_dropped_after_its_runtime() {
+    if chrome().is_none() {
+        return;
     }
+    let server = cookie_server();
+    let temp = scratch("dropped-late-profile");
+    let runtime = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    let first = runtime().block_on(async {
+        let first = common::launch(LaunchOptions {
+            executable: chrome(),
+            user_data_dir: Some(temp.join("profile")),
+            ..LaunchOptions::default()
+        })
+        .await;
+        let page = first.new_page().await.unwrap();
+        page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+            .await
+            .unwrap();
+        first
+    });
+    // The runtime is gone by now.
+    drop(first);
+    runtime().block_on(has_the_cookie(temp.join("profile"), temp));
 }
 
 /// Chrome is asked to end before it's made to, so a profile to keep has

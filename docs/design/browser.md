@@ -129,7 +129,11 @@ doesn't: the lifeline is closed on exec.
 A browser with a profile to keep that's dropped without `close()` is
 asked to quit as `close()` asks (`Browser.close`), without the drop
 waiting: a thread waits for Chrome, kills it after ten seconds, and only
-then lets go of its lifeline. A temporary profile still goes at once,
+then lets go of its lifeline. The command goes to the pipe's writer
+thread, so it reaches Chrome even when the runtime has already gone.
+A launch with the same profile meanwhile waits for that Chrome to have
+gone (ten seconds at most), since a new Chrome that found it would hand
+its window over and exit. A temporary profile still goes at once,
 Chrome with it, as before.
 
 Nothing is left running to remove the profile of a program that was
