@@ -44,7 +44,9 @@ struct Shared {
 #[derive(Default)]
 struct State {
     closed: bool,
-    pending: HashMap<u64, (String, oneshot::Sender<Result<Value>>)>,
+    /// Commands waiting for their answers, by id: the method, and the
+    /// session it went to.
+    pending: HashMap<u64, (String, String, oneshot::Sender<Result<Value>>)>,
     /// By session id; "" is the browser's own.
     handlers: HashMap<String, Handler>,
     /// Every method sent, for the test that nothing forbidden was.
@@ -134,7 +136,9 @@ impl Connection {
                 return Err(Error::Closed);
             }
             state.sent.insert(method.to_string());
-            state.pending.insert(id, (method.to_string(), tx));
+            state
+                .pending
+                .insert(id, (method.to_string(), session.to_string(), tx));
         }
         let sent = match &*self.shared.out.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(out) => out.send(bytes).is_ok(),
@@ -236,7 +240,7 @@ impl Shared {
 
     fn deliver(&self, message: Value) {
         if let Some(id) = message.get("id").and_then(Value::as_u64) {
-            let Some((method, tx)) = self.lock().pending.remove(&id) else {
+            let Some((method, _, tx)) = self.lock().pending.remove(&id) else {
                 return;
             };
             let result = match message.get("error") {
@@ -261,10 +265,29 @@ impl Shared {
             .get("sessionId")
             .and_then(Value::as_str)
             .unwrap_or("");
-        // A detached target's session hears it from the browser's.
+        // A detached target's session hears it from the browser's. Chrome
+        // never answers what was sent to it, so that fails now.
         if method == "Target.detachedFromTarget"
             && let Some(gone) = params.get("sessionId").and_then(Value::as_str)
         {
+            let stranded: Vec<_> = {
+                let mut state = self.lock();
+                let ids: Vec<u64> = state
+                    .pending
+                    .iter()
+                    .filter(|(_, (_, s, _))| s == gone)
+                    .map(|(id, _)| *id)
+                    .collect();
+                ids.iter()
+                    .filter_map(|id| state.pending.remove(id))
+                    .collect()
+            };
+            for (method, _, tx) in stranded {
+                let _ = tx.send(Err(Error::Protocol {
+                    method,
+                    message: "the session went away before Chrome answered".into(),
+                }));
+            }
             let handler = self.lock().handlers.remove(gone);
             if let Some(handler) = handler {
                 handler(GONE, &Value::Null);
@@ -285,7 +308,7 @@ impl Shared {
                 std::mem::take(&mut state.handlers),
             )
         };
-        for (_, (_, tx)) in pending {
+        for (_, (_, _, tx)) in pending {
             let _ = tx.send(Err(Error::Closed));
         }
         for handler in handlers.into_values() {
@@ -329,6 +352,33 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Invalid(_)), "{err}");
         assert!(conn.methods_sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_that_detaches_fails_what_was_waiting_on_it() {
+        let (input, mut writer) = std::io::pipe().unwrap();
+        let conn = Connection::new(input, std::io::sink());
+        let waiting = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("gone", "Page.getFrameTree", json!({})).await }
+        });
+        let other = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("kept", "Page.getFrameTree", json!({})).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        writer
+            .write_all(
+                b"{\"method\":\"Target.detachedFromTarget\",\"params\":{\"sessionId\":\"gone\"}}\0",
+            )
+            .unwrap();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+            .await
+            .expect("still waiting on a session that's gone")
+            .unwrap();
+        assert!(matches!(r, Err(Error::Protocol { .. })), "{r:?}");
+        assert!(!other.is_finished(), "another session's command waits on");
+        drop(writer);
     }
 
     #[tokio::test]

@@ -42,6 +42,10 @@ pub struct LaunchOptions {
     /// The brands pages present. Chrome for Testing calls itself Chromium
     /// alone, where Google Chrome of the same version lists itself too.
     pub brands: Option<Brands>,
+    /// A profile directory to use and keep, instead of a fresh one that's
+    /// removed on close: cookies and storage survive to the next launch.
+    /// Pages from [`Browser::new_page`] then share it.
+    pub user_data_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for LaunchOptions {
@@ -53,6 +57,7 @@ impl std::fmt::Debug for LaunchOptions {
             .field("timeout", &self.timeout)
             .field("proxy", &self.proxy.as_ref().map(|_| "…"))
             .field("brands", &self.brands.as_ref().map(|_| "…"))
+            .field("user_data_dir", &self.user_data_dir)
             .finish()
     }
 }
@@ -66,6 +71,7 @@ impl Default for LaunchOptions {
             timeout: Duration::from_secs(30),
             proxy: None,
             brands: None,
+            user_data_dir: None,
         }
     }
 }
@@ -89,8 +95,12 @@ pub(crate) struct Inner {
     pub conn: Connection,
     /// The Chrome netweir launched; None for one it connected to.
     child: Mutex<Option<Child>>,
-    /// The launched Chrome's profile, removed when it closes.
+    /// The launched Chrome's profile, removed when it closes unless it's
+    /// one the caller gave.
     profile: Option<PathBuf>,
+    /// Whether the profile is the caller's, to keep: then pages open in
+    /// its own context, the one whose cookies and storage Chrome saves.
+    keep_profile: bool,
     /// Contexts netweir made, for closing a browser it connected to,
     /// whose other contexts aren't netweir's to close.
     contexts: Mutex<Vec<String>>,
@@ -110,8 +120,12 @@ impl Browser {
             Some(path) => path,
             None => launch::find_chrome()?,
         };
-        let profile = profile_dir()
-            .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
+        let keep_profile = options.user_data_dir.is_some();
+        let profile = match &options.user_data_dir {
+            Some(dir) => std::fs::create_dir_all(dir).map(|()| dir.clone()),
+            None => profile_dir(),
+        }
+        .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
         let mut args = vec![
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".into(),
@@ -148,7 +162,9 @@ impl Browser {
         let started = match launch::start(&executable, &args) {
             Ok(started) => started,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&profile);
+                if !keep_profile {
+                    let _ = std::fs::remove_dir_all(&profile);
+                }
                 return Err(e);
             }
         };
@@ -158,6 +174,7 @@ impl Browser {
             conn,
             child: Mutex::new(Some(started.child)),
             profile: Some(profile),
+            keep_profile,
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -206,6 +223,7 @@ impl Browser {
             conn,
             child: Mutex::new(None),
             profile: None,
+            keep_profile: false,
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -366,8 +384,13 @@ impl Browser {
     }
 
     /// A page in a context of its own: no cookies or storage shared with
-    /// any other page. Closing it closes the context.
+    /// any other page. Closing it closes the context. With a
+    /// [`LaunchOptions::user_data_dir`], it's a page of the profile's own
+    /// context instead, so what it keeps is saved there.
     pub async fn new_page(&self) -> Result<Page> {
+        if self.inner.keep_profile {
+            return Page::open(self.inner.clone(), None, false, None, None).await;
+        }
         let context = self.create_context().await?;
         Page::open(self.inner.clone(), Some(context), true, None, None).await
     }
@@ -416,7 +439,7 @@ impl Browser {
     }
 
     /// Asks Chrome to quit, waits for it (killing it after 10 seconds),
-    /// and removes its profile directory.
+    /// and removes its profile directory, unless it was given one.
     pub async fn close(&self) -> Result<()> {
         let inner = self.inner.clone();
         if inner.profile.is_none() {
@@ -497,8 +520,8 @@ impl Inner {
             }
         }
         match &self.profile {
-            Some(profile) => remove_profile(profile),
-            None => Ok(()),
+            Some(profile) if !self.keep_profile => remove_profile(profile),
+            _ => Ok(()),
         }
     }
 }
@@ -615,6 +638,7 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
             conn: Connection::new(started.replies, started.commands),
             child: Mutex::new(Some(started.child)),
             profile: Some(profile),
+            keep_profile: false,
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,

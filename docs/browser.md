@@ -81,12 +81,31 @@ The options:
 | `timeout` | `30.0` | the default limit, in seconds, for navigations and actions, and for Chrome to answer anything netweir asks it |
 | `proxy` | `None` | an `http://`, `https://` or `socks5://` proxy for everything Chrome fetches; for an HTTP(S) proxy, a username and password in it are given when it asks (Chrome can't log in to a SOCKS proxy) |
 | `connect` | `None` | drive a browser that's already running, instead of starting one: a `ws://` DevTools URL, or `http://host:port` |
+| `user_data_dir` | `None` | a profile folder to use and keep, so cookies and storage are still there next time |
 
 Use it with `async with`, or `await` it and call `await browser.close()`
 yourself. Each browser netweir starts gets a fresh profile, deleted when it
 closes. A program that exits without closing it still ends Chrome, but
 leaves the profile behind, as a `netweir-chrome-*` folder in the temporary
 directory.
+
+To stay logged in from one run to the next, give Chrome a folder of your
+own:
+
+```python
+async with netweir.browser(user_data_dir="~/.cache/shop-profile") as browser:
+    page = await browser.new_page()
+    await page.goto("https://example.com/account")
+```
+
+netweir creates the folder if it isn't there and never deletes it. The
+cookies, local storage and cache a page keeps are saved there when the
+browser closes, and the next browser started with the same folder starts
+with them. With `user_data_dir`, `new_page()` opens pages in the profile
+itself, so they share its cookies with each other; `new_context()` still
+gives you a context that's thrown away. Only one Chrome can use a profile
+at a time, so close the first before starting another with the same
+folder. Cookies that only last the session (no expiry date) aren't kept.
 
 With `connect`, netweir drives a Chrome that's already running, started
 with `--remote-debugging-port`, or anything else that speaks the DevTools
@@ -144,6 +163,8 @@ response = await moved
 | `fill(selector, text)` | replaces what's in a field with `text`, as typing would |
 | `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
+| `hover(selector)` | moves the mouse over the element |
+| `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
 
 Selectors are CSS. You don't need to wait before acting: `click` and
 `fill` keep trying until the element can take the action, up to the
@@ -154,6 +175,151 @@ visible, enabled field that isn't read-only.
 If the time runs out, `netweir.BrowserTimeout` (a `TimeoutError`) says
 which of those never happened, such as "something else was always at its
 centre, covering it". Each method takes `timeout=` in seconds.
+
+## Scrolling, forms and frames
+
+### Endless feeds
+
+A feed that loads more as you scroll is the commonest reason to reach for
+a browser at all. Most feeds fetch their items as JSON, so you can skip
+the HTML and read that:
+
+```python
+page = await browser.new_page()
+await page.goto("https://example.com/feed")
+
+posts = []
+while True:
+    async with page.expect_response("**/api/posts?*") as info:
+        loaded = await page.scroll(times=1)
+    if not loaded:
+        break  # the feed has run out
+    posts += (await (await info.value).json())["posts"]
+```
+
+`scroll()` turns the mouse wheel, as a person would, down to where the
+bottom of the page was, then waits up to `idle` seconds (2 by default) for
+the page to grow. With `times=1` it does that once and returns 1 if more
+loaded, or 0 if nothing did. Each batch the page fetched is the response
+`expect_response` caught on the way.
+
+If you only want the page with everything loaded, `await page.scroll()`
+goes round until nothing more comes and returns how many times something
+did; then read it with `page.parse()`. A feed that never ends never stops
+growing, so give it `times=` to stop after that many rounds.
+
+How long it may take:
+
+- With `times=`, that's the limit, and it isn't cut short by the
+  browser's `timeout`. Each step still has its own bound, so nothing
+  hangs: each wait for more lasts at most `idle`, and every request to
+  Chrome the browser's `timeout`.
+- With `timeout=`, that's a limit on the whole call, whatever `times`
+  says.
+- With neither, the browser's `timeout` (30 seconds unless you changed
+  it) is the limit on the whole call, so a feed still growing after that
+  raises `netweir.BrowserTimeout`. Its `rounds` is how many rounds had
+  loaded, and everything that loaded is still in the page, so you can
+  catch it and read on, or read a long feed in rounds with `times=1` as
+  above.
+
+If the API is slow, raise `idle`; if the page swaps a "Load more" button
+in instead, click it.
+
+The wheel turns a notch (100 pixels) at a time, the way a mouse wheel
+sends it, so a long way down is a long run of small turns. Boxes and
+frames that scroll by themselves take the wheel before the page does, so
+each turn goes where nothing like that is under the mouse, out to the
+edges of the window if need be. One that fills the whole window and won't
+pass its scroll on to the page stops the scroll there, as it would stop
+your own mouse wheel.
+
+`scroll()` does three other things too:
+
+| Call | Does |
+|---|---|
+| `scroll("#reviews")` | wheels the element into view |
+| `scroll(y=600)`, `scroll(x=-200)` | turns the wheel over the middle of the page, by that many pixels (negative is up or left) |
+| `scroll("#feed", y=600)` | turns the wheel over the element, which scrolls it if it scrolls by itself |
+
+Scrolling to the bottom moves the page as a whole. A feed that lives in a
+box of its own (the page itself doesn't scroll) needs
+`scroll("#feed", y=...)` in a loop instead.
+
+### Forms
+
+Here's a whole order form: a dropdown, a list where you can pick several,
+a checkbox and a file.
+
+```python
+await page.goto("https://example.com/order")
+await page.select_option("#size", "m")
+await page.select_option("#extras", ["milk", "lemon"])
+await page.select_option("#country", label="United Kingdom")
+await page.check("#gift-wrap")
+await page.set_input_files("#receipt", "receipt.pdf")
+await page.click("button[type=submit]")
+```
+
+`select_option(selector, value)` picks the option with that `value`
+attribute; `label=` picks by the text shown, and `index=` by position
+from 0. Each takes one or a list, and a list needs a `<select multiple>`.
+It returns the values selected. The page hears `input` and then `change`,
+as when a person picks something, and hears nothing if the option was
+already the one selected. It waits for the `<select>` to be visible and
+enabled and for the option to be there, so options a script adds later
+are fine; if the option never turns up, `netweir.BrowserTimeout` says
+which one.
+
+`check(selector)` and `uncheck(selector)` click a checkbox or radio
+button only if it isn't already the way you want, then make sure the
+click worked. You can point them at a `<label>` instead, which is handy
+when a page hides the real checkbox behind a styled one. A radio button
+can't be unchecked by clicking it, so `uncheck` on one raises
+`netweir.BrowserError`; check another in its group.
+
+`set_input_files(selector, files)` takes a path or a list of paths, and a
+list needs `<input type=file multiple>`. A missing file raises
+`FileNotFoundError` before anything is sent. An empty list clears the
+input. With `connect`, the paths are read on the machine Chrome runs on.
+
+`hover(selector)` moves the mouse over the element, for menus and
+tooltips that only appear on `:hover` or `mouseover`.
+
+### Frames
+
+Selectors only look inside the document they run in, so an element in an
+`<iframe>` can't be reached from the page. Get the frame and act on that:
+
+```python
+frame = await page.frame(name="checkout")
+await frame.fill("#card-name", "Ada Lovelace")
+await frame.click("button.pay")
+
+for frame in await page.frames():
+    print(frame.name, frame.url)
+```
+
+`page.frames()` lists every frame, the page's own first. `page.frame()`
+finds the first with that `name`, a `url` matching a glob or compiled
+regex, or both, and gives `None` if there isn't one. A frame has the
+methods a page uses to read and act: `content`, `parse`, `title`,
+`evaluate`, `click`, `fill`, `hover`, `scroll`, `select_option`, `check`,
+`uncheck`, `set_input_files` and `wait_for`. Keys go wherever focus is,
+so after `frame.fill(...)`, `page.press("Enter")` presses Enter in the
+frame. Frames from other sites, which Chrome runs in processes of their
+own, work the same way.
+
+A frame's `name` and `url` are what they were when you asked for it.
+Once the frame loads a different page, from this site or another (a
+payment or sign-in frame often does), its actions work on the new one;
+once the frame is removed they raise `netweir.BrowserError`.
+
+One thing frames from other sites don't share: their requests. Chrome
+runs those frames in processes of their own, and their requests aren't
+seen by `on_request`, `on_response` or the `wait_for_`/`expect_` methods,
+and aren't blocked or routed by `block()` and `route()`. A frame from the
+page's own site is covered like the page.
 
 ## Running JavaScript
 
@@ -418,13 +584,17 @@ netweir avoids these giveaways:
   workers and service workers.
 - It never turns on the DevTools domains whose side effects page scripts
   can notice, and its own scripts run where the page can't see them.
-- Clicks and keys are real input events, not JavaScript calls.
+- Clicks, keys, hovering and scrolling are real input events, not
+  JavaScript calls.
 
 A test in the repository loads a page that checks the first two from page
 script and the server checks the request headers; the test also fails if
 any of the DevTools domains in the third was turned on.
 
-That isn't everything a site can check. In a service worker, the
+That isn't everything a site can check. `select_option`, and clearing a
+file input, change the element from a script and send the `input` and
+`change` events it would send; a page that checks `event.isTrusted` can
+tell those apart from a person's. In a service worker, the
 high-entropy client hints (`getHighEntropyValues`) come back empty, and
 headless Chrome on a Linux server without a GPU reports a software renderer
 to WebGL. Pass `headless=False` where that matters.

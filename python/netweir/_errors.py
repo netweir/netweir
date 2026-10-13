@@ -51,4 +51,10 @@ class BrowserError(Exception):
 
 class BrowserTimeout(BrowserError, TimeoutError):
     """A navigation or an action ran out of time. The message says what
-    never happened, such as the element never becoming visible."""
+    never happened, such as the element never becoming visible.
+
+    From scrolling to the bottom, ``rounds`` is how many rounds of more had
+    loaded when the time ran out; they're still in the page. Otherwise it's
+    None."""
+
+    rounds: int | None = None

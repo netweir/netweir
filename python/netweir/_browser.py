@@ -33,6 +33,10 @@ class browser:
     starting one: a ``ws://`` DevTools URL, or ``http://host:port``.
     Closing it closes the pages netweir opened and leaves the browser
     running.
+
+    ``user_data_dir`` is a profile directory to keep: cookies and storage
+    survive to the next launch with the same directory, and it's never
+    deleted. A leading ``~`` is your home directory. Pages from ``new_page()`` then share that profile.
     """
 
     def __init__(
@@ -44,6 +48,7 @@ class browser:
         timeout: float = 30.0,
         proxy: str | None = None,
         connect: str | None = None,
+        user_data_dir: str | os.PathLike[str] | None = None,
     ):
         self._options: dict[str, Any] = {
             "executable": None if executable is None else os.fspath(executable),
@@ -52,6 +57,9 @@ class browser:
             "timeout": timeout,
             "proxy": proxy,
             "connect": connect,
+            "user_data_dir": (
+                None if user_data_dir is None else os.path.expanduser(os.fspath(user_data_dir))
+            ),
         }
         self._browser: Browser | None = None
 

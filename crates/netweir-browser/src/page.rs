@@ -12,15 +12,12 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use crate::browser::{Inner, context_cookies, set_context_cookies, str_of};
-use crate::conn::{GONE, Handler};
+use crate::conn::{Connection, GONE, Handler};
+use crate::frame::Frame;
 use crate::network::{
     Decider, NetworkEvent, Request, Route, SharedRules, chrome_type, headers_of, lock,
 };
 use crate::{Error, Result};
-
-/// netweir's helpers, installed in each document's isolated world. The
-/// page can't see them: the world shares the DOM, not the globals.
-const HELPERS: &str = include_str!("helpers.js");
 
 /// The lifecycle event a navigation waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,19 +130,22 @@ pub(crate) fn cookies_to(cookies: &[Cookie]) -> Value {
 /// A page. Cheap to clone; the page stays open until [`Page::close`].
 #[derive(Clone)]
 pub struct Page {
-    inner: Arc<PageInner>,
+    pub(crate) inner: Arc<PageInner>,
 }
 
 pub(crate) struct PageInner {
     browser: Arc<Inner>,
     target: String,
-    session: String,
+    pub(crate) session: String,
     context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
     shared: Arc<Shared>,
-    /// The isolated world of the current document: (loader id, context id).
-    world: tokio::sync::Mutex<Option<(String, i64)>>,
+    /// netweir's isolated worlds, by (session, frame id): the loader of the
+    /// document each was made for (the main frame's; empty for others,
+    /// whose worlds are made again when they're found gone), and its
+    /// context id.
+    pub(crate) worlds: tokio::sync::Mutex<HashMap<(String, String), (String, i64)>>,
     closed: AtomicBool,
     /// What the page blocks and routes.
     rules: SharedRules,
@@ -185,11 +185,11 @@ struct Shared {
 }
 
 #[derive(Default)]
-struct State {
-    frame: String,
+pub(crate) struct State {
+    pub(crate) frame: String,
     url: String,
     /// The current document's loader.
-    loader: String,
+    pub(crate) loader: String,
     /// Loaders in the order their documents were committed.
     committed: Vec<String>,
     /// Lifecycle events seen, by loader.
@@ -199,8 +199,15 @@ struct State {
     loading: HashMap<String, String>,
     /// Where requests and responses go, while anyone listens.
     listeners: Vec<tokio::sync::mpsc::UnboundedSender<NetworkEvent>>,
+    /// Frames Chrome runs in processes of their own (from other sites),
+    /// each with a session: (session, frame id), in the order they came.
+    pub(crate) children: Vec<(String, String)>,
     gone: bool,
 }
+
+/// How far one notch of a mouse wheel scrolls, in pixels: 100 on Windows
+/// and Linux, about that on a Mac.
+const NOTCH: f64 = 100.0;
 
 /// How many documents' events and responses are kept.
 const KEPT: usize = 16;
@@ -232,6 +239,13 @@ impl State {
                     self.events.remove(&old);
                     self.responses.remove(&old);
                 }
+            }
+            // A frame committing here is in the page's process now: any
+            // session it had in a process of its own is on its way out,
+            // and may never answer again.
+            "Page.frameNavigated" => {
+                let id = p["frame"]["id"].as_str().unwrap_or_default();
+                self.children.retain(|(_, frame)| frame != id);
             }
             "Page.navigatedWithinDocument" if p["frameId"] == self.frame.as_str() => {
                 self.url = str_of(p, "url");
@@ -394,10 +408,14 @@ impl Page {
             frame: target.clone(),
             decider,
         };
+        let adopting = (conn.clone(), shared.clone());
         let handler: Handler = Arc::new(move |method, params| {
             match method {
                 "Fetch.authRequired" => return intercept.answer(params),
                 "Fetch.requestPaused" => return intercept.release(params),
+                "Target.attachedToTarget" | "Target.detachedFromTarget" => {
+                    return children(&adopting.0, &adopting.1, method, params);
+                }
                 _ => {}
             }
             watched
@@ -416,7 +434,7 @@ impl Page {
                 context,
                 owns_context,
                 shared,
-                world: tokio::sync::Mutex::new(None),
+                worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
                 rules,
                 shared_context: shared_context.clone(),
@@ -436,6 +454,9 @@ impl Page {
                 .await?;
             page.call("Network.enable", json!({})).await?;
             page.refresh_fetch().await?;
+            // Frames from other sites run in processes of their own, and
+            // are reached through sessions of their own.
+            page.call("Target.setAutoAttach", auto_attach()).await?;
             if let Some(identity) = &browser.identity {
                 page.call(
                     "Network.setUserAgentOverride",
@@ -463,7 +484,7 @@ impl Page {
         Ok(page)
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.inner
             .shared
             .state
@@ -475,23 +496,38 @@ impl Page {
     /// longer than the browser's timeout: a renderer kept busy by the
     /// page's own script may never answer at all.
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_on(&self.inner.session, method, params).await
+    }
+
+    /// `call`, to the session of one of the page's frames.
+    pub(crate) async fn call_on(
+        &self,
+        session: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         if self.inner.closed.load(Ordering::Relaxed) {
             return Err(Error::PageClosed);
         }
-        let browser = &self.inner.browser;
-        browser.call(&self.inner.session, method, params).await
+        self.inner.browser.call(session, method, params).await
     }
 
     /// `call`, waiting as long as Chrome takes.
     async fn call_unbounded(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_unbounded_on(&self.inner.session, method, params)
+            .await
+    }
+
+    pub(crate) async fn call_unbounded_on(
+        &self,
+        session: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         if self.inner.closed.load(Ordering::Relaxed) {
             return Err(Error::PageClosed);
         }
-        self.inner
-            .browser
-            .conn
-            .call(&self.inner.session, method, params)
-            .await
+        self.inner.browser.conn.call(session, method, params).await
     }
 
     /// Waits until `ready` holds for the page's state, the page goes away
@@ -528,7 +564,7 @@ impl Page {
 
     /// The limit for one wait, at most a year: a longer one would overflow
     /// the clock.
-    fn timeout(&self, timeout: Option<Duration>) -> Duration {
+    pub(crate) fn timeout(&self, timeout: Option<Duration>) -> Duration {
         timeout
             .unwrap_or(self.inner.browser.timeout)
             .min(Duration::from_secs(365 * 24 * 3600))
@@ -758,185 +794,113 @@ impl Page {
         self.state().url.clone()
     }
 
-    /// The current document's isolated world, made (with the helpers in
-    /// it) the first time it's needed.
-    async fn world(&self, fresh: bool) -> Result<i64> {
-        let mut world = self.inner.world.lock().await;
-        let (frame, loader) = {
+    /// The page's own frame, the one that shows its document.
+    pub fn main_frame(&self) -> Frame {
+        let (id, url) = {
             let state = self.state();
-            (state.frame.clone(), state.loader.clone())
+            (state.frame.clone(), state.url.clone())
         };
-        if let Some((l, id)) = &*world
-            && *l == loader
-            && !fresh
-        {
-            return Ok(*id);
-        }
-        let r = self
-            .call("Page.createIsolatedWorld", json!({"frameId": frame}))
-            .await?;
-        let id = r["executionContextId"].as_i64().unwrap_or_default();
-        self.run(Some(id), HELPERS, true).await?;
-        *world = Some((loader, id));
-        Ok(id)
-    }
-
-    /// Runs `expression` in netweir's isolated world, awaiting a promise.
-    async fn helper(&self, expression: &str) -> Result<Value> {
-        let id = self.world(false).await?;
-        match self.run(Some(id), expression, true).await {
-            // The document changed under it; once more in the new one.
-            Err(Error::Protocol { message, .. }) if message.contains("context") => {
-                let id = self.world(true).await?;
-                self.run(Some(id), expression, true).await
-            }
-            other => other,
-        }
-    }
-
-    /// `Runtime.evaluate`, which works without `Runtime.enable`. With no
-    /// context, it runs in the main world. `bounded` holds it to the
-    /// browser's timeout.
-    async fn run(&self, context: Option<i64>, expression: &str, bounded: bool) -> Result<Value> {
-        let mut params = json!({
-            "expression": expression,
-            "awaitPromise": true,
-            "returnByValue": true,
-        });
-        if let Some(id) = context {
-            params["contextId"] = Value::from(id);
-        }
-        let r = if bounded {
-            self.call("Runtime.evaluate", params).await?
-        } else {
-            self.call_unbounded("Runtime.evaluate", params).await?
-        };
-        if let Some(details) = r.get("exceptionDetails") {
-            let message = details["exception"]["description"]
-                .as_str()
-                .or_else(|| details["text"].as_str())
-                .unwrap_or("script error");
-            return Err(Error::Script(message.to_string()));
-        }
-        let result = &r["result"];
-        // NaN, Infinity, -0 and BigInts aren't JSON; they come as text.
-        if let Some(text) = result["unserializableValue"].as_str() {
-            return Ok(Value::from(text.trim_end_matches('n')));
-        }
-        Ok(result.get("value").cloned().unwrap_or(Value::Null))
+        Frame::new(
+            self.clone(),
+            self.inner.session.clone(),
+            id,
+            None,
+            String::new(),
+            url,
+        )
     }
 
     /// Runs `js` in the page's main world: an expression, or a function,
     /// which is called. A promise is awaited. The result comes back as
     /// JSON.
     pub async fn evaluate(&self, js: &str) -> Result<Value> {
-        let expression = format!(
-            "(async () => {{ const v = ({js}\n); return typeof v === 'function' ? await v() : await v; }})()"
-        );
-        // No timeout of its own, as documented: the caller's script may
-        // rightly take as long as it likes.
-        self.run(None, &expression, false).await
+        self.main_frame().evaluate(js).await
     }
 
     /// The document as Chrome now has it, doctype included.
     pub async fn content(&self) -> Result<String> {
-        let html = self.helper("__netweir.content()").await?;
-        Ok(html.as_str().unwrap_or_default().to_string())
+        self.main_frame().content().await
     }
 
     pub async fn title(&self) -> Result<String> {
-        Ok(self
-            .helper("document.title")
-            .await?
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
-    }
-
-    /// Waits until the element `selector` finds passes `checks`, scrolling
-    /// it into view first if `scroll`. Returns its centre.
-    async fn actionable(
-        &self,
-        action: &str,
-        selector: &str,
-        checks: &[&str],
-        scroll: bool,
-        timeout: Option<Duration>,
-    ) -> Result<(f64, f64)> {
-        let deadline = Instant::now() + self.timeout(timeout);
-        let call = format!(
-            "__netweir.check({}, {}, {scroll})",
-            Value::from(selector),
-            json!(checks)
-        );
-        let mut pause = Duration::from_millis(20);
-        loop {
-            let r = self.helper(&call).await?;
-            if let Some(failed) = r["failed"].as_str() {
-                if Instant::now() + pause >= deadline {
-                    return Err(Error::Timeout(format!(
-                        "{action} {selector}: {}",
-                        never(failed)
-                    )));
-                }
-                tokio::time::sleep(pause).await;
-                pause = (pause * 2).min(Duration::from_millis(200));
-                continue;
-            }
-            return Ok((
-                r["x"].as_f64().unwrap_or(0.0),
-                r["y"].as_f64().unwrap_or(0.0),
-            ));
-        }
+        self.main_frame().title().await
     }
 
     /// Clicks the element's centre with the mouse, once it's visible,
     /// still, enabled and not covered.
     pub async fn click(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
-        let checks = [
-            "attached",
-            "visible",
-            "stable",
-            "enabled",
-            "receives events",
-        ];
-        let (x, y) = self
-            .actionable("click", selector, &checks, true, timeout)
-            .await?;
-        self.call(
-            "Input.dispatchMouseEvent",
-            json!({"type": "mouseMoved", "x": x, "y": y}),
-        )
-        .await?;
-        for kind in ["mousePressed", "mouseReleased"] {
-            self.call(
-                "Input.dispatchMouseEvent",
-                json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": 1}),
-            )
-            .await?;
-        }
-        Ok(())
+        self.main_frame().click(selector, timeout).await
     }
 
     /// Replaces the element's contents with `text`, as typing would.
     pub async fn fill(&self, selector: &str, text: &str, timeout: Option<Duration>) -> Result<()> {
-        let checks = ["attached", "visible", "enabled", "editable"];
-        self.actionable("fill", selector, &checks, true, timeout)
-            .await?;
-        let focused = self
-            .helper(&format!("__netweir.focus({})", Value::from(selector)))
-            .await?;
-        if focused != Value::Bool(true) {
-            return Err(Error::Script(format!(
-                "fill {selector}: it couldn't be focused"
-            )));
-        }
-        if text.is_empty() {
-            self.press("Delete").await
-        } else {
-            self.call("Input.insertText", json!({"text": text})).await?;
-            Ok(())
-        }
+        self.main_frame().fill(selector, text, timeout).await
+    }
+
+    /// Moves the mouse to the element's centre, once it's visible, still
+    /// and not covered.
+    pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.main_frame().hover(selector, timeout).await
+    }
+
+    /// See [`Frame::scroll`].
+    pub async fn scroll(
+        &self,
+        selector: Option<&str>,
+        x: f64,
+        y: Option<f64>,
+        times: Option<u32>,
+        idle: Duration,
+        timeout: Option<Duration>,
+    ) -> Result<u32> {
+        self.main_frame()
+            .scroll(selector, x, y, times, idle, timeout)
+            .await
+    }
+
+    /// See [`Frame::select_option`].
+    pub async fn select_option(
+        &self,
+        selector: &str,
+        pick: &crate::Pick,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<String>> {
+        self.main_frame()
+            .select_option(selector, pick, timeout)
+            .await
+    }
+
+    /// See [`Frame::set_checked`].
+    pub async fn set_checked(
+        &self,
+        selector: &str,
+        on: bool,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.main_frame().set_checked(selector, on, timeout).await
+    }
+
+    /// See [`Frame::set_input_files`].
+    pub async fn set_input_files(
+        &self,
+        selector: &str,
+        files: &[std::path::PathBuf],
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.main_frame()
+            .set_input_files(selector, files, timeout)
+            .await
+    }
+
+    /// Waits until `selector` is "attached", "visible", "hidden" (or gone)
+    /// or "detached".
+    pub async fn wait_for(
+        &self,
+        selector: &str,
+        state: &str,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.main_frame().wait_for(selector, state, timeout).await
     }
 
     /// Presses and releases a key in whatever has focus: a character, or
@@ -962,42 +926,80 @@ impl Page {
         Ok(())
     }
 
-    /// Waits until `selector` is "attached", "visible", "hidden" (or gone)
-    /// or "detached".
-    pub async fn wait_for(
-        &self,
-        selector: &str,
-        state: &str,
-        timeout: Option<Duration>,
-    ) -> Result<()> {
-        if !["attached", "visible", "hidden", "detached"].contains(&state) {
-            return Err(Error::Invalid(format!(
-                "state must be \"attached\", \"visible\", \"hidden\" or \"detached\", not {state:?}"
-            )));
+    /// Moves the mouse to (x, y) in the viewport.
+    pub(crate) async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
+        self.call(
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseMoved", "x": x, "y": y}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Moves the mouse to (x, y) and clicks the left button there.
+    pub(crate) async fn mouse_click(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse_move(x, y).await?;
+        for kind in ["mousePressed", "mouseReleased"] {
+            self.call(
+                "Input.dispatchMouseEvent",
+                json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": 1}),
+            )
+            .await?;
         }
-        let deadline = Instant::now() + self.timeout(timeout);
-        let call = format!("__netweir.state({})", Value::from(selector));
-        let mut pause = Duration::from_millis(20);
-        loop {
-            let now = self.helper(&call).await?;
-            let now = now.as_str().unwrap_or("detached");
-            let done = match state {
-                "attached" => now != "detached",
-                "visible" => now == "visible",
-                "hidden" => now != "visible",
-                _ => now == "detached",
+        Ok(())
+    }
+
+    /// Moves the mouse to (x, y) and turns the wheel by (dx, dy) pixels,
+    /// which scrolls whatever is under it. The turn goes as a run of
+    /// events no bigger than a mouse wheel's notch, as a person's wheel
+    /// sends it, not as one leap no wheel makes.
+    pub(crate) async fn mouse_wheel(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+        self.mouse_move(x, y).await?;
+        let notches = (dx.abs().max(dy.abs()) / NOTCH).ceil().max(1.0);
+        for _ in 0..notches as u64 {
+            self.call(
+                "Input.dispatchMouseEvent",
+                json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx / notches, "deltaY": dy / notches}),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Every frame of the page, its own first: those in its process, then
+    /// those Chrome runs in processes of their own, with the frames inside
+    /// them.
+    pub async fn frames(&self) -> Result<Vec<Frame>> {
+        let mut sessions = vec![self.inner.session.clone()];
+        sessions.extend(self.state().children.iter().map(|(s, _)| s.clone()));
+        let mut frames: Vec<Frame> = Vec::new();
+        for session in sessions {
+            let tree = match self.call_on(&session, "Page.getFrameTree", json!({})).await {
+                Ok(tree) => tree,
+                // A frame that went away while it was asked.
+                Err(Error::Protocol { .. }) if session != self.inner.session => continue,
+                Err(e) => return Err(e),
             };
-            if done {
-                return Ok(());
+            let mut walk = vec![&tree["frameTree"]];
+            while let Some(node) = walk.pop() {
+                let f = &node["frame"];
+                let id = str_of(f, "id");
+                // A frame's own process knows it best.
+                frames.retain(|known| known.id() != id);
+                frames.push(Frame::new(
+                    self.clone(),
+                    session.clone(),
+                    id,
+                    f["parentId"].as_str().map(str::to_string),
+                    str_of(f, "name"),
+                    str_of(f, "url"),
+                ));
+                if let Some(children) = node["childFrames"].as_array() {
+                    walk.extend(children.iter().rev());
+                }
             }
-            if Instant::now() + pause >= deadline {
-                return Err(Error::Timeout(format!(
-                    "waiting for {selector} to be {state}"
-                )));
-            }
-            tokio::time::sleep(pause).await;
-            pause = (pause * 2).min(Duration::from_millis(200));
         }
+        Ok(frames)
     }
 
     /// A PNG of the viewport, or of the whole page.
@@ -1043,6 +1045,7 @@ impl Page {
         // Whoever takes the page's routes hears there are no more.
         lock(&self.inner.rules).routes = None;
         let conn = &self.inner.browser.conn;
+        let children = std::mem::take(&mut self.state().children);
         let closed = self
             .inner
             .browser
@@ -1053,6 +1056,9 @@ impl Page {
             )
             .await;
         conn.off(&self.inner.session);
+        for (session, _) in children {
+            conn.off(&session);
+        }
         if self.inner.owns_context
             && let Some(id) = &self.inner.context
         {
@@ -1144,17 +1150,50 @@ impl Intercept {
     }
 }
 
-/// How a failed check reads in a timeout.
-fn never(check: &str) -> &'static str {
-    match check {
-        "attached" => "nothing matched it",
-        "visible" => "it never became visible",
-        "stable" => "it never stopped moving",
-        "enabled" => "it never became enabled",
-        "editable" => "it never became editable",
-        "receives events" => "something else was always at its centre, covering it",
-        _ => "it never became actionable",
+/// What `Target.setAutoAttach` asks for: the sessions of frames Chrome
+/// runs in processes of their own, and nothing else (not workers). Nothing
+/// is held for it: a frame runs at once.
+fn auto_attach() -> Value {
+    json!({
+        "autoAttach": true,
+        "waitForDebuggerOnStart": false,
+        "flatten": true,
+        "filter": [{"type": "iframe"}],
+    })
+}
+
+/// Keeps track of the sessions of frames from other sites as they come
+/// and go, in a page's session or a frame's (for the frames inside it).
+/// Runs on the reader thread, so it sends without waiting.
+fn children(conn: &Connection, shared: &Arc<Shared>, method: &str, params: &Value) {
+    let session = str_of(params, "sessionId");
+    if method == "Target.detachedFromTarget" {
+        lock_state(shared).children.retain(|(s, _)| *s != session);
+        return;
     }
+    if params["targetInfo"]["type"] != "iframe" {
+        return;
+    }
+    let (c, s) = (conn.clone(), shared.clone());
+    let handler: Handler = Arc::new(move |method, params| {
+        if matches!(
+            method,
+            "Target.attachedToTarget" | "Target.detachedFromTarget"
+        ) {
+            children(&c, &s, method, params);
+        }
+    });
+    conn.on(&session, handler);
+    conn.send(&session, "Target.setAutoAttach", auto_attach());
+    let frame = str_of(&params["targetInfo"], "targetId");
+    let mut state = lock_state(shared);
+    if !state.gone {
+        state.children.push((session, frame));
+    }
+}
+
+fn lock_state(shared: &Shared) -> std::sync::MutexGuard<'_, State> {
+    shared.state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct Key {

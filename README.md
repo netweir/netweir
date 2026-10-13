@@ -90,9 +90,11 @@ Working today:
 - Proxy pools: a new proxy for every request, one per site, or one only
   after a block, with proxies that keep failing benched for a while. See
   [docs/self-healing.md](docs/self-healing.md#proxies).
-- A Chrome driver for pages that need JavaScript: click, type and wait
-  like Playwright, then read the page with netweir's selectors, or read
-  the JSON its own requests got back. Requests can be blocked, changed or
+- A Chrome driver for pages that need JavaScript: click, type, hover,
+  scroll an endless feed to its end, pick from dropdowns, tick boxes,
+  upload files and reach into iframes like Playwright, then read the page
+  with netweir's selectors, or read the JSON its own requests got back. A
+  profile can be kept between runs. Requests can be blocked, changed or
   answered before they leave Chrome. In a
   crawl, it can take over a request a site keeps blocking, and hand the
   cookies it earns back to the fast HTTP client. `netweir install chrome`

@@ -19,6 +19,7 @@ from netweir._monitor import Checks, validate
 from netweir._native import (
     Browser,
     BrowserContext,
+    BrowserFrame,
     BrowserPage,
     BrowserRequest,
     BrowserResponse,
@@ -41,6 +42,7 @@ __all__ = [
     "Browser",
     "BrowserContext",
     "BrowserError",
+    "BrowserFrame",
     "BrowserPage",
     "BrowserRequest",
     "BrowserResponse",

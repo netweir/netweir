@@ -6,12 +6,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use netweir_browser::{
-    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Error, LaunchOptions,
-    NetworkEvent, Page as CorePage, Request as CoreRequest, Response as CoreResponse,
-    Route as CoreRoute, WaitUntil,
+    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Error, Frame as CoreFrame,
+    LaunchOptions, NetworkEvent, Page as CorePage, Pick, Request as CoreRequest,
+    Response as CoreResponse, Route as CoreRoute, WaitUntil,
 };
 use netweir_dom::Document;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyFileNotFoundError, PyIsADirectoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
@@ -25,6 +25,11 @@ fn raise(e: Error) -> PyErr {
             let value = match &e {
                 Error::Invalid(m) => return Ok(PyValueError::new_err(m.clone())),
                 Error::Timeout(_) => errors.getattr("BrowserTimeout")?.call1((e.to_string(),))?,
+                Error::ScrollTimeout { rounds, .. } => {
+                    let error = errors.getattr("BrowserTimeout")?.call1((e.to_string(),))?;
+                    error.setattr("rounds", rounds)?;
+                    error
+                }
                 Error::Navigation(m) => {
                     // Chrome's net error names: the connection never
                     // happened, ran out of time, or failed TLS. Anything
@@ -72,7 +77,8 @@ fn seconds(name: &str, value: Option<f64>) -> PyResult<Option<Duration>> {
 
 /// Starts Chrome. Resolves to a Browser.
 #[pyfunction]
-#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None))]
+#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn launch(
     py: Python<'_>,
     executable: Option<PathBuf>,
@@ -81,13 +87,23 @@ pub(crate) fn launch(
     timeout: f64,
     proxy: Option<String>,
     connect: Option<String>,
+    user_data_dir: Option<PathBuf>,
 ) -> PyResult<Bound<'_, PyAny>> {
     if connect.is_some()
-        && (executable.is_some() || proxy.is_some() || !args.is_empty() || !headless)
+        && (executable.is_some()
+            || proxy.is_some()
+            || !args.is_empty()
+            || !headless
+            || user_data_dir.is_some())
     {
         return Err(PyValueError::new_err(
-            "connect= drives a browser that's already running, so executable, args, proxy and \
-             headless don't apply",
+            "connect= drives a browser that's already running, so executable, args, proxy, \
+             headless and user_data_dir don't apply",
+        ));
+    }
+    if args.iter().any(|a| a.starts_with("--user-data-dir")) && user_data_dir.is_some() {
+        return Err(PyValueError::new_err(
+            "give the profile as user_data_dir, not also as --user-data-dir in args",
         ));
     }
     let timeout = seconds("timeout", Some(timeout))?.expect("checked above");
@@ -99,6 +115,7 @@ pub(crate) fn launch(
         proxy,
         // Chrome for Testing presents itself as Google Chrome would.
         brands: Some(Arc::new(netweir_core::Profile::chrome_brands)),
+        user_data_dir,
     };
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let inner = match connect {
@@ -536,6 +553,134 @@ impl BrowserPage {
         })
     }
 
+    #[pyo3(signature = (selector, timeout=None))]
+    fn hover<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::hover(py, self.inner.main_frame(), selector, timeout)
+    }
+
+    /// Scrolls with the mouse wheel. Resolves to how many times more of
+    /// the page loaded, when scrolling to the bottom; otherwise 0.
+    #[pyo3(signature = (selector=None, *, x=0.0, y=None, times=None, idle=2.0, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn scroll<'py>(
+        &self,
+        py: Python<'py>,
+        selector: Option<String>,
+        x: f64,
+        y: Option<f64>,
+        times: Option<u32>,
+        idle: f64,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let how = act::Scroll {
+            selector,
+            x,
+            y,
+            times,
+            idle,
+            timeout,
+        };
+        act::scroll(py, self.inner.main_frame(), how)
+    }
+
+    /// Chooses options of a <select>. Resolves to the values selected.
+    #[pyo3(signature = (selector, value=None, *, label=None, index=None, timeout=None))]
+    fn select_option<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        value: Option<Bound<'py, PyAny>>,
+        label: Option<Bound<'py, PyAny>>,
+        index: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let pick = act::pick(value, label, index)?;
+        act::select_option(py, self.inner.main_frame(), selector, pick, timeout)
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn check<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_checked(py, self.inner.main_frame(), selector, true, timeout)
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn uncheck<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_checked(py, self.inner.main_frame(), selector, false, timeout)
+    }
+
+    #[pyo3(signature = (selector, files, timeout=None))]
+    fn set_input_files<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        files: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_input_files(py, self.inner.main_frame(), selector, &files, timeout)
+    }
+
+    /// Every frame of the page, its own first. Resolves to BrowserFrames.
+    fn frames<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let frames = page.frames().await.map_err(raise)?;
+            Ok(frames
+                .into_iter()
+                .map(|inner| BrowserFrame { inner })
+                .collect::<Vec<_>>())
+        })
+    }
+
+    /// The first frame with this `name`, and whose URL matches `url` (a
+    /// glob or a compiled regex); None if there's none.
+    #[pyo3(signature = (name=None, url=None))]
+    fn frame<'py>(
+        &self,
+        py: Python<'py>,
+        name: Option<String>,
+        url: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let url = url.map(|u| u.unbind());
+        let page = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let frames = page.frames().await.map_err(raise)?;
+            Python::attach(|py| -> PyResult<Option<BrowserFrame>> {
+                for inner in frames {
+                    if name.as_deref().is_some_and(|n| n != inner.name()) {
+                        continue;
+                    }
+                    if let Some(url) = &url {
+                        let url = url.bind(py);
+                        let matched = match url.extract::<String>() {
+                            Ok(glob) => netweir_browser::glob_match(&glob, inner.url()),
+                            Err(_) => url.call_method1("search", (inner.url(),))?.is_truthy()?,
+                        };
+                        if !matched {
+                            continue;
+                        }
+                    }
+                    return Ok(Some(BrowserFrame { inner }));
+                }
+                Ok(None)
+            })
+        })
+    }
+
     /// PNG bytes, also written to `path` if given.
     #[pyo3(signature = (path=None, full_page=false))]
     fn screenshot<'py>(
@@ -756,6 +901,342 @@ impl BrowserPage {
 
     fn __repr__(&self) -> String {
         format!("<BrowserPage {}>", self.inner.url())
+    }
+}
+
+/// A frame of a page: its own document, or one in an <iframe>, from the
+/// page's site or another. Selectors find elements in its document.
+#[pyclass(frozen, module = "netweir")]
+pub struct BrowserFrame {
+    inner: CoreFrame,
+}
+
+#[pymethods]
+impl BrowserFrame {
+    /// Its name attribute; "" for the page's own frame.
+    #[getter]
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    /// Its URL when it was found.
+    #[getter]
+    fn url(&self) -> &str {
+        self.inner.url()
+    }
+
+    fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame.content().await.map_err(raise)
+        })
+    }
+
+    fn parse<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let html = frame.content().await.map_err(raise)?;
+            let doc = tokio::task::spawn_blocking(move || Document::parse(&html))
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            Ok(Node::root_of(Arc::new(doc)))
+        })
+    }
+
+    fn title<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { frame.title().await.map_err(raise) },
+        )
+    }
+
+    fn evaluate<'py>(&self, py: Python<'py>, js: String) -> PyResult<Bound<'py, PyAny>> {
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let value = frame.evaluate(&js).await.map_err(raise)?;
+            Python::attach(|py| to_python(py, &value))
+        })
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn click<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame.click(&selector, timeout).await.map_err(raise)
+        })
+    }
+
+    #[pyo3(signature = (selector, text, timeout=None))]
+    fn fill<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        text: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame.fill(&selector, &text, timeout).await.map_err(raise)
+        })
+    }
+
+    #[pyo3(signature = (selector, state="visible".to_string(), timeout=None))]
+    fn wait_for<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        state: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let frame = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame
+                .wait_for(&selector, &state, timeout)
+                .await
+                .map_err(raise)
+        })
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn hover<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::hover(py, self.inner.clone(), selector, timeout)
+    }
+
+    #[pyo3(signature = (selector=None, *, x=0.0, y=None, times=None, idle=2.0, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn scroll<'py>(
+        &self,
+        py: Python<'py>,
+        selector: Option<String>,
+        x: f64,
+        y: Option<f64>,
+        times: Option<u32>,
+        idle: f64,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let how = act::Scroll {
+            selector,
+            x,
+            y,
+            times,
+            idle,
+            timeout,
+        };
+        act::scroll(py, self.inner.clone(), how)
+    }
+
+    #[pyo3(signature = (selector, value=None, *, label=None, index=None, timeout=None))]
+    fn select_option<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        value: Option<Bound<'py, PyAny>>,
+        label: Option<Bound<'py, PyAny>>,
+        index: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let pick = act::pick(value, label, index)?;
+        act::select_option(py, self.inner.clone(), selector, pick, timeout)
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn check<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_checked(py, self.inner.clone(), selector, true, timeout)
+    }
+
+    #[pyo3(signature = (selector, timeout=None))]
+    fn uncheck<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_checked(py, self.inner.clone(), selector, false, timeout)
+    }
+
+    #[pyo3(signature = (selector, files, timeout=None))]
+    fn set_input_files<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        files: Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::set_input_files(py, self.inner.clone(), selector, &files, timeout)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<BrowserFrame {:?} {}>",
+            self.inner.name(),
+            self.inner.url()
+        )
+    }
+}
+
+/// The actions a page and its frames share, on a frame.
+mod act {
+    use super::*;
+
+    pub(super) fn hover<'py>(
+        py: Python<'py>,
+        frame: CoreFrame,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame.hover(&selector, timeout).await.map_err(raise)
+        })
+    }
+
+    pub(super) struct Scroll {
+        pub selector: Option<String>,
+        pub x: f64,
+        pub y: Option<f64>,
+        pub times: Option<u32>,
+        pub idle: f64,
+        pub timeout: Option<f64>,
+    }
+
+    pub(super) fn scroll(
+        py: Python<'_>,
+        frame: CoreFrame,
+        how: Scroll,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let timeout = seconds("timeout", how.timeout)?;
+        let idle = Duration::try_from_secs_f64(how.idle)
+            .map_err(|_| PyValueError::new_err("idle must be a number of seconds, 0 or more"))?;
+        if !how.x.is_finite() || !how.y.unwrap_or(0.0).is_finite() {
+            return Err(PyValueError::new_err("x and y must be numbers of pixels"));
+        }
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame
+                .scroll(
+                    how.selector.as_deref(),
+                    how.x,
+                    how.y,
+                    how.times,
+                    idle,
+                    timeout,
+                )
+                .await
+                .map_err(raise)
+        })
+    }
+
+    /// One of value, label or index, each one or a list.
+    pub(super) fn pick(
+        value: Option<Bound<'_, PyAny>>,
+        label: Option<Bound<'_, PyAny>>,
+        index: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Pick> {
+        fn many<'py, T: for<'a> FromPyObject<'a, 'py>>(
+            v: &Bound<'py, PyAny>,
+            what: &str,
+        ) -> PyResult<Vec<T>> {
+            if let Ok(one) = v.extract::<T>() {
+                return Ok(vec![one]);
+            }
+            v.try_iter()?
+                .map(|item| item?.extract::<T>().map_err(Into::into))
+                .collect::<PyResult<Vec<T>>>()
+                .map_err(|_| PyTypeError::new_err(format!("{what} must be one, or a list")))
+        }
+        match (value, label, index) {
+            (Some(v), None, None) => Ok(Pick::Values(many(&v, "value")?)),
+            (None, Some(l), None) => Ok(Pick::Labels(many(&l, "label")?)),
+            (None, None, Some(i)) => Ok(Pick::Indexes(many(&i, "index")?)),
+            _ => Err(PyValueError::new_err("give one of value, label or index")),
+        }
+    }
+
+    pub(super) fn select_option(
+        py: Python<'_>,
+        frame: CoreFrame,
+        selector: String,
+        pick: Pick,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame
+                .select_option(&selector, &pick, timeout)
+                .await
+                .map_err(raise)
+        })
+    }
+
+    pub(super) fn set_checked(
+        py: Python<'_>,
+        frame: CoreFrame,
+        selector: String,
+        on: bool,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame
+                .set_checked(&selector, on, timeout)
+                .await
+                .map_err(raise)
+        })
+    }
+
+    pub(super) fn set_input_files<'py>(
+        py: Python<'py>,
+        frame: CoreFrame,
+        selector: String,
+        files: &Bound<'py, PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        // A path, or a list of them.
+        let files: Vec<PathBuf> = match files.extract::<PathBuf>() {
+            Ok(one) => vec![one],
+            Err(_) => files
+                .try_iter()?
+                .map(|f| f?.extract::<PathBuf>())
+                .collect::<PyResult<_>>()
+                .map_err(|_| PyTypeError::new_err("files must be a path, or a list of paths"))?,
+        };
+        if let Some(dir) = files.iter().find(|f| f.is_dir()) {
+            return Err(PyIsADirectoryError::new_err(format!(
+                "{} is a directory, not a file",
+                dir.display()
+            )));
+        }
+        if let Some(missing) = files.iter().find(|f| !f.is_file()) {
+            return Err(PyFileNotFoundError::new_err(format!(
+                "no file at {}",
+                missing.display()
+            )));
+        }
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            frame
+                .set_input_files(&selector, &files, timeout)
+                .await
+                .map_err(raise)
+        })
     }
 }
 
@@ -1210,6 +1691,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Browser>()?;
     m.add_class::<BrowserContext>()?;
     m.add_class::<BrowserPage>()?;
+    m.add_class::<BrowserFrame>()?;
     m.add_class::<BrowserResponse>()?;
     m.add_class::<BrowserRequest>()?;
     m.add_class::<Route>()?;

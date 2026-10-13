@@ -7,11 +7,13 @@
 
 mod browser;
 mod conn;
+mod frame;
 mod launch;
 mod network;
 mod page;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};
+pub use frame::{Frame, Pick};
 pub use launch::{cft_executable, cft_platform, find_chrome, netweir_home};
 pub use network::{Continue, NetworkEvent, Request, Route, glob_match, resource_types};
 pub use page::{Cookie, Page, Response, WaitUntil};
@@ -30,6 +32,9 @@ pub enum Error {
     Protocol { method: String, message: String },
     /// A wait ran out of time; says what was being waited for.
     Timeout(String),
+    /// Scrolling to the bottom ran out of time with the page still
+    /// growing; `rounds` of more had loaded by then, and are in the page.
+    ScrollTimeout { message: String, rounds: u32 },
     /// Navigation failed before a response (DNS, refused, TLS).
     Navigation(String),
     /// Script in the page threw.
@@ -49,7 +54,9 @@ impl fmt::Display for Error {
             | Error::Script(m)
             | Error::Invalid(m)
             | Error::Gone(m) => f.write_str(m),
-            Error::Timeout(m) => write!(f, "timed out: {m}"),
+            Error::Timeout(m) | Error::ScrollTimeout { message: m, .. } => {
+                write!(f, "timed out: {m}")
+            }
             Error::Closed => f.write_str("the browser has closed"),
             Error::PageClosed => f.write_str("the page has closed"),
             Error::Protocol { method, message } => write!(f, "{method}: {message}"),
