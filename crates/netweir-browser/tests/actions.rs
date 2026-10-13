@@ -960,8 +960,14 @@ async fn times_is_the_limit_even_past_the_browsers_timeout() {
         ("/items?page=4", slow(3)),
     ]);
     let page = browser.new_page().await.unwrap();
-    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    page.wait_for("li", "visible", None).await.unwrap();
+    // The browser's 3 s is for scroll, the step under test: the page
+    // loading first gets a limit of its own, as a cold Chrome on a loaded
+    // Windows runner has taken longer than 3 s to load it.
+    let setup = Some(Duration::from_secs(30));
+    page.goto(&server.url, WaitUntil::Load, setup)
+        .await
+        .unwrap();
+    page.wait_for("li", "visible", setup).await.unwrap();
     let started = std::time::Instant::now();
     let grew = page
         .scroll(None, 0.0, None, Some(3), Duration::from_secs(4), None)
