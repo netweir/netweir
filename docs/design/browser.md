@@ -35,6 +35,9 @@ In this design:
 - Chrome's remaining gaps: proxies that need a login, installing a
   pinned Chrome for Testing, and connecting to a browser that's already
   running (milestone 10)
+- The rest of the actions Playwright users reach for: hovering,
+  scrolling (endless feeds included), dropdowns, checkboxes, file
+  uploads, frames, and a profile kept between runs (milestone 33)
 
 Not in this design: tracing, PDF, Safari (no BiDi), Camoufox (a third
 protocol), and Firefox for now (see below). Reading what a page fetches,
@@ -98,8 +101,10 @@ These are rules of the driver, not options, and tests enforce them:
 - `page.evaluate()` runs in the page's main world, because that's where
   your code expects the page's variables to be. It uses `Runtime.evaluate`
   with no context id, which needs no `Runtime.enable`.
-- Clicks, typing and key presses are `Input.dispatch*` events at real
-  coordinates, never `element.click()`.
+- Clicks, typing, key presses, hovering and scrolling are
+  `Input.dispatch*` events at real coordinates, never `element.click()`
+  or `scrollTo()`. The exceptions, and why, are under
+  [Scrolling, forms and frames](#scrolling-forms-and-frames-milestone-33).
 - Chrome is launched without `--enable-automation`, and with
   `--disable-blink-features=AutomationControlled`, so
   `navigator.webdriver` is false.
@@ -179,7 +184,8 @@ key's code and text for the common keys.
 Without `executable`, it uses `$NETWEIR_CHROME`, then the usual install
 paths on each platform (Chrome, then Chrome for Testing, then Chromium).
 If none is found, the error lists where it looked. Each browser gets a
-fresh temporary profile directory, removed on close.
+fresh temporary profile directory, removed on close, unless it's given
+one to keep (milestone 33).
 
 ## Python API
 
@@ -295,6 +301,194 @@ TLS library the HTTP client uses) checked against Chrome's root store. Nothing i
 profile to remove; closing the Browser closes the pages it opened and
 disconnects, leaving the browser running.
 
+## Scrolling, forms and frames (milestone 33)
+
+These follow the actions above: the same selectors, the same retries
+until the checks pass or the timeout runs out, the same
+`netweir.BrowserTimeout` naming what never happened. Every method below
+is on a page and on a frame.
+
+**Hovering.** `hover(selector)` waits for attached, visible, stable and
+receives events (not enabled: a disabled button still shows a tooltip),
+then sends one `mouseMoved` to the element's centre. Chrome moves its
+own pointer there, so the page gets `mouseover`, `mouseenter` and
+`:hover` exactly as it would from a mouse.
+
+**Scrolling.** `scroll(selector=None, *, x=0, y=None, times=None,
+idle=2.0, timeout=None)` turns the mouse wheel: a `mouseMoved` to where
+the wheel turns, then `Input.dispatchMouseEvent` with type `mouseWheel`
+and the deltas, split into events of at most a notch (100 pixels, what
+a mouse wheel sends on Windows and Linux) so no single event is a leap no
+wheel makes. Chrome scrolls the way it scrolls for a real wheel or
+trackpad, through the compositor, with its own smooth scrolling where
+that's on, so the page sees `wheel` events followed by `scroll` events.
+`scrollTo()` or `scrollIntoView()` would scroll too, but with no `wheel`
+before the `scroll`, which is just what a script watching for bots looks
+for, and some endless feeds listen for `wheel` alone. After each turn,
+the isolated world waits for the scroll to start (up to ten animation
+frames) and then to stop (three frames without a change), so the next
+step reads where the page really is.
+
+- With a selector and no distance, the element is wheeled into view.
+  The wheel goes over the nearest ancestor that scrolls by itself, if
+  there is one, or the middle of the viewport, by as far as brings the
+  element's centre to the middle. That repeats until its centre is in
+  view. If a turn moves nothing (the scrolling box is itself out of
+  view, or blocks the wheel), it falls back to `scrollIntoView()`, as a
+  click already does; a page can tell that one apart.
+- With a distance, the wheel turns by `x` and `y` pixels, over the
+  element if there's a selector (after bringing it into view), or over
+  the page.
+- Over the page means where a wheel scrolls the document: the middle of
+  the viewport, unless what's there (or one of its ancestors) scrolls by
+  itself, or is a frame, which would take the wheel first. Then it's the
+  first point of a 7 by 7 grid, out to 2% from the edges, where nothing
+  does. It's picked again for every turn, since scrolling brings new
+  things under the mouse. A turn counts as moving something if the page,
+  a box under the wheel, or a frame under it moved (a frame from the
+  page's origin is read; one from another can't be, so it's assumed to
+  have moved). A turn that moved nothing is tried at the next three
+  places before the page is taken to have stopped, and 40 turns in a row
+  that move something but not the page (a box or frame that won't pass
+  the scroll on) stop it too.
+- With neither, it scrolls to the bottom. Each round wheels down, a
+  viewport at a time, to where the bottom was when the round began,
+  then polls the document's `scrollHeight` until it grows or `idle`
+  runs out. Growth starts another round; none ends it. Stopping at the
+  old bottom makes each round one trip, so `times=1` is exactly one
+  batch from a feed that loads as you near the end, and the response
+  that batch came in can be caught with `expect_response`. It returns
+  how many rounds the page grew in. There's no other sign a feed has
+  ended than nothing more arriving, so `idle` is a wait by design; it
+  isn't used to wait for anything that has a signal.
+- `timeout` is a deadline for the whole call, not each step: into view,
+  a wheel turn, or scrolling to the bottom. Without one, the browser's
+  timeout is the deadline, except when scrolling to the bottom with
+  `times`, which is a limit of its own: then there's no overall
+  deadline, and each step is bounded by itself (every CDP call by the
+  browser's timeout, each wait for more by `idle`, the trip down by the
+  stall limit and the end of the page). Scrolling to the bottom past its
+  deadline raises `BrowserTimeout` with `rounds`, how many rounds had
+  loaded.
+
+Known limit: scrolling to the bottom moves the document. A page whose
+document doesn't scroll, with its feed in a box of its own, needs
+`scroll(box, y=...)` in a loop. Known limit: a box or frame that fills
+the whole viewport and keeps its scroll to itself
+(`overscroll-behavior: contain`, or a cross-origin frame at its end)
+leaves no place for the wheel, and scrolling stops there. Known limit: a wheel turned over an
+element that cancels `wheel` events moves nothing, and into-view falls
+back as above.
+
+**Dropdowns.** `select_option(selector, value=None, *, label=None,
+index=None)` waits for a visible, enabled `<select>` that has the
+options asked for (by `value`, by `label` or text, or by index; one or a
+list), then sets `selected` on each option from the isolated world and
+dispatches `input` (bubbling, composed) and then `change` (bubbling),
+the order Chrome uses for a person's choice. Nothing is dispatched when
+the selection doesn't change, as with a person picking what's already
+picked. It returns the values selected. A disabled option, or one in a
+disabled `<optgroup>`, is waited for as if missing, since nobody can
+pick it; the timeout names it. Asking for more than one option of a
+`<select>` without `multiple`, or using it on anything else, fails at
+once.
+
+Known limit: those events are dispatched by script, so
+`event.isTrusted` is false. The trusted alternatives aren't portable: a
+dropdown's popup is a separate widget that `Input` events can't reach,
+and keyboard selection differs by platform (on macOS the arrow keys open
+the popup instead of changing the value). Playwright and Puppeteer
+dispatch these events the same way.
+
+**Checkboxes.** `check(selector)` and `uncheck(selector)` read the state
+first (an `<input type=checkbox>` or `radio`, a `<label>` standing in for
+its control, or `role=checkbox`, `radio`, `switch` and the menu item
+variants with `aria-checked`), and if it differs, wait for the control
+(not the label) to be enabled, click with the full click checks, and
+read it again. A click that didn't change it raises
+`netweir.BrowserError`; so does unchecking a radio button, which a click
+can't do. A box that never becomes visible is usually a hidden real one
+behind a styled one, so that timeout says to check its `<label>`.
+
+**File inputs.** `set_input_files(selector, files)` checks each path is
+a file (a directory is refused as one) and makes it absolute (Chrome needs that), waits for an enabled
+`<input type=file>`, takes it as a remote object from the isolated world
+(`Runtime.evaluate` without `returnByValue`), and sends
+`DOM.setFileInputFiles` with that object id. Chrome sets the files as
+its file chooser would and fires trusted `input` and `change` events.
+`DOM.setFileInputFiles` doesn't need `DOM.enable`, and nothing in it
+reaches page script; `DOM.enable` is never sent. An empty list empties
+the input from the isolated world (`value = ""`, then `input` and
+`change`), since Chrome won't set no files; those two events aren't
+trusted.
+
+**Frames.** A `Frame` is a frame of a page, reached through a CDP
+session, with its own isolated world. Every selector method above, and
+`content`, `title` and `wait_for`, now runs in a frame; a page's own
+methods run in its main frame.
+
+- Frames from the page's own process are listed by `Page.getFrameTree`
+  on the page's session. Frames from other sites run in processes of
+  their own (out-of-process iframes), which the page's session can't
+  reach. Each page sends `Target.setAutoAttach` with `flatten` and a
+  filter of `iframe` only (not workers), without waiting for a debugger,
+  so each such frame gets a session of its own as it's created; its
+  session does the same for the frames inside it. Attaching is
+  invisible to the page and holds nothing up. `frames()` asks each
+  session for its tree.
+- A frame that navigates to another site moves to a process of its own,
+  and one that comes back moves back, so a `Frame` keeps its id, not its
+  session. Each call finds the session now: one attached for that frame
+  id, if there is one; else the one it was found in, if that's still
+  attached; else the one the frame tree has it in. If Chrome says the
+  frame isn't in its session, the tree is asked once more, and a frame
+  that isn't there any more raises at once.
+- Chrome never answers a command sent to a session that detaches before
+  it's done, which a frame moving process does at any moment, so the
+  connection fails a detached session's waiting commands at once rather
+  than leaving them to time out. A frame that commits in the page's own
+  process has any session it had of its own forgotten there and then.
+- Each frame's isolated world is made with `Page.createIsolatedWorld`
+  for that frame id, on the session that holds it, and kept by session
+  and frame. The main frame's is still tied to its document's loader;
+  another frame's is made again when Chrome says its context, or its
+  session, is gone.
+- `evaluate` in a frame has to run in the frame's main world, which
+  `Runtime.evaluate` can only name for a session's own top frame
+  without `Runtime.enable`. So the frame's `document` is taken as an
+  object in the isolated world, `DOM.describeNode` gives its backend
+  node id, `DOM.resolveNode` without a context resolves that in the
+  main world, and `Runtime.callFunctionOn` runs the code with it. None
+  of the three needs a domain enabled.
+- Input always goes to the page's session at page coordinates, and
+  Chrome routes it to whichever frame is under the point, its own or
+  another process's. A point inside a frame is moved out through each
+  `<iframe>` holding it: `DOM.getFrameOwner` on the parent's session
+  gives the `<iframe>`, `DOM.resolveNode` puts it in the parent's
+  isolated world, and a helper adds its content box's offset (borders
+  and padding included), scrolls the parent if the point is out of its
+  view, and, for a click or a hover, checks the `<iframe>` is what's at
+  that point. Keys go to whatever is focused, so `fill` focuses the
+  element inside the frame and sends `Input.insertText` to the page.
+
+Known limit: an `<iframe>` with a CSS transform (scaled or rotated) puts
+the point in the wrong place. Known limit: a frame's `name` and `url` are
+those of when it was found. Known limit: requests from frames in other
+processes still go out unrouted and unheard, by blocks, routes and
+listeners alike (see [network.md](network.md)); attaching to them is
+only for acting on them.
+
+**A profile to keep.** `user_data_dir` gives Chrome that folder as its
+profile, made if missing and never removed, where each launch otherwise
+gets a fresh one that's deleted. Cookies set in a context made with
+`Target.createBrowserContext` are never written to the profile, so with
+a profile to keep, `new_page()` opens its pages in the default context
+instead; they share its cookies, which is the point. `new_context()` and
+the crawl's guarded pages still make throwaway contexts. Chrome writes
+the profile as it closes, so `close()` asks it to quit and waits, as it
+always has. Known limit: two Chromes can't share a profile, so a second
+launch with a folder that's in use fails.
+
 ## Firefox, later
 
 Firefox has dropped CDP; its remote protocol is WebDriver BiDi. Under
@@ -321,6 +515,14 @@ in scope.
 - Action tests use local pages that hide, cover, disable, move and delay
   elements, and check each action waits for the right thing and that the
   timeout names the check that failed.
+- An endless feed served by the test server fetches each page of items
+  as the list nears its end; the tests scroll it to the end, one round at
+  a time and all at once, and read each batch's JSON with
+  `expect_response`. A form test selects, checks and uploads a file,
+  submits it, and the server checks the bytes it got. A page with an
+  `<iframe>` from its own origin and one from `localhost` (another site,
+  so another process) acts on both. A profile is launched twice and
+  keeps a cookie.
 - CI runs the browser tests on Linux, macOS and Windows with the runner's
   installed Chrome. Locally they're skipped, with a reason, if no Chrome
   is found.
@@ -336,3 +538,7 @@ ladder, cookie hand-back, the page pool and its settings and stats.
 
 **M10, Chrome's gaps.** Proxy logins, `netweir install chrome`, and
 connecting to a running browser.
+
+**M33, the rest of the actions.** Hover, scroll, select_option,
+check and uncheck, set_input_files, frames (in-process and
+out-of-process), and `user_data_dir`.
