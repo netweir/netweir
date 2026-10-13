@@ -1464,6 +1464,9 @@ source = { virtual = "." }
 images = [
     { name = "pillow" },
 ]
+jmespath = [
+    { name = "jmespath" },
+]
 
 [package.dev-dependencies]
 bench = [
@@ -1475,6 +1478,7 @@ bench = [
 ]
 dev = [
     { name = "fsspec" },
+    { name = "jmespath" },
     { name = "jsonschema" },
     { name = "maturin" },
     { name = "pillow" },
@@ -1488,8 +1492,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pillow", marker = "extra == 'images'", specifier = ">=11" }]
-provides-extras = ["images"]
+requires-dist = [
+    { name = "jmespath", marker = "extra == 'jmespath'", specifier = ">=1.0" },
+    { name = "pillow", marker = "extra == 'images'", specifier = ">=11" },
+]
+provides-extras = ["images", "jmespath"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -1501,6 +1508,7 @@ bench = [
 ]
 dev = [
     { name = "fsspec", specifier = ">=2025" },
+    { name = "jmespath", specifier = ">=1.0" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "maturin", specifier = ">=1.15,<2" },
     { name = "pillow", specifier = ">=11" },

@@ -186,3 +186,89 @@ def test_defaults_can_be_anything_like_parsel(page):
     assert page.css("nothing::text").get(default=0) == 0
     assert page.css("nothing::text").re_first(r"\d", default=0) == 0
     assert page.css("nothing").extract_first(default=[]) == []
+
+
+LISTING = """<html><body>
+<aside><div class="card">Sidebar card</div></aside>
+<main><section class="grid">
+  <div class="card"><h2>Lamp</h2><span class="price">£10</span></div>
+  <div class="card sale"><h2>Chair</h2><span class="price">£25</span></div>
+  <div class="card sale new"><h2>Desk</h2><span class="price">£90</span></div>
+  <div class="banner">Free delivery</div>
+</section>
+<section class="grid"><div class="card" data-id="7"><h2>Rug</h2><span class="price">£40</span></div></section>
+</main></body></html>"""
+
+
+def test_find_similar_finds_the_other_cards_and_skips_decoys():
+    doc = netweir.parse(LISTING)
+    lamp = doc.css("div.card")[1]
+    assert lamp.css("h2::text").get() == "Lamp"
+    similar = lamp.find_similar()
+    # The sidebar's card sits elsewhere, the banner shares no class, and
+    # the desk shares only a third of its classes; the card in the next
+    # section counts, its data-id being one feature among two.
+    assert similar.css("h2::text").getall() == ["Chair", "Rug"]
+    assert lamp not in list(similar)
+
+
+def test_find_similar_threshold():
+    doc = netweir.parse(LISTING)
+    lamp = doc.css("div.card")[1]
+    assert lamp.find_similar(0.3).css("h2::text").getall() == ["Chair", "Desk", "Rug"]
+    assert lamp.find_similar(1.0).css("h2::text").getall() == []
+    assert len(lamp.find_similar(0.0)) == 4, "every div on the same path, the banner too"
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        lamp.find_similar(1.5)
+    assert len(doc.find("h2").find_similar()) == 3, "the other titles"
+    assert len(doc.find_similar()) == 0, "the document has nothing like it"
+
+
+def test_find_similar_sees_edits():
+    doc = netweir.parse(LISTING)
+    lamp = doc.css("div.card")[1]
+    lamp.find_similar()  # build the index
+    doc.css("div.sale")[0].decompose()
+    assert lamp.find_similar().css("h2::text").getall() == ["Rug"]
+
+
+JSON_SCRIPT = """<html><body><script id="data" type="application/json">
+{"products": [{"name": "Lamp", "price": 10}, {"name": "Rug", "price": 40}], "total": 2}
+</script><script type="application/json">{"products": []}</script></body></html>"""
+
+
+def test_jmespath_on_json_in_a_script():
+    doc = netweir.parse(JSON_SCRIPT)
+    assert doc.find("script").jmespath("products[].name") == ["Lamp", "Rug"]
+    assert doc.css("#data::text").jmespath("products[?price > `20`].name") == [["Rug"]]
+    assert doc.css("script").jmespath("total") == [2], "results giving None are left out"
+    assert netweir.jmespath("props.items[0]", {"props": {"items": [1, 2]}}) == 1
+    with pytest.raises(ValueError, match="isn't JSON"):
+        doc.find("body").jmespath("a")
+
+
+def test_jmespath_on_a_json_page():
+    from netweir._native import _response
+
+    body = b'{"items": [{"name": "a"}, {"name": "b"}], "next": null}'
+    page = netweir.Page(
+        _response(
+            "https://x.test/api", 200, "HTTP/1.1", [("content-type", "application/json")], body
+        )
+    )
+    assert page.jmespath("items[].name") == ["a", "b"]
+    assert page.jmespath("next") is None
+    html = netweir.Page(_response("https://x.test/", 200, "HTTP/1.1", [], b"<p>x</p>"))
+    with pytest.raises(ValueError, match="the page isn't JSON"):
+        html.jmespath("a")
+
+
+def test_jmespath_without_the_extra_names_it(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jmespath", None)
+    doc = netweir.parse(JSON_SCRIPT)
+    with pytest.raises(ImportError, match=r"pip install 'netweir\[jmespath\]'"):
+        doc.find("script").jmespath("total")
+    with pytest.raises(ImportError, match="netweir"):
+        netweir.jmespath("a", {})

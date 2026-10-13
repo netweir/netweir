@@ -47,5 +47,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "edit"
+path = "fuzz_targets/edit.rs"
+test = false
+doc = false
+bench = false
+
 # Built with cargo-fuzz on nightly, outside the workspace.
 [workspace]

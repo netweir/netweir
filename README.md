@@ -36,6 +36,11 @@ Working today:
 - CSS queries with Scrapy's `::text` and `::attr()`, all of XPath 1.0, and
   Beautiful Soup's `find_all` family, each faster than the library you'd
   otherwise use for it.
+- Changing the page as Beautiful Soup does (`decompose()`, `extract()`,
+  `replace_with()`, `unwrap()`, `new_tag()`, `append()`, `prettify()`),
+  `find_similar()` to get every product card once you've found one, and
+  JMESPath queries over JSON APIs and the JSON in a page's scripts. See
+  [docs/selecting.md](docs/selecting.md#changing-the-page).
 - Structured data: `page.metadata()` reads a page's JSON-LD, microdata,
   Open Graph, Twitter cards and Dublin Core in one call, in Rust.
 - Prices, dates and script data: `parse_price` gives a `Decimal` and the

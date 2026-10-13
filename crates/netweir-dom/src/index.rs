@@ -20,27 +20,38 @@ pub(crate) struct Index {
     ids: OnceLock<HashMap<String, Vec<u32>>>,
 }
 
-// SAFETY: the pointers are into a document that is never modified after
-// parsing and outlives the index (the Document owns it).
+// SAFETY: the pointers are into a document that outlives the index (the
+// Document owns it) and never frees a node before it is dropped. An edit
+// replaces the index rather than changing it.
 unsafe impl Send for Index {}
 unsafe impl Sync for Index {}
 
 impl Index {
-    pub(crate) fn build(root: *mut RawNode) -> Index {
-        let n = unsafe { ffi::nw_number(root) };
-        let mut raw = vec![std::ptr::null_mut(); n];
+    /// Indexes the tree under each of `roots` in turn: the document, then
+    /// any subtrees removed from it or built apart from it, so every node
+    /// a caller can hold has a position.
+    pub(crate) fn build(roots: &[*mut RawNode]) -> Index {
+        let mut starts = Vec::with_capacity(roots.len());
+        let mut n = 0;
+        for &root in roots {
+            starts.push(n);
+            n = unsafe { ffi::nw_number(root, n) };
+        }
+        let mut raw: Vec<*mut RawNode> = vec![std::ptr::null_mut(); n];
         let mut parent = vec![0u32; n];
         let mut kind = vec![0u8; n];
         let mut tag = vec![0usize; n];
-        unsafe {
-            ffi::nw_index_fill(
-                root,
-                raw.as_mut_ptr(),
-                parent.as_mut_ptr(),
-                kind.as_mut_ptr(),
-                tag.as_mut_ptr(),
-            )
-        };
+        for (&root, &at) in roots.iter().zip(&starts) {
+            unsafe {
+                ffi::nw_index_fill(
+                    root,
+                    raw.as_mut_ptr().add(at),
+                    parent.as_mut_ptr().add(at),
+                    kind.as_mut_ptr().add(at),
+                    tag.as_mut_ptr().add(at),
+                )
+            };
+        }
         // Children come after their parent, so one backward pass carries
         // each subtree's end up to its parent.
         let mut end: Vec<u32> = (1..=n as u32).collect();
@@ -94,6 +105,57 @@ impl Index {
         for j in start..self.end[at as usize] as usize {
             if keep(self.kind[j], self.tag[j]) {
                 out.push(Node::from_raw(doc, self.raw[j]));
+            }
+        }
+    }
+
+    /// The nodes in `at`'s tree, other than `at`, of its kind and tag and
+    /// with the same tags all the way up, that pass `keep`, in document
+    /// order. Tags are compared as lexbor's ids, so the scan is integer
+    /// work until `keep` runs.
+    pub(crate) fn same_path<'a>(
+        &self,
+        doc: &'a Document,
+        at: u32,
+        keep: impl Fn(Node<'a>) -> bool,
+    ) -> Vec<Node<'a>> {
+        let a = at as usize;
+        let mut top = a;
+        while self.parent[top] != u32::MAX {
+            top = self.parent[top] as usize;
+        }
+        let mut out = Vec::new();
+        for j in top..self.end[top] as usize {
+            if j != a
+                && self.tag[j] == self.tag[a]
+                && self.kind[j] == self.kind[a]
+                && self.same_ancestors(j, a)
+            {
+                let node = Node::from_raw(doc, self.raw[j]);
+                if keep(node) {
+                    out.push(node);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the ancestors of `x` and `y` have the same tags, level by
+    /// level, up to the root of their tree.
+    fn same_ancestors(&self, mut x: usize, mut y: usize) -> bool {
+        loop {
+            let (px, py) = (self.parent[x], self.parent[y]);
+            // Siblings and cousins meet at a shared ancestor, and the rest
+            // of the way up is the same for both.
+            if px == py {
+                return true;
+            }
+            if px == u32::MAX || py == u32::MAX {
+                return false;
+            }
+            (x, y) = (px as usize, py as usize);
+            if self.tag[x] != self.tag[y] || self.kind[x] != self.kind[y] {
+                return false;
             }
         }
     }

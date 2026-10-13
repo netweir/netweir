@@ -160,11 +160,11 @@ static lxb_dom_node_t *nw_step(lxb_dom_node_t *n, lxb_dom_node_t *root) {
     return NULL;
 }
 
-/* Numbers every node under `root` (root first) in document order, keeping
- * the number in the node's `user` field, which lexbor leaves to callers.
- * Returns how many nodes there are. */
-size_t nw_number(lxb_dom_node_t *root) {
-    uintptr_t i = 0;
+/* Numbers every node under `root` (root first) in document order, from
+ * `start`, keeping the number in the node's `user` field, which lexbor
+ * leaves to callers. Returns the number after the last. */
+size_t nw_number(lxb_dom_node_t *root, size_t start) {
+    uintptr_t i = start;
     for (lxb_dom_node_t *n = root; n != NULL; n = nw_step(n, root)) {
         n->user = (void *) i++;
     }
@@ -175,7 +175,7 @@ uintptr_t nw_order(lxb_dom_node_t *n) { return (uintptr_t) n->user; }
 
 /* After nw_number: fills one entry per node, in document order, with the
  * node, its parent's number (UINT32_MAX for the root), its type and its tag
- * id. Each array holds as many entries as nw_number returned. */
+ * id. Each array holds an entry for every node nw_number numbered. */
 void nw_index_fill(lxb_dom_node_t *root, lxb_dom_node_t **raw, uint32_t *parent,
                    uint8_t *type, uintptr_t *tag) {
     size_t i = 0;
@@ -185,6 +185,45 @@ void nw_index_fill(lxb_dom_node_t *root, lxb_dom_node_t **raw, uint32_t *parent,
         type[i] = (uint8_t) n->type;
         tag[i] = n->local_name;
     }
+}
+
+/* ---- editing ------------------------------------------------------------ */
+
+/*
+ * Tree edits only relink nodes and create new ones; nothing is ever freed
+ * before the document is, so a pointer to a removed node stays valid. The
+ * _wo_events variants skip lexbor's mutation callbacks, which netweir does
+ * not register.
+ */
+void nw_remove(lxb_dom_node_t *n) { lxb_dom_node_remove_wo_events(n); }
+void nw_append(lxb_dom_node_t *parent, lxb_dom_node_t *n) {
+    lxb_dom_node_insert_child_wo_events(parent, n);
+}
+void nw_insert_before(lxb_dom_node_t *at, lxb_dom_node_t *n) {
+    lxb_dom_node_insert_before_wo_events(at, n);
+}
+
+/* A new element with no parent, or NULL when lexbor cannot allocate. */
+lxb_dom_node_t *nw_create_element(lxb_html_document_t *doc, const char *name, size_t len) {
+    lxb_dom_element_t *el = lxb_dom_document_create_element(
+        lxb_dom_interface_document(doc), (const lxb_char_t *) name, len, NULL);
+    return el == NULL ? NULL : lxb_dom_interface_node(el);
+}
+
+/* Returns 0 on success. */
+int nw_set_attr(lxb_dom_node_t *n, const char *name, size_t name_len, const char *value,
+                size_t value_len) {
+    lxb_dom_attr_t *attr = lxb_dom_element_set_attribute(
+        lxb_dom_interface_element(n), (const lxb_char_t *) name, name_len,
+        (const lxb_char_t *) value, value_len);
+    return attr == NULL ? -1 : 0;
+}
+
+/* A new text node with no parent, or NULL when lexbor cannot allocate. */
+lxb_dom_node_t *nw_create_text(lxb_html_document_t *doc, const char *data, size_t len) {
+    lxb_dom_text_t *t = lxb_dom_document_create_text_node(
+        lxb_dom_interface_document(doc), (const lxb_char_t *) data, len);
+    return t == NULL ? NULL : lxb_dom_interface_node(t);
 }
 
 /* ---- serialising ------------------------------------------------------- */
@@ -207,6 +246,13 @@ static lxb_status_t nw_on_chunk(const lxb_char_t *data, size_t len, void *ctx) {
 int nw_serialize(lxb_dom_node_t *n, nw_chunk_fn chunk, void *ctx) {
     nw_sink_t sink = {chunk, ctx};
     return lxb_html_serialize_tree_cb(n, nw_on_chunk, &sink) == LXB_STATUS_OK ? 0 : -1;
+}
+
+/* Serialises `n` alone: an element's start tag, a text node escaped (or
+ * raw inside <script> and the like), a comment or a doctype. */
+int nw_serialize_one(lxb_dom_node_t *n, nw_chunk_fn chunk, void *ctx) {
+    nw_sink_t sink = {chunk, ctx};
+    return lxb_html_serialize_cb(n, nw_on_chunk, &sink) == LXB_STATUS_OK ? 0 : -1;
 }
 
 /* ---- CSS ---------------------------------------------------------------- */

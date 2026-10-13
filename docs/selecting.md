@@ -89,7 +89,8 @@ know: a string, a list, `True`/`False`, a compiled regex or a function, with
 `class_=`, `string=` (or `text=`), `limit=` and `recursive=`. Navigation
 (`parent`, `children`, `contents`, `descendants`, siblings,
 `next_element`), `get_text()`, `.string`, `select()` and `select_one()`
-work as in Beautiful Soup.
+work as in Beautiful Soup, and so do the editing methods in
+[Changing the page](#changing-the-page).
 
 Two differences, both on purpose:
 
@@ -97,6 +98,194 @@ Two differences, both on purpose:
   list; filters still match one class out of several.
 - `.text` and `get_text()` leave out the contents of `<script>`, `<style>`
   and `<template>`, as Beautiful Soup 4.10 and later do.
+
+## Changing the page
+
+Sometimes the page needs tidying before you read it. The usual case is
+throwing away scripts, styles and cookie banners so `get_text()` gives you
+only what a reader sees:
+
+```python
+for junk in page.find_all(["script", "style", "noscript"]):
+    junk.decompose()
+for banner in page.css(".cookie-banner"):
+    banner.decompose()
+
+article = page.find("article").get_text(" ", strip=True)
+```
+
+These work as in Beautiful Soup:
+
+| | Does |
+|---|---|
+| `node.decompose()` | removes the node and everything in it |
+| `node.extract()` | removes it and returns it, to keep or put back elsewhere |
+| `node.replace_with(a, "b", ...)` | puts nodes or strings where the node was, and returns the node |
+| `node.unwrap()` | replaces the node with its contents (`<b>big</b>` becomes `big`), and returns the empty node |
+| `page.new_tag("a", href="/x", string="next")` | a new element, not on the page yet |
+| `node.append(x)`, `node.insert(i, x)` | adds a node or a string as the last child, or at position `i` of `contents` |
+| `node.string = "text"` | replaces everything in the element with that text |
+| `node.prettify()` | the HTML indented a level per tag, one tag or piece of text to a line |
+
+```python
+price = page.find("span", class_="price")
+price.replace_with(page.new_tag("data", value="12.99", string="£12.99"))
+
+for b in page.find_all("b"):
+    b.unwrap()
+
+print(page.find("table").prettify())
+```
+
+A node you append or insert that's already on the page moves there. A
+string becomes a text node. `new_tag()` takes attributes as a dict, as
+keyword arguments, or both, and `string=` for its text. Values are
+written as Beautiful Soup writes them: a list joined with spaces
+(`class_=["card", "sale"]`), None as an attribute with no value
+(`hidden=None`), and anything else as its `str()`, so `True` is `"True"`.
+A keyword name loses one trailing `_`, so `class_` is `class` and `for_`
+is `for`; names in the `attrs` dict are used as they are.
+
+Every query after an edit sees the edited page: CSS, XPath, the Beautiful
+Soup methods and `find_similar()`. A `Selection` or a list from before the
+edit still holds the nodes it found, removed ones included.
+
+Edit first, then query. XPath and `find_similar()` read an index of the
+page that every edit throws away and the next of them rebuilds, and the
+rebuild covers what you've removed as well as the page. A loop that edits
+and runs XPath on every turn pays for a whole index each time.
+
+### Removed nodes
+
+A node you've removed, with `decompose()` or any of the others, is off the
+page but still readable through any handle you kept. It and everything
+in it read as they were when you removed them:
+
+```python
+p = page.find("p")
+p.decompose()
+page.find("p")         # the next <p>, or None
+p.html                 # still '<p>...</p>'
+p.parent               # None
+p.css("a::attr(href)") # queries see only the removed subtree
+```
+
+In Beautiful Soup, a decomposed tag shouldn't be used again. Here it's
+safe: nothing is freed until the whole page is, so a handle can never
+point at memory that's been reused. The cost is that `decompose()` doesn't
+give memory back early. It's returned when you drop the page.
+
+A query on a removed node treats it as a small document of its own, as
+lxml does, so XPath's `/` and `//` start at the top of what you removed.
+
+### Edits and queries running together
+
+You can query a page from several threads, and edit it from one of them.
+An edit waits until queries already running on other threads finish, and
+queries that start while it waits let it go first, so nothing ever reads
+a half-edited tree. An edit itself takes microseconds.
+
+What you can't do is edit a page from inside a query: a function passed
+to `find_all()` that removes nodes, from that page or any other, raises
+`RuntimeError`. (Two threads each editing the other's page from inside a
+query would otherwise wait for each other forever.) Collect what you want
+first, then edit:
+
+```python
+for tag in page.find_all(is_advert):
+    tag.decompose()
+```
+
+An edit that makes no sense raises `ValueError` and changes nothing:
+putting a node inside itself, adding a node from another page (use
+`new_tag()` on this one), or an invalid tag or attribute name.
+
+Known limit: you can't set or delete one attribute (`node["href"] =
+...`), and there's no `insert_before()`, `insert_after()`, `extend()`,
+`wrap()` or `new_string()`. `insert()` and `replace_with()` cover what
+they do.
+
+Known limit: `new_tag()` makes HTML elements, with attribute names
+lowercased. A `new_tag("circle", viewBox="0 0 10 10")` put inside an
+`<svg>` serialises as `<circle viewbox="0 0 10 10">`, which a browser
+won't draw as SVG. For scraping, where you read the page rather than
+render it, that rarely matters.
+
+## Elements like this one
+
+You've found one product card. `find_similar()` gives you the others:
+
+```python
+first = page.css("article.product")[0]
+for card in first.find_similar():
+    print(card.css("h3 a::text").get(), card.css(".price::text").get())
+
+titles = first.find_similar().css("h3 a::text").getall()
+```
+
+It returns a `Selection` of the other elements, in document order, that
+
+- have the same tag;
+- sit at the same depth, inside elements with the same tags all the way
+  up (an `<li>` in `html > body > main > ul`, say); and
+- share at least `threshold` (0.5 by default) of their attribute
+  features with the one you started from.
+
+The features are the attribute names and each class on its own. Values
+other than classes don't count, because a link or a `data-id` differs from
+card to card. The share is what both have over what either has:
+`class="card"` and `class="card sale"` share 1 of 2, which is 0.5 and
+counts; `class="card"` and `class="card sale new"` share 1 of 3 and don't.
+Two elements without attributes match fully.
+
+So a `<div class="card">` in the sidebar isn't counted, since its parents
+differ, and neither is a `<div class="banner">` next to your cards. Lower
+`threshold` to take in cards with extra classes; `find_similar(0)` gives
+every element of the same tag on the same path. The element you started
+from isn't in the results.
+
+It runs in Rust over the page's index: about 0.15 ms on a 1 MB listing
+and 1.6 ms on a 10 MB one, plus building the index the first time (the
+first XPath query builds it too).
+
+## JSON
+
+JSON APIs, and pages that carry their data in a `<script
+type="application/json">`, answer [JMESPath](https://jmespath.org)
+queries, as in parsel:
+
+```python
+page = netweir.get("https://example.com/api/products")
+page.jmespath("items[].name")                    # ['Lamp', 'Rug']
+page.jmespath("items[?price > `20`].name")       # ['Rug']
+
+page.find("script", id="__NEXT_DATA__").jmespath("props.pageProps.items[0]")
+page.css("script[type='application/json']::text").jmespath("total")  # one result per script
+
+netweir.jmespath("props.items[].id", page.js_data("__STATE__"))
+```
+
+- `page.jmespath(expr)` reads the body as JSON.
+- `node.jmespath(expr)` reads the node's text as JSON.
+- `selection.jmespath(expr)` reads each result as JSON (an element's text,
+  or the string) and gives a list of what each gives, leaving out the ones
+  that give None.
+- `netweir.jmespath(expr, data)` searches data you already have, such as
+  what `js_data()` returned.
+
+They return plain Python values: dicts, lists, strings, numbers, None.
+Text that isn't JSON raises `ValueError`. For JavaScript objects that
+aren't strict JSON, read them with `js_data()` first and pass the result
+to `netweir.jmespath()`.
+
+JMESPath needs the `jmespath` package, which Netweir doesn't install by
+default:
+
+```
+pip install 'netweir[jmespath]'
+```
+
+Without it, these raise `ImportError` saying so.
 
 ## Following an element through a redesign
 

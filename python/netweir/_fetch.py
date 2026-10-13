@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urlencode, urljoin
 
-from netweir import _track
+from netweir import _jmespath, _track
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
@@ -216,6 +216,11 @@ class Page:
         with that id, like Next.js's ``__NEXT_DATA__``), or None. Without,
         a list of every object and array in every script, in order."""
         return self.root.js_data(name)
+
+    def jmespath(self, expression: str) -> Any:
+        """The body read as JSON and searched with a JMESPath expression,
+        for JSON APIs. Needs the ``netweir[jmespath]`` extra."""
+        return _jmespath.search_text(expression, self.text, "the page")
 
     def form(
         self,

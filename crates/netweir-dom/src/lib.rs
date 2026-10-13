@@ -13,9 +13,10 @@ pub mod js;
 pub mod metadata;
 pub mod price;
 mod query;
+pub mod similar;
 pub mod track;
 mod xpath;
 
-pub use document::{Document, Node, NodeId, NodeKind, ParseTimeout};
+pub use document::{Content, Document, EditError, Node, NodeId, NodeKind, ParseTimeout, Reading};
 pub use query::{Hit, Output, Query, QueryError};
 pub use xpath::{XPath, XPathError, XValue};

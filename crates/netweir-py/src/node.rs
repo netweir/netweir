@@ -1,13 +1,16 @@
 //! `Node` and `Selection`: the parsel-style query API (css, xpath, get,
 //! getall, re) and the Beautiful Soup style one (find_all and navigation).
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 use netweir_dom::extract::{TrackContext, Tracker, Tracking};
-use netweir_dom::{Document, Hit, NodeId, NodeKind, Query, XPath, XValue};
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError};
+use netweir_dom::{
+    Content, Document, EditError, Hit, NodeId, NodeKind, Query, Reading, XPath, XValue,
+};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PySlice, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySlice, PyString, PyTuple};
 
 use crate::filter::{Criteria, Filter, single_string};
 use crate::rules::TrackStore;
@@ -58,9 +61,49 @@ impl Node {
         self.id
     }
 
-    pub(crate) fn get(&self) -> netweir_dom::Node<'_> {
-        // SAFETY: `id` was taken from a node of `doc`, which this Node keeps alive.
-        unsafe { self.doc.node(self.id) }
+    /// The node, with edits from other threads held off while it's used.
+    pub(crate) fn get(&self) -> Held<'_> {
+        Held {
+            _reading: self.doc.read(),
+            // SAFETY: `id` was taken from a node of `doc`, which this Node keeps alive.
+            node: unsafe { self.doc.node(self.id) },
+        }
+    }
+
+    /// Runs a tree edit without the GIL, so that while it waits for
+    /// readers on other threads, they can finish.
+    fn edit<R: Send>(
+        &self,
+        py: Python<'_>,
+        edit: impl FnOnce(&Document) -> Result<R, EditError> + Send,
+    ) -> PyResult<R> {
+        let doc = self.doc.clone();
+        py.detach(move || edit(&doc)).map_err(edit_error)
+    }
+
+    /// What `items` stand for, ready to insert: Nodes of this page as they
+    /// are, strings as text the edit will create, so one edit does both.
+    fn insertable(&self, items: &[Bound<'_, PyAny>]) -> PyResult<Vec<Insert>> {
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            if let Ok(node) = item.cast::<Node>() {
+                let node = node.get();
+                if !Arc::ptr_eq(&node.doc, &self.doc) {
+                    return Err(PyValueError::new_err(
+                        "that node belongs to another page; parse its HTML into this one with new_tag()",
+                    ));
+                }
+                out.push(Insert::Node(node.id));
+            } else if let Ok(text) = item.cast::<PyString>() {
+                out.push(Insert::Text(text.to_string()));
+            } else {
+                return Err(PyTypeError::new_err(format!(
+                    "only a Node or a str can be inserted, not {}",
+                    item.get_type().name()?
+                )));
+            }
+        }
+        Ok(out)
     }
 
     fn sibling(&self, id: NodeId) -> Node {
@@ -76,6 +119,47 @@ impl Node {
 
     fn wrap_all<'a>(&self, nodes: impl Iterator<Item = netweir_dom::Node<'a>>) -> Vec<Node> {
         nodes.map(|n| self.sibling(n.id())).collect()
+    }
+}
+
+/// An owned [`Content`], to carry into an edit that runs without the GIL.
+enum Insert {
+    Node(NodeId),
+    Text(String),
+}
+
+fn contents(items: &[Insert]) -> Vec<Content<'_>> {
+    items
+        .iter()
+        .map(|i| match i {
+            Insert::Node(id) => Content::Node(*id),
+            Insert::Text(t) => Content::Text(t),
+        })
+        .collect()
+}
+
+/// A node and a hold on its document's edits. Python-facing code reads
+/// through one of these, so a thread editing the page waits until the
+/// read is done (on free-threaded Python, readers don't hold the GIL).
+pub(crate) struct Held<'a> {
+    _reading: Reading<'a>,
+    node: netweir_dom::Node<'a>,
+}
+
+impl<'a> Deref for Held<'a> {
+    type Target = netweir_dom::Node<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.node
+    }
+}
+
+fn edit_error(e: EditError) -> PyErr {
+    match e {
+        EditError::Invalid(why) => PyValueError::new_err(why),
+        EditError::Reading => PyRuntimeError::new_err(format!(
+            "{e} (a find_all() function can't change a page; collect what to change, then change it)"
+        )),
     }
 }
 
@@ -116,6 +200,7 @@ fn css_entries(
     let query = Query::new(css).map_err(|e| SelectorError::new_err(e.to_string()))?;
     let doc = doc.clone();
     Ok(py.detach(move || {
+        let _reading = doc.read();
         let mut out = Vec::new();
         for id in scopes {
             // SAFETY: every scope id came from `doc`.
@@ -173,6 +258,7 @@ fn xpath_entries(
     let vars = xpath_vars(vars)?;
     let doc = doc.clone();
     py.detach(move || {
+        let _reading = doc.read();
         let mut out = Vec::new();
         for id in scopes {
             // SAFETY: every scope id came from `doc`.
@@ -402,6 +488,7 @@ impl Node {
         let site = site.to_string();
         let (entries, tracking) = py
             .detach(move || {
+                let _reading = doc.read();
                 let ctx = TrackContext {
                     tracks: &tracks,
                     site: &site,
@@ -554,7 +641,10 @@ impl Node {
         let doc = self.doc.clone();
         let id = self.id;
         // SAFETY: `id` belongs to `doc`.
-        py.detach(move || unsafe { doc.node(id) }.readable_text_pieces().concat())
+        py.detach(move || {
+            let _reading = doc.read();
+            unsafe { doc.node(id) }.readable_text_pieces().concat()
+        })
     }
 
     /// The structured data the page carries about itself: a dict with
@@ -567,6 +657,7 @@ impl Node {
         let base = base_url.and_then(|b| url::Url::parse(b).ok());
         // SAFETY: `id` belongs to `doc`.
         let value = py.detach(move || {
+            let _reading = doc.read();
             netweir_dom::metadata::metadata(unsafe { doc.node(id) }, base.as_ref())
         });
         crate::browser::to_python(py, &value)
@@ -582,8 +673,10 @@ impl Node {
         let id = self.id;
         let wanted = name.clone();
         // SAFETY: `id` belongs to `doc`.
-        let found =
-            py.detach(move || netweir_dom::js::scripts(unsafe { doc.node(id) }, wanted.as_deref()));
+        let found = py.detach(move || {
+            let _reading = doc.read();
+            netweir_dom::js::scripts(unsafe { doc.node(id) }, wanted.as_deref())
+        });
         match (name, found.first()) {
             (None, _) => crate::helpers::list(py, &found),
             (Some(_), Some(value)) => crate::helpers::to_python(py, value),
@@ -597,13 +690,16 @@ impl Node {
         let doc = self.doc.clone();
         let id = self.id;
         // SAFETY: `id` belongs to `doc`.
-        py.detach(move || unsafe { doc.node(id) }.html())
+        py.detach(move || {
+            let _reading = doc.read();
+            unsafe { doc.node(id) }.html()
+        })
     }
 
     /// The text of a node whose only content is one piece of text, else None.
     #[getter]
     fn string(&self) -> Option<String> {
-        single_string(self.get())
+        single_string(*self.get())
     }
 
     /// Text below this node (scripts, styles and templates left out), pieces
@@ -717,6 +813,183 @@ impl Node {
         self.wrap(self.get().prev_in_order())
     }
 
+    // --- elements like this one ----------------------------------------
+
+    /// The other elements on the page that look like this one: same tag,
+    /// same tags on the way up, and at least `threshold` of their
+    /// attribute names and classes in common. In document order.
+    #[pyo3(signature = (threshold=netweir_dom::similar::SIMILAR))]
+    fn find_similar(&self, py: Python<'_>, threshold: f64) -> PyResult<Selection> {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(PyValueError::new_err(format!(
+                "threshold must be between 0 and 1, not {threshold}"
+            )));
+        }
+        let (doc, id) = (self.doc.clone(), self.id);
+        let entries = py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            let found = unsafe { doc.node(id) }.similar(threshold);
+            found.into_iter().map(|n| Entry::Node(n.id())).collect()
+        });
+        Ok(Selection {
+            doc: self.doc.clone(),
+            entries,
+            relocated: false,
+            score: None,
+        })
+    }
+
+    /// The node's text read as JSON (a `<script type="application/json">`,
+    /// say), searched with a JMESPath expression.
+    fn jmespath(&self, py: Python<'_>, expression: &str) -> PyResult<Py<PyAny>> {
+        let text = self.get().text();
+        Ok(py
+            .import("netweir._jmespath")?
+            .getattr("search_text")?
+            .call1((expression, text))?
+            .unbind())
+    }
+
+    // --- editing ----------------------------------------------------------
+
+    /// Removes the node from the page. A handle to it, or to anything in
+    /// it, still reads what was removed.
+    fn decompose(&self, py: Python<'_>) -> PyResult<()> {
+        let id = self.id;
+        // SAFETY: `id` belongs to the document the edit runs on.
+        self.edit(py, move |doc| unsafe { doc.remove(id) })
+    }
+
+    /// Removes the node from the page and returns it, to keep or put back
+    /// elsewhere.
+    fn extract(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<Node>> {
+        slf.get().decompose(py)?;
+        Ok(slf.clone().unbind())
+    }
+
+    /// Puts the nodes or strings given where this node is, and returns
+    /// this node, now removed.
+    #[pyo3(signature = (*items))]
+    fn replace_with(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        items: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<Py<Node>> {
+        let me = slf.get();
+        let with = me.insertable(&items)?;
+        let id = me.id;
+        // SAFETY: every id belongs to the document the edit runs on.
+        me.edit(py, move |doc| unsafe { doc.replace(id, &contents(&with)) })?;
+        Ok(slf.clone().unbind())
+    }
+
+    /// Replaces the node with what's in it, and returns it, now removed
+    /// and empty.
+    #[pyo3(name = "unwrap")]
+    fn unwrap_node(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<Node>> {
+        let id = slf.get().id;
+        // SAFETY: `id` belongs to the document the edit runs on.
+        slf.get().edit(py, move |doc| unsafe { doc.unwrap(id) })?;
+        Ok(slf.clone().unbind())
+    }
+
+    /// Adds a node or a string as the last child. A node already on the
+    /// page moves.
+    fn append(&self, py: Python<'_>, child: Bound<'_, PyAny>) -> PyResult<()> {
+        let items = self.insertable(&[child])?;
+        let id = self.id;
+        // SAFETY: every id belongs to the document the edit runs on.
+        self.edit(py, move |doc| unsafe {
+            doc.insert(id, None, &contents(&items))
+        })
+    }
+
+    /// Adds a node or a string at `position` among the children (text
+    /// included, as in `contents`); past the end appends, negative counts
+    /// from the end.
+    fn insert(&self, py: Python<'_>, position: isize, child: Bound<'_, PyAny>) -> PyResult<()> {
+        let items = self.insertable(&[child])?;
+        let id = self.id;
+        // The position is found inside the edit, so an edit on another
+        // thread can't move the children in between.
+        // SAFETY: every id belongs to the document the edit runs on.
+        self.edit(py, move |doc| unsafe {
+            doc.insert(id, Some(position), &contents(&items))
+        })
+    }
+
+    /// A new element for this page, not yet placed: add it with append(),
+    /// insert() or replace_with(). Attributes come from `attrs` and
+    /// keyword arguments (`class_` for class); `string` is its text.
+    #[pyo3(signature = (name, attrs=None, string=None, **kwattrs))]
+    fn new_tag(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        attrs: Option<&Bound<'_, PyDict>>,
+        string: Option<String>,
+        kwattrs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Node> {
+        // Values as Beautiful Soup writes them: a list joined with spaces,
+        // None as an attribute with no value, anything else as its str().
+        // Keyword names lose one trailing "_" (class_, for_), as find_all's
+        // do; names in `attrs` are taken as they are.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (dict, keyword) in [(attrs, false), (kwattrs, true)] {
+            for (k, v) in dict.into_iter().flat_map(|d| d.iter()) {
+                let mut k: String = k.extract()?;
+                if keyword && k.len() > 1 && k.ends_with('_') {
+                    k.pop();
+                }
+                let value = if v.is_none() {
+                    String::new()
+                } else if v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>() {
+                    let parts: Vec<String> = v
+                        .try_iter()?
+                        .map(|p| Ok(p?.str()?.to_string()))
+                        .collect::<PyResult<_>>()?;
+                    parts.join(" ")
+                } else {
+                    v.str()?.to_string()
+                };
+                pairs.push((k, value));
+            }
+        }
+        let tag = name.to_string();
+        let el = self.edit(py, move |doc| {
+            let attrs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            // SAFETY: the new node belongs to the document the edit runs on.
+            let el = unsafe { doc.create_element(&tag, &attrs)? };
+            if let Some(text) = string {
+                unsafe { doc.set_text(el, &text)? };
+            }
+            Ok(el)
+        })?;
+        Ok(self.sibling(el))
+    }
+
+    /// Replaces everything in the element with one piece of text.
+    #[setter(string)]
+    fn set_string(&self, py: Python<'_>, text: String) -> PyResult<()> {
+        let id = self.id;
+        // SAFETY: `id` belongs to the document the edit runs on.
+        self.edit(py, move |doc| unsafe { doc.set_text(id, &text) })
+    }
+
+    /// The node as indented HTML, a tag or piece of text to a line.
+    fn prettify(&self, py: Python<'_>) -> String {
+        let (doc, id) = (self.doc.clone(), self.id);
+        py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            unsafe { doc.node(id) }.pretty()
+        })
+    }
+
     // --- identity -------------------------------------------------------
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
@@ -739,7 +1012,7 @@ impl Node {
         let n = self.get();
         match n.kind() {
             NodeKind::Comment => n.data().unwrap_or_default().to_string(),
-            _ => node_string(n),
+            _ => node_string(*n),
         }
     }
 
@@ -754,6 +1027,7 @@ impl Node {
 }
 
 impl Selection {
+    /// The entry as `get()` gives it. The caller holds a `Reading`.
     fn string_of(&self, entry: &Entry) -> String {
         match entry {
             // SAFETY: ids in a Selection all come from its `doc`.
@@ -762,8 +1036,14 @@ impl Selection {
         }
     }
 
+    fn strings(&self) -> Vec<String> {
+        let _reading = self.doc.read();
+        self.entries.iter().map(|e| self.string_of(e)).collect()
+    }
+
     /// Ids of the entries a query can start from; strings and text can't.
     fn scopes(&self, what: &str) -> PyResult<Vec<NodeId>> {
+        let _reading = self.doc.read();
         self.entries
             .iter()
             .map(|e| match e {
@@ -779,6 +1059,7 @@ impl Selection {
     }
 
     fn item(&self, py: Python<'_>, entry: &Entry) -> PyResult<Py<PyAny>> {
+        let reading = self.doc.read();
         Ok(match entry {
             // SAFETY: ids in a Selection all come from its `doc`.
             Entry::Node(id) if unsafe { self.doc.node(*id) }.kind() != NodeKind::Text => Py::new(
@@ -789,9 +1070,11 @@ impl Selection {
                 },
             )?
             .into_any(),
-            other => PyString::new(py, &self.string_of(other))
-                .into_any()
-                .unbind(),
+            other => {
+                let text = self.string_of(other);
+                drop(reading);
+                PyString::new(py, &text).into_any().unbind()
+            }
         })
     }
 }
@@ -802,7 +1085,13 @@ impl Selection {
     #[pyo3(signature = (default=None))]
     fn get(&self, py: Python<'_>, default: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
         match self.entries.first() {
-            Some(e) => Ok(PyString::new(py, &self.string_of(e)).into_any().unbind()),
+            Some(e) => {
+                let text = {
+                    let _reading = self.doc.read();
+                    self.string_of(e)
+                };
+                Ok(PyString::new(py, &text).into_any().unbind())
+            }
             None => Ok(default.unwrap_or_else(|| py.None())),
         }
     }
@@ -811,9 +1100,9 @@ impl Selection {
     fn getall(&self, py: Python<'_>) -> Vec<String> {
         // Releasing the GIL costs more than serialising a few nodes.
         if self.entries.len() < 16 {
-            return self.entries.iter().map(|e| self.string_of(e)).collect();
+            return self.strings();
         }
-        py.detach(|| self.entries.iter().map(|e| self.string_of(e)).collect())
+        py.detach(|| self.strings())
     }
 
     /// parsel's older name for `getall`.
@@ -889,6 +1178,28 @@ impl Selection {
         }
     }
 
+    /// Each result read as JSON (an element's text, or the string) and
+    /// searched with a JMESPath expression: a list of what each gives,
+    /// leaving out results that give nothing (None).
+    fn jmespath(&self, py: Python<'_>, expression: &str) -> PyResult<Py<PyAny>> {
+        let texts: Vec<String> = {
+            let _reading = self.doc.read();
+            self.entries
+                .iter()
+                .map(|e| match e {
+                    // SAFETY: ids in a Selection all come from its `doc`.
+                    Entry::Node(id) => unsafe { self.doc.node(*id) }.text(),
+                    Entry::Value(v) => v.clone(),
+                })
+                .collect()
+        };
+        Ok(py
+            .import("netweir._jmespath")?
+            .getattr("search_texts")?
+            .call1((expression, texts))?
+            .unbind())
+    }
+
     /// With track=: whether the selector missed and these results were
     /// found by similarity instead.
     #[getter]
@@ -910,6 +1221,7 @@ impl Selection {
     fn attrib<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         if let Some(Entry::Node(id)) = self.entries.first() {
+            let _reading = self.doc.read();
             // SAFETY: ids in a Selection all come from its `doc`.
             for (k, v) in unsafe { self.doc.node(*id) }.attrs() {
                 dict.set_item(k, v)?;

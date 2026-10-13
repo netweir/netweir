@@ -48,7 +48,7 @@ unsafe extern "C" {
     pub fn nw_serialize(n: *mut RawNode, chunk: ChunkFn, ctx: *mut c_void) -> c_int;
     pub fn nw_type(n: *mut RawNode) -> c_int;
     pub fn nw_tag_id(n: *mut RawNode) -> usize;
-    pub fn nw_number(root: *mut RawNode) -> usize;
+    pub fn nw_number(root: *mut RawNode, start: usize) -> usize;
     pub fn nw_order(n: *mut RawNode) -> usize;
     pub fn nw_index_fill(
         root: *mut RawNode,
@@ -57,6 +57,24 @@ unsafe extern "C" {
         kind: *mut u8,
         tag: *mut usize,
     );
+    pub fn nw_serialize_one(n: *mut RawNode, chunk: ChunkFn, ctx: *mut c_void) -> c_int;
+
+    pub fn nw_remove(n: *mut RawNode);
+    pub fn nw_append(parent: *mut RawNode, n: *mut RawNode);
+    pub fn nw_insert_before(at: *mut RawNode, n: *mut RawNode);
+    pub fn nw_create_element(
+        doc: *mut RawDocument,
+        name: *const c_char,
+        len: usize,
+    ) -> *mut RawNode;
+    pub fn nw_set_attr(
+        n: *mut RawNode,
+        name: *const c_char,
+        name_len: usize,
+        value: *const c_char,
+        value_len: usize,
+    ) -> c_int;
+    pub fn nw_create_text(doc: *mut RawDocument, data: *const c_char, len: usize) -> *mut RawNode;
     pub fn nw_tag_id_named(n: *mut RawNode, name: *const c_char, len: usize) -> usize;
     pub fn nw_tag(n: *mut RawNode, len: *mut usize) -> *const c_char;
     pub fn nw_char_data(n: *mut RawNode, len: *mut usize) -> *const c_char;

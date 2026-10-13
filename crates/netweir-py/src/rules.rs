@@ -258,6 +258,7 @@ impl ItemSpec {
         // SAFETY: the id came from a Node of this document, which `doc` keeps
         // alive.
         let (values, notes) = py.detach(move || {
+            let _reading = doc.read();
             let root = unsafe { doc.node(id) };
             match &tracks {
                 Some(tracks) => inner.extract_tracked(
@@ -319,7 +320,7 @@ pub fn similarity(
         .ok_or_else(|| PyValueError::new_err("not a fingerprint"))?;
     let tracker = Tracker::new("similarity", kind, query).map_err(PyValueError::new_err)?;
     Ok(tracker
-        .first_element(node.get())
+        .first_element(*node.get())
         .map_err(PyValueError::new_err)?
         .map(|el| fp.score(el)))
 }

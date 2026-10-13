@@ -96,7 +96,12 @@ pub(super) fn run<'a>(
     scope: Node<'a>,
     vars: &[(String, XValue)],
 ) -> Result<Vec<Hit<'a>>> {
-    let root = scope.doc.root();
+    // `/` is the top of the scope's tree: the document, or for a node
+    // removed from it, the top of what was removed (as lxml has it).
+    let mut root = scope;
+    while let Some(up) = root.parent() {
+        root = up;
+    }
     let kept = RefCell::default();
     let ctx = Context {
         item: Item::Node(scope),
