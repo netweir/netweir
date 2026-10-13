@@ -278,10 +278,11 @@ the proxy, and a crawl's browser requests use the crawl's `proxy`,
 credentials and all.
 
 Only HTTP(S) proxies: Chrome's SOCKS client offers no login, so a SOCKS
-proxy with one is refused with an error. Only pages answer the
-challenge, but Chrome keeps the login for the context once given, so a
-page's workers and frames from other sites, which are targets of their
-own, get through without being asked; a test checks a worker does.
+proxy with one is refused with an error. Pages answer the challenge,
+and so do frames from other sites, which have the Fetch domain on their
+own sessions (milestone 34). Workers have no Fetch domain, but Chrome
+keeps the login for the context once given, so they get through without
+being asked; a test checks a worker does.
 
 **Installing Chrome.** `netweir install chrome` downloads the Chrome for
 Testing build whose major version matches Netweir's newest Chrome
@@ -469,11 +470,15 @@ methods run in its main frame.
   on the page's session. Frames from other sites run in processes of
   their own (out-of-process iframes), which the page's session can't
   reach. Each page sends `Target.setAutoAttach` with `flatten` and a
-  filter of `iframe` only (not workers), without waiting for a debugger,
-  so each such frame gets a session of its own as it's created; its
-  session does the same for the frames inside it. Attaching is
-  invisible to the page and holds nothing up. `frames()` asks each
-  session for its tree.
+  filter of every kind but the browser and tabs, so each such frame, and
+  each dedicated worker, gets a session of its own as it's created (any
+  other kind, a worklet say, is let go and left); its session does the
+  same for the frames and workers inside it. Since
+  milestone 34 Chrome holds each one until its session has the page's
+  network setup, then lets it go; the network design note says why that
+  is invisible to the page, and what happens if setup stalls. Workers
+  aren't frames: `frames()` asks only the frames' sessions for their
+  trees.
 - A frame that navigates to another site moves to a process of its own,
   and one that comes back moves back, so a `Frame` keeps its id, not its
   session. Each call finds the session now: one attached for that frame
@@ -511,10 +516,9 @@ methods run in its main frame.
 
 Known limit: an `<iframe>` with a CSS transform (scaled or rotated) puts
 the point in the wrong place. Known limit: a frame's `name` and `url` are
-those of when it was found. Known limit: requests from frames in other
-processes still go out unrouted and unheard, by blocks, routes and
-listeners alike (see [network.md](network.md)); attaching to them is
-only for acting on them.
+those of when it was found. Requests from frames in other processes are
+heard, blocked and routed through their own sessions since milestone 34
+(see [network.md](network.md)).
 
 **A profile to keep.** `user_data_dir` gives Chrome that folder as its
 profile, made if missing and never removed, where each launch otherwise
@@ -580,3 +584,7 @@ connecting to a running browser.
 **M33, the rest of the actions.** Hover, scroll, select_option,
 check and uncheck, set_input_files, frames (in-process and
 out-of-process), and `user_data_dir`.
+
+**M34, frames' and workers' requests.** Requests from frames from other
+sites and from dedicated workers are heard, blocked and routed like the
+page's own; see the network design note.
