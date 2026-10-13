@@ -695,15 +695,11 @@ async fn scrolling_to_the_bottom_gets_past_a_box_in_the_middle_of_the_page() {
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    page.scroll(None, 0.0, None, None, Duration::from_millis(300), None)
+    let rounds = page
+        .scroll(None, 0.0, None, None, Duration::from_millis(300), None)
         .await
         .unwrap();
-    assert_eq!(
-        page.evaluate("scrollY + innerHeight >= document.documentElement.scrollHeight - 1")
-            .await
-            .unwrap(),
-        json!(true)
-    );
+    assert_at_bottom(&page, rounds).await;
     browser.close().await.unwrap();
 }
 
@@ -831,8 +827,20 @@ async fn checking_waits_for_the_box_and_says_to_use_its_label() {
     browser.close().await.unwrap();
 }
 
-/// Whether the page is scrolled to its bottom.
-const AT_BOTTOM: &str = "scrollY + innerHeight >= document.documentElement.scrollHeight - 1";
+/// Fails, saying where everything was, unless the page is scrolled to its
+/// bottom.
+async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
+    let state = page
+        .evaluate(
+            "(() => { const s = document.scrollingElement; const box = document.querySelector('#box, [style*=contain]'); \
+             return {at_bottom: scrollY + innerHeight >= s.scrollHeight - 1, scrollY, max: s.scrollHeight - innerHeight, \
+             innerWidth, innerHeight, clientWidth: s.clientWidth, clientHeight: s.clientHeight, dpr: devicePixelRatio, \
+             box: box && {scrollTop: box.scrollTop, max: box.scrollHeight - box.clientHeight, rect: box.getBoundingClientRect().toJSON()}}; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(state["at_bottom"], json!(true), "rounds {rounds}: {state}");
+}
 
 #[tokio::test]
 async fn scrolling_to_the_bottom_gets_past_a_tall_frame_that_scrolls_itself() {
@@ -853,10 +861,11 @@ async fn scrolling_to_the_bottom_gets_past_a_tall_frame_that_scrolls_itself() {
     ]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    page.scroll(None, 0.0, None, None, Duration::from_millis(300), None)
+    let rounds = page
+        .scroll(None, 0.0, None, None, Duration::from_millis(300), None)
         .await
         .unwrap();
-    assert_eq!(page.evaluate(AT_BOTTOM).await.unwrap(), json!(true));
+    assert_at_bottom(&page, rounds).await;
     browser.close().await.unwrap();
 }
 
@@ -878,10 +887,11 @@ async fn scrolling_to_the_bottom_gets_past_a_box_that_keeps_its_scroll_to_itself
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    page.scroll(None, 0.0, None, None, Duration::from_millis(300), None)
+    let rounds = page
+        .scroll(None, 0.0, None, None, Duration::from_millis(300), None)
         .await
         .unwrap();
-    assert_eq!(page.evaluate(AT_BOTTOM).await.unwrap(), json!(true));
+    assert_at_bottom(&page, rounds).await;
     browser.close().await.unwrap();
 }
 
