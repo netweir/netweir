@@ -1639,7 +1639,7 @@ class _Run:
             self.counts["items_validated"] += 1
         checked = item
         if isinstance(item, dict) and ("_id" in item or "_errors" in item):
-            # netweir's own fields: a schema that allows no others mustn't
+            # Netweir's own fields: a schema that allows no others mustn't
             # fail an item for the _id a checkpoint gives it.
             checked = {k: v for k, v in item.items() if k not in ("_id", "_errors")}
         problems = stage.problems(checked)
@@ -1742,7 +1742,7 @@ class _Run:
 
     async def guarded(self, method: Callable[..., Any], *args: Any, allowed: tuple) -> Any:
         """A middleware method's result: None, or an instance of ``allowed``.
-        IgnoreRequest (netweir's or Scrapy's) gives _IGNORED. Any other
+        IgnoreRequest (Netweir's or Scrapy's) gives _IGNORED. Any other
         exception, or a result of another type, counts as a callback error
         (fail_fast stops the crawl) and gives _FAILED."""
         try:
@@ -1952,7 +1952,7 @@ class _Run:
             try:
                 item = await _result(process(item, self.spider) if process else stage(item))
             except Exception as e:
-                # netweir's DropItem, or Scrapy's, from a pipeline written
+                # Netweir's DropItem, or Scrapy's, from a pipeline written
                 # for Scrapy (subclasses too): a drop, not an error.
                 if not _named(e, "DropItem"):
                     raise
@@ -2060,9 +2060,9 @@ def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
 
 
 def _named(error: BaseException, name: str) -> bool:
-    """``error`` is of a class called ``name``, or a subclass of one: netweir's
+    """``error`` is of a class called ``name``, or a subclass of one: Netweir's
     DropItem or IgnoreRequest, or Scrapy's, which a ported pipeline or
-    middleware raises without importing netweir's."""
+    middleware raises without importing Netweir's."""
     return any(cls.__name__ == name for cls in type(error).__mro__)
 
 

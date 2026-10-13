@@ -31,7 +31,7 @@ class browser:
 
     ``connect`` drives a browser that's already running instead of
     starting one: a ``ws://`` DevTools URL, or ``http://host:port``.
-    Closing it closes the pages netweir opened and leaves the browser
+    Closing it closes the pages Netweir opened and leaves the browser
     running.
 
     ``user_data_dir`` is a profile directory to keep: cookies and storage

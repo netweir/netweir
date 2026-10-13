@@ -1,4 +1,4 @@
-"""A Scrapy download handler that fetches with netweir, so a Scrapy project
+"""A Scrapy download handler that fetches with Netweir, so a Scrapy project
 sends its requests the way a browser does, from the TLS handshake to the
 order of the headers, without changing anything else about the project:
 
@@ -11,7 +11,7 @@ Scrapy's middlewares keep their jobs: redirects, cookies, retries, proxies
 (``meta["proxy"]``) and timeouts (``download_timeout``) work as they do
 with Scrapy's own handler. The browser's own headers (User-Agent, Accept,
 Accept-Language, Accept-Encoding and the client hints) come from the
-netweir profile, ``NETWEIR_PROFILE`` in the settings ("chrome" by
+Netweir profile, ``NETWEIR_PROFILE`` in the settings ("chrome" by
 default); the rest of a request's headers are sent as Scrapy set them.
 """
 
@@ -42,7 +42,7 @@ _PROFILE_HEADERS = {
 #: is the spider asking for something, as an API's JSON.
 _DEFAULTED_HEADERS = ("accept", "accept-language")
 #: Response headers that describe the body as it travelled, not as it's
-#: handed on: netweir has already decompressed it.
+#: handed on: Netweir has already decompressed it.
 _TRANSPORT_HEADERS = {"content-encoding", "content-length", "transfer-encoding"}
 #: Clients kept at once, one per proxy, timeout and size limit: each holds
 #: its own connections, and a rotating gateway with a session in its login
@@ -51,7 +51,7 @@ _MAX_CLIENTS = 64
 
 
 class DownloadHandler:
-    """Scrapy's download handler protocol, fetching with netweir."""
+    """Scrapy's download handler protocol, fetching with Netweir."""
 
     lazy = False
 
@@ -75,7 +75,7 @@ class DownloadHandler:
         }
         self._auth_encoding = get("HTTPPROXY_AUTH_ENCODING", "latin-1")
         self._fetchers: collections.OrderedDict[tuple, Fetcher] = collections.OrderedDict()
-        # A profile netweir doesn't know raises here. Scrapy logs a handler
+        # A profile Netweir doesn't know raises here. Scrapy logs a handler
         # that fails to start and carries on, so the crawl's requests then
         # fail one by one, each saying why.
         self._fetcher(None, self._timeout, self._max_size)
@@ -248,7 +248,7 @@ def _proxy(request: Any, headers: list[tuple[str, str]], encoding: str) -> str |
     """The request's proxy, with its login put back into the URL: Scrapy's
     proxy middleware moves it into a Proxy-Authorization header, which the
     proxy itself must not be sent twice. Scrapy encodes the login with
-    HTTPPROXY_AUTH_ENCODING (latin-1 unless set); netweir sends a login as
+    HTTPPROXY_AUTH_ENCODING (latin-1 unless set); Netweir sends a login as
     UTF-8, so it's read back to text first."""
     proxy = request.meta.get("proxy")
     login = next((v for k, v in headers if k.lower() == "proxy-authorization"), None)
@@ -258,7 +258,7 @@ def _proxy(request: Any, headers: list[tuple[str, str]], encoding: str) -> str |
         return proxy
     if not login.lower().startswith("basic "):
         raise ValueError(
-            "a Proxy-Authorization other than Basic can't be sent through netweir's client;"
+            "a Proxy-Authorization other than Basic can't be sent through Netweir's client;"
             " put the login in meta['proxy'] instead"
         )
     _pop(headers, "proxy-authorization")

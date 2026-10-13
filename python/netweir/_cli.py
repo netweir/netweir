@@ -156,14 +156,14 @@ def main(argv: list[str] | None = None) -> int:
         "--headers", action="store_true", help="the status line and headers instead of the body"
     )
     _fetch_options(fetch, browser=True)
-    view = commands.add_parser("view", help="open the page netweir gets in your browser")
+    view = commands.add_parser("view", help="open the page Netweir gets in your browser")
     view.add_argument("url")
     _fetch_options(view, browser=True)
     shell = commands.add_parser("shell", help="a Python prompt with a fetched page in `page`")
     shell.add_argument("url", nargs="?", help="a URL to fetch, or an HTML file to read")
     shell.add_argument("-c", dest="code", help="evaluate one expression, print it and exit")
     _fetch_options(shell, browser=False)
-    install = commands.add_parser("install", help="download a browser for netweir to drive")
+    install = commands.add_parser("install", help="download a browser for Netweir to drive")
     install.add_argument("browser", choices=["chrome"])
     install.add_argument(
         "--headless-shell",
@@ -573,7 +573,7 @@ def _view(page) -> Path:
     return path
 
 
-_BANNER = """netweir {version} shell
+_BANNER = """Netweir {version} shell
   page              the page{what}
   fetch(url)        fetch another page into `page` (method=, form=, json=, body=, headers=, referer=)
   submit(form)      submit page.form(...) and make the answer `page`
