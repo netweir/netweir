@@ -96,7 +96,7 @@ pub(crate) struct Inner {
     /// The Chrome netweir launched; None for one it connected to.
     child: Mutex<Option<Child>>,
     /// What ends the launched Chrome if netweir goes without closing it.
-    lifeline: Option<launch::Lifeline>,
+    lifeline: Mutex<Option<launch::Lifeline>>,
     /// The launched Chrome's profile, removed when it closes unless it's
     /// one the caller gave.
     profile: Option<PathBuf>,
@@ -217,7 +217,7 @@ impl Browser {
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
-            lifeline: Some(started.lifeline),
+            lifeline: Mutex::new(Some(started.lifeline)),
             profile: Some(profile),
             keep_profile,
             temp_profile: Mutex::new(temp),
@@ -268,7 +268,7 @@ impl Browser {
         let inner = Inner {
             conn,
             child: Mutex::new(None),
-            lifeline: None,
+            lifeline: Mutex::default(),
             profile: None,
             keep_profile: false,
             temp_profile: Mutex::default(),
@@ -598,6 +598,14 @@ impl Inner {
                 }
             }
         }
+        let lifeline = self
+            .lifeline
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(lifeline) = lifeline {
+            lifeline.chrome_gone();
+        }
         let removed = match &self.profile {
             Some(profile) if !self.keep_profile => remove_profile(profile),
             _ => Ok(()),
@@ -630,7 +638,11 @@ impl Drop for Inner {
         {
             self.conn.send("", "Browser.close", json!({}));
             self.conn.shut();
-            let lifeline = self.lifeline.take();
+            let lifeline = self
+                .lifeline
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             let quitting = Quitting::start(self.profile.as_deref().unwrap_or(Path::new("")));
             let _ = std::thread::Builder::new()
                 .name("netweir-chrome-quit".into())
@@ -641,7 +653,9 @@ impl Drop for Inner {
                     }
                     let _ = child.kill();
                     let _ = child.wait();
-                    drop(lifeline);
+                    if let Some(lifeline) = lifeline {
+                        lifeline.chrome_gone();
+                    }
                     drop(quitting);
                 });
             return;
@@ -777,7 +791,7 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
         inner: Arc::new(Inner {
             conn: Connection::new(started.replies, started.commands),
             child: Mutex::new(Some(started.child)),
-            lifeline: Some(started.lifeline),
+            lifeline: Mutex::new(Some(started.lifeline)),
             profile: Some(profile),
             keep_profile: false,
             temp_profile: Mutex::new(Some(temp)),

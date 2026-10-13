@@ -449,6 +449,23 @@ pub(crate) struct Lifeline {
     _job: Option<std::os::windows::io::OwnedHandle>,
 }
 
+impl Lifeline {
+    /// Lets go once Chrome has exited, as after close(): the watcher has
+    /// nothing to give time to, so on Windows, where it would wait ten
+    /// seconds regardless, it's ended at once, before its read returns.
+    /// Elsewhere it finds Chrome gone and ends at once by itself.
+    pub(crate) fn chrome_gone(self) {
+        #[cfg(windows)]
+        {
+            let mut lifeline = self;
+            if let Some(mut watcher) = lifeline.watcher.take() {
+                let _ = watcher.kill();
+                let _ = watcher.wait();
+            }
+        }
+    }
+}
+
 impl Drop for Lifeline {
     fn drop(&mut self) {
         drop(self.end.take());
@@ -728,49 +745,83 @@ fn tie(child: &Child) -> Lifeline {
 fn watch(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<(PipeWriter, Child)> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, GetCurrentProcess,
+    };
 
+    // Both from the system folder, by full path: neither a search from
+    // the program's own folder nor an environment that may be empty.
+    let system = system_dir()?;
+    let ping = system.join("PING.EXE");
     let (held, end) = std::io::pipe()?;
-    let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
-    let mut command = Command::new(shell);
+    let mut command = Command::new(system.join("cmd.exe"));
     command
-        .raw_arg(r#"/d /q /c "set /p _= & %SystemRoot%\System32\PING.EXE -n 11 127.0.0.1 >nul""#)
+        .raw_arg(format!(
+            r#"/d /q /s /c "set /p _= & "{}" -n 11 127.0.0.1 >nul""#,
+            ping.display()
+        ))
         .stdin(held)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW);
-    // The watcher's copy of the job handle is inherited, so it's made
-    // inheritable only while it starts, taking turns as start() does.
-    let inherited = job.try_clone()?;
-    let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
-    // SAFETY: the handle is ours and open.
-    if unsafe {
-        SetHandleInformation(
-            inherited.as_raw_handle() as _,
-            HANDLE_FLAG_INHERIT,
-            HANDLE_FLAG_INHERIT,
+        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    let mut watcher = command.spawn()?;
+    // The job handle is copied into the watcher, never made inheritable,
+    // so no other process started meanwhile can come by one. Holding it
+    // is all the watcher does with it.
+    let mut copy = std::ptr::null_mut();
+    // SAFETY: both process handles and the job's are open; the copy
+    // belongs to the watcher and closes with it.
+    let copied = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            job.as_raw_handle() as _,
+            watcher.as_raw_handle() as _,
+            &mut copy,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
         )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
+    } != 0;
+    let started = if copied {
+        resume(&watcher)
+    } else {
+        Err(std::io::Error::last_os_error())
+    };
+    if let Err(e) = started {
+        let _ = watcher.kill();
+        let _ = watcher.wait();
+        return Err(e);
     }
-    let watcher = command.spawn()?;
-    drop(inherited);
     Ok((end, watcher))
 }
 
-/// Lets a Chrome started suspended run.
+/// The Windows system folder, where `cmd.exe` and `PING.EXE` are.
 #[cfg(windows)]
-fn resume(child: &Child) -> std::io::Result<()> {
+fn system_dir() -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0u16; 512];
+    // SAFETY: the buffer is the size given.
+    let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if len == 0 || len >= buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len])))
+}
+
+/// Lets a process started suspended run.
+#[cfg(windows)]
+fn resume(process: &Child) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
 
     #[link(name = "ntdll", kind = "raw-dylib")]
     unsafe extern "system" {
         fn NtResumeProcess(process: *mut std::ffi::c_void) -> i32;
     }
-    // SAFETY: the handle is Chrome's, open while `child` is.
-    match unsafe { NtResumeProcess(child.as_raw_handle()) } {
+    // SAFETY: the handle is the process's, open while `process` is.
+    match unsafe { NtResumeProcess(process.as_raw_handle()) } {
         0 => Ok(()),
         status => Err(std::io::Error::other(format!(
             "it couldn't be resumed (NTSTATUS {status:#x})"

@@ -124,7 +124,13 @@ lifeline the driver holds, and is ended when that's let go.
   the job on whatever is left. `ping` because `timeout` wants a console;
   `cmd` and `ping` are on every Windows, and nothing else could be run:
   the driver may be a Python extension, with no executable of its own to
-  start. Without the watcher, Chrome is ended at once, as before. A
+  start. Both are run by full path from the system folder. The watcher
+  starts suspended, the job handle is copied into it, and it's resumed:
+  the handle is never inheritable, so no process the host starts
+  meanwhile can come by one and keep Chrome alive. After `close()`,
+  with Chrome already gone, the watcher is ended at once rather than
+  left its ten seconds. Without the watcher, Chrome is ended at once, as
+  before. A
   Chrome that can't be put in a job runs untied, with a warning; one that
   can't be resumed is killed and the launch fails.
 
