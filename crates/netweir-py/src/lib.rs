@@ -1,6 +1,7 @@
 //! Python bindings. Kept thin: anything that could live in netweir-dom or
 //! netweir-core does.
 
+mod aio;
 mod browser;
 mod crawl;
 mod export;
@@ -124,6 +125,22 @@ fn _robots_sitemaps(body: &str) -> Vec<String> {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Before Python shuts down, Rust threads still in it get to finish;
+    // a forked child has none of its parent's (aio.rs).
+    let wait = wrap_pyfunction!(aio::_wait_for_rust_threads, m)?;
+    m.add_function(wait.clone())?;
+    m.py().import("atexit")?.call_method1("register", (wait,))?;
+    let forked = wrap_pyfunction!(aio::_forked, m)?;
+    m.add_function(forked.clone())?;
+    let os = m.py().import("os")?;
+    if os.hasattr("register_at_fork")? {
+        let kwargs = pyo3::types::PyDict::new(m.py());
+        kwargs.set_item("after_in_child", forked)?;
+        os.call_method("register_at_fork", (), Some(&kwargs))?;
+    }
+    // Shipped on purpose, for tests/test_exit.py to drive the bridge.
+    m.add_function(wrap_pyfunction!(aio::_test_sleep, m)?)?;
+    m.add_function(wrap_pyfunction!(aio::_test_panic, m)?)?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(_sitemap, m)?)?;

@@ -1271,9 +1271,9 @@ impl Crawler {
     #[pyo3(signature = (max=256))]
     fn next<'py>(&self, py: Python<'py>, max: usize) -> PyResult<Bound<'py, PyAny>> {
         let engine = self.engine.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let events = engine.clone().next(max).await;
-            Python::attach(|py| -> PyResult<Py<PyAny>> {
+            crate::aio::attach(|py| -> PyResult<Py<PyAny>> {
                 let list = PyList::empty(py);
                 for event in events {
                     list.append(out_py(py, &engine, event)?)?;
@@ -1413,7 +1413,7 @@ impl Crawler {
     /// Closes Chrome, if the crawl started it.
     fn close_browser<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let engine = self.engine.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             engine.core.close_browser().await;
             Ok(())
         })

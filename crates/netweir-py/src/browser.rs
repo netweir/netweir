@@ -19,7 +19,8 @@ use crate::Node;
 
 /// Raises the Python exception that matches `e`.
 fn raise(e: Error) -> PyErr {
-    Python::attach(|py| {
+    // Called on Rust threads too, so counted for the atexit hook (aio.rs).
+    crate::aio::attach(|py| {
         let made = (|| -> PyResult<PyErr> {
             let errors = py.import("netweir._errors")?;
             let value = match &e {
@@ -103,7 +104,7 @@ pub(crate) fn launch(
         brands: Some(Arc::new(netweir_core::Profile::chrome_brands)),
         user_data_dir,
     };
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    crate::aio::future_into_py(py, async move {
         let inner = match connect {
             Some(url) => CoreBrowser::connect(&url, options).await,
             None => CoreBrowser::launch(options).await,
@@ -135,7 +136,7 @@ impl Browser {
     /// A page in a context of its own: it shares no cookies or storage.
     fn new_page<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let browser = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let inner = browser.new_page().await.map_err(raise)?;
             Ok(BrowserPage::new(inner, None))
         })
@@ -144,7 +145,7 @@ impl Browser {
     /// A context whose pages share cookies and storage.
     fn new_context<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let browser = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let inner = browser.new_context().await.map_err(raise)?;
             Ok(BrowserContext {
                 inner,
@@ -160,14 +161,12 @@ impl Browser {
 
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let browser = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            browser.close().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { browser.close().await.map_err(raise) })
     }
 
     fn __aenter__<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let me = slf.clone().unbind();
-        pyo3_async_runtimes::tokio::future_into_py(slf.py(), async move { Ok(me) })
+        crate::aio::future_into_py(slf.py(), async move { Ok(me) })
     }
 
     fn __aexit__<'py>(
@@ -198,7 +197,7 @@ impl BrowserContext {
     fn new_page<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let context = slf.get().inner.clone();
         let me = slf.clone().unbind();
-        pyo3_async_runtimes::tokio::future_into_py(slf.py(), async move {
+        crate::aio::future_into_py(slf.py(), async move {
             let inner = context.new_page().await.map_err(raise)?;
             Ok(BrowserPage::new(inner, Some(me)))
         })
@@ -229,7 +228,7 @@ impl BrowserContext {
 
     fn _route<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let rx = context.route().await.map_err(raise)?;
             Ok(Routes::new(rx))
         })
@@ -237,9 +236,7 @@ impl BrowserContext {
 
     fn _unroute<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            context.unroute().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { context.unroute().await.map_err(raise) })
     }
 
     /// Stops handing requests to the context's routes, at once.
@@ -254,9 +251,9 @@ impl BrowserContext {
 
     fn cookies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let cookies = context.cookies().await.map_err(raise)?;
-            Python::attach(|py| cookie_list(py, &cookies))
+            crate::aio::attach(|py| cookie_list(py, &cookies))
         })
     }
 
@@ -270,7 +267,7 @@ impl BrowserContext {
             .map(cookie_from)
             .collect::<PyResult<Vec<_>>>()?;
         let context = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             context.set_cookies(&cookies).await.map_err(raise)
         })
     }
@@ -278,14 +275,12 @@ impl BrowserContext {
     /// Closes the context and every page in it.
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            context.close().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { context.close().await.map_err(raise) })
     }
 
     fn __aenter__<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let me = slf.clone().unbind();
-        pyo3_async_runtimes::tokio::future_into_py(slf.py(), async move { Ok(me) })
+        crate::aio::future_into_py(slf.py(), async move { Ok(me) })
     }
 
     fn __aexit__<'py>(
@@ -417,7 +412,7 @@ impl BrowserPage {
         let wait: WaitUntil = wait.parse().map_err(raise)?;
         let timeout = seconds("timeout", timeout)?;
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let inner = page.goto(&url, wait, timeout).await.map_err(raise)?;
             Ok(BrowserResponse::new(inner, &page))
         })
@@ -439,7 +434,7 @@ impl BrowserPage {
         // navigation that starts while the future waits to run still
         // counts.
         let after = page.response();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let inner = page
                 .wait_for_navigation(&after, wait, timeout)
                 .await
@@ -451,15 +446,13 @@ impl BrowserPage {
     /// The HTML as Chrome now has it.
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            page.content().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { page.content().await.map_err(raise) })
     }
 
     /// The page as it is now, parsed into a netweir Node.
     fn parse<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let html = page.content().await.map_err(raise)?;
             let doc = tokio::task::spawn_blocking(move || Document::parse(&html))
                 .await
@@ -470,19 +463,16 @@ impl BrowserPage {
 
     fn title<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { page.title().await.map_err(raise) },
-        )
+        crate::aio::future_into_py(py, async move { page.title().await.map_err(raise) })
     }
 
     /// Runs `js` in the page: an expression, or a function, which is
     /// called. Resolves to the result as Python values.
     fn evaluate<'py>(&self, py: Python<'py>, js: String) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let value = page.evaluate(&js).await.map_err(raise)?;
-            Python::attach(|py| to_python(py, &value))
+            crate::aio::attach(|py| to_python(py, &value))
         })
     }
 
@@ -495,7 +485,7 @@ impl BrowserPage {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             page.click(&selector, timeout).await.map_err(raise)
         })
     }
@@ -510,16 +500,14 @@ impl BrowserPage {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             page.fill(&selector, &text, timeout).await.map_err(raise)
         })
     }
 
     fn press<'py>(&self, py: Python<'py>, key: String) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            page.press(&key).await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { page.press(&key).await.map_err(raise) })
     }
 
     #[pyo3(signature = (selector, state="visible".to_string(), timeout=None))]
@@ -532,7 +520,7 @@ impl BrowserPage {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             page.wait_for(&selector, &state, timeout)
                 .await
                 .map_err(raise)
@@ -623,7 +611,7 @@ impl BrowserPage {
     /// Every frame of the page, its own first. Resolves to BrowserFrames.
     fn frames<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let frames = page.frames().await.map_err(raise)?;
             Ok(frames
                 .into_iter()
@@ -643,9 +631,9 @@ impl BrowserPage {
     ) -> PyResult<Bound<'py, PyAny>> {
         let url = url.map(|u| u.unbind());
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let frames = page.frames().await.map_err(raise)?;
-            Python::attach(|py| -> PyResult<Option<BrowserFrame>> {
+            crate::aio::attach(|py| -> PyResult<Option<BrowserFrame>> {
                 for inner in frames {
                     if name.as_deref().is_some_and(|n| n != inner.name()) {
                         continue;
@@ -676,21 +664,21 @@ impl BrowserPage {
         full_page: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let png = page.screenshot(full_page).await.map_err(raise)?;
             if let Some(path) = path {
                 std::fs::write(&path, &png)?;
             }
-            Python::attach(|py| Ok(PyBytes::new(py, &png).unbind()))
+            crate::aio::attach(|py| Ok(PyBytes::new(py, &png).unbind()))
         })
     }
 
     /// The cookies of the page's context, as dicts.
     fn cookies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let cookies = page.cookies().await.map_err(raise)?;
-            Python::attach(|py| cookie_list(py, &cookies))
+            crate::aio::attach(|py| cookie_list(py, &cookies))
         })
     }
 
@@ -704,7 +692,7 @@ impl BrowserPage {
             .map(cookie_from)
             .collect::<PyResult<Vec<_>>>()?;
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             page.set_cookies(&cookies).await.map_err(raise)
         })
     }
@@ -817,7 +805,7 @@ impl BrowserPage {
         urls: Vec<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let types: Vec<&str> = resource_types.iter().map(String::as_str).collect();
             page.block(&types, &urls).await.map_err(raise)
         })
@@ -833,7 +821,7 @@ impl BrowserPage {
 
     fn _route<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let rx = page.route().await.map_err(raise)?;
             Ok(Routes::new(rx))
         })
@@ -841,9 +829,7 @@ impl BrowserPage {
 
     fn _unroute<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            page.unroute().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { page.unroute().await.map_err(raise) })
     }
 
     /// Stops handing requests to the page's routes, at once.
@@ -859,7 +845,7 @@ impl BrowserPage {
 
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let (page, live) = (self.inner.clone(), self.live.clone());
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             match live {
                 Some(live) => {
                     live.close().await;
@@ -872,7 +858,7 @@ impl BrowserPage {
 
     fn __aenter__<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let me = slf.clone().unbind();
-        pyo3_async_runtimes::tokio::future_into_py(slf.py(), async move { Ok(me) })
+        crate::aio::future_into_py(slf.py(), async move { Ok(me) })
     }
 
     fn __aexit__<'py>(
@@ -913,14 +899,12 @@ impl BrowserFrame {
 
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            frame.content().await.map_err(raise)
-        })
+        crate::aio::future_into_py(py, async move { frame.content().await.map_err(raise) })
     }
 
     fn parse<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let html = frame.content().await.map_err(raise)?;
             let doc = tokio::task::spawn_blocking(move || Document::parse(&html))
                 .await
@@ -931,17 +915,14 @@ impl BrowserFrame {
 
     fn title<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { frame.title().await.map_err(raise) },
-        )
+        crate::aio::future_into_py(py, async move { frame.title().await.map_err(raise) })
     }
 
     fn evaluate<'py>(&self, py: Python<'py>, js: String) -> PyResult<Bound<'py, PyAny>> {
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let value = frame.evaluate(&js).await.map_err(raise)?;
-            Python::attach(|py| to_python(py, &value))
+            crate::aio::attach(|py| to_python(py, &value))
         })
     }
 
@@ -954,7 +935,7 @@ impl BrowserFrame {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame.click(&selector, timeout).await.map_err(raise)
         })
     }
@@ -969,7 +950,7 @@ impl BrowserFrame {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame.fill(&selector, &text, timeout).await.map_err(raise)
         })
     }
@@ -984,7 +965,7 @@ impl BrowserFrame {
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
         let frame = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame
                 .wait_for(&selector, &state, timeout)
                 .await
@@ -1090,7 +1071,7 @@ mod act {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame.hover(&selector, timeout).await.map_err(raise)
         })
     }
@@ -1115,7 +1096,7 @@ mod act {
         if !how.x.is_finite() || !how.y.unwrap_or(0.0).is_finite() {
             return Err(PyValueError::new_err("x and y must be numbers of pixels"));
         }
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame
                 .scroll(
                     how.selector.as_deref(),
@@ -1164,7 +1145,7 @@ mod act {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame
                 .select_option(&selector, &pick, timeout)
                 .await
@@ -1180,7 +1161,7 @@ mod act {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let timeout = seconds("timeout", timeout)?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame
                 .set_checked(&selector, on, timeout)
                 .await
@@ -1217,7 +1198,7 @@ mod act {
                 missing.display()
             )));
         }
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             frame
                 .set_input_files(&selector, &files, timeout)
                 .await
@@ -1249,9 +1230,9 @@ impl BrowserResponse {
         then: fn(Python<'_>, Vec<u8>) -> PyResult<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (page, response) = (self.page.clone(), self.inner.clone());
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let body = page.body(&response).await.map_err(raise)?;
-            Python::attach(|py| then(py, body))
+            crate::aio::attach(|py| then(py, body))
         })
     }
 }
@@ -1378,9 +1359,9 @@ impl NetworkEvents {
     /// once the page has closed.
     fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let (rx, page) = (self.rx.clone(), self.page.clone());
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let event = rx.lock().await.recv().await;
-            Python::attach(|py| -> PyResult<Py<PyAny>> {
+            crate::aio::attach(|py| -> PyResult<Py<PyAny>> {
                 Ok(match event {
                     None => py.None(),
                     Some(NetworkEvent::Request(inner)) => {
@@ -1415,9 +1396,9 @@ impl Routes {
     /// Resolves to the next Route, or None once routing has stopped.
     fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let rx = self.rx.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let route = rx.lock().await.recv().await;
-            Python::attach(|py| -> PyResult<Py<PyAny>> {
+            crate::aio::attach(|py| -> PyResult<Py<PyAny>> {
                 Ok(match route {
                     None => py.None(),
                     Some(inner) => Py::new(py, Route { inner })?.into_any(),
@@ -1453,10 +1434,7 @@ impl Route {
     /// Fails the request; the page sees a network error.
     fn abort<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let route = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { route.abort().await.map_err(raise) },
-        )
+        crate::aio::future_into_py(py, async move { route.abort().await.map_err(raise) })
     }
 
     /// Lets the request go on, changed as asked. `headers` replace all the
@@ -1477,9 +1455,10 @@ impl Route {
             body: body.as_ref().map(body_bytes).transpose()?,
         };
         let route = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            route.continue_(with).await.map_err(raise)
-        })
+        crate::aio::future_into_py(
+            py,
+            async move { route.continue_(with).await.map_err(raise) },
+        )
     }
 
     /// Answers the request without it leaving Chrome. `json` is sent as
@@ -1519,7 +1498,7 @@ impl Route {
             (None, None) => Vec::new(),
         };
         let route = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             route.fulfill(status, &headers, &body).await.map_err(raise)
         })
     }
@@ -1650,7 +1629,7 @@ fn install_chrome(
     })
     .map(|i| (i.version, i.executable, i.already))
     .map_err(|e| {
-        Python::attach(|py| -> PyErr {
+        crate::aio::attach(|py| -> PyErr {
             match py
                 .import("netweir._errors")
                 .and_then(|m| m.getattr("BrowserError"))

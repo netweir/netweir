@@ -35,7 +35,8 @@ pub(crate) fn fetch_error_value(py: Python<'_>, e: &CoreError) -> PyResult<Py<Py
 
 /// Raises `netweir.FetchError(message, kind)`.
 fn fetch_error(e: CoreError) -> PyErr {
-    Python::attach(|py| match fetch_error_value(py, &e) {
+    // Called on Rust threads too, so counted for the atexit hook (aio.rs).
+    crate::aio::attach(|py| match fetch_error_value(py, &e) {
         Ok(err) => PyErr::from_value(err.into_bound(py)),
         Err(err) => err,
     })
@@ -100,7 +101,7 @@ impl Fetcher {
     ) -> PyResult<Bound<'py, PyAny>> {
         let fetcher = self.inner.clone();
         let headers = headers.unwrap_or_default();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let response = fetcher.get(&url, &headers).await.map_err(fetch_error)?;
             Ok(Response::from(response))
         })
@@ -136,7 +137,7 @@ impl Fetcher {
                 .after_redirects(&chain, &url)
                 .map_err(fetch_error)?;
         }
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let response = if follow {
                 fetcher.send(&url, &outgoing, &headers).await
             } else {
