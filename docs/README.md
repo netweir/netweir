@@ -1,7 +1,7 @@
 # Netweir documentation
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
-- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, prices, dates and the data in scripts.
+- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles and Markdown, prices, dates and the data in scripts.
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
 - [Crawling](crawling.md): spiders, requests, pipelines, downloading files and images, middlewares, signals, exporters and the command line.
@@ -30,5 +30,6 @@ The designs behind it, for anyone working on Netweir:
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
 - [design/selecting.md](design/selecting.md): editing the tree safely, `find_similar()` and JMESPath.
+- [design/content.md](design/content.md): finding a page's main content, reading it as an article, and Markdown.
 - [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.
 - [design/serve.md](design/serve.md): the job service.
