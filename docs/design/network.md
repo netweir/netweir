@@ -218,6 +218,103 @@ main frame's navigation, which Chrome pauses on the page's session, where
 the guard sees it. A frame's own documents were never guarded and still
 aren't; they're routed and blocked like anything else.
 
+### Pages fetched ahead (milestone 36)
+
+A page can ask Chrome to fetch pages before anyone follows a link to
+them: speculation rules (`<script type="speculationrules">` with
+`prerender` or `prefetch`), and `<link rel=prerender>`. Chrome does that
+fetching itself, outside every session Netweir has. Against Chrome 154,
+with preloading on as Chrome ships it, a page whose rules prerender
+`/pre` and prefetch `/pf` had both fetched (sent with `Sec-Purpose:
+prefetch;prerender` and `Sec-Purpose: prefetch`); listeners heard them,
+but a route set to abort them never saw them, since the Fetch domain
+doesn't pause them. `<link rel=prerender>` was fetched as a prefetch and
+not even heard. Clicking the link to `/pre` then showed the prerendered
+page as the main document without a request, so the guard was never
+asked: a crawl obeying robots.txt could land on a page it rules out.
+`<link rel=prefetch>` is different: it's the page's own request, paused
+and routed like an image.
+
+Two ways out were tried.
+
+**Attaching the prerender and guarding it there.** The page's
+auto-attach never reports a prerendered page: Chrome hangs it off the
+tab, a target Netweir doesn't attach to, so this would mean driving
+every page through its tab and following the swap when the prerender
+replaces the main frame. Even then it's too late: Chrome fetches the
+document first as a prefetch, from the browser process, before any
+prerender target exists, and a speculation-rules prefetch or
+`<link rel=prerender>` has no target at all. It would be the most work
+and still leave the fetches unguarded. `Page.setPrerenderingAllowed`, which DevTools describes
+as a short-term solution, stops the prerender but not the prefetch in
+front of it.
+
+**Turning preloading off**, as you can in Chrome's settings: Settings >
+Performance > "Preload pages". That's the profile preference
+`net.network_prediction_options`; off is `2`. Evidence, each run against
+a local server and Chrome 154:
+
+| What Chrome was given | Fetched ahead |
+|---|---|
+| nothing | `/pre`, `/pf`, `<link rel=prerender>` |
+| `--disable-features=Prerender2,NoStatePrefetch` | the same: those flags no longer gate them |
+| the preference off | `<link rel=prerender>` only |
+| the preference off, and `--enable-features=NoStatePrefetchHoldback` | nothing |
+
+With the preference off, Chrome reports the attempts as
+`PrefetchNotEligiblePreloadingDisabled`, its own reason for a person who
+turned it off. `NoStatePrefetchHoldback` is the switch for Chrome's own
+experiment that holds `<link rel=prerender>` back for some of its users;
+the preference doesn't reach that path in Chrome 154. Chrome's holdback
+for speculation rules (`PreloadingConfig`) was no use: with DevTools
+attached, Chrome fetches regardless.
+
+So that's what Netweir does, for every Chrome it starts:
+
+- Before launch, it sets `net.network_prediction_options` to `2` in the
+  `Preferences` file of the profile Chrome will open, found as Chrome
+  finds it: the one `--profile-directory` names, else the one Local
+  State's `profile.last_used` names, else `Default`. A name that isn't
+  one plain folder (`..`, a path, an absolute path, a drive) fails the
+  launch rather than have Netweir write outside the user data directory,
+  since Local State can come with a profile someone else made; Chrome
+  wouldn't start with such a name either, and falling back to `Default`
+  would prepare a profile it doesn't open. Switches are read as Chrome
+  reads them: after `--` or `-` (and `/` on Windows, where names are
+  case-insensitive), the last one winning, none after a bare `--`. That
+  holds for `--user-data-dir`, `--profile-directory` and
+  `--enable-features` alike. A fresh profile gets
+  a file with only that in it. A profile you give it with
+  `user_data_dir`, or with a `--user-data-dir=` switch in `args` or
+  `NETWEIR_CHROME_ARGS` (Chrome takes the last such switch, so that's
+  the profile it would open; given both ways, and differently, the
+  launch fails), is read, that one value changed, and the rest written
+  back as it was. The new file is written beside the old and renamed
+  over it, with the old one's permissions (a new one is private, as
+  Chrome makes it); a linked file is changed where the link points, and
+  the link kept. A file already set that way isn't touched. An empty
+  file, as a crash can leave, is treated as an empty profile, as Chrome
+  treats it; one that isn't valid JSON is left alone and the launch
+  fails, saying so. There's no command-line switch for the preference,
+  and changing the file is what the setting itself does, so it stays off
+  for that profile afterwards, in your own browsing too if the folder is
+  your everyday Chrome's.
+- It adds `NoStatePrefetchHoldback` to `--enable-features`, folding in
+  any `--enable-features` you passed, since Chrome reads only the last
+  one. A `--disable-features=NoStatePrefetchHoldback` of yours wins over
+  it, as disabling does in Chrome, and turns `<link rel=prerender>` back
+  on.
+
+Contexts Netweir creates take the preference from the profile, so every
+page gets it. A page can't tell: `HTMLScriptElement.supports
+('speculationrules')`, `document.prerendering` and `relList.supports
+('prerender')` read as they do with preloading on, and a person can have
+it off. Nothing is fetched, so nothing goes past routes, blocks or the
+guard; following a link to a page that would have been prerendered is an
+ordinary navigation, which the guard sees first. The back-forward cache
+isn't affected and doesn't need to be: it only shows a page this tab
+showed before, which was guarded then, and fetches nothing.
+
 ## The rules for slow and failed handlers
 
 A request must never hang because of a handler. So:
@@ -268,6 +365,24 @@ A request must never hang because of a handler. So:
   browser's timeout runs anyway, logged, and its requests may go out
   unheard and unrouted. The timeout includes any wait while a route
   change is sent to the page's other frames.
+- Known limit: a browser Netweir connects to keeps its own "Preload
+  pages" setting. `chrome-headless-shell` ignores the setting: with it
+  off in the profile, the shell still fetched the speculation rules'
+  prerender and prefetch (not `<link rel=prerender>`). In either, those
+  are fetched without routes, blocks or a guard seeing them, and a
+  prerendered page can be shown without the guard. Turn the setting off
+  in a Chrome you connect to. A crawl with `obey_robots` or
+  `obey_tdmrep` on refuses the shell: when its browser starts and
+  reports itself as the shell (`HeadlessChrome/` in `Browser.getVersion`'s
+  product, where Chrome itself says `Chrome/`, headless or not, and a
+  `--user-agent` switch changes nothing), it's closed before any page
+  opens and the crawl's browser requests fail, naming the two ways out:
+  Chrome instead, or both settings off. The product string is the
+  shell's own build saying what it is; a file name or install path
+  would miss a shell copied or renamed elsewhere.
+- Known limit: Chrome may come to preload in some way the preference
+  doesn't cover, as `<link rel=prerender>` already doesn't. The tests
+  below fail if one of the ways a page can ask starts fetching again.
 - Bodies are Chrome's to keep. Past its buffer's size, or after the page
   has navigated, a body can't be read. A body Chrome couldn't decode (a
   broken image, say) comes back empty.
@@ -309,6 +424,23 @@ A request must never hang because of a handler. So:
   in such a frame can't take a guarded page where the guard refuses.
 - Python tests: a frame from another site is routed, heard, unrouted and
   read through `expect_response`; `block()` stops its images.
+- Rust tests for pages fetched ahead, with a page whose speculation rules
+  prerender and prefetch, plus `<link rel=prerender>` and
+  `<link rel=prefetch>`: on a guarded page nothing the guard refuses is
+  fetched, `supports('speculationrules')` and `document.prerendering`
+  read as usual, following the link to the would-be prerender asks the
+  guard and stays refused, and no forbidden method is sent; with a route
+  aborting everything but the page, the route sees the plain prefetch and
+  the server gets none of them; a kept profile whose preference was
+  turned back on fetches nothing ahead either, and keeps its other
+  preferences; so do a profile Local State names as last used, and one
+  given as a `--user-data-dir=` switch, while one given twice,
+  differently, is refused. A crawl obeying robots.txt fails its browser
+  request rather than use an installed `chrome-headless-shell`, and one
+  that doesn't fetches with it. Unit tests cover finding the profile, an
+  empty file, permissions and a linked file. A Python test does the same through a crawl obeying
+  robots.txt. Each fails against a launch without the preference and the
+  switch.
 - Python tests for the same through the Python API, plus globs, regexes
   and predicates; `expect_response` around a click; listeners removed;
   a raising handler and an undecided one; deciding twice; `browser_block`

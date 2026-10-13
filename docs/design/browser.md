@@ -108,6 +108,11 @@ These are rules of the driver, not options, and tests enforce them:
 - Chrome is launched without `--enable-automation`, and with
   `--disable-blink-features=AutomationControlled`, so
   `navigator.webdriver` is false.
+- Chrome starts with its "Preload pages" setting off in the profile and
+  `--enable-features=NoStatePrefetchHoldback`, so it fetches nothing
+  ahead outside the page's sessions; a person can have the setting off,
+  and a page can't tell. Why, and the evidence, are in the network
+  design, under "Pages fetched ahead".
 - Headless Chrome puts `HeadlessChrome` in its user agent, though not in
   its client hints. Each page's user agent is overridden with the same
   string reading `Chrome`, together with the client-hint metadata Chrome
