@@ -773,62 +773,97 @@ fn hand_over(
     Ok(())
 }
 
-/// A lock on a profile netweir made, held while it's in use: a file
-/// beside the folder, named after it with `.lock`. On macOS and Linux
-/// it's an `flock`, which the system lets go of with the process, however
-/// it ends; on Windows, the file open with no sharing, which nothing else
-/// can open until the process lets go of it. Removed with the profile.
-pub(crate) struct ProfileLock {
-    path: PathBuf,
-    _file: std::fs::File,
+/// A fresh profile folder netweir made in the temporary directory,
+/// removed when this is dropped, and the lock that says it's in use: a
+/// file beside the folder, named after it with `.lock`. On macOS and
+/// Linux it's an `flock`, which the system lets go of with the process,
+/// however it ends; on Windows, the file open sharing only its deletion,
+/// which nothing else can open until the process lets go of it. A
+/// filesystem with no `flock` gets no lock, and the profile is swept as
+/// one from before there were locks.
+pub(crate) struct TempProfile {
+    dir: PathBuf,
+    lock: Option<(PathBuf, std::fs::File)>,
 }
 
-impl ProfileLock {
-    /// Takes the lock for the profile `dir`, which doesn't exist yet. It
-    /// is made under another name and held before it's given its own,
-    /// so a sweep never finds it untaken.
-    pub(crate) fn take(dir: &Path) -> std::io::Result<ProfileLock> {
-        let path = lock_of(dir);
-        #[cfg(unix)]
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            let making = dir.with_extension("lock-new");
-            let made = (|| {
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&making)?;
-                if !try_lock(&file) {
-                    return Err(std::io::Error::last_os_error());
-                }
-                std::fs::rename(&making, &path)?;
-                Ok(file)
-            })();
-            if made.is_err() {
-                let _ = std::fs::remove_file(&making);
-            }
-            made?
-        };
-        #[cfg(windows)]
-        let file = {
-            use std::os::windows::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .share_mode(0)
-                .open(&path)?
-        };
-        Ok(ProfileLock { path, _file: file })
+impl TempProfile {
+    /// Makes one, its lock taken first, so the folder never exists with
+    /// it untaken.
+    pub(crate) fn make() -> std::io::Result<TempProfile> {
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "netweir-chrome-{}-{}-{nanos}",
+            std::process::id(),
+            COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let lock = take_lock(&dir)?;
+        let profile = TempProfile { dir, lock };
+        std::fs::create_dir_all(&profile.dir)?;
+        Ok(profile)
+    }
+
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 }
 
-impl Drop for ProfileLock {
+impl Drop for TempProfile {
     fn drop(&mut self) {
-        // Before the file closes, so no sweep takes it meanwhile; Windows
-        // deletes it once it closes.
-        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_dir_all(&self.dir);
+        // The lock goes last, and its file before it closes, so no sweep
+        // takes it meanwhile; Windows deletes it once it closes.
+        if let Some((path, _file)) = &self.lock {
+            let _ = std::fs::remove_file(path);
+        }
     }
+}
+
+/// Takes the lock for the profile `dir`, which doesn't exist yet. It's
+/// made under another name and held before it's given its own, so a
+/// sweep never finds it untaken.
+#[cfg(unix)]
+fn take_lock(dir: &Path) -> std::io::Result<Option<(PathBuf, std::fs::File)>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = lock_of(dir);
+    let making = dir.with_extension("lock-new");
+    let made = (|| {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&making)?;
+        if !try_lock(&file) {
+            let e = std::io::Error::last_os_error();
+            // Some network and FUSE filesystems have no flock.
+            return match e.raw_os_error() {
+                Some(libc::ENOLCK | libc::EOPNOTSUPP | libc::ENOSYS) => Ok(None),
+                _ => Err(e),
+            };
+        }
+        std::fs::rename(&making, &path)?;
+        Ok(Some((path, file)))
+    })();
+    if !matches!(made, Ok(Some(_))) {
+        let _ = std::fs::remove_file(&making);
+    }
+    made
+}
+
+#[cfg(windows)]
+fn take_lock(dir: &Path) -> std::io::Result<Option<(PathBuf, std::fs::File)>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+    let path = lock_of(dir);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(FILE_SHARE_DELETE)
+        .open(&path)?;
+    Ok(Some((path, file)))
 }
 
 /// The lock file for the profile `dir`.
@@ -865,12 +900,46 @@ fn untaken(path: &Path) -> Option<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        // Fails while the profile's program holds it: it shares nothing.
+        // Fails while the profile's program holds it: it shares nothing
+        // but deletion.
         std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
             .open(path)
             .ok()
+    }
+}
+
+/// Runs [`sweep_profiles`] on `std::env::temp_dir()` on a thread of its
+/// own, which doesn't hold up the launch, nor the program's end. One
+/// sweep at a time: a launch while one runs has it go round once more,
+/// for what it may have read too soon to see.
+pub(crate) fn sweep_soon() {
+    // Whether one runs, and whether it's to go round again.
+    static SWEEPING: std::sync::Mutex<(bool, bool)> = std::sync::Mutex::new((false, false));
+    let state = || SWEEPING.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let mut sweeping = state();
+        if sweeping.0 {
+            sweeping.1 = true;
+            return;
+        }
+        *sweeping = (true, false);
+    }
+    let started = std::thread::Builder::new()
+        .name("netweir-profile-sweep".into())
+        .spawn(move || {
+            loop {
+                sweep_profiles(&std::env::temp_dir());
+                let mut sweeping = state();
+                if !std::mem::take(&mut sweeping.1) {
+                    sweeping.0 = false;
+                    return;
+                }
+            }
+        });
+    if started.is_err() {
+        state().0 = false;
     }
 }
 
@@ -901,6 +970,13 @@ pub(crate) fn sweep_profiles(temp: &Path) {
                 drop(lock);
             }
             let _ = std::fs::remove_file(&path);
+        } else if let Some(pid) = name.strip_suffix(".lock-new").and_then(left_by) {
+            // A lock a program ended before naming. One being named right
+            // now is in the moment between being made and being taken, so
+            // its program must have gone too.
+            if pid != std::process::id() && !running(pid) && untaken(&path).is_some() {
+                let _ = std::fs::remove_file(&path);
+            }
         } else if let Some(pid) = left_by(name) {
             let old = std::fs::symlink_metadata(lock_of(&path)).is_err()
                 && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());

@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -97,15 +96,15 @@ pub(crate) struct Inner {
     /// The Chrome netweir launched; None for one it connected to.
     child: Mutex<Option<Child>>,
     /// What ends the launched Chrome if netweir goes without closing it.
-    _lifeline: Option<launch::Lifeline>,
+    lifeline: Option<launch::Lifeline>,
     /// The launched Chrome's profile, removed when it closes unless it's
     /// one the caller gave.
     profile: Option<PathBuf>,
     /// Whether the profile is the caller's, to keep: then pages open in
     /// its own context, the one whose cookies and storage Chrome saves.
     keep_profile: bool,
-    /// The lock on a profile netweir made, let go once it's removed.
-    profile_lock: Mutex<Option<launch::ProfileLock>>,
+    /// The profile netweir made, if it did; it goes when this does.
+    temp_profile: Mutex<Option<launch::TempProfile>>,
     /// Contexts netweir made, for closing a browser it connected to,
     /// whose other contexts aren't netweir's to close.
     contexts: Mutex<Vec<String>>,
@@ -162,21 +161,16 @@ impl Browser {
         }
         let keep_profile = options.user_data_dir.is_some();
         // Profiles left by programs that ended without closing their
-        // browser; on the side, since a big one takes a while to remove.
-        drop(tokio::task::spawn_blocking(|| {
-            launch::sweep_profiles(&std::env::temp_dir())
-        }));
-        let (profile, lock) = match &options.user_data_dir {
+        // browser.
+        launch::sweep_soon();
+        // A profile of netweir's own is removed if the launch fails, on
+        // whichever line.
+        let (profile, temp) = match &options.user_data_dir {
             Some(dir) => std::fs::create_dir_all(dir).map(|()| (dir.clone(), None)),
-            None => profile_dir().map(|(dir, lock)| (dir, Some(lock))),
+            None => launch::TempProfile::make().map(|t| (t.dir().to_path_buf(), Some(t))),
         }
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
-        if let Err(e) = launch::turn_off_preloading(&profile, &options.args) {
-            if !keep_profile {
-                let _ = std::fs::remove_dir_all(&profile);
-            }
-            return Err(e);
-        }
+        launch::turn_off_preloading(&profile, &options.args)?;
         let mut args = vec![
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".into(),
@@ -214,24 +208,16 @@ impl Browser {
         // as Chrome's own experiment does for some of its users.
         let mut args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
         args.push("about:blank".into());
-        let started = match launch::start(&executable, &args) {
-            Ok(started) => started,
-            Err(e) => {
-                if !keep_profile {
-                    let _ = std::fs::remove_dir_all(&profile);
-                }
-                return Err(e);
-            }
-        };
+        let started = launch::start(&executable, &args)?;
         let said = started.said.clone();
         let conn = Connection::new(started.replies, started.commands);
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
-            _lifeline: Some(started.lifeline),
+            lifeline: Some(started.lifeline),
             profile: Some(profile),
             keep_profile,
-            profile_lock: Mutex::new(lock),
+            temp_profile: Mutex::new(temp),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -279,10 +265,10 @@ impl Browser {
         let inner = Inner {
             conn,
             child: Mutex::new(None),
-            _lifeline: None,
+            lifeline: None,
             profile: None,
             keep_profile: false,
-            profile_lock: Mutex::default(),
+            temp_profile: Mutex::default(),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,
@@ -614,7 +600,7 @@ impl Inner {
             _ => Ok(()),
         };
         drop(
-            self.profile_lock
+            self.temp_profile
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take(),
@@ -625,6 +611,34 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        // A profile to keep: Chrome is asked to quit, as close() asks, so
+        // it writes out what it hasn't yet, and is let go without waiting.
+        // A thread waits for it, killing it after ten seconds, and only
+        // then lets go of the lifeline; if the program ends first, the
+        // lifeline asks again, as gently as the system allows.
+        if self.keep_profile
+            && let Some(mut child) = self
+                .child
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+        {
+            self.conn.send("", "Browser.close", json!({}));
+            self.conn.shut();
+            let lifeline = self.lifeline.take();
+            let _ = std::thread::Builder::new()
+                .name("netweir-chrome-quit".into())
+                .spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    drop(lifeline);
+                });
+            return;
+        }
         let _ = self.shut_down(Duration::ZERO);
     }
 }
@@ -670,25 +684,6 @@ const FOREGROUND: &[&str] = &[
     "--disable-background-timer-throttling",
 ];
 
-/// A fresh profile folder in the temporary directory, and the lock that
-/// says it's in use (see [`launch::sweep_profiles`]): taken first, so
-/// the folder never exists without it.
-fn profile_dir() -> std::io::Result<(PathBuf, launch::ProfileLock)> {
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "netweir-chrome-{}-{}-{nanos}",
-        std::process::id(),
-        COUNT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let lock = launch::ProfileLock::take(&dir)?;
-    std::fs::create_dir_all(&dir)?;
-    Ok((dir, lock))
-}
-
 /// What a headless Chrome at `executable` says it is: its user agent and
 /// its client hints, which only asking it tells exactly, and only before
 /// a --user-agent flag empties the hints. The first time, it's started once
@@ -714,8 +709,9 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
     {
         return Ok(known.clone());
     }
-    let (profile, lock) =
-        profile_dir().map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
+    let temp = launch::TempProfile::make()
+        .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
+    let profile = temp.dir().to_path_buf();
     // The caller's switches too: a Chrome that only starts with, say,
     // --no-sandbox must have it here as well.
     let mut args = vec![
@@ -726,22 +722,16 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
     args.extend(KEYRING.iter().chain(FOREGROUND).map(|a| a.to_string()));
     args.extend(extra.iter().cloned());
     args.push("about:blank".into());
-    let started = match launch::start(executable, &args) {
-        Ok(started) => started,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&profile);
-            return Err(e);
-        }
-    };
+    let started = launch::start(executable, &args)?;
     let said = started.said.clone();
     let probe = Browser {
         inner: Arc::new(Inner {
             conn: Connection::new(started.replies, started.commands),
             child: Mutex::new(Some(started.child)),
-            _lifeline: Some(started.lifeline),
+            lifeline: Some(started.lifeline),
             profile: Some(profile),
             keep_profile: false,
-            profile_lock: Mutex::new(Some(lock)),
+            temp_profile: Mutex::new(Some(temp)),
             contexts: Mutex::default(),
             version: String::new(),
             identity: None,

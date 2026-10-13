@@ -301,6 +301,27 @@ async fn launches_chrome_for_the_orphan_test() {
     let Some(mode) = std::env::var_os("NETWEIR_ORPHAN_CONTROLLER") else {
         return;
     };
+    if mode == "fail" {
+        // Fails after Chrome has been asked what it is, and before.
+        let failed = Browser::launch(LaunchOptions {
+            executable: chrome(),
+            proxy: Some("not a proxy".into()),
+            ..LaunchOptions::default()
+        })
+        .await;
+        assert!(failed.is_err());
+        #[cfg(unix)]
+        {
+            let failed = Browser::launch(LaunchOptions {
+                executable: Some("/usr/bin/false".into()),
+                ..LaunchOptions::default()
+            })
+            .await;
+            assert!(failed.is_err());
+        }
+        println!("controller: failed");
+        return;
+    }
     let browser = Browser::launch(LaunchOptions {
         executable: chrome(),
         user_data_dir: std::env::var_os("NETWEIR_ORPHAN_PROFILE").map(Into::into),
@@ -402,6 +423,84 @@ async fn chrome_goes_when_the_program_that_launched_it_is_killed() {
     std::fs::remove_dir_all(&temp).unwrap();
 }
 
+/// A launch that fails leaves no profile behind.
+#[tokio::test]
+async fn a_launch_that_fails_leaves_no_profile() {
+    if chrome().is_none() {
+        return;
+    }
+    let _turn = common::turn();
+    let temp = scratch("failed-launch");
+    let (mut controller, said) = Controller::start(&temp, &[("NETWEIR_ORPHAN_CONTROLLER", "fail")]);
+    assert_eq!(
+        said.recv_timeout(std::time::Duration::from_secs(60))
+            .as_deref(),
+        Ok("failed")
+    );
+    controller.0.wait().unwrap();
+    let left: Vec<_> = std::fs::read_dir(&temp)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with("netweir-chrome-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    std::fs::remove_dir_all(&temp).unwrap();
+}
+
+/// Dropping a browser with a profile to keep, without closing it, asks
+/// Chrome to quit, so what it hadn't written out, such as a cookie just
+/// set, is kept.
+#[tokio::test]
+async fn a_kept_profile_keeps_its_cookies_when_the_browser_is_dropped() {
+    let Some(executable) = chrome() else { return };
+    let server = common::serve(vec![(
+        "/",
+        common::Reply {
+            status: 200,
+            headers: vec![
+                ("Content-Type", "text/html".into()),
+                ("Set-Cookie", "kept=yes; Path=/; Max-Age=3600".into()),
+            ],
+            body: "<p>hi</p>".into(),
+        },
+    )]);
+    let temp = scratch("dropped-profile");
+    let options = LaunchOptions {
+        executable: Some(executable),
+        user_data_dir: Some(temp.join("profile")),
+        ..LaunchOptions::default()
+    };
+    let first = common::launch(options.clone()).await;
+    let pid = first.pid().unwrap();
+    let page = first.new_page().await.unwrap();
+    page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    drop(page);
+    drop(first);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while running_with(&temp.join("profile"), pid) {
+        assert!(std::time::Instant::now() < deadline, "Chrome didn't quit");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let second = common::launch(options).await;
+    let page = second.new_page().await.unwrap();
+    let cookies = page.cookies().await.unwrap();
+    assert!(
+        cookies.iter().any(|c| c.name == "kept" && c.value == "yes"),
+        "{cookies:?}"
+    );
+    second.close().await.unwrap();
+    drop(second);
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&temp).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Chrome is asked to end before it's made to, so a profile to keep has
 /// what Chrome hadn't yet written out, such as a cookie just set.
 #[tokio::test]
@@ -483,6 +582,11 @@ async fn profiles_left_behind_are_swept_at_the_next_launch() {
         std::fs::write(dir.join("Default").join("Preferences"), "{}").unwrap();
     }
     std::fs::write(name(&format!("{me}-90-1.lock")), "").unwrap();
+    // A lock its program never named, and one being named now.
+    let unnamed = name(&format!("{}-93-1.lock-new", gone.id()));
+    let naming = name(&format!("{me}-94-1.lock-new"));
+    std::fs::write(&unnamed, "").unwrap();
+    std::fs::write(&naming, "").unwrap();
     // A link with a free lock, to a folder that isn't netweir's.
     #[cfg(unix)]
     let (target, link) = {
@@ -502,11 +606,12 @@ async fn profiles_left_behind_are_swept_at_the_next_launch() {
     let own = browser.profile_dir().unwrap().to_path_buf();
     // The sweep runs on the side.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while unlocked.exists() || old.exists() {
+    while unlocked.exists() || old.exists() || unnamed.exists() {
         assert!(std::time::Instant::now() < deadline, "not swept");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(own.exists() && old_live.exists() && other.exists());
+    assert!(own.exists() && old_live.exists() && other.exists() && naming.exists());
+    std::fs::remove_file(&naming).unwrap();
     #[cfg(unix)]
     {
         assert!(target.exists());

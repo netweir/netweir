@@ -126,21 +126,32 @@ copy of the lifeline, so Chrome lasts until that child ends too. A child
 that execs another program (`subprocess`, the `spawn` start method)
 doesn't: the lifeline is closed on exec.
 
+A browser with a profile to keep that's dropped without `close()` is
+asked to quit as `close()` asks (`Browser.close`), without the drop
+waiting: a thread waits for Chrome, kills it after ten seconds, and only
+then lets go of its lifeline. A temporary profile still goes at once,
+Chrome with it, as before.
+
 Nothing is left running to remove the profile of a program that was
-killed, so each launch sweeps the temporary directory, on a blocking
-thread so a large profile doesn't hold the launch up. Each profile the
-driver makes has a lock file beside it, `netweir-chrome-<pid>-<n>-<nanos>.lock`,
-held for the browser's life: an `flock` on macOS and Linux, and on
-Windows the file open with no sharing. The system lets go of either when
-the process ends, however it ends. The lock is taken under another name
-and renamed into place before the folder is made, so a folder never
-exists with its lock untaken. The sweep removes a folder whose lock it
-can take, and a folder with no lock at all (one from before locks) once
-the process named in it has gone. Process ids alone would be wrong where
+killed, so each launch sweeps the temporary directory, on a thread of
+its own that holds up neither the launch nor the program's end. One
+sweep runs at a time; a launch meanwhile has it go round once more.
+Each profile the driver makes has a lock file beside it,
+`netweir-chrome-<pid>-<n>-<nanos>.lock`, held for the browser's life: an
+`flock` on macOS and Linux, and on Windows the file open sharing only
+its deletion. The system lets go of either when the process ends,
+however it ends. The lock is taken under another name (`.lock-new`) and
+renamed into place before the folder is made, so a folder never exists
+with its lock untaken. The sweep removes a folder whose lock it can
+take, a `.lock-new` its program ended before naming, and a folder with
+no lock at all (from before locks, or on a filesystem with no `flock`,
+where the profile goes unlocked rather than the launch failing) once the
+process named in it has gone. Process ids alone would be wrong where
 containers share a temporary directory but not process ids, and a reused
 id would keep a folder forever; the lock is right in both. Only names
 the driver makes are looked at, links are never followed, and a profile
-the caller gave is never named that way, so it's never touched.
+the caller gave is never named that way, so it's never touched. A launch
+that fails removes the profile it made, at whichever step it fails.
 
 ### Stealth rules
 
@@ -664,7 +675,9 @@ in scope.
   and checks Chrome, its helpers and (on macOS and Linux) the watcher are
   gone within seconds, and that the next launch sweeps the profile it
   left. Another kills one with a cookie just set in a profile to keep,
-  and finds the cookie there after. A third checks the sweep takes
+  and finds the cookie there after, and one more does the same by
+  dropping the browser. Launches that fail, before and after Chrome is
+  first started, leave no profile. A third checks the sweep takes
   folders with a free lock and old ones of gone processes, and leaves
   folders in use, other names and links.
 - CI runs the browser tests on Linux, macOS and Windows with the runner's
