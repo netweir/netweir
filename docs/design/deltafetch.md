@@ -7,7 +7,7 @@ which pages gave items, and a later run skips them. Listing pages give
 only links, so they are never remembered and are fetched every run, which
 is how new products are found.
 
-With `deltafetch` set to a directory, netweir does the same, with the
+With `deltafetch` set to a directory, Netweir does the same, with the
 differences listed at the end.
 
 ## Settings
@@ -303,7 +303,7 @@ checkpoint and the cache: a second crawl on the same directory waits its
 turn. A table of 16-byte keys and a table of output files: each one's
 length, the digest of its end (0 and none for a Parquet output and its
 parts) and whether it was closed cleanly. The format is
-the file's `user_version`, 1; a file from a newer netweir is refused before
+the file's `user_version`, 1; a file from a newer Netweir is refused before
 anything is written.
 
 The keys are read into memory when the crawl starts, as the checkpoint's

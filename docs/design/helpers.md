@@ -8,7 +8,7 @@ regex that works on the first site and breaks on the second. A price:
 page keeps in a script rather than its HTML: `window.__INITIAL_STATE__ =
 {products: [...], 'total': 42,}` — JavaScript, not JSON, so `json.loads`
 fails on the unquoted keys, single quotes and trailing comma. Scrapy
-users reach for price-parser, dateparser and chompjs. netweir does all
+users reach for price-parser, dateparser and chompjs. Netweir does all
 three in Rust.
 
 ## Prices

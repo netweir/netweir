@@ -1,6 +1,6 @@
 # Code of Conduct
 
-netweir is built in the open by people who mostly have never met. This page
+Netweir is built in the open by people who mostly have never met. This page
 is what we owe each other while we do it. It covers the issue tracker, pull
 requests, Discussions, and anywhere else you're speaking for or about the
 project.
@@ -25,7 +25,7 @@ project.
 - Publishing someone's private information, such as an address or an
   email, without their permission.
 - Trolling, and deliberately derailing a conversation.
-- Using netweir's issue tracker or Discussions to plan scraping that
+- Using Netweir's issue tracker or Discussions to plan scraping that
   breaks the law, or to share data taken from people who didn't agree to
   it.
 
@@ -33,7 +33,7 @@ project.
 
 If something here happens to you, or you see it happen, email
 **jconway@sentrello.com**. Reports are read by the maintainer, kept
-confidential, and answered within a week. netweir has one maintainer for
+confidential, and answered within a week. Netweir has one maintainer for
 now, so if your report is about the maintainer, you can take it to
 [GitHub](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam)
 instead.

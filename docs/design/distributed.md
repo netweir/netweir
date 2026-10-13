@@ -14,7 +14,7 @@ requests from one queue in Redis and checks one duplicate filter there,
 and new start URLs can be pushed into the queue while the crawl runs.
 
 `Settings(queue="redis://host:6379/0", queue_key="books")` does the same
-for netweir. Start the same spider on as many machines as you like,
+for Netweir. Start the same spider on as many machines as you like,
 pointed at the same Redis and key, and they share the work: each page is
 fetched by one of them, once.
 
@@ -35,7 +35,7 @@ xxhash-rust, is under the Boost licence, which is permissive and allowed
 for that crate alone in deny.toml.
 
 The cost is the client's size in the extension, and no TLS: redis-rs
-does TLS with rustls or native-tls, and netweir's TLS is BoringSSL, tuned
+does TLS with rustls or native-tls, and Netweir's TLS is BoringSSL, tuned
 to look like a browser; a second TLS stack for one feature isn't worth
 it yet. `rediss://` is refused with a message saying so. (Known limit.)
 
@@ -156,7 +156,7 @@ the same rule the checkpoint keeps.
 A request taken but refused when it's queued locally (offsite, too deep,
 a trap, over `max_pages_per_domain`: settings the processes should share,
 but may not) is released at once, and so gone for the whole crawl. So is
-one whose member can't be read (not UTF-8, not netweir's JSON, a body
+one whose member can't be read (not UTF-8, not Netweir's JSON, a body
 that isn't hex; members are kept as their bytes throughout, so one that
 isn't UTF-8 is still released by exactly those) or can't be made a
 Request in Python, whether by itself or through the middlewares for a
@@ -367,7 +367,7 @@ callback must be a method of the spider, and meta must be JSON.
 | two processes find the same new URL at once | one queues it; the other drops it |
 | a process dies while queueing | the batch was queued whole or not at all; its page goes back with what the process held, and its links are found again |
 | a slow process is taken for dead | its requests are fetched twice |
-| a member that isn't a request netweir can use | dropped, logged and counted as `queue_bad` |
+| a member that isn't a request Netweir can use | dropped, logged and counted as `queue_bad` |
 | the queue's task panics | the crawl stops with `netweir.QueueError`, not silently |
 
 ## Known limits

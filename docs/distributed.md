@@ -36,9 +36,9 @@ Or leave the spider as it is and say so on the command line:
 netweir crawl books.py -o items.jsonl --queue redis://10.0.0.5:6379/0
 ```
 
-There's nothing extra to install: the Redis client is part of netweir. A
+There's nothing extra to install: the Redis client is part of Netweir. A
 password goes in the URL, `redis://:secret@10.0.0.5:6379/0`, and
-netweir's messages hide it. On Linux and macOS a Redis on the same
+Netweir's messages hide it. On Linux and macOS a Redis on the same
 machine can be reached through its unix socket,
 `redis+unix:///run/redis.sock?db=0&pass=secret`; on Windows there are no
 unix sockets, and such a URL is refused.
@@ -91,7 +91,7 @@ sends them somewhere every process can reach, such as a database.
 
 The files have to be local. An `s3://` or `gs://` output is only
 uploaded when the file closes, so a process killed before then would
-lose items whose pages the queue already counts as done; netweir refuses
+lose items whose pages the queue already counts as done; Netweir refuses
 the combination rather than let that happen. Write locally and upload
 when the crawl is over.
 
@@ -191,7 +191,7 @@ hangs is found out as fast as one that's gone. And if Redis answers its
 heartbeats but every attempt to queue something fails for a minute, it
 stops the same way rather than keep trying for ever.
 
-Something in the queue that isn't a request netweir can use (written
+Something in the queue that isn't a request Netweir can use (written
 there by hand, say, or by another program) is dropped with a warning
 and counted in the stats as `queue_bad`, so it can't stop one process
 after another.
@@ -248,7 +248,7 @@ A request in the queue says which URL to fetch, and that can be an
 address inside your network (169.254.169.254, the cloud metadata
 service, for one). It also says which proxy to use, which headers and
 body to send, and which spider method to call with the page. And the
-traffic between netweir and Redis is plain TCP, readable by anyone on
+traffic between Netweir and Redis is plain TCP, readable by anyone on
 the path, password included.
 
 So give Redis a password (`requirepass`, and `redis://:password@host`

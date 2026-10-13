@@ -2,7 +2,7 @@
 
 Most of the web you scrape is GET requests, but not all of it. A search box
 posts its query, a login posts a username and password, and a page's own
-JavaScript often fetches its data from a JSON API with a POST. netweir sends
+JavaScript often fetches its data from a JSON API with a POST. Netweir sends
 all of these, and sends each the way the browser in your profile would.
 
 ## Two kinds of POST
@@ -18,7 +18,7 @@ A browser sends a POST in one of two ways, and a server can tell them apart:
 
 `form=` sends the first kind; `json=` and `body=` send the second. Chrome
 154, Firefox 156 and Safari 27 were recorded doing both, and following a
-link, and loading the page a login redirects to; netweir's tests check its
+link, and loading the page a login redirects to; Netweir's tests check its
 requests match them byte for byte, header order included.
 
 ## Sending data
@@ -98,7 +98,7 @@ form = page.form("#upload", files={"cover": ("report.csv", csv_bytes)})
 form = page.form("#upload", files={"photos": ["a.jpg", "b.jpg"]})
 ```
 
-Give a path and netweir reads the file and names it as a browser would,
+Give a path and Netweir reads the file and names it as a browser would,
 from the path's last part. Give a `(filename, bytes)` tuple when the file
 isn't on disk, or `(filename, bytes, content_type)` to say what it is. A
 list fills an input that takes several, and an empty one leaves the input

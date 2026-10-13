@@ -100,8 +100,8 @@ Two differences, both on purpose:
 
 ## Following an element through a redesign
 
-Give a query a name with `track=`, and netweir remembers what its element
-looked like. When a redesign breaks the query, netweir finds the most
+Give a query a name with `track=`, and Netweir remembers what its element
+looked like. When a redesign breaks the query, Netweir finds the most
 similar element instead. See [Self-healing](self-healing.md#tracked-selectors).
 
 ## Structured data
@@ -138,7 +138,7 @@ once has a list of its values. A parsed document has it too:
 ## Prices, dates and data in scripts
 
 Three things turn up on nearly every job, and each is a regular
-expression that works on the first site and breaks on the second. netweir
+expression that works on the first site and breaks on the second. Netweir
 reads all three in Rust.
 
 ### Prices
@@ -231,7 +231,7 @@ A few rules decide the hard cases:
   the clocks change. Days and longer are on the calendar: `1 day ago` is
   the same clock time yesterday.
 
-Anything netweir doesn't fully understand is None, not a guess: a date
+Anything Netweir doesn't fully understand is None, not a guess: a date
 without a year (`12 Oct`), an impossible one (`31/04/2026`), or a date
 with words around it (`Posted 12 Oct 2026`; take the date out with `re=`
 first).

@@ -1,6 +1,6 @@
 # Declarative spiders
 
-A declarative spider describes its items and its links. netweir then runs the
+A declarative spider describes its items and its links. Netweir then runs the
 whole crawl in Rust: pages are parsed on worker threads, links queued and
 items extracted without Python running for each page. Python sees only the
 finished items.

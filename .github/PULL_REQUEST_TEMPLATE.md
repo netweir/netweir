@@ -15,4 +15,4 @@ Fixes #
 - [ ] `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` and `pytest` pass locally
 - [ ] Tests cover the change, and a bug fix has the test that would have caught it
 - [ ] [docs/](../docs/README.md) is updated if the change is visible from Python
-- [ ] It's my own work, written for netweir and not copied from another project (see [CONTRIBUTING.md](../CONTRIBUTING.md))
+- [ ] It's my own work, written for Netweir and not copied from another project (see [CONTRIBUTING.md](../CONTRIBUTING.md))

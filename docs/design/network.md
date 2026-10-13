@@ -1,4 +1,4 @@
-# netweir network capture and routing design
+# Netweir network capture and routing design
 
 Status: implemented, October 2026
 Author: James Conway
@@ -64,7 +64,7 @@ matcher routes use, a regex with `search`, a callable with what it's given.
 listening side. It reads Chrome's own buffer of what it received; it runs
 nothing in the page and the page can't see it. Chrome clears that buffer
 when the main frame commits a new document, and caps it, so a body asked
-for after a navigation fails; netweir turns Chrome's "No resource with
+for after a navigation fails; Netweir turns Chrome's "No resource with
 given identifier" into a `BrowserError` saying the body isn't available
 any more, rather than letting anyone wait for it.
 
@@ -150,7 +150,7 @@ A request must never hang because of a handler. So:
   loop reading events ends, the page's listeners and waits go too, and
   their channel is closed. Either way that's all of them, whichever loop
   added them. The next loop adds its own. A closed page ends its routes' channel the same way.
-- A route dropped undecided, by Python or by netweir (the handler task
+- A route dropped undecided, by Python or by Netweir (the handler task
   went away, routing stopped with requests still queued): it goes on
   unchanged when it's dropped.
 - Deciding twice, or after the timer: `BrowserError`, saying the request

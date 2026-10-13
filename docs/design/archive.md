@@ -26,7 +26,7 @@ to them (see [Crashes and resuming](#crashes-and-resuming)).
 The files are opened when the crawl starts, at the same point its output
 files are: after every pipeline's `open_spider` has worked. Before that the
 engine only checks them (the directory, and that a file it's going to add
-to is one netweir wrote), so a crawl that fails to start leaves them as
+to is one Netweir wrote), so a crawl that fails to start leaves them as
 they were. Requests resumed from a checkpoint may be fetched in between;
 their exchanges wait in the queue until the files are open. Both files are
 read and judged before either is changed, so a HAR file that can't be
@@ -40,7 +40,7 @@ waits for good on a queue nobody empties.
 
 ## What goes in
 
-Every response netweir's HTTP client got during the crawl:
+Every response Netweir's HTTP client got during the crawl:
 
 - each page, and each hop of a redirect, since the engine follows
   redirects a hop at a time and each hop is its own request;
@@ -57,7 +57,7 @@ Left out:
 - a request that got no response: a network error, a timeout, or a body
   over `max_response_size`, which is abandoned part way;
 - a page served from the [cache](cache.md): nothing was fetched;
-- a page fetched in Chrome. netweir never sees the bytes Chrome got from
+- a page fetched in Chrome. Netweir never sees the bytes Chrome got from
   the server, only the page once its scripts have run. A `resource` record
   of that rendered HTML could be written, but it isn't what the site sent,
   and a record that looks like a fetch and isn't one does more harm in an
@@ -81,18 +81,18 @@ the response by `WARC-Concurrent-To`. Each record has `WARC-Record-ID` (a
 microsecond), `WARC-Target-URI`, `WARC-Block-Digest` and
 `WARC-Payload-Digest` (both `sha1:` and base 32, warcio's form), and
 `WARC-Protocol` (`http/1.0`, `http/1.1` or `h2`, the protocol the response
-came in; a request is `http/1.1` or `h2`, as netweir never sends 1.0). In a
+came in; a request is `http/1.1` or `h2`, as Netweir never sends 1.0). In a
 `.warc.gz` every record is a gzip member of its own, so a reader can seek
 to any record, and a file can be appended to.
 
 ### The request record
 
-The request as netweir sent it. The header lines are captured from the
+The request as Netweir sent it. The header lines are captured from the
 HTTP client as it writes them to the connection, in order and with their
 capitalisation: what the profile and the caller set, the cookie jar's
 Cookie, the Host and Content-Length the client fills in. Nothing is
 reconstructed. wreq's emulation sets no header of its own beyond the
-profile's: every default header comes from netweir's profile file, so the
+profile's: every default header comes from Netweir's profile file, so the
 captured lines are the whole request.
 
 To capture them, the fetcher replaces wreq's header-ordering hook for the
@@ -124,7 +124,7 @@ The status line has the version the server answered in (`HTTP/1.0` or
 `HTTP/1.1`; an HTTP/2 response is written as `HTTP/1.1`, with
 `WARC-Protocol: h2`) and the server's own reason phrase.
 
-The headers are what the HTTP client hands netweir, which isn't quite the
+The headers are what the HTTP client hands Netweir, which isn't quite the
 lines the server wrote. The client keeps them in a map: names come out
 lowercase, and a name sent more than once has its values together, in the
 order they came, where the name first appeared. Two `Set-Cookie` lines with
@@ -132,7 +132,7 @@ another header between them are written one after the other, that header
 after both. Values are byte for byte, Latin-1 and all. wreq offers no way
 to see the lines as they came, so this is the closest the record can be.
 
-The client decompresses a body as it reads it, and netweir keeps only the
+The client decompresses a body as it reads it, and Netweir keeps only the
 result, so the record holds the decompressed body. The client takes the
 `Content-Encoding` and `Content-Length` headers away when it does, so
 neither is in the record, and nothing says the body came compressed. The
@@ -187,7 +187,7 @@ Cookie and Set-Cookie headers are there in full.
   `HTTP/2`, as in the WARC request record; the response's is the one it
   came back in, which may be `HTTP/1.0`.
 - A redirect body only partly read (see the response record) has
-  `"_truncated": true` in its `content`, a field of netweir's own, named
+  `"_truncated": true` in its `content`, a field of Netweir's own, named
   with the underscore HAR keeps for those.
 
 The file is one JSON object written as the crawl goes: the head

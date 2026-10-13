@@ -1,9 +1,9 @@
 # Requests that aren't GETs
 
-netweir sends GETs and nothing else. A search box, a login, a "load more"
+Netweir sends GETs and nothing else. A search box, a login, a "load more"
 button and most JSON APIs need a POST, so today none of them can be
 scraped. This adds request methods and bodies to every layer, and form
-submission on top, without giving up what netweir is for: a request has to
+submission on top, without giving up what Netweir is for: a request has to
 look like the browser its profile names, and a POST looks different from a
 GET.
 
@@ -33,7 +33,7 @@ The capture server gains two pages and records two more things:
   `/submitted`, `application/x-www-form-urlencoded`, two fields.
 - `/fetch` serves a page whose script POSTs JSON to `/api` with `fetch()`.
 - Each capture records the request method and the body, so a test can
-  check netweir sent the same bytes.
+  check Netweir sent the same bytes.
 
 The scenario adds, after the four navigations: open `/form` (the script
 submits), then open `/fetch` (the script posts). Chrome and Firefox are

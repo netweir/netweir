@@ -3,7 +3,7 @@
 Writing a spider means running it dozens of times: fix a selector, run it
 again, find the next one. Each run fetches the same pages from the same
 site, waits out the same politeness delays, and puts the same load on
-someone else's server. With `cache` set to a directory, a response netweir
+someone else's server. With `cache` set to a directory, a response Netweir
 already has is served from there instead: no request goes out, no delay is
 waited, and the callback gets the same page it got before.
 
@@ -32,7 +32,7 @@ are two URLs that differ only in a fragment or a `utm_` parameter. A hit
 comes back with the URL that was asked for, not the one that was kept.
 
 It's the fingerprint of the request as it was submitted, not of where it
-ended up. netweir follows redirects a hop at a time, each hop queued like a
+ended up. Netweir follows redirects a hop at a time, each hop queued like a
 new request on its own host, so the request carries its original
 fingerprint through the hops, and the entry holds the final response, its
 URL included. A hit then needs no hops at all, and `page.url` is the final
@@ -132,7 +132,7 @@ instead of failing or corrupting it. One crawl per cache directory is what
 it's for; two at once is safe, merely slower.
 
 The layout is versioned with SQLite's `user_version`. This is format 1. A
-future change upgrades older files on open; a file from a newer netweir is
+future change upgrades older files on open; a file from a newer Netweir is
 refused with a message saying so, and the format is read before anything
 is written, so the file is left exactly as it was. A file that can't be
 opened at all, or isn't a database, is an error that names it and says to

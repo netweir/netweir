@@ -1,17 +1,17 @@
 # Getting started
 
-This page takes you from installing netweir to a crawl that writes a file of
+This page takes you from installing Netweir to a crawl that writes a file of
 items. It takes about ten minutes. Each step builds on the one before.
 
 ## Install
 
-netweir needs Python 3.10 or later, on Linux, macOS or Windows.
+Netweir needs Python 3.10 or later, on Linux, macOS or Windows.
 
 ```
 pip install netweir
 ```
 
-The wheels include everything netweir needs, BoringSSL and the HTML parser
+The wheels include everything Netweir needs, BoringSSL and the HTML parser
 among it, so there's nothing else to install.
 
 ## Fetch a page
@@ -73,7 +73,7 @@ item; each `page.follow(...)` is another page to fetch.
 netweir crawl books.py -o books.jsonl
 ```
 
-netweir fetches all 50 pages of the site and writes 1,000 items to
+Netweir fetches all 50 pages of the site and writes 1,000 items to
 `books.jsonl`, one JSON object per line. It reads the site's robots.txt
 first and keeps a polite pace, so the crawl takes about 20 seconds. Name
 the file `books.csv` or `books.parquet` to get that format instead.
@@ -81,7 +81,7 @@ the file `books.csv` or `books.parquet` to get that format instead.
 ## Where next
 
 - [Trying a page](shell.md): `netweir shell URL` gives you a Python prompt
-  with the page netweir got, for trying selectors before they go in a
+  with the page Netweir got, for trying selectors before they go in a
   spider.
 - [Crawling](crawling.md): requests, callbacks, pipelines, exporters and
   the command line.

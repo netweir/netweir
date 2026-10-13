@@ -1,6 +1,6 @@
-# Contributing to netweir
+# Contributing to Netweir
 
-Thanks for wanting to help. Bug reports, a site netweir can't get past, a
+Thanks for wanting to help. Bug reports, a site Netweir can't get past, a
 browser that's shipped a new version, a fix, a faster loop: all of it is
 welcome, and most of it starts with an issue.
 
@@ -51,7 +51,7 @@ comes with tests and, if you can use it from Python, a line in
 
 ## The one hard rule: write it yourself
 
-netweir is clean-room. Please don't copy code, or translate it line by line,
+Netweir is clean-room. Please don't copy code, or translate it line by line,
 from another scraping library or browser automation tool, however
 permissive its licence. Depending on a published crate or package without
 modifying it is fine; vendoring or pasting its source isn't. If you learnt
@@ -79,7 +79,7 @@ how you tested it.
 
 ## The contributor licence agreement
 
-netweir is AGPL-3.0, and it's also offered under a commercial licence to
+Netweir is AGPL-3.0, and it's also offered under a commercial licence to
 companies that can't use AGPL code. That only works if every line can be
 licensed both ways, so before your first pull request is merged you'll be
 asked to agree to the [CLA](CLA.md). You keep the copyright in your work;

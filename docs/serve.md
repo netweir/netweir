@@ -63,7 +63,7 @@ error; take the `--project` off and restart instead.
 | `--username U`, `--password P` | require HTTP basic auth; better read from `NETWEIR_SERVE_USERNAME` and `NETWEIR_SERVE_PASSWORD` (see below) |
 | `--insecure-no-auth` | let `--bind` take an address other machines can reach without a username and password (see below) |
 
-scrapyd runs four jobs per CPU by default. A netweir crawl already fetches
+scrapyd runs four jobs per CPU by default. A Netweir crawl already fetches
 and parses on several threads, so one per CPU keeps a machine busy
 without making jobs fight for it.
 
@@ -86,7 +86,7 @@ curl http://127.0.0.1:6800/schedule.json \
     -d category=fiction
 ```
 
-- `setting=KEY=VALUE` is any netweir [setting](settings.md), exactly as
+- `setting=KEY=VALUE` is any Netweir [setting](settings.md), exactly as
   `-s KEY=VALUE` takes it. A setting that doesn't exist, or a value of the
   wrong type, is an error now, not a failed job in an hour. So is one
   the crawl would refuse as it started, such as `concurrency=0`,
@@ -132,7 +132,7 @@ curl http://127.0.0.1:6800/logs/shop/books/6487ec79947edab326d6db28a2d86511.log
 with its `log_url` and `items_url`, and its `outcome` once it's finished.
 Items URLs end in `.jl`, as scrapyd's do; the same file is there as
 `.jsonl` too.
-`jobstats.json` is netweir's own: the job's crawl stats, the same numbers
+`jobstats.json` is Netweir's own: the job's crawl stats, the same numbers
 `netweir crawl` logs at the end, with `finish_reason` among them. A job
 still running has none yet.
 

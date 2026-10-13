@@ -1,4 +1,4 @@
-# netweir worker processes
+# Netweir worker processes
 
 Status: draft, October 2026
 Author: James Conway

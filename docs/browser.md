@@ -2,7 +2,7 @@
 
 Some pages are built by JavaScript after they load, and some sites won't
 show anything until a real browser has passed their checks. For those,
-netweir drives Chrome. It's an async API:
+Netweir drives Chrome. It's an async API:
 
 ```python
 import netweir
@@ -16,7 +16,7 @@ async with netweir.browser() as browser:
     quotes = root.css("span.text::text").getall()
 ```
 
-`page.parse()` gives a netweir `Node`, so everything in
+`page.parse()` gives a Netweir `Node`, so everything in
 [Selecting](selecting.md) works on the rendered page.
 
 ## Starting Chrome
@@ -25,21 +25,21 @@ async with netweir.browser() as browser:
 newest one `netweir install chrome` installed, or else the first of Google
 Chrome, Chrome for Testing and Chromium in their usual places. An
 installed one comes first even when the system's Chrome is newer, so
-after updating netweir, run `netweir install chrome` again to move up to
+after updating Netweir, run `netweir install chrome` again to move up to
 the version its newest profile is for.
 
-If you don't have Chrome, or want the one netweir is tuned for:
+If you don't have Chrome, or want the one Netweir is tuned for:
 
 ```
 netweir install chrome
 ```
 
-downloads the Chrome for Testing build whose version matches netweir's
+downloads the Chrome for Testing build whose version matches Netweir's
 newest Chrome profile into `~/.netweir/chrome/` (`$NETWEIR_HOME` moves
 it). Chrome for Testing is Chrome without the auto-updates, so a crawl's
 cookie hand-back always has a profile that matches. It names itself
 Chromium where Google Chrome adds its own name, so its pages present the
-brands of the Google Chrome version netweir has a profile for, as the HTTP
+brands of the Google Chrome version Netweir has a profile for, as the HTTP
 client does. `--headless-shell` installs `chrome-headless-shell` instead,
 which is lighter and faster but easier to tell from a real browser; pass
 its path as `executable` to use it.
@@ -48,8 +48,8 @@ On Windows, the install also lets Chrome's sandbox read the folder, as
 Chrome's own installer does: Chrome runs its network service and other
 helpers in a sandbox that can only read folders granted to app packages,
 and without that, pages fail to load with `ERR_ABORTED`. A Chrome
-installed by an earlier netweir gets the same access the first time it's
-started, so there's no need to install it again. netweir never changes
+installed by an earlier Netweir gets the same access the first time it's
+started, so there's no need to install it again. Netweir never changes
 the access of a Chrome it didn't install.
 
 On Ubuntu 23.10 and later, Chrome for Testing may not start at all:
@@ -65,11 +65,11 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 That lasts until the machine restarts. Passing `--no-sandbox` in `args`
 also works, but leaves pages less contained than Chrome means them to be.
 
-`$NETWEIR_CHROME_ARGS` adds switches to every Chrome netweir starts,
+`$NETWEIR_CHROME_ARGS` adds switches to every Chrome Netweir starts,
 separated by spaces, on top of `args`. It's for what a machine needs
 whatever the code says. On a macOS virtual machine, such as a cloud Mac or
 a CI runner, the virtual GPU now and then hangs on Chrome's work and macOS
-stops taking any more from it; Chrome then stops answering, and netweir's
+stops taking any more from it; Chrome then stops answering, and Netweir's
 error says it "didn't answer". Software rendering avoids the GPU:
 
 ```
@@ -85,14 +85,14 @@ The options:
 |---|---|---|
 | `executable` | `None` | the Chrome to start, instead of searching |
 | `headless` | `True` | `False` opens a window |
-| `args` | `()` | more Chrome command-line switches; with your own `--user-agent=`, pages say that and keep Chrome's behaviour under the flag: high-entropy client hints empty, and Chrome's own brands even where netweir would present Google Chrome's |
-| `timeout` | `30.0` | the default limit, in seconds, for navigations and actions, and for Chrome to answer anything netweir asks it |
+| `args` | `()` | more Chrome command-line switches; with your own `--user-agent=`, pages say that and keep Chrome's behaviour under the flag: high-entropy client hints empty, and Chrome's own brands even where Netweir would present Google Chrome's |
+| `timeout` | `30.0` | the default limit, in seconds, for navigations and actions, and for Chrome to answer anything Netweir asks it |
 | `proxy` | `None` | an `http://`, `https://` or `socks5://` proxy for everything Chrome fetches; for an HTTP(S) proxy, a username and password in it are given when it asks (Chrome can't log in to a SOCKS proxy) |
 | `connect` | `None` | drive a browser that's already running, instead of starting one: a `ws://` DevTools URL, or `http://host:port` |
 | `user_data_dir` | `None` | a profile folder to use and keep, so cookies and storage are still there next time |
 
 Use it with `async with`, or `await` it and call `await browser.close()`
-yourself. Each browser netweir starts gets a fresh profile, deleted when it
+yourself. Each browser Netweir starts gets a fresh profile, deleted when it
 closes. A program that exits without closing it still ends Chrome, but
 leaves the profile behind, as a `netweir-chrome-*` folder in the temporary
 directory.
@@ -106,7 +106,7 @@ async with netweir.browser(user_data_dir="~/.cache/shop-profile") as browser:
     await page.goto("https://example.com/account")
 ```
 
-netweir creates the folder if it isn't there and never deletes it. The
+Netweir creates the folder if it isn't there and never deletes it. The
 cookies, local storage and cache a page keeps are saved there when the
 browser closes, and the next browser started with the same folder starts
 with them. With `user_data_dir`, `new_page()` opens pages in the profile
@@ -115,14 +115,14 @@ gives you a context that's thrown away. Only one Chrome can use a profile
 at a time, so close the first before starting another with the same
 folder. Cookies that only last the session (no expiry date) aren't kept.
 
-With `connect`, netweir drives a Chrome that's already running, started
+With `connect`, Netweir drives a Chrome that's already running, started
 with `--remote-debugging-port`, or anything else that speaks the DevTools
 protocol. Pass the `ws://` URL Chrome prints, or `http://host:port` and
-netweir asks it for the URL; Chrome only answers that when `host` is an IP
+Netweir asks it for the URL; Chrome only answers that when `host` is an IP
 address or `localhost`, so for one in Docker, say, use the `ws://` URL.
 Nothing is launched, so `executable`, `args`, `proxy` and `headless`
 don't apply. Closing the browser, or dropping it, closes the pages
-netweir opened and leaves the browser running. A `wss://` URL works too:
+Netweir opened and leaves the browser running. A `wss://` URL works too:
 its certificate is checked against Chrome's own root store (not against
 certificates installed on the machine, such as a company's).
 
@@ -421,7 +421,7 @@ it is logged to the `netweir` logger rather than raised. `on_request`,
 go out; a request has `url`, `method`, `headers`, `resource_type` and
 `post_data` (the body it sends, as bytes, or `None`).
 
-Nothing piles up behind your back. netweir only hears Chrome's network
+Nothing piles up behind your back. Netweir only hears Chrome's network
 events while a listener or a wait wants them, and keeps none of them:
 a response nobody asked for is let go as it arrives.
 
@@ -498,7 +498,7 @@ seconds unless you changed it) loses the request, which goes on unchanged
 too; deciding after that raises `netweir.BrowserError`.
 
 Routing has a cost: while a page has routes, every request it makes is
-held in Chrome until netweir has asked your Python code about it, which is
+held in Chrome until Netweir has asked your Python code about it, which is
 a round trip each. `block()` with resource types only holds requests of
 those types, and decides them without asking Python.
 
@@ -558,8 +558,8 @@ Two settings make Chrome step in on its own:
   pass. If it gets through, the site's HTTP session takes Chrome's
   cookies, so the next requests to that site go back to the HTTP client.
   Those cookies are often tied to the browser that earned them, so the
-  session switches to netweir's profile for the installed Chrome's
-  version; if netweir has none, a warning says so. If Chrome can't be
+  session switches to Netweir's profile for the installed Chrome's
+  version; if Netweir has none, a warning says so. If Chrome can't be
   started, the request goes to `on_block` as before, and a warning says
   why.
 - `browser="always"`: every request goes through Chrome.
@@ -583,10 +583,10 @@ in `sessions_replaced` too.
 ## Not looking automated
 
 A browser that's being driven usually shows it, and bot protection looks.
-netweir avoids these giveaways:
+Netweir avoids these giveaways:
 
 - `navigator.webdriver` is false.
-- Headless Chrome calls itself `HeadlessChrome` in its user agent. netweir
+- Headless Chrome calls itself `HeadlessChrome` in its user agent. Netweir
   sends the normal user agent instead, with the client hints Chrome
   reports for itself, in the request headers, in the page, and in its
   workers and service workers.

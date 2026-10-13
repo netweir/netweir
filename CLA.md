@@ -1,16 +1,16 @@
-# netweir Contributor Licence Agreement
+# Netweir Contributor Licence Agreement
 
 Version 1.0
 
 This agreement is between you and James Conway, the copyright holder and
-maintainer of netweir ("the Maintainer"), and covers everything you submit
-to netweir. You agree to it by posting the comment the CLA check asks for
+maintainer of Netweir ("the Maintainer"), and covers everything you submit
+to Netweir. You agree to it by posting the comment the CLA check asks for
 on a pull request. It applies to that pull request and to every
 contribution you make afterwards.
 
 ## Why it exists
 
-netweir is licensed under the GNU Affero General Public License, version 3,
+Netweir is licensed under the GNU Affero General Public License, version 3,
 and is also offered under a commercial licence. The Maintainer can only
 offer both if every contribution can be licensed both ways. You keep the
 copyright in your work; this agreement gives the Maintainer the licence
@@ -22,13 +22,13 @@ needed to do that.
 acts, that agrees to this agreement.
 
 "Contribution" means any work of authorship, including code, documentation,
-tests, and browser profiles and captures, that you submit to netweir
+tests, and browser profiles and captures, that you submit to Netweir
 through a pull request, a patch, an issue, or any other means intended for
-inclusion in netweir.
+inclusion in Netweir.
 
 ## 2. Copyright licence
 
-You grant the Maintainer, and anyone who receives netweir from the
+You grant the Maintainer, and anyone who receives Netweir from the
 Maintainer, a perpetual, worldwide, non-exclusive, no-charge,
 royalty-free, irrevocable licence to reproduce, prepare derivative works
 of, publicly display, publicly perform, sublicense, and distribute your
@@ -38,13 +38,13 @@ commercial licences.
 
 ## 3. Patent licence
 
-You grant the Maintainer, and anyone who receives netweir from the
+You grant the Maintainer, and anyone who receives Netweir from the
 Maintainer, a perpetual, worldwide, non-exclusive, no-charge,
 royalty-free, irrevocable patent licence to make, have made, use, sell,
 offer for sale, import, and otherwise transfer your Contributions, for any
 patent claims you can license that your Contribution, alone or combined
-with netweir, would infringe. If anyone starts patent litigation alleging
-that netweir or a Contribution infringes a patent, the patent licences
+with Netweir, would infringe. If anyone starts patent litigation alleging
+that Netweir or a Contribution infringes a patent, the patent licences
 they received under this agreement end on the date the litigation is
 filed.
 
@@ -74,7 +74,7 @@ warranties or conditions of any kind, except those in section 4.
 ## 7. Successors
 
 The Maintainer may assign the rights in this agreement to a company or
-other successor that takes over netweir. This agreement then binds you and
+other successor that takes over Netweir. This agreement then binds you and
 benefits that successor in the same way.
 
 ## Agreeing

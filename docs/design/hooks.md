@@ -6,7 +6,7 @@ fetched again before a callback sees it, a database connection a pipeline
 opens once and closes at the end, a count of items sent to a dashboard as
 they arrive. Scrapy puts that code in downloader middlewares, signal
 handlers and pipeline methods, and people porting a Scrapy project bring
-it with them. netweir gives each a place, under the same names where
+it with them. Netweir gives each a place, under the same names where
 Scrapy's names are the ones people know.
 
 ## Middlewares
@@ -104,7 +104,7 @@ pages.
 
 A pipeline stage can be a function, as before, or an object. An object
 with `process_item(item, spider)` is called through that, as Scrapy calls
-it. `DropItem` (netweir's, or any class of that name, subclasses
+it. `DropItem` (Netweir's, or any class of that name, subclasses
 included) drops the item, as returning `None` does. Any stage may have `open_spider(spider)`,
 called before the first request, and `close_spider(spider)`, called after
 the last item, sync or async. Exporters keep their own `close()`.

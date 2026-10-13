@@ -1,8 +1,8 @@
-# netweir documentation
+# Netweir documentation
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; structured data, prices, dates and the data in scripts.
-- [Trying a page](shell.md): the page netweir gets, on stdout, in your browser or at a Python prompt.
+- [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
 - [Crawling](crawling.md): spiders, requests, pipelines, middlewares, signals, exporters and the command line.
 - [Declarative spiders](declarative.md): items and rules that run in Rust.
@@ -12,7 +12,7 @@
 - [Running spiders as a service](serve.md): `netweir serve`, jobs scheduled, watched and cancelled over HTTP, as with scrapyd.
 - [Settings](settings.md): every setting and its default.
 
-The designs behind it, for anyone working on netweir:
+The designs behind it, for anyone working on Netweir:
 
 - [design/v0.1.md](design/v0.1.md): the engine, the parser and the first release.
 - [design/browser.md](design/browser.md): the Chrome driver.
@@ -25,7 +25,7 @@ The designs behind it, for anyone working on netweir:
 - [design/exports.md](design/exports.md): JSON, XML, cloud storage and batches.
 - [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.
 - [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
-- [design/scrapy.md](design/scrapy.md): netweir as Scrapy's download handler.
+- [design/scrapy.md](design/scrapy.md): Netweir as Scrapy's download handler.
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
 - [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.

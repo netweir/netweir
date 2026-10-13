@@ -1,9 +1,9 @@
 # Trying a page: fetch, view and shell
 
 A selector that works in your browser's devtools can still find nothing in
-a spider. The browser ran the page's JavaScript and netweir didn't, or the
-site sent your browser one page and netweir another. These three commands
-show you the page netweir gets, so you can write selectors against that.
+a spider. The browser ran the page's JavaScript and Netweir didn't, or the
+site sent your browser one page and Netweir another. These three commands
+show you the page Netweir gets, so you can write selectors against that.
 
 ```
 netweir fetch https://quotes.toscrape.com/           # the body, on stdout
@@ -60,7 +60,7 @@ so, and a `<base href>` naming where the page came from, so its
 stylesheets and images still load from the site. The first of each wins,
 so the page's own charset and base don't get in the way; the base is the
 page's own resolved against its URL, so links point where they did on the
-site. What you see is what netweir got. If an element is missing here, a
+site. What you see is what Netweir got. If an element is missing here, a
 selector for it won't find it either.
 
 ## Pages built by JavaScript

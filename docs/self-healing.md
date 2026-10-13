@@ -1,7 +1,7 @@
 # Self-healing
 
 Long crawls meet three kinds of trouble: sites that block them, crashes,
-and redesigns. netweir deals with each.
+and redesigns. Netweir deals with each.
 
 ## Blocks
 
@@ -84,11 +84,11 @@ which shares one jar between every site.
 A proxy with a login takes it in the URL, percent-encoded:
 `http://ann:p%40ss@10.0.0.1:8080` for the password `p@ss`. A `/`, `?`,
 `#` or `@` left as it is would move where the address seems to start, so
-netweir refuses it rather than send your requests somewhere else.
+Netweir refuses it rather than send your requests somewhere else.
 
 ### When a proxy stops working
 
-A proxy fails a request when netweir can't connect to the proxy, when
+A proxy fails a request when Netweir can't connect to the proxy, when
 the proxy wants a login (a 407, or a tunnel to an https:// site refused
 with one), when it drops the tunnel half way, or when the answer is a
 block page. Everything else is the site's doing, not the proxy's:
@@ -97,7 +97,7 @@ block page. Everything else is the site's doing, not the proxy's:
 - a 502, 503 or 504, even from a gateway saying it couldn't reach the
   site, since the site can send the same codes;
 - a tunnel the proxy wouldn't open, which is mostly the proxy saying it
-  couldn't reach the site, and which netweir can't tell from a refusal
+  couldn't reach the site, and which Netweir can't tell from a refusal
   for the proxy's own reasons;
 - a TLS error with the site at the far end of a tunnel;
 - a proxy hanging up on a plain `http://` request before it answers,
@@ -218,7 +218,7 @@ price.relocated   # True when the selector missed and the element was found by s
 price.score       # 1.0 for a match, the similarity when relocated
 ```
 
-Each time the selector matches, netweir saves what the element looks like:
+Each time the selector matches, Netweir saves what the element looks like:
 its tag, text, attributes, the elements around it and the text just before
 it. When a redesign breaks the selector, every element of the same kind is
 scored against that, and the best one is used if it scores at least

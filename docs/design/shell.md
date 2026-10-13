@@ -1,12 +1,12 @@
 # fetch, view and shell
 
 Writing a spider is mostly asking one question over and over: what does
-the page netweir gets look like, and does my selector find the thing on
+the page Netweir gets look like, and does my selector find the thing on
 it? A browser's devtools answer that for the page the browser got, and
-that's often not the page netweir gets. A site can send a different page
+that's often not the page Netweir gets. A site can send a different page
 to a client it doesn't trust, and much of what a browser shows is built by
-JavaScript that netweir doesn't run. Three commands answer the question
-with netweir's own fetch:
+JavaScript that Netweir doesn't run. Three commands answer the question
+with Netweir's own fetch:
 
 ```
 netweir fetch URL           # the body, on stdout

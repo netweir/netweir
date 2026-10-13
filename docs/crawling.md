@@ -1,6 +1,6 @@
 # Crawling
 
-A spider is a class. netweir's engine, in Rust, runs the queue, robots.txt,
+A spider is a class. Netweir's engine, in Rust, runs the queue, robots.txt,
 throttling and deduplication; your code says what to take from each page
 and which links to follow.
 
@@ -286,7 +286,7 @@ writes only what's new. Or give each run a file of its own:
 netweir crawl shop.py -s deltafetch=state/shop -o "shop-$(date +%F).jsonl"
 ```
 
-What netweir won't do is write over a file it can't account for. An output
+What Netweir won't do is write over a file it can't account for. An output
 that's there but that the record has never seen, while the record already
 has pages, is refused: its pages' items may be somewhere else, and starting
 it afresh would lose what it holds. So is a file that has changed since the
@@ -362,7 +362,7 @@ of the run.
 ### Coming from scrapy-deltafetch
 
 - Start requests are skipped too. scrapy-deltafetch only looks at what
-  callbacks yield, so it fetches a start URL every run; netweir doesn't, so
+  callbacks yield, so it fetches a start URL every run; Netweir doesn't, so
   a start URL that is itself a product page is fetched once. Give it
   `dont_filter=True` to fetch it every run.
 - A page is remembered once its items have been through the pipelines and
@@ -410,7 +410,7 @@ The WARC file is the archive. It's the format web archives keep (WARC
 every response the crawl got is in it with the request that asked for it:
 each hop of a redirect, every retry and block page, robots.txt and the
 sitemaps, and the pages declarative rules followed in Rust. The request is
-what netweir sent, header for header in the order they went out, cookies
+what Netweir sent, header for header in the order they went out, cookies
 included. Read it back with [warcio](https://github.com/webrecorder/warcio):
 
 ```python
@@ -441,7 +441,7 @@ format wants.
 
 Three things aren't in either file. A page served from the
 [cache](#caching-while-you-develop) wasn't fetched. A page fetched in
-Chrome is left out, because netweir only sees the page after its scripts
+Chrome is left out, because Netweir only sees the page after its scripts
 ran, never what the server sent. And a request that got no answer (a
 timeout, or a body over `max_response_size`) has nothing to record.
 
@@ -509,7 +509,7 @@ again to carry on.
 
 ## Being polite
 
-By default netweir reads each site's robots.txt (RFC 9309) and stays out of
+By default Netweir reads each site's robots.txt (RFC 9309) and stays out of
 what it disallows, skips pages whose owners reserve text and data mining
 rights (TDMRep), and adapts its pace to each site: the delay between
 requests moves toward the site's response time, and a 429 or a block slows
@@ -698,9 +698,9 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
 - Spider middlewares (`process_spider_output` and the rest) and signals
   other than the five above aren't there.
 
-### Or keep Scrapy, and fetch with netweir
+### Or keep Scrapy, and fetch with Netweir
 
-Not ready to move a project over? Keep it on Scrapy and let netweir do the
+Not ready to move a project over? Keep it on Scrapy and let Netweir do the
 fetching. Two lines in `settings.py`:
 
 ```python
@@ -719,7 +719,7 @@ before. Its middlewares still do their jobs:
   makes, so a start URL that redirects still looks typed, and a form that
   answers with a 303 lands with a GET;
 - cookies, kept by Scrapy's cookie middleware and sent once;
-- retries: netweir's errors arrive as Scrapy's own (`DownloadTimeoutError`,
+- retries: Netweir's errors arrive as Scrapy's own (`DownloadTimeoutError`,
   `DownloadConnectionRefusedError`, `CannotResolveHostError` and the
   rest), so they're retried as Scrapy's would be. A body over the size
   limit (`DownloadCancelledError`) or a request that can't be sent

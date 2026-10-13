@@ -157,6 +157,6 @@ jobs:
           merge-multiple: true
       # Notes list the pull requests merged since the last tag; the files
       # are the ones just published to PyPI.
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "netweir ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Netweir ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}

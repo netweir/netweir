@@ -1,4 +1,4 @@
-# netweir browser driver design
+# Netweir browser driver design
 
 Status: draft, October 2026
 Author: James Conway
@@ -6,7 +6,7 @@ Author: James Conway
 ## What it is for
 
 Some pages only exist after JavaScript runs, and some sites won't serve
-anything until a browser has passed their challenge. For those, netweir
+anything until a browser has passed their challenge. For those, Netweir
 drives a real Chrome. Everything else keeps going through the HTTP client,
 which is a hundred times cheaper per page.
 
@@ -24,7 +24,7 @@ In this design:
 - Launching Chrome (installed, or a path you give) and driving it over the
   Chrome DevTools Protocol (CDP), through a pipe rather than a port
 - Pages and isolated browser contexts; navigation that reports the status
-  and headers of the document; reading the page back as a netweir `Node`
+  and headers of the document; reading the page back as a Netweir `Node`
 - Clicking, typing, pressing keys and waiting for elements, with
   Playwright-style actionability checks and real input events
 - Running JavaScript in the page, screenshots, cookies
@@ -93,7 +93,7 @@ These are rules of the driver, not options, and tests enforce them:
 - `Runtime.enable`, `Console.enable` and `Log.enable` are never sent.
   Their side effects are visible to page scripts. The client refuses to
   send them.
-- netweir's own helper code (finding elements, actionability checks,
+- Netweir's own helper code (finding elements, actionability checks,
   reading the page) runs in an isolated world made with
   `Page.createIsolatedWorld`. It shares the DOM but not the page's
   JavaScript globals, so the page can't see or patch it. The world name
@@ -139,7 +139,7 @@ headers of the main document. A network error (DNS, refused, TLS) raises
 doesn't raise; the status is in the response, as with `netweir.get()`.
 
 `content()` returns the HTML as Chrome now has it, doctype included, and
-`parse()` returns it as a netweir `Node`, so every selector, `find_all`
+`parse()` returns it as a Netweir `Node`, so every selector, `find_all`
 and tracked selector works on a rendered page as on a fetched one.
 
 ### Actions
@@ -208,7 +208,7 @@ they own. Closing the browser closes every page.
 ## Crawl integration (milestone 9)
 
 - `Request(..., browser=True)` and `page.follow(..., browser=True)` fetch
-  that request in Chrome. The callback gets a netweir `Page` built from
+  that request in Chrome. The callback gets a Netweir `Page` built from
   the rendered HTML, with `page.browser` the live browser page for
   actions until the callback returns; then it closes. Callbacks reached
   through a declarative spider's rules get the rendered page but no live
@@ -284,10 +284,10 @@ page's workers and frames from other sites, which are targets of their
 own, get through without being asked; a test checks a worker does.
 
 **Installing Chrome.** `netweir install chrome` downloads the Chrome for
-Testing build whose major version matches netweir's newest Chrome
+Testing build whose major version matches Netweir's newest Chrome
 profile, so a crawl's cookie hand-back always has a matching profile. The
 build is listed in Google's `latest-versions-per-milestone-with-downloads`
-JSON, downloaded with netweir's own HTTP client and unpacked into
+JSON, downloaded with Netweir's own HTTP client and unpacked into
 `~/.netweir/chrome/<version>/` (`$NETWEIR_HOME` moves it). Finding Chrome
 looks there after `$NETWEIR_CHROME` and before the system installs, newest
 version first. `--headless-shell` installs `chrome-headless-shell`
@@ -314,7 +314,7 @@ crashed or was terminated, restarting service.
 So `netweir install chrome` runs `icacls <version folder> /grant
 *S-1-15-2-1:(OI)(CI)(RX) /grant *S-1-15-2-2:(OI)(CI)(RX)` (by SID, since
 the group names are translated), fails the install if that fails, and
-leaves a marker file once it's done. Launching a Chrome under netweir's
+leaves a marker file once it's done. Launching a Chrome under Netweir's
 own install folder without the marker grants it then, so an install
 from before this works without reinstalling. A Chrome anywhere else is
 never touched.
@@ -528,7 +528,7 @@ BiDi, Firefox reports `navigator.webdriver` as true, and no setting turns
 that off: it follows whether the remote agent is running. Hiding it from
 page script would mean overriding a browser property in JavaScript, which
 detection looks for in its own right. So a Firefox driver would render
-pages but give itself away to every bot check, and netweir leaves it out
+pages but give itself away to every bot check, and Netweir leaves it out
 until a patched build (such as Camoufox, which needs a third protocol) is
 in scope.
 

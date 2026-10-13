@@ -1,4 +1,4 @@
-# netweir serve
+# Netweir serve
 
 Status: draft, October 2026
 Author: James Conway
@@ -9,9 +9,9 @@ People who run Scrapy in production mostly run it under scrapyd: an HTTP
 service that takes "run this spider" as a job, queues it, runs it in a
 process of its own, and keeps its log and items for later. Their
 dashboards (ScrapydWeb) and deploy scripts (scrapyd-client) talk to that
-API. netweir has `netweir crawl` and nothing that sits above it.
+API. Netweir has `netweir crawl` and nothing that sits above it.
 
-`netweir serve` is that service for netweir spiders, small enough to read
+`netweir serve` is that service for Netweir spiders, small enough to read
 in one sitting. It speaks scrapyd's JSON API where doing so costs little,
 so a client written for scrapyd mostly works unchanged, and it runs each
 job through `netweir crawl`, so a job behaves exactly as it would from the
@@ -27,7 +27,7 @@ netweir serve [--bind 127.0.0.1] [--port 6800] [--dir DIR] [--max-jobs N]
 - `--dir` (default `./netweir-serve`) holds everything the service
   writes: `jobs.db`, `logs/`, `items/` and `stats/`.
 - `--max-jobs` (default: the number of CPUs) is how many jobs run at once.
-  scrapyd's default is four per CPU; a netweir crawl already runs its
+  scrapyd's default is four per CPU; a Netweir crawl already runs its
   fetching and parsing on several threads, so one per CPU is plenty.
 - `--keep` (default 100, scrapyd's `finished_to_keep`) is how many
   finished jobs are remembered. Past that the oldest is forgotten, and its
@@ -46,7 +46,7 @@ netweir serve [--bind 127.0.0.1] [--port 6800] [--dir DIR] [--max-jobs N]
 
 ## Projects and spiders
 
-netweir has no eggs to deploy: a spider is a class in a Python file. So a
+Netweir has no eggs to deploy: a spider is a class in a Python file. So a
 project is files on the service's disk, named on its command line. A
 spider's name is what `netweir crawl --spider` matches: its `name`, or
 its class name.
@@ -61,7 +61,7 @@ seen at once. A name defined in two files of one project is refused at
 
 `addversion.json` isn't supported; `listversions.json` answers with an
 empty list, for clients that ask before scheduling. Uploading code over HTTP is the one
-thing in scrapyd's API that runs whatever the network sends, and netweir
+thing in scrapyd's API that runs whatever the network sends, and Netweir
 projects are plain files that can be copied into place with whatever
 deploys the rest of your code. `delproject.json` answers with an error
 for the same reason: a project comes from the command line, so that's
@@ -91,7 +91,7 @@ auth a 401, a refused origin or host a 403, a body too big a 413.
 
 `schedule.json`:
 
-- `setting=K=V` is a netweir setting, as `-s K=V` on the command line,
+- `setting=K=V` is a Netweir setting, as `-s K=V` on the command line,
   checked when the job is scheduled: an unknown setting or bad value is
   an error then, not a failed job later. The parsed settings are built
   into a `Settings` and an engine, so what those refuse (`concurrency=0`,

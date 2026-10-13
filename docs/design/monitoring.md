@@ -5,7 +5,7 @@ leave every price empty, a block can cut a crawl to a tenth of its pages,
 and a callback can fail on half of them, and the crawl still ends with
 "finished". People running spiders on a schedule add Spidermon to Scrapy
 for this: validate each item against a schema, and check the run as a
-whole at the end. netweir does both itself.
+whole at the end. Netweir does both itself.
 
 ## Validating items
 
