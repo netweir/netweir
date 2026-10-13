@@ -3069,24 +3069,11 @@ fn rendered(document: &netweir_browser::Response, html: String) -> Response {
 }
 
 fn browser_error(e: netweir_browser::Error) -> FetchError {
-    use netweir_browser::Error;
-    let kind = match &e {
-        Error::Timeout(_) => FetchErrorKind::Timeout,
-        Error::Navigation(m) if m.contains("TIMED_OUT") => FetchErrorKind::Timeout,
-        Error::Navigation(m) if m.contains("CERT") || m.contains("SSL") => FetchErrorKind::Tls,
-        Error::Navigation(m)
-            if [
-                "CONNECTION",
-                "NAME_NOT_RESOLVED",
-                "ADDRESS",
-                "INTERNET_DISCONNECTED",
-                "PROXY",
-            ]
-            .iter()
-            .any(|n| m.contains(n)) =>
-        {
-            FetchErrorKind::Connect
-        }
+    use netweir_browser::{Error, NetFailure};
+    let kind = match (&e, e.net_failure()) {
+        (Error::Timeout(_), _) | (_, Some(NetFailure::Timeout)) => FetchErrorKind::Timeout,
+        (_, Some(NetFailure::Tls)) => FetchErrorKind::Tls,
+        (_, Some(NetFailure::Connect)) => FetchErrorKind::Connect,
         _ => FetchErrorKind::Other,
     };
     FetchError {

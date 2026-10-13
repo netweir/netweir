@@ -84,7 +84,7 @@ async fn a_refused_connection_is_a_navigation_error() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, Error::Navigation(m) if m.contains("ERR_CONNECTION_REFUSED")),
+        matches!(&err, Error::Navigation { error: m, .. } if m.contains("ERR_CONNECTION_REFUSED")),
         "{err}"
     );
     browser.close().await.unwrap();
@@ -518,7 +518,7 @@ async fn a_guard_sees_every_hop_and_can_stop_one_before_it_is_fetched() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, Error::Navigation(m) if m.contains("BLOCKED_BY_CLIENT")),
+        matches!(&err, Error::Navigation { error: m, .. } if m.contains("BLOCKED_BY_CLIENT")),
         "{err}"
     );
     assert!(
@@ -597,4 +597,39 @@ async fn goto_waits_as_long_as_it_is_told_not_the_browsers_timeout() {
         .await;
     assert_eq!(r.map(|r| r.status).ok(), Some(200));
     let _ = browser.close().await;
+}
+
+#[tokio::test]
+async fn a_failed_navigation_carries_what_chrome_said_without_changing_its_kind() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    // Verbose, so Chrome always has something to say.
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        args: vec!["--enable-logging=stderr".into(), "--v=1".into()],
+        ..Default::default()
+    })
+    .await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let page = browser.new_page().await.unwrap();
+    let err = page
+        .goto(&format!("http://127.0.0.1:{port}/"), WaitUntil::Load, None)
+        .await
+        .unwrap_err();
+    let Error::Navigation { error, said, .. } = &err else {
+        panic!("{err}");
+    };
+    assert_eq!(error, "net::ERR_CONNECTION_REFUSED");
+    assert!(said.as_deref().is_some_and(|s| !s.is_empty()), "{err}");
+    assert!(err.to_string().contains("Chrome said lately:"), "{err}");
+    assert_eq!(
+        err.net_failure(),
+        Some(netweir_browser::NetFailure::Connect)
+    );
+    browser.close().await.unwrap();
 }

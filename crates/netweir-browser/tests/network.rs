@@ -337,7 +337,7 @@ async fn a_document_the_guard_refuses_stays_refused_whatever_a_route_says() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, Error::Navigation(m) if m.contains("BLOCKED_BY_CLIENT")),
+        matches!(&err, Error::Navigation { error: m, .. } if m.contains("BLOCKED_BY_CLIENT")),
         "{err}"
     );
     // What the guard allows, the route still gets.
@@ -452,7 +452,7 @@ async fn a_route_cant_send_a_guarded_document_where_the_guard_refuses() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, Error::Navigation(m) if m.contains("BLOCKED_BY_CLIENT")),
+        matches!(&err, Error::Navigation { error: m, .. } if m.contains("BLOCKED_BY_CLIENT")),
         "{err}"
     );
     let seen = server.seen.lock().unwrap().clone();

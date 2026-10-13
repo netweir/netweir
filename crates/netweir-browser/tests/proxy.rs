@@ -59,7 +59,7 @@ async fn a_wrong_login_fails_instead_of_asking_forever() {
     // again and again.
     match r {
         Ok(r) => assert_eq!(r.status, 407),
-        Err(Error::Navigation(_)) => {}
+        Err(Error::Navigation { .. }) => {}
         Err(e) => panic!("{e}"),
     }
     assert!(

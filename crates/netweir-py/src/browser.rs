@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use netweir_browser::{
     Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Error, Frame as CoreFrame,
-    LaunchOptions, NetworkEvent, Page as CorePage, Pick, Request as CoreRequest,
+    LaunchOptions, NetFailure, NetworkEvent, Page as CorePage, Pick, Request as CoreRequest,
     Response as CoreResponse, Route as CoreRoute, WaitUntil,
 };
 use netweir_dom::Document;
@@ -30,30 +30,16 @@ fn raise(e: Error) -> PyErr {
                     error.setattr("rounds", rounds)?;
                     error
                 }
-                Error::Navigation(m) => {
-                    // Chrome's net error names: the connection never
-                    // happened, ran out of time, or failed TLS. Anything
-                    // else, such as ERR_ABORTED for a 204 or a download,
-                    // reached the server.
-                    let kind = if m.contains("TIMED_OUT") {
-                        "timeout"
-                    } else if m.contains("CERT") || m.contains("SSL") {
-                        "tls"
-                    } else if [
-                        "CONNECTION",
-                        "NAME_NOT_RESOLVED",
-                        "ADDRESS",
-                        "INTERNET_DISCONNECTED",
-                        "PROXY",
-                    ]
-                    .iter()
-                    .any(|n| m.contains(n))
-                    {
-                        "connect"
-                    } else {
-                        "other"
+                Error::Navigation { .. } => {
+                    // The kind comes from Chrome's net error alone; the
+                    // message has all of it, what Chrome said included.
+                    let kind = match e.net_failure() {
+                        Some(NetFailure::Timeout) => "timeout",
+                        Some(NetFailure::Tls) => "tls",
+                        Some(NetFailure::Connect) => "connect",
+                        _ => "other",
                     };
-                    errors.getattr("FetchError")?.call1((m.clone(), kind))?
+                    errors.getattr("FetchError")?.call1((e.to_string(), kind))?
                 }
                 _ => errors.getattr("BrowserError")?.call1((e.to_string(),))?,
             };

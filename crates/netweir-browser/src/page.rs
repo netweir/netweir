@@ -586,7 +586,13 @@ impl Page {
             .await
             .map_err(|_| Error::Timeout(format!("navigating to {url}")))??;
         if let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
-            return Err(Error::Navigation(format!("{url}: {e}")));
+            return Err(Error::Navigation {
+                url: url.to_string(),
+                error: e.to_string(),
+                // Chrome doesn't say why it gave up on a navigation; its
+                // stderr sometimes does.
+                said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
+            });
         }
         let Some(loader) = r["loaderId"].as_str().map(str::to_string) else {
             // Within the same document (a #fragment): nothing to wait for.
