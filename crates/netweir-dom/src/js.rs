@@ -1010,42 +1010,59 @@ continued', '\q']"#,
     #[test]
     fn hostile_input_ends_quickly() {
         use std::time::{Duration, Instant};
-        let big = 1_000_000;
-        let cases = [
-            "[".repeat(big),
-            "{".repeat(big),
-            "{a:".repeat(big),
-            "[1,".repeat(big / 3),
-            format!("[{}", "0,".repeat(big / 2)),
-            "[\"".repeat(big / 2),
-            "['['".repeat(big / 4),
-            "x=[".repeat(big / 3),
-            format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1)),
-            "/*".repeat(big / 2),
-            "\"".repeat(big),
-            "{a:[{a:[".repeat(big / 8),
-            // Every attempt would read to the end of an unclosed comment
-            // or string.
-            "{/*".repeat(big / 3),
-            "x=/*".repeat(big / 4),
-            "x='[".repeat(big / 4),
-            "{a:'".repeat(big / 4),
-            "JSON.parse(".repeat(big / 11),
-            "[new Date(".repeat(big / 10),
-        ];
-        for text in &cases {
-            let started = Instant::now();
-            let _ = first(text);
-            let _ = all(text);
-            let _ = assigned(text, "x");
-            let _ = assigned(text, "a");
+        // Each case at two sizes: twice the input may take about twice the
+        // time, never four times, which is what reading to the end once per
+        // position costs. Timed by growth rather than against a clock, so a
+        // slow machine can't fail it and a fast one can't hide it.
+        let cases = |big: usize| {
+            [
+                "[".repeat(big),
+                "{".repeat(big),
+                "{a:".repeat(big),
+                "[1,".repeat(big / 3),
+                format!("[{}", "0,".repeat(big / 2)),
+                "[\"".repeat(big / 2),
+                "['['".repeat(big / 4),
+                "x=[".repeat(big / 3),
+                "/*".repeat(big / 2),
+                "\"".repeat(big),
+                "{a:[{a:[".repeat(big / 8),
+                // Every attempt would read to the end of an unclosed comment
+                // or string.
+                "{/*".repeat(big / 3),
+                "x=/*".repeat(big / 4),
+                "x='[".repeat(big / 4),
+                "{a:'".repeat(big / 4),
+                "JSON.parse(".repeat(big / 11),
+                "[new Date(".repeat(big / 10),
+            ]
+        };
+        let time = |text: &str| {
+            // The quicker of two runs, so a pause elsewhere isn't counted.
+            (0..2)
+                .map(|_| {
+                    let started = Instant::now();
+                    let _ = first(text);
+                    let _ = all(text);
+                    let _ = assigned(text, "x");
+                    let _ = assigned(text, "a");
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        for (half, full) in cases(250_000).iter().zip(cases(500_000).iter()) {
+            let (small, large) = (time(half), time(full));
             assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "{:?}... took {:?}",
-                &text[..20.min(text.len())],
-                started.elapsed()
+                large < small * 3 + Duration::from_millis(50),
+                "{:?}...: {:?} for half the input, {:?} for all of it",
+                &full[..20.min(full.len())],
+                small,
+                large
             );
         }
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+        assert!(time(&deep) < Duration::from_secs(5));
         // Nesting up to the limit is read; past it is not.
         let deep = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
         assert!(first(&deep(MAX_DEPTH)).is_some());
