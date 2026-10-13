@@ -662,6 +662,53 @@ async fn max_pages_sends_that_many_requests_and_ends_the_crawl() {
 }
 
 #[tokio::test]
+async fn a_download_starts_past_max_pages_and_a_full_backlog_and_comes_back_on_its_own() {
+    let robots = "User-agent: *\nDisallow: /private\n";
+    let site = Site::start(vec![
+        ("/robots.txt", Page::status(200, robots)),
+        ("/", Page::html("p")),
+    ])
+    .await;
+    let c = crawler(CrawlSettings {
+        obey_tdmrep: false,
+        concurrency: 1,
+        max_pages: Some(2),
+        ..settings()
+    });
+    for i in 0..4 {
+        // The highest priority a page can ask for still comes after a
+        // download.
+        let mut page = request(i, site.url(&format!("/p{i}")));
+        page.priority = i32::MAX;
+        c.submit(page);
+    }
+    // Unread, the two pages fill the backlog (twice the concurrency) and
+    // max_pages: no page may start, but a download still does.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut file = request(100, site.url("/file.pdf"));
+    file.outgoing = netweir_core::Outgoing::image(Some(site.url("/p0")));
+    let done = tokio::time::timeout(Duration::from_secs(10), c.download(file))
+        .await
+        .expect("the download waited behind the pages")
+        .expect("the crawl is still running");
+    assert!(!done.cached);
+    assert!(matches!(done.event, Event::Fetched { id: 100, .. }));
+    let private = c
+        .download(request(101, site.url("/private/file.pdf")))
+        .await;
+    assert!(matches!(
+        private.map(|d| d.event),
+        Some(Event::Dropped {
+            id: 101,
+            reason: DropReason::Robots
+        })
+    ));
+    // Neither counted as a page, nor came back as an event.
+    assert_eq!(fetched(&drain(&c).await), [0, 1]);
+    assert_eq!(c.stats().queued, 2);
+}
+
+#[tokio::test]
 async fn dropping_the_crawler_closes_its_checkpoint() {
     let dir = std::env::temp_dir().join(format!("netweir-crawl-close-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

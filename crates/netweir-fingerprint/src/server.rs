@@ -209,6 +209,11 @@ const LINK_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>link</tit
 const FETCH_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>fetch</title>
 <script>fetch("/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({q: "rust", page: 2})}).then(() => { document.title = "posted" })</script>"#;
 
+/// The page `/image` serves: an `<img>`, so the browser's request for a
+/// picture is captured.
+const IMAGE_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>image</title>
+<img src="/picture.png" alt="">"#;
+
 /// The status, the headers, and a body of its own, or `None` to echo the
 /// capture as JSON.
 type Answer = (u16, Vec<(&'static str, String)>, Option<Vec<u8>>);
@@ -256,6 +261,10 @@ fn route(path: &str) -> Answer {
         }
         ("/link", _) => {
             let page = html(&mut headers, LINK_PAGE);
+            (200, headers, page)
+        }
+        ("/image", _) => {
+            let page = html(&mut headers, IMAGE_PAGE);
             (200, headers, page)
         }
         _ => {

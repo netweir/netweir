@@ -175,6 +175,26 @@ headers = [
     ["Connection", "keep-alive"],
 ]
 
+# An <img> on a page loading its picture.
+# Known limit: written from Safari's documented image requests, not from a
+# recording of Safari as the other shapes are; the capture tool's /image
+# page is there to record one with.
+[image]
+headers = [
+    ["Host", ""],
+    ["Accept", "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"],
+    ["Sec-Fetch-Site", ""],
+    ["Sec-Fetch-Dest", "image"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Sec-Fetch-Mode", "no-cors"],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"],
+    ["Referer", ""],
+    ["Priority", "u=5, i"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Cookie", ""],
+    ["Connection", "keep-alive"],
+]
+
 [after_form_redirect]
 headers = [
     ["Host", ""],

@@ -177,6 +177,32 @@ http2_headers = [
 # A script's requests go at a lower HTTP/2 weight, to match Priority: u=4.
 headers_priority = { exclusive = false, depends_on = 0, weight = 21 }
 
+# An <img> on a page loading its picture. Written from
+# firefox-156-macos.image.capture.json and .image.http1.capture.json, which
+# recorded Firefox 157.0.1 loading the capture tool's /image page: a
+# version on from this profile, so the fingerprint test takes the
+# User-Agent from here and holds everything else to the recording.
+[image]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:156.0) Gecko/20100101 Firefox/156.0"],
+    ["Accept", "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Connection", "keep-alive"],
+    ["Referer", ""],
+    ["Cookie", ""],
+    ["Sec-Fetch-Dest", "image"],
+    ["Sec-Fetch-Mode", "no-cors"],
+    ["Sec-Fetch-Site", ""],
+    ["Priority", "u=4, i"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]
+# Images go at a lower HTTP/2 weight still than a script's requests.
+headers_priority = { exclusive = false, depends_on = 0, weight = 13 }
+
 [after_form_redirect]
 headers = [
     ["Host", ""],

@@ -365,6 +365,19 @@ pub enum Event {
     },
 }
 
+/// A download's priority: ahead of every page of its host, whose
+/// priorities are kept below it.
+const DOWNLOAD_PRIORITY: i32 = i32::MAX;
+
+/// How a download (`Crawler::download`) ended: its `Fetched`, `Failed`,
+/// `Dropped` or `Blocked` event, and whether the response came from the
+/// cache.
+#[derive(Debug)]
+pub struct Downloaded {
+    pub event: Event,
+    pub cached: bool,
+}
+
 /// A page still open in Chrome after a browser fetch. Closing it, or
 /// dropping the last clone, closes the page and frees its place among
 /// `browser_pages`.
@@ -534,6 +547,9 @@ struct State {
     /// Hosts that may be able to start a request. The scheduler visits only
     /// these, so its work follows what changed, not how many hosts exist.
     ready: VecDeque<String>,
+    /// The same, for hosts with a download first in their queue: those the
+    /// scheduler visits while pages are held.
+    ready_downloads: VecDeque<String>,
     /// Hosts waiting out their delay, soonest first.
     timers: BinaryHeap<Reverse<(Instant, String)>>,
     /// robots.txt and tdmrep.json fetches under way.
@@ -572,6 +588,9 @@ struct State {
     /// The shared queue has been empty for its grace period: the crawl
     /// is over once this process is idle.
     queue_over: bool,
+    /// Downloads under way (`Crawler::download`), by id, with where their
+    /// outcome goes instead of the events.
+    downloads: HashMap<u64, tokio::sync::oneshot::Sender<Downloaded>>,
 }
 
 /// The shared queue, and the way to its task.
@@ -736,6 +755,8 @@ struct Host {
     floor: Duration,
     /// In `State::ready`.
     listed: bool,
+    /// In `State::ready_downloads`.
+    download_listed: bool,
     /// When this host's timer is set for, so it is set once.
     timer: Option<Instant>,
     /// Requests submitted for this host, for `max_pages_per_domain`.
@@ -1141,7 +1162,77 @@ impl Crawler {
         }
     }
 
-    fn admit(&self, request: CrawlRequest, persist: Persist<'_>) -> Submitted {
+    /// Fetches a file a page links to (an image, a PDF) through the crawl:
+    /// its host's queue, delay and concurrency, robots.txt and TDMRep, the
+    /// sessions, proxies, retries, cache and archive, as a page. But it isn't
+    /// a page: it goes ahead of the host's pages, isn't checked against
+    /// `allowed_domains`, `max_depth`, `max_pages_per_domain`, the
+    /// duplicate filter or deltafetch, isn't saved in the checkpoint or
+    /// sent to the shared queue, never goes to Chrome, doesn't count toward
+    /// `max_pages`, and starts even while the caller has events to read,
+    /// which is what lets a caller wait for it in the middle of handling
+    /// them. Its outcome comes back here rather than as an event; None if
+    /// the crawl stopped first. `id` must not be one a request in flight
+    /// has.
+    pub fn download(
+        &self,
+        mut request: CrawlRequest,
+    ) -> impl Future<Output = Option<Downloaded>> + Send + 'static {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let id = request.id;
+        let o = &request.outgoing;
+        let fp = fingerprint_with(&o.method, &request.url, o.body.as_deref());
+        let bad_proxy = request
+            .proxy
+            .as_deref()
+            .is_some_and(|p| !p.is_empty() && check_proxy(p).is_err());
+        let invalid = |message: String| Downloaded {
+            event: Event::Failed {
+                id,
+                error: FetchError::invalid(message),
+            },
+            cached: false,
+        };
+        let refused = match fp {
+            None => Some(format!("not an http(s) URL: {}", request.url)),
+            Some(_) if bad_proxy => Some(format!("{}: its proxy can't be used", request.url)),
+            Some(_) => None,
+        };
+        if let Some(message) = refused {
+            let _ = tx.send(invalid(message));
+        } else if let Some(fp) = fp {
+            request.priority = DOWNLOAD_PRIORITY;
+            request.browser = false;
+            let cache = self.shared.cache.as_ref();
+            let hit = cache.is_some_and(|c| c.has(&fp));
+            let keep = cache.map(|_| Keep {
+                key: fp,
+                redirects: Vec::new(),
+            });
+            let url = request.url.clone();
+            let mut state = self.shared.lock();
+            state.downloads.insert(id, tx);
+            let queued = enqueue(
+                &self.shared.settings,
+                &mut state,
+                request,
+                &url,
+                0,
+                keep,
+                hit,
+            );
+            if !queued && let Some(tx) = state.downloads.remove(&id) {
+                let _ = tx.send(invalid(format!("not an http(s) URL: {url}")));
+            }
+            drop(state);
+            self.shared.schedule.notify_one();
+        }
+        async move { rx.await.ok() }
+    }
+
+    fn admit(&self, mut request: CrawlRequest, persist: Persist<'_>) -> Submitted {
+        // Below every download's, which an item is waiting for.
+        request.priority = request.priority.min(DOWNLOAD_PRIORITY - 1);
         let o = &request.outgoing;
         let Some(fp) = fingerprint_with(&o.method, &request.url, o.body.as_deref()) else {
             return Submitted::Invalid;
@@ -1420,6 +1511,12 @@ impl Shared {
     }
 
     fn push_event(&self, state: &mut State, event: Event) {
+        self.push_event_from(state, event, false);
+    }
+
+    /// `push_event`, saying whether the response came from the cache. A
+    /// download's outcome goes to its waiter, not to the events.
+    fn push_event_from(&self, state: &mut State, event: Event, cached: bool) {
         match &event {
             Event::Fetched { response, .. } => {
                 state.stats.fetched += 1;
@@ -1439,6 +1536,17 @@ impl Shared {
             | Event::Warning { .. }
             | Event::Leased { .. }
             | Event::Fatal { .. } => {}
+        }
+        let id = match &event {
+            Event::Fetched { id, .. }
+            | Event::Failed { id, .. }
+            | Event::Dropped { id, .. }
+            | Event::Blocked { id, .. } => Some(*id),
+            _ => None,
+        };
+        if let Some(tx) = id.and_then(|id| state.downloads.remove(&id)) {
+            let _ = tx.send(Downloaded { event, cached });
+            return;
         }
         state.events.push_back(event);
         self.events.notify_waiters();
@@ -1925,7 +2033,8 @@ fn enqueue(
     };
     request.url = url.to_string();
     state.seq += 1;
-    let in_browser = wants_browser(settings, &request);
+    let in_browser =
+        wants_browser(settings, &request) && !state.downloads.contains_key(&request.id);
     let queued = Queued {
         priority: request.priority,
         seq: state.seq,
@@ -1952,6 +2061,7 @@ fn enqueue(
         },
         floor: Duration::ZERO,
         listed: false,
+        download_listed: false,
         timer: None,
         accepted: 0,
         session: None,
@@ -1976,12 +2086,33 @@ impl State {
         settings.max_pages.is_some_and(|max| self.sent >= max)
     }
 
+    /// Whether pages may not start now, for room in the backlog or for
+    /// `max_pages`; downloads still may.
+    fn pages_held(&self, settings: &CrawlSettings) -> bool {
+        self.events.len() >= backlog_limit(settings) || self.capped(settings)
+    }
+
+    fn is_download(&self, q: &Queued) -> bool {
+        self.downloads.contains_key(&q.request.id)
+    }
+
     fn make_ready(&mut self, name: &str) {
-        if let Some(host) = self.hosts.get_mut(name)
-            && !host.listed
-        {
+        let Some(host) = self.hosts.get_mut(name) else {
+            return;
+        };
+        if !host.listed {
             host.listed = true;
             self.ready.push_back(name.to_string());
+        }
+        // Listed for downloads too, if one is first in its queue (they go
+        // ahead of pages), so plan can find it while pages are held.
+        let download_first = host
+            .queue
+            .peek()
+            .is_some_and(|q| self.downloads.contains_key(&q.request.id));
+        if download_first && !host.download_listed {
+            host.download_listed = true;
+            self.ready_downloads.push_back(name.to_string());
         }
     }
 }
@@ -2023,32 +2154,44 @@ fn plan(
     // the backlog, and count toward max_pages as a fetch would. One at a
     // time, as the cache has one connection anyway: they come back in the
     // order they were queued.
+    let download_hit = state.hits.peek().is_some_and(|q| state.is_download(q));
     if !state.serving
-        && !state.capped(settings)
-        && state.events.len() < backlog_limit(settings)
+        && (download_hit || !state.pages_held(settings))
         && let Some(q) = state.hits.pop()
     {
         state.stats.queued -= 1;
         state.serving = true;
-        state.sent += 1;
+        if !state.is_download(&q) {
+            state.sent += 1;
+        }
         actions.push(Action::Serve(Box::new(q)));
     }
-    'hosts: while let Some(name) = state.ready.front().cloned() {
+    'hosts: loop {
         // Gate fetches count against the limit like any other request.
-        if state.stats.in_flight + state.gate_fetches >= settings.concurrency
-            || state.events.len() >= backlog_limit(settings)
-            || state.capped(settings)
-        {
+        if state.stats.in_flight + state.gate_fetches >= settings.concurrency {
             break;
         }
-        state.ready.pop_front();
-        if let Some(host) = state.hosts.get_mut(&name) {
-            host.listed = false;
-        }
-        loop {
-            if state.capped(settings) {
-                break 'hosts;
+        // While pages are held, only the hosts with a download first in
+        // line are visited, so a crawl of many sites waiting on one file
+        // doesn't walk them all on every wake.
+        let name = if state.pages_held(settings) {
+            let Some(name) = state.ready_downloads.pop_front() else {
+                break;
+            };
+            if let Some(host) = state.hosts.get_mut(&name) {
+                host.download_listed = false;
             }
+            name
+        } else {
+            let Some(name) = state.ready.pop_front() else {
+                break;
+            };
+            if let Some(host) = state.hosts.get_mut(&name) {
+                host.listed = false;
+            }
+            name
+        };
+        loop {
             if state.stats.in_flight + state.gate_fetches >= settings.concurrency {
                 // Still has work: back in line for when a slot frees.
                 state.make_ready(&name);
@@ -2058,6 +2201,12 @@ fn plan(
                 break;
             };
             let Some(next) = host.queue.peek() else { break };
+            // Downloads go ahead of a host's pages, so only a page waits:
+            // its host stays in line for when pages may start again.
+            if state.pages_held(settings) && !state.downloads.contains_key(&next.request.id) {
+                state.make_ready(&name);
+                break;
+            }
             let origin = next.origin.clone();
             // A robots.txt or tdmrep.json goes the way this request will.
             let wanted = next.request.proxy.clone();
@@ -2170,7 +2319,9 @@ fn plan(
             host.next_at = now + host.delay.max(host.floor);
             state.stats.queued -= 1;
             state.stats.in_flight += 1;
-            state.sent += 1;
+            if !state.is_download(&q) {
+                state.sent += 1;
+            }
             actions.push(match permit {
                 Some(permit) => Action::Render(Box::new(q), permit),
                 None => {
@@ -2308,7 +2459,9 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
             if can_retry {
                 retry(settings, &mut state, q);
                 None
-            } else if settings.browser == BrowserMode::OnBlock && q.request.outgoing.method == "GET"
+            } else if settings.browser == BrowserMode::OnBlock
+                && q.request.outgoing.method == "GET"
+                && !state.is_download(&q)
             {
                 // One more go, in Chrome, once the host's delay is up. Not a
                 // retry: the retries are spent. Chrome replaying a POST could
@@ -2380,7 +2533,9 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
         // counts as seen, but is fetched even if seen: this request has to
         // end somewhere.
         (Ok(Hop::Redirect(next, then, cookies)), _) => {
-            let seen = fingerprint_with(&then.method, &next, then.body.as_deref());
+            // A download's redirect isn't a page the crawl has seen.
+            let seen = fingerprint_with(&then.method, &next, then.body.as_deref())
+                .filter(|_| !state.is_download(&q));
             if let Some(fp) = seen {
                 state.seen.insert(fp);
                 if let Some(cp) = &shared.checkpoint {
@@ -2502,12 +2657,14 @@ async fn serve(shared: Arc<Shared>, q: Queued) {
                 response,
                 page: None,
             };
-            shared.push_event(&mut state, event);
+            shared.push_event_from(&mut state, event, true);
             state.stats.bytes -= size;
         }
         // Gone or gone stale since it was admitted: fetched after all.
         None => {
-            state.sent -= 1;
+            if !state.is_download(&q) {
+                state.sent -= 1;
+            }
             requeue(&mut state, q, Duration::ZERO);
         }
     }

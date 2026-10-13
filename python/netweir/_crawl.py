@@ -25,7 +25,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _memory, _monitor, _track
+from netweir import _files, _memory, _monitor, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs
 from netweir._native import (
@@ -821,6 +821,9 @@ class _Run:
         self.depth = 0
         #: The page the running callback was given, for item signals.
         self.page: Page | None = None
+        #: The URL of the page items being handled come from, when there is
+        #: one: the Referer netweir.files sends.
+        self.page_url: str | None = None
         #: Whether the item being handled has met a validate stage yet, and
         #: failed one: each is counted once an item.
         self.validating = False
@@ -863,6 +866,16 @@ class _Run:
             "lost": 0,
             "repair_proposals": 0,
         }
+        # Stages that download what items link to fetch through this crawl.
+        for stage in pipelines:
+            if isinstance(stage, _files._Media):
+                stage._attach(self)
+
+    async def download(self, url: str, kind: str, referer: str | None) -> tuple | None:
+        """Fetches a file an item links to through the engine, ahead of the
+        pages and outside them: for netweir.files and netweir.images,
+        which the crawl waits for. See the engine's ``download``."""
+        return await self.engine.download(next(self.ids), url, kind, referer)
 
     def resume(self) -> dict[str, int] | None:
         """Queues what an earlier run of this crawl left unfinished, and
@@ -1520,6 +1533,7 @@ class _Run:
             # too.
             self.source, self.position = f"rule{rule}:{url}", 0
             self.page = None
+            self.page_url = url
             # The page a rule's link led to, fetched as a plain GET. Its
             # one item is all it gives.
             self.from_page = ("GET", url, None, None) if self.delta else None
@@ -1840,6 +1854,7 @@ class _Run:
         self.depth = (source.depth if isinstance(source, (Page, Request)) else 0) + 1
         self.source = source.url if isinstance(source, (Page, Request)) else url
         self.page = source if isinstance(source, Page) else None
+        self.page_url = self.page.url if self.page is not None else None
         # An errback's or on_block's items came with no page to skip.
         self.from_page = self.delta_of(self.page.request) if self.page is not None else None
         self.gave = False
@@ -1872,6 +1887,7 @@ class _Run:
         self.source = page_url
         # The page stayed in the worker.
         self.page = None
+        self.page_url = page_url
         self.from_page = self.delta_of(request)
         self.gave = False
         self.position = 0
@@ -2033,7 +2049,7 @@ def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
     it, with its payload."""
     _row, url, priority, headers, dont_filter, depth, payload = head
     method, kind, body, content_type, referer, retry_post, proxy = sent
-    if kind not in ("navigate", "form", "fetch"):
+    if kind not in ("navigate", "form", "fetch", "image"):
         raise ValueError(f"unknown kind of request {kind!r}")
     data = json.loads(payload)
     request = Request(

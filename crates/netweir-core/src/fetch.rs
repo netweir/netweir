@@ -130,6 +130,8 @@ pub struct Fetcher {
     max_body: Option<u64>,
     /// For a script's requests, where they have a priority of their own.
     script_client: Option<wreq::Client>,
+    /// For images, likewise.
+    image_client: Option<wreq::Client>,
     http2_headers: Arc<Vec<(HeaderName, HeaderValue)>>,
     /// Header order for a navigation's first request, and after a redirect.
     navigation_order: Arc<Vec<String>>,
@@ -265,6 +267,7 @@ struct Shapes {
     link: Option<Shape>,
     form: Option<Shape>,
     fetch: Option<Shape>,
+    image: Option<Shape>,
     after_form_redirect: Option<Shape>,
 }
 
@@ -420,15 +423,18 @@ pub enum Kind {
     Form,
     /// The referer page's own script sending a request with `fetch()`.
     Fetch,
+    /// An image the referer page shows, as an `<img>` loads it.
+    Image,
 }
 
 impl Kind {
-    /// "navigate", "form" or "fetch", as a checkpoint saves it.
+    /// "navigate", "form", "fetch" or "image", as a checkpoint saves it.
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Navigate => "navigate",
             Kind::Form => "form",
             Kind::Fetch => "fetch",
+            Kind::Image => "image",
         }
     }
 
@@ -437,6 +443,7 @@ impl Kind {
             "navigate" => Some(Kind::Navigate),
             "form" => Some(Kind::Form),
             "fetch" => Some(Kind::Fetch),
+            "image" => Some(Kind::Image),
             _ => None,
         }
     }
@@ -612,8 +619,17 @@ impl Outgoing {
         }
     }
 
+    /// An `<img>` on `referer` loading its picture: always a GET.
+    pub fn image(referer: Option<String>) -> Outgoing {
+        Outgoing {
+            kind: Kind::Image,
+            referer,
+            ..Outgoing::navigate()
+        }
+    }
+
     /// The request these parts describe, as `kind`'s constructor makes it.
-    /// A navigation is always a GET without a body.
+    /// A navigation or an image is always a GET without a body.
     pub fn from_parts(
         method: &str,
         kind: Kind,
@@ -631,6 +647,7 @@ impl Outgoing {
                 ..Outgoing::form(body.unwrap_or_default(), content_type, referer)
             },
             Kind::Fetch => Outgoing::fetch(method, body, content_type, referer),
+            Kind::Image => Outgoing::image(referer),
         }
     }
 
@@ -857,20 +874,20 @@ impl Fetcher {
         };
         let client = build(emulation)?;
         // HTTP/2 sets a request's priority for the whole connection, so a
-        // script's requests, which Chrome sends at a lower one, go on
-        // connections of their own; the cookies are the same.
-        let script_priority = profile
-            .fetch
-            .as_ref()
-            .and_then(|f| f.headers_priority.as_ref());
-        let script_client = match script_priority {
-            Some(priority) => Some(build(
-                profile
-                    .emulation_with(Some(priority))
-                    .map_err(|e| FetchError::invalid(e.to_string()))?,
-            )?),
-            None => None,
+        // script's requests and images, which Chrome sends at lower ones,
+        // go on connections of their own; the cookies are the same.
+        let client_for = |shape: &Option<Shape>| -> Result<Option<wreq::Client>, FetchError> {
+            match shape.as_ref().and_then(|s| s.headers_priority.as_ref()) {
+                Some(priority) => Ok(Some(build(
+                    profile
+                        .emulation_with(Some(priority))
+                        .map_err(|e| FetchError::invalid(e.to_string()))?,
+                )?)),
+                None => Ok(None),
+            }
         };
+        let script_client = client_for(&profile.fetch)?;
+        let image_client = client_for(&profile.image)?;
         let http2_headers = profile
             .http2_headers
             .iter()
@@ -886,6 +903,7 @@ impl Fetcher {
             client,
             max_body: options.max_body,
             script_client,
+            image_client,
             http2_headers: Arc::new(http2_headers),
             navigation_order: Arc::new(profile.header_order(false)),
             redirect_order: Arc::new(profile.header_order(true)),
@@ -897,6 +915,7 @@ impl Fetcher {
                 link: profile.link.clone(),
                 form: profile.form.clone(),
                 fetch: profile.fetch.clone(),
+                image: profile.image.clone(),
                 after_form_redirect: profile.after_form_redirect.clone(),
             }),
             archive: options.archive.clone(),
@@ -1239,6 +1258,7 @@ impl Fetcher {
         let (shape, what, without) = match outgoing.kind {
             Kind::Form => (&shapes.form, "a form submission", None),
             Kind::Fetch => (&shapes.fetch, "a script's request", None),
+            Kind::Image => (&shapes.image, "an image", None),
             Kind::Navigate if outgoing.after_form => (
                 &shapes.after_form_redirect,
                 "the redirect after a form submission",
@@ -1266,8 +1286,9 @@ impl Fetcher {
         let method = wreq::Method::from_bytes(outgoing.method.as_bytes())
             .map_err(|_| FetchError::invalid(format!("bad method {:?}", outgoing.method)))?;
         let mut order = OrigHeaderMap::new();
-        let client = match (&self.script_client, outgoing.kind) {
-            (Some(script), Kind::Fetch) => script,
+        let client = match (&self.script_client, &self.image_client, outgoing.kind) {
+            (Some(script), _, Kind::Fetch) => script,
+            (_, Some(image), Kind::Image) => image,
             _ => &self.client,
         };
         let mut request = client.request(method, uri.clone()).default_headers(false);

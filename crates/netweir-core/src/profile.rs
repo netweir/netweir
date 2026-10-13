@@ -73,6 +73,9 @@ pub struct Profile {
     /// A page's own script sending a request with `fetch()`.
     #[serde(default)]
     pub fetch: Option<Shape>,
+    /// An `<img>` on a page loading its picture.
+    #[serde(default)]
+    pub image: Option<Shape>,
     /// The GET after a form submission is answered with a redirect.
     #[serde(default)]
     pub after_form_redirect: Option<Shape>,
@@ -490,6 +493,7 @@ mod tests {
                 ("link", &p.link),
                 ("form", &p.form),
                 ("fetch", &p.fetch),
+                ("image", &p.image),
                 ("after_form_redirect", &p.after_form_redirect),
             ];
             for (kind, shape) in shapes {

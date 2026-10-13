@@ -67,6 +67,10 @@ netweir.Request(
 )
 ```
 
+The highest priority a page gets is one below the largest 32-bit
+integer, which is kept for file downloads, so priorities from there up
+tie and go in the order they were submitted.
+
 `page.depth` is how many links the crawl followed from a start page to get
 here. A request the same as one already seen (same method, URL and body,
 ignoring fragments, query order and tracking parameters such as `utm_*`) is
@@ -567,6 +571,169 @@ returning `None` does; Scrapy's `DropItem` works too. Any of these can be async.
 it fetches anything, so a database that's down is found out at once, not
 a thousand pages in.
 
+## Downloading files and images
+
+Sometimes the text isn't the whole job: you want the PDF datasheet each
+product page links to, or the cover of every book. List the URLs on the
+item and add a stage that fetches them:
+
+```python
+import netweir
+
+
+class Books(netweir.Spider):
+    start_urls = ["https://books.toscrape.com/"]
+    pipelines = [
+        netweir.images("covers/", thumbs={"small": (50, 50)}),
+        netweir.export.jsonl("books.jsonl"),
+    ]
+
+    def parse(self, page):
+        for book in page.css("article.product_pod"):
+            yield {
+                "title": book.css("h3 a::attr(title)").get(),
+                "image_urls": [page.urljoin(book.css("img::attr(src)").get())],
+            }
+```
+
+Each book then comes out with a note of what was stored for it:
+
+```
+{"title": "A Light in the Attic",
+ "image_urls": ["https://books.toscrape.com/media/cache/2c/da/2cda...e8b.jpg"],
+ "images": [{"url": "https://books.toscrape.com/media/cache/2c/da/2cda...e8b.jpg",
+             "path": "full/5f1c0a6a...9d1e.jpg",
+             "checksum": "b9d2e6...c41a",
+             "status": "downloaded"}]}
+```
+
+`netweir.files(store)` does the same for any kind of file, reading
+`file_urls` and writing `files`. Those are Scrapy's field names, so items
+built for Scrapy's FilesPipeline and ImagesPipeline work as they are;
+`urls_field=` and `result_field=` pick others.
+
+Where things go:
+
+- `store` is a directory, or a URL such as `s3://bucket/books` that fsspec
+  can write to (install the same packages as for [cloud
+  storage](#cloud-storage)). Each file is uploaded the moment it's
+  stored, not at the end of the crawl.
+- A file is stored at `full/<SHA1 of its URL>.<extension>`. The
+  extension comes from the URL if it's one Netweir knows (pdf, jpg, png,
+  webp, avif, zip, docx and four dozen like them; not php or asp),
+  otherwise from the Content-Type, otherwise there's none. The list is
+  Netweir's own, so a URL gets the same name on every Python and every
+  machine. Images are always `full/<SHA1>.jpg`, with each thumbnail at
+  `thumbs/<name>/<SHA1>.jpg`.
+- That's Scrapy's layout, and for most files Scrapy's names too. They
+  differ where Scrapy would write the URL differently before hashing it
+  (Scrapy percent-encodes it first, so a URL with spaces or non-ASCII
+  characters hashes differently), and where the extension would differ:
+  Scrapy never takes one from the Content-Type, and asks Python's
+  mimetypes, so `.jpeg` there is `.jpg`.
+- `checksum` is the MD5 of what was stored, as in Scrapy. For a file
+  that's `"uptodate"` in a local store, the file is read to work it out.
+  In a cloud store it isn't downloaded again just for that: the checksum
+  is what the bucket records (S3's ETag for a file uploaded in one piece,
+  Google Cloud Storage's MD5), and `None` where it records nothing
+  usable. An S3 object encrypted with SSE-KMS has an ETag that isn't its
+  MD5, so the checksum is wrong there, as it is in Scrapy.
+
+`status` says how the file got there. `"downloaded"` means it was
+fetched; `"cached"` that it came from the crawl's [cache](#caching-while-you-develop);
+`"uptodate"` that the store already had it, written less than `expires`
+ago, so nothing was fetched. `expires` is 90 days unless you say
+otherwise, in seconds or as a `timedelta`; `None` keeps a file for good.
+For a store in the cloud, Netweir asks fsspec when the file was written;
+S3, Google Cloud Storage and fsspec's own memory store say, and where a
+filesystem doesn't, the file is fetched every run.
+
+The same URL in a thousand items is fetched once a crawl. A download that
+fails (a 404, a timeout, robots.txt saying no, a bucket that refuses the
+upload) is logged and left out of the item's list, and the item carries
+on to the next stage, as in Scrapy. Later items naming the same URL get
+the same answer without another try.
+The crawl's stats count them: `files_downloaded`, `files_cached`,
+`files_uptodate` and `files_failed`, plus `images_too_small` for
+`netweir.images`.
+
+### The downloads are the crawl's own
+
+Files aren't fetched by a separate client on the side. They go through
+the same engine as the pages, so everything that keeps the crawl polite
+and unblocked applies to them too: robots.txt and TDMRep, each site's
+delay and `per_domain`, the session's cookies, the proxies and their
+rotation, retries, the cache, the WARC and HAR files, and
+`max_response_size`. A file goes out as a page's own script would ask for
+it, and an image as an `<img>` on the page would, with the page as the
+Referer:
+
+```
+Sec-Fetch-Dest: image
+Sec-Fetch-Mode: no-cors
+Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8
+```
+
+What a download isn't is a page. It doesn't count toward `max_pages` or
+`max_pages_per_domain`, isn't held to `allowed_domains` (covers often
+live on another domain, a CDN), isn't parsed, followed or handed to a
+callback, isn't remembered by deltafetch, and never goes to Chrome. It
+also goes ahead of the site's waiting pages, since an item is waiting
+for it.
+
+That last part matters, because the crawl waits too. While an item's
+files download, the engine keeps fetching pages, but your callbacks and
+pipelines don't run again until that item's files are stored. One
+item's files download at the same time, as many as `per_domain` allows.
+A slow file holds the crawl for as long as it takes, retries included,
+and `max_time` isn't looked at meanwhile. So is a file on a site that
+keeps blocking: the [circuit breaker](settings.md) pauses that
+site, `breaker_pause` (five minutes by default), and the file waits it
+out.
+
+### Images
+
+`netweir.images` needs Pillow:
+
+```
+pip install "netweir[images]"
+```
+
+Every image is stored as an RGB JPEG; a transparent one is laid over
+white first. `thumbs` names the thumbnails you want and the box each one
+fits in, keeping the image's shape, and a thumbnail is never bigger than
+the image. `min_size=(width, height)` skips anything smaller, says so in
+the log and counts it in `images_too_small`:
+
+```python
+netweir.images("s3://my-bucket/covers", thumbs={"small": (50, 50), "big": (270, 270)}, min_size=(100, 100))
+```
+
+Converting and resizing happen on a thread, not in the crawl's event
+loop, two images at a time. An image's pixels take far more memory than
+its file: a 64 MB PNG can need several hundred MB to decode. So an image
+with more than `max_pixels` pixels (25 million by default, a 5000 × 5000
+picture) fails without being decoded; raise it if you need bigger. Pillow
+refuses anything above about 179 million pixels itself, so a `max_pixels`
+above that changes nothing. An animated GIF or WebP is judged, converted
+and stored by its first frame.
+
+### Checkpoints, workers and shared queues
+
+A download is never saved in a [checkpoint](self-healing.md#checkpoints).
+If a crawl stops while an item's files are downloading, that item hadn't
+been written yet, so the resumed crawl fetches its page again, and the
+files with it; whatever was already stored comes back as `"uptodate"`. A
+file only appears under its final name once it's complete, so a crawl cut
+off part way never leaves half a file behind.
+
+With `workers`, pipelines run in the main process, downloads included,
+and nothing changes. With a [shared queue](distributed.md), each process
+downloads the files of the items it handles and only skips repeats it
+has seen itself. Point every process at the same bucket and a file one
+of them stored is `"uptodate"` for the rest; give each a local directory
+and each machine keeps its own copies.
+
 ## Middlewares
 
 Code that belongs to every request or every page, rather than to one
@@ -697,6 +864,20 @@ over as they are: `process_item`, `open_spider`, `close_spider`,
   errback.
 - Spider middlewares (`process_spider_output` and the rest) and signals
   other than the five above aren't there.
+
+FilesPipeline and ImagesPipeline become [`netweir.files` and
+`netweir.images`](#downloading-files-and-images): the same fields, the same
+results and the same layout in the store. Their settings are arguments:
+`FILES_STORE` and `IMAGES_STORE` are `store`, `FILES_EXPIRES` (days) is
+`expires` (seconds, or a `timedelta`), `IMAGES_THUMBS` is `thumbs`, and
+`IMAGES_MIN_WIDTH` and `IMAGES_MIN_HEIGHT` are `min_size`. A store is a
+directory or anything fsspec reaches, not FTP. There's no `file_path()`
+or `get_media_requests()` to override: the names are always the SHA1 of
+the URL, which is what keeps them inside the store. Scrapy's offsite
+middleware now drops a file or image on a domain outside
+`allowed_domains`; Netweir downloads it, since covers so often sit on a
+CDN. Filter `file_urls` in your callback if you want Scrapy's
+behaviour.
 
 ### Or keep Scrapy, and fetch with Netweir
 

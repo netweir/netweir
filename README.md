@@ -52,6 +52,12 @@ Working today:
   `allowed_domains` keeps a crawl on the sites you meant; `max_items`,
   `max_pages`, `max_errors`, `max_time` and `max_memory` stop it when
   you've seen enough.
+- Files and images an item links to, downloaded through the crawl
+  itself (its robots.txt, delays, proxies and cache) and stored once
+  each, on disk or in a bucket, in Scrapy's layout and with Scrapy's
+  `file_urls` and `image_urls` fields. Images become JPEGs with
+  thumbnails. See
+  [docs/crawling.md](docs/crawling.md#downloading-files-and-images).
 - `netweir serve`: spiders run as jobs you schedule, watch and cancel
   over HTTP, with their logs, items and stats kept, like scrapyd and
   speaking much of its API. See [docs/serve.md](docs/serve.md).
@@ -337,6 +343,12 @@ One known difference: Chrome sends a `priority` header only over HTTP/2,
 and Netweir can't tell a server lacks HTTP/2 until it has answered once. So
 the first request to an https server that only speaks HTTP/1.1 carries that
 header; every request after it doesn't.
+
+Images a crawl downloads with `netweir.images` go out as an `<img>` on
+the page asks for them, not as a page, and the same test holds Chrome's
+and Firefox's to recordings of each loading an image. Safari's are
+written from what Safari is known to send, and not yet checked against a
+recording.
 
 For many pages at once, use a client. It keeps connections and cookies
 between requests, and the requests run concurrently in Rust:

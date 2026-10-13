@@ -173,6 +173,36 @@ http2_headers = [
 # A lower weight than a navigation's 255, to match the priority header.
 headers_priority = { exclusive = true, depends_on = 0, weight = 219 }
 
+# An <img> on a page loading its picture: no-cors, Accept for images, and
+# an image's priority, below a script's. Written from
+# chrome-154-macos.image.capture.json and .image.http1.capture.json, which
+# recorded Google Chrome 155.0 loading the capture tool's /image page:
+# a version on from this profile, so the fingerprint test takes the
+# User-Agent, client hints and Accept (155 added image/jxl) from here and
+# holds everything else, order and priority included, to the recording.
+[image]
+headers = [
+    ["Host", ""],
+    ["Connection", "keep-alive"],
+    ["sec-ch-ua-platform", "\"macOS\""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"],
+    ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
+    ["sec-ch-ua-mobile", "?0"],
+    ["Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"],
+    ["Sec-Fetch-Site", ""],
+    ["Sec-Fetch-Mode", "no-cors"],
+    ["Sec-Fetch-Dest", "image"],
+    ["Referer", ""],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Cookie", ""],
+]
+http2_headers = [
+    ["priority", "u=2, i"],
+]
+# The HTTP/2 weight Chrome gives that priority.
+headers_priority = { exclusive = true, depends_on = 0, weight = 182 }
+
 # Following a link: a navigation from a page, as a person clicking it makes
 # one. The same headers as typing the address, except that Sec-Fetch-Site
 # says how the page's site relates to the link's, and Referer names the

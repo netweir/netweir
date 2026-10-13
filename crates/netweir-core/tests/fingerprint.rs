@@ -5,6 +5,7 @@
 //! navigations against the recording server: a page that sets a cookie, a
 //! revisit that sends it, a redirect to another site, and a redirect within
 //! the site. Here netweir does the same four and every request is compared.
+//! The image captures record Chrome and Firefox loading a page's `<img>`.
 
 use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
 use netweir_fingerprint::{Capture, Server, differences, extension_order_differs};
@@ -446,4 +447,140 @@ fn learned_http1(mut expected: Vec<Capture>, actual: &[Capture]) -> Vec<Capture>
         }
     }
     expected
+}
+
+/// An `<img>` on `/image` loading `/picture.png`, as the image captures
+/// recorded it: the request netweir.images makes.
+async fn image_scenario(fetcher: &Fetcher, server: &mut Server) -> Vec<Capture> {
+    let page = format!("https://localhost:{}/image", server.port);
+    let picture = format!("https://localhost:{}/picture.png", server.port);
+    let response = fetcher
+        .send(&picture, &Outgoing::image(Some(page)), &[])
+        .await
+        .unwrap();
+    assert_eq!(response.status, 200);
+    vec![server.next().await.unwrap()]
+}
+
+/// The image captures were recorded from the browser a version on from the
+/// profile (Chrome 155, Firefox 157), so the headers that name a version
+/// are taken from the profile's own `[image]` shape: the User-Agent, the
+/// client hints and, for Chrome, Accept (155 added image/jxl). Their order
+/// and everything else, TLS and HTTP/2 included, must match the recording.
+fn at_profile_version(mut expected: Vec<Capture>, profile: &str) -> Vec<Capture> {
+    let shape = Profile::named(profile).unwrap().image.unwrap();
+    for capture in &mut expected {
+        for (name, value) in &mut capture.headers {
+            let versioned = ["user-agent", "sec-ch-ua", "accept"];
+            if !versioned.contains(&name.to_ascii_lowercase().as_str()) {
+                continue;
+            }
+            if let Some((_, own)) = shape
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            {
+                *value = own.clone();
+            }
+        }
+    }
+    expected
+}
+
+#[tokio::test]
+async fn chrome_154_images_load_like_chrome_over_http2() {
+    let expected: Vec<Capture> = serde_json::from_str(include_str!(
+        "../../../profiles/chrome-154-macos.image.capture.json"
+    ))
+    .unwrap();
+    let expected = at_profile_version(expected, "chrome-154-macos");
+    let mut server = Server::start().await.unwrap();
+    let fetcher = local_fetcher("chrome-154-macos");
+    let actual = image_scenario(&fetcher, &mut server).await;
+    assert_same(&expected, &actual, "Chrome loading an image over HTTP/2");
+}
+
+#[tokio::test]
+async fn chrome_154_images_load_like_chrome_over_http1() {
+    let expected: Vec<Capture> = serde_json::from_str(include_str!(
+        "../../../profiles/chrome-154-macos.image.http1.capture.json"
+    ))
+    .unwrap();
+    let expected = at_profile_version(expected, "chrome-154-macos");
+    let mut server = Server::start_http1(0).await.unwrap();
+    let fetcher = local_fetcher("chrome-154-macos");
+    let warm = [format!("https://localhost:{}/warm", server.port)];
+    run(&fetcher, &mut server, &warm).await;
+    let actual = image_scenario(&fetcher, &mut server).await;
+    assert_same(&expected, &actual, "Chrome loading an image over HTTP/1.1");
+}
+
+#[tokio::test]
+async fn firefox_156_images_load_like_firefox_over_http2() {
+    let expected: Vec<Capture> = serde_json::from_str(include_str!(
+        "../../../profiles/firefox-156-macos.image.capture.json"
+    ))
+    .unwrap();
+    let expected = at_profile_version(expected, "firefox-156-macos");
+    let mut server = Server::start().await.unwrap();
+    let fetcher = local_fetcher("firefox-156-macos");
+    let actual = image_scenario(&fetcher, &mut server).await;
+    assert_same_in_order(&expected, &actual, "Firefox loading an image over HTTP/2");
+}
+
+#[tokio::test]
+async fn firefox_156_images_load_like_firefox_over_http1() {
+    let expected: Vec<Capture> = serde_json::from_str(include_str!(
+        "../../../profiles/firefox-156-macos.image.http1.capture.json"
+    ))
+    .unwrap();
+    let expected = at_profile_version(expected, "firefox-156-macos");
+    let mut server = Server::start_http1(0).await.unwrap();
+    let fetcher = local_fetcher("firefox-156-macos");
+    let warm = [format!("https://localhost:{}/warm", server.port)];
+    run(&fetcher, &mut server, &warm).await;
+    let actual = image_scenario(&fetcher, &mut server).await;
+    assert_same_in_order(&expected, &actual, "Firefox loading an image over HTTP/1.1");
+}
+
+/// The image tests take the headers that name a version from the
+/// `[image]` shape, so those are checked here instead: the same as the
+/// profile's own navigation, and, for Chrome's Accept, the value Chrome
+/// for Testing 154 sent for an image (155 added image/jxl).
+#[test]
+fn image_shapes_name_the_profiles_own_versions() {
+    for name in ["chrome-154-macos", "firefox-156-macos", "safari-27-macos"] {
+        let profile = Profile::named(name).unwrap();
+        let image = profile.image.as_ref().unwrap();
+        let value = |headers: &[(String, String)], key: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.clone())
+        };
+        for key in [
+            "user-agent",
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+        ] {
+            assert_eq!(
+                value(&image.headers, key),
+                value(&profile.headers, key),
+                "{name} [image] {key}"
+            );
+        }
+    }
+    let chrome = Profile::named("chrome-154-macos").unwrap();
+    let accept = chrome
+        .image
+        .unwrap()
+        .headers
+        .into_iter()
+        .find(|(k, _)| k == "Accept")
+        .map(|(_, v)| v);
+    assert_eq!(
+        accept.as_deref(),
+        Some("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+    );
 }

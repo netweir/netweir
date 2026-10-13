@@ -13,6 +13,7 @@ from netweir._errors import (
     QueueError,
 )
 from netweir._fetch import Client, Page, get, post, request, submit
+from netweir._files import files, images
 from netweir._form import File, Form
 from netweir._helpers import Price, parse_date, parse_price
 from netweir._monitor import Checks, validate
@@ -73,7 +74,9 @@ __all__ = [
     "browser",
     "css",
     "export",
+    "files",
     "get",
+    "images",
     "js_data",
     "parse",
     "parse_date",

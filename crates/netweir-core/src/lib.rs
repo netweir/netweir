@@ -24,8 +24,8 @@ pub mod traps;
 
 pub use archive::Archive;
 pub use crawl::{
-    BrowserMode, CrawlRequest, CrawlSettings, Crawler, DropReason, Event, LivePage, ProxyRotation,
-    ProxyStats, Stats, Submitted, allowed_domains, offsite,
+    BrowserMode, CrawlRequest, CrawlSettings, Crawler, Downloaded, DropReason, Event, LivePage,
+    ProxyRotation, ProxyStats, Stats, Submitted, allowed_domains, offsite,
 };
 pub use decode::{decode, meta_content};
 pub use deltafetch::DeltaKey;

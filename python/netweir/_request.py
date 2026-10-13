@@ -37,6 +37,8 @@ class Request:
 
     url: str
     callback: Callable[..., Any] | str | None = None
+    #: Higher goes first among a site's requests. Kept below 2**31 - 1,
+    #: which file downloads have: from there up, submission order decides.
     priority: int = 0
     headers: Headers = None
     meta: dict[str, Any] = dataclasses.field(default_factory=dict)

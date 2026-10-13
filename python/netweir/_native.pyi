@@ -370,7 +370,7 @@ class Crawler:
         row: int | None = None,
         browser: bool = False,
         method: str = "GET",
-        kind: Literal["navigate", "form", "fetch"] = "navigate",
+        kind: Literal["navigate", "form", "fetch", "image"] = "navigate",
         body: bytes | None = None,
         content_type: str | None = None,
         referer: str | None = None,
@@ -390,6 +390,15 @@ class Crawler:
         "delta",
         "pushed",
     ]: ...
+    def download(
+        self,
+        id: int,
+        url: str,
+        kind: Literal["fetch", "image"] = "fetch",
+        referer: str | None = None,
+        headers: list[tuple[str, str]] | None = None,
+        proxy: str | None = None,
+    ) -> Awaitable[tuple[Any, ...] | None]: ...
     def release(self, row: int) -> None: ...
     def capped(self) -> bool: ...
     def resume(self) -> dict[str, Any] | None: ...

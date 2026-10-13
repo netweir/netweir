@@ -1052,7 +1052,7 @@ impl Crawler {
     /// record isn't asked.
     /// With `apply_rules`, the rules take links from the page; then the page
     /// reaches Python only if `to_python`, and a "handled" event says so
-    /// otherwise. `method`, `kind` ("navigate", "form" or "fetch"), `body`,
+    /// otherwise. `method`, `kind` ("navigate", "form", "fetch" or "image"), `body`,
     /// `content_type` and `referer` say what to send, as Fetcher.send
     /// takes them. `proxy` sends it through that proxy, whatever the
     /// rotation.
@@ -1135,6 +1135,103 @@ impl Crawler {
             Submitted::BadProxy => "bad_proxy",
             Submitted::Delta => "delta",
             Submitted::Pushed => "pushed",
+        })
+    }
+
+    /// Fetches a file a page links to through the crawl, outside its pages
+    /// (see netweir_core's `Crawler::download`): for pipeline stages, which
+    /// await it while the crawl loop waits for them. `kind` is "fetch" or
+    /// "image"; `id` comes from the same count as `submit`'s. Awaits one of:
+    ///
+    /// - ("fetched", Response, cached)
+    /// - ("failed", FetchError)
+    /// - ("dropped", "robots" | "tdm")
+    /// - ("blocked", vendor, kind, Response)
+    /// - None, if the crawl stopped first
+    #[pyo3(signature = (id, url, kind="fetch", referer=None, headers=None, proxy=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn download<'py>(
+        &self,
+        py: Python<'py>,
+        id: u64,
+        url: String,
+        kind: &str,
+        referer: Option<String>,
+        headers: Option<Vec<(String, String)>>,
+        proxy: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let outgoing = match kind {
+            "fetch" => netweir_core::Outgoing::fetch("GET", None, None, referer),
+            "image" => netweir_core::Outgoing::image(referer),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "a download is a \"fetch\" or an \"image\", not {kind:?}"
+                )));
+            }
+        };
+        if id >= RULE_IDS {
+            return Err(PyValueError::new_err("request ids must be below 2**62"));
+        }
+        let request = CrawlRequest {
+            id,
+            url,
+            priority: 0,
+            headers: headers.unwrap_or_default(),
+            dont_filter: true,
+            depth: 0,
+            browser: false,
+            outgoing,
+            retry_post: false,
+            proxy,
+            delta_key: netweir_core::DeltaKey::Off,
+        };
+        let done = self.engine.core.download(request);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let done = done.await;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                let s =
+                    |v: &str| -> PyResult<Bound<'_, PyAny>> { Ok(v.into_pyobject(py)?.into_any()) };
+                let response = |r| -> PyResult<Bound<'_, PyAny>> {
+                    Ok(Py::new(py, Response::from(r))?.into_bound(py).into_any())
+                };
+                let Some(done) = done else {
+                    return Ok(py.None());
+                };
+                let out = match done.event {
+                    Event::Fetched { response: r, .. } => tuple(
+                        py,
+                        vec![
+                            s("fetched")?,
+                            response(r)?,
+                            pyo3::types::PyBool::new(py, done.cached)
+                                .to_owned()
+                                .into_any(),
+                        ],
+                    )?,
+                    Event::Failed { error, .. } => tuple(
+                        py,
+                        vec![s("failed")?, fetch_error_value(py, &error)?.into_bound(py)],
+                    )?,
+                    Event::Dropped { reason, .. } => {
+                        let why = match reason {
+                            DropReason::Robots => "robots",
+                            DropReason::TdmReserved => "tdm",
+                        };
+                        tuple(py, vec![s("dropped")?, s(why)?])?
+                    }
+                    Event::Blocked {
+                        vendor,
+                        kind,
+                        response: r,
+                        ..
+                    } => tuple(
+                        py,
+                        vec![s("blocked")?, s(&vendor)?, s(kind.as_str())?, response(r)?],
+                    )?,
+                    _ => py.None().into_bound(py),
+                };
+                Ok(out.unbind())
+            })
         })
     }
 
