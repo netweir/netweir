@@ -30,6 +30,13 @@
     return found;
   };
 
+  // Whether a wheel at (x, y) goes to the document: nothing there scrolls
+  // by itself, and it isn't a frame.
+  const free = ([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    return el && !el.matches("iframe, frame") && !scrollers(el).length;
+  };
+
   const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
 
   globalThis.__netweir = {
@@ -128,14 +135,16 @@
       // box that fills the middle.
       const at = [0.5, 0.25, 0.75, 0.1, 0.9, 0.02, 0.98];
       for (const fy of at) for (const fx of at) points.push([w * fx, h * fy]);
-      const free = ([x, y]) => {
-        const el = document.elementFromPoint(x, y);
-        return el && !el.matches("iframe, frame") && !scrollers(el).length;
-      };
       const ordered = [...points.filter(free), ...points.filter((p) => !free(p))];
       const [x, y] = ordered[Math.min(skip, ordered.length - 1)];
       this.wheelAt = [x, y];
       return { x, y };
+    },
+
+    // The first place pagePoint() would pick.
+    freeSpot() {
+      const { x, y } = this.pagePoint(0);
+      return [x, y];
     },
 
     // How far the page has scrolled and how far it can.
@@ -186,37 +195,46 @@
       return moved;
     },
 
-    // What it takes to wheel the element `selector` finds into view: where
-    // to put the mouse (over the box that scrolls it, or the middle of the
-    // viewport) and by how much, or, once it's in view, its middle.
+    // What it takes to wheel the element `selector` finds into view. Each
+    // box that scrolls it is asked in turn, innermost first and the
+    // document last: the first that doesn't show all of it (or its middle,
+    // if it's too big to show whole), and can still scroll the way it
+    // needs, is where the mouse goes and by how much. Once every one shows
+    // it, it's done and its middle is returned; if one doesn't and none
+    // can scroll, it's stuck, and the caller falls back.
     async aim(selector) {
       const c = await this.check(selector, ["attached", "visible"], false);
       if (c.failed) return c;
       const el = document.querySelector(selector);
-      let box = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
-      for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
-        const s = getComputedStyle(p);
-        const scrolls = /(auto|scroll)/.test(s.overflowX + s.overflowY);
-        if (scrolls && (p.scrollHeight > p.clientHeight || p.scrollWidth > p.clientWidth)) {
-          const b = p.getBoundingClientRect();
-          box = {
-            left: Math.max(b.left, 0),
-            top: Math.max(b.top, 0),
-            right: Math.min(b.right, innerWidth),
-            bottom: Math.min(b.bottom, innerHeight),
-          };
-          break;
-        }
-      }
       const r = el.getBoundingClientRect();
       const [cx, cy] = [r.left + r.width / 2, r.top + r.height / 2];
-      const inside = (b) => cx >= b.left && cx < b.right && cy >= b.top && cy < b.bottom;
       const viewport = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
-      if (inside(box) && inside(viewport)) return { done: true, x: cx, y: cy };
-      // A box scrolled out of view can't be wheeled; the caller falls back.
-      if (box.right <= box.left || box.bottom <= box.top) return { stuck: true, x: 0, y: 0 };
-      const [bx, by] = [(box.left + box.right) / 2, (box.top + box.bottom) / 2];
-      return { x: bx, y: by, dx: cx - bx, dy: cy - by };
+      const clip = (b) => ({
+        left: Math.max(b.left, 0),
+        top: Math.max(b.top, 0),
+        right: Math.min(b.right, innerWidth),
+        bottom: Math.min(b.bottom, innerHeight),
+      });
+      const fits = (lo, hi, a, b, mid) => (hi - lo <= b - a ? lo >= a - 0.5 && hi <= b + 0.5 : mid >= a && mid < b);
+      const shows = (b) => fits(r.left, r.right, b.left, b.right, cx) && fits(r.top, r.bottom, b.top, b.bottom, cy);
+      const room = (d, at, max) => (d > 0.5 ? at < max - 0.5 : d < -0.5 ? at > 0.5 : false);
+      const page = document.scrollingElement || document.documentElement;
+      const boxes = scrollers(el.parentElement).map((p) => [p, clip(p.getBoundingClientRect())]);
+      boxes.push([page, viewport]);
+      for (const [p, b] of boxes) {
+        // One scrolled out of view itself is brought in by the next.
+        if (b.right <= b.left || b.bottom <= b.top || shows(b)) continue;
+        // The page is wheeled where nothing that scrolls by itself is
+        // under the mouse, so a box at its limit can't take the turn.
+        const [bx, by] = p === page ? this.freeSpot() : [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
+        const [dx, dy] = [cx - (b.left + b.right) / 2, cy - (b.top + b.bottom) / 2];
+        const can =
+          room(dy, p.scrollTop, p.scrollHeight - p.clientHeight) ||
+          room(dx, p.scrollLeft, p.scrollWidth - p.clientWidth);
+        if (can) return { x: bx, y: by, dx, dy };
+      }
+      if (shows(viewport)) return { done: true, x: cx, y: cy };
+      return { stuck: true, x: 0, y: 0 };
     },
 
     // Scrolls the element into view without the mouse, as click does.

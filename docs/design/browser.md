@@ -330,12 +330,18 @@ frames) and then to stop (three frames without a change), so the next
 step reads where the page really is.
 
 - With a selector and no distance, the element is wheeled into view.
-  The wheel goes over the nearest ancestor that scrolls by itself, if
-  there is one, or the middle of the viewport, by as far as brings the
-  element's centre to the middle. That repeats until its centre is in
-  view. If a turn moves nothing (the scrolling box is itself out of
-  view, or blocks the wheel), it falls back to `scrollIntoView()`, as a
-  click already does; a page can tell that one apart.
+  Each box that scrolls it is asked in turn, innermost first and the
+  document last: the first that doesn't show all of the element (or its
+  middle, for one too big to show whole) and can still scroll the way it
+  needs is wheeled, over its visible middle (the document over a place
+  where nothing else scrolls), by as far as brings the element's middle
+  to that middle. That repeats until every box shows it. So an element
+  at the end of a box that itself runs below the window gets the box
+  scrolled to its end, then the page, rather than stopping with only
+  its middle on screen. If a turn moves nothing (the scrolling box is
+  itself out of view, or blocks the wheel), or nothing can scroll and
+  it still isn't shown, it falls back to `scrollIntoView()`, as a click
+  already does; a page can tell that one apart.
 - With a distance, the wheel turns by `x` and `y` pixels, over the
   element if there's a selector (after bringing it into view), or over
   the page.

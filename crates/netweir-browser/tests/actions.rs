@@ -959,3 +959,43 @@ async fn a_timeout_on_the_first_trip_down_says_so() {
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn into_view_moves_the_page_when_the_box_holding_it_runs_out() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // The box ends just below the window; at its furthest, the element in
+    // it has its middle in view and its bottom still out of it.
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html><style>body { margin: 0 }</style>
+<div style="height: 3000px"></div>
+<div id=box style="height: 200px; overflow: auto">
+  <div style="height: 2000px"></div>
+  <p id=deep style="height: 40px; margin: 0">deep</p>
+</div>
+<div style="height: 3000px"></div>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.evaluate("scrollTo(0, box.offsetTop + 200 - innerHeight - 10)")
+        .await
+        .unwrap();
+    page.scroll(Some("#deep"), 0.0, None, None, Duration::ZERO, None)
+        .await
+        .unwrap();
+    let r = page
+        .evaluate("(() => { const r = deep.getBoundingClientRect(); return [r.top, r.bottom, innerHeight]; })()")
+        .await
+        .unwrap();
+    let (top, bottom, height) = (
+        r[0].as_f64().unwrap(),
+        r[1].as_f64().unwrap(),
+        r[2].as_f64().unwrap(),
+    );
+    assert!(top >= 0.0 && bottom <= height, "{r}");
+    browser.close().await.unwrap();
+}
