@@ -70,7 +70,9 @@ pub fn serve(routes: Vec<(&'static str, Reply)>) -> Server {
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
-                if reader.read_line(&mut line).is_err() {
+                // Chrome opens connections ahead of need and closes some
+                // unused: one that sends nothing is no request for "/".
+                if !matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
                     return;
                 }
                 let path = line.split(' ').nth(1).unwrap_or("/").to_string();
