@@ -1009,3 +1009,42 @@ async fn into_view_moves_the_page_when_the_box_holding_it_runs_out() {
     assert!(top >= 0.0 && bottom <= height, "{r}");
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn scrolling_to_the_bottom_turns_whole_notches_as_a_mouse_wheel_does() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // An awkward height, so the last stretch isn't a whole number of
+    // notches.
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<script>
+  window.deltas = [];
+  addEventListener('wheel', (e) => deltas.push(e.deltaY), {passive: true});
+</script>
+<div style="height: 4321px"></div>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let rounds = page
+        .scroll(None, 0.0, None, None, Duration::from_millis(300), None)
+        .await
+        .unwrap();
+    assert_at_bottom(&page, rounds).await;
+    let deltas = page.evaluate("deltas").await.unwrap();
+    let all: Vec<f64> = deltas
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_f64().unwrap())
+        .collect();
+    assert!(
+        !all.is_empty() && all.iter().all(|d| *d == 100.0),
+        "{all:?}"
+    );
+    browser.close().await.unwrap();
+}

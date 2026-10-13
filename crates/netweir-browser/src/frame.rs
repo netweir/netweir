@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::browser::str_of;
-use crate::page::Page;
+use crate::page::{NOTCH, Page};
 use crate::{Error, Result};
 
 /// netweir's helpers, installed in each document's isolated world. The
@@ -888,7 +888,15 @@ impl Frame {
                 if past() {
                     return Err(late(grew, false));
                 }
-                let step = m["view"].as_f64().unwrap_or(600.0).min(max - at);
+                // Whole notches, as a mouse wheel turns: about a window's
+                // worth, and at the end as many as cover what's left, never
+                // a fraction of one. How far a notch scrolls is Chrome's to
+                // say (on Windows it differs from the delta), so a turn cut
+                // to land exactly can come up short, and the sliver of a
+                // turn after it can move nothing.
+                let view = (m["view"].as_f64().unwrap_or(600.0) / NOTCH).floor();
+                let left = ((max - at) / NOTCH).ceil();
+                let step = view.min(left).max(1.0) * NOTCH;
                 // The place is picked again each turn, since the page moves
                 // what's under it; where a turn moves nothing, a few others
                 // are tried before the page is taken to have stopped.

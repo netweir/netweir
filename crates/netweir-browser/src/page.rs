@@ -207,7 +207,7 @@ pub(crate) struct State {
 
 /// How far one notch of a mouse wheel scrolls, in pixels: 100 on Windows
 /// and Linux, about that on a Mac.
-const NOTCH: f64 = 100.0;
+pub(crate) const NOTCH: f64 = 100.0;
 
 /// How many documents' events and responses are kept.
 const KEPT: usize = 16;

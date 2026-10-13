@@ -383,10 +383,16 @@ step reads where the page really is.
   places before the page is taken to have stopped, and 40 turns in a row
   that move something but not the page (a box or frame that won't pass
   the scroll on) stop it too.
-- With neither, it scrolls to the bottom. Each round wheels down, a
-  viewport at a time, to where the bottom was when the round began,
-  then polls the document's `scrollHeight` until it grows or `idle`
-  runs out. Growth starts another round; none ends it. Stopping at the
+- With neither, it scrolls to the bottom. Each round wheels down, in
+  turns of whole notches about a viewport long (the last only as many as
+  cover what's left), until the page is at or past where the bottom was
+  when the round began, then polls the
+  document's `scrollHeight` until it grows or `idle` runs out. No turn is
+  a fraction of a notch: how far a notch scrolls is Chrome's to decide
+  per platform, and on Windows it isn't the delta. When turns were cut
+  to land exactly, Windows CI stopped 56 px short of the bottom with the
+  box in the way never touched; whole notches, as a mouse wheel sends,
+  don't depend on that arithmetic. Growth starts another round; none ends it. Stopping at the
   old bottom makes each round one trip, so `times=1` is exactly one
   batch from a feed that loads as you near the end, and the response
   that batch came in can be caught with `expect_response`. It returns
