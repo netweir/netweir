@@ -401,11 +401,14 @@ step reads where the page really is.
   don't depend on that arithmetic.
   The bottom is measured against the height the page scrolls in
   (`scrollingElement.clientHeight`, which leaves out a horizontal
-  scrollbar), and a turn that moves nothing at any of the places tried
-  is taken as the bottom, whatever the arithmetic says: on Windows CI
-  the page went no further than 8 px short of `scrollHeight` minus the
-  window's height, by wheel or by script, so the browser's own limit is
-  what counts. Growth starts another round; none ends it. Stopping at the
+  scrollbar). On Windows CI the last notch, with 8 px to go, moved
+  nothing, though a script then took the page the rest of the way. So
+  when a turn moves nothing with less than a notch left, that sliver is
+  scrolled by script, once per trip, after any scroll still running has
+  finished: a page that loads more at its very bottom has to see the
+  page get there. It's the one place scrolling to the bottom scrolls by
+  script, which a page can tell apart, as with click's fallback. A
+  page that doesn't move for that either has stopped. Growth starts another round; none ends it. Stopping at the
   old bottom makes each round one trip, so `times=1` is exactly one
   batch from a feed that loads as you near the end, and the response
   that batch came in can be caught with `expect_response`. It returns

@@ -880,6 +880,8 @@ impl Frame {
             // Turns in a row that moved something, but not the page: a box
             // or a frame under the wheel that won't pass the scroll on.
             let mut stalled = 0;
+            // Whether the last sliver has been scrolled by script.
+            let mut nudged = false;
             loop {
                 let at = m["y"].as_f64().unwrap_or(0.0);
                 if at >= max - 1.0 {
@@ -909,10 +911,31 @@ impl Frame {
                     }
                 }
                 if !moved {
-                    // As far as the browser will take the page, which is the
-                    // bottom whatever the heights say: Windows stopped 8 px
-                    // short of scrollHeight minus the window, by wheel and by
-                    // script alike.
+                    // The wheel may not take the page its last few pixels:
+                    // on Windows CI the last notch, with 8 px to go, moved
+                    // nothing, though a script took it the rest of the way.
+                    // Something waiting at the very bottom has to see the
+                    // page get there, so that sliver (less than a notch, as
+                    // far as the page really goes) is scrolled by script, as
+                    // click scrolls, which a page can tell apart. Once per
+                    // trip, after any scroll still running has finished, so
+                    // it can't carry the page back.
+                    m = self.helper("__netweir.metrics()").await?;
+                    let (now, end) = (
+                        m["y"].as_f64().unwrap_or(0.0),
+                        m["max"].as_f64().unwrap_or(0.0),
+                    );
+                    if !nudged && end - now > 0.5 && end - now < NOTCH {
+                        nudged = true;
+                        self.helper("__netweir.settle(null, __netweir.where(null))")
+                            .await?;
+                        self.helper("__netweir.toEnd()").await?;
+                        self.helper("__netweir.settle(null, __netweir.where(null))")
+                            .await?;
+                        m = self.helper("__netweir.metrics()").await?;
+                        continue;
+                    }
+                    // Otherwise as far as the browser will take the page.
                     // Known limit: a page that scrolls in a box of its own,
                     // not as a whole, isn't scrolled by this; wheel the box
                     // with a selector instead.

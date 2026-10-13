@@ -1075,3 +1075,45 @@ async fn scrolling_to_the_bottom_turns_whole_notches_as_a_mouse_wheel_does() {
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn the_last_pixels_the_wheel_wont_take_are_scrolled_all_the_same() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // The wheel can't take the page its last few pixels, as on Windows,
+    // where the last notch with 8 px to go moved nothing though a script
+    // could; something waiting at the very bottom still has to see the
+    // page get there.
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<script>
+  window.reached = false;
+  const bottom = () => {
+    const s = document.scrollingElement;
+    return s.scrollHeight - s.clientHeight;
+  };
+  addEventListener('wheel', (e) => {
+    if (scrollY > bottom() - 60) e.preventDefault();
+  }, {passive: false});
+  addEventListener('scroll', () => {
+    if (scrollY >= bottom() - 1) reached = true;
+  });
+</script>
+<div style="height: 4321px"></div>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let rounds = page
+        .scroll(None, 0.0, None, None, Duration::from_millis(300), None)
+        .await
+        .unwrap();
+    // Read before the check below scrolls by script itself.
+    let reached = page.evaluate("reached").await.unwrap();
+    assert_at_bottom(&page, rounds).await;
+    assert_eq!(reached, json!(true));
+    browser.close().await.unwrap();
+}

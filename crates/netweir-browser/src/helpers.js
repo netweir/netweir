@@ -155,6 +155,12 @@
       return { y: scrollY, max: s.scrollHeight - s.clientHeight, height: s.scrollHeight, view: s.clientHeight };
     },
 
+    // Scrolls the page by script to as far as it goes.
+    toEnd() {
+      const s = document.scrollingElement || document.documentElement;
+      scrollTo({ left: scrollX, top: s.scrollHeight - s.clientHeight, behavior: "instant" });
+    },
+
     // Where the page, the boxes under the wheel, and the element
     // `selector` finds if given, are scrolled to, as one string to compare.
     where(selector) {
