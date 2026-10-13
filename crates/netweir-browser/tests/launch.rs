@@ -138,3 +138,45 @@ async fn chrome_netweir_installed_lets_its_sandbox_in() {
         assert!(sids.lines().any(|l| l.trim() == sid), "{sid} not in {sids}");
     }
 }
+
+/// A chrome-headless-shell that `netweir install chrome --headless-shell`
+/// put in place, if there is one: the tests that need it skip without.
+fn headless_shell() -> Option<std::path::PathBuf> {
+    let platform = netweir_browser::cft_platform()?;
+    let mut found: Vec<_> = std::fs::read_dir(netweir_browser::netweir_home().join("chrome"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            e.path()
+                .join(netweir_browser::cft_executable(platform, true))
+        })
+        .filter(|p| p.is_file())
+        .collect();
+    found.sort();
+    let shell = found.pop();
+    if shell.is_none() {
+        eprintln!("skipped: no chrome-headless-shell installed");
+    }
+    shell
+}
+
+#[tokio::test]
+async fn chrome_headless_shell_launches_and_says_what_it_is() {
+    let Some(executable) = headless_shell() else {
+        return;
+    };
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        timeout: std::time::Duration::from_secs(30),
+        ..LaunchOptions::default()
+    })
+    .await;
+    let page = browser.new_page().await.unwrap();
+    let agent = page.evaluate("navigator.userAgent").await.unwrap();
+    assert!(
+        agent.as_str().unwrap().contains(" Chrome/")
+            && !agent.as_str().unwrap().contains("Headless"),
+        "{agent}"
+    );
+    browser.close().await.unwrap();
+}

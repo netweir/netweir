@@ -269,6 +269,7 @@ impl Browser {
         let full = browser
             .inner
             .version
+            .trim_start_matches("HeadlessChrome/")
             .trim_start_matches("Chrome/")
             .to_string();
         let major = full.split('.').next().unwrap_or_default().to_string();
@@ -331,16 +332,36 @@ impl Browser {
     }
 
     /// The client hints Chrome reports for itself, read where no override
-    /// is in force and the hints are visible: chrome://version.
+    /// is in force and the hints are visible: a secure page, which
+    /// `navigator.userAgentData` needs. That's chrome://version, which
+    /// Chrome serves itself and keeps out of history. chrome-headless-shell
+    /// serves no chrome:// pages, so there it's an https page a route
+    /// answers, which never leaves Chrome.
     async fn own_metadata(&self) -> Result<Value> {
+        const HINTS: &str = "navigator.userAgentData && navigator.userAgentData\
+            .getHighEntropyValues(['architecture', 'bitness', 'formFactors', \
+            'fullVersionList', 'model', 'platformVersion', 'wow64'])";
         let page = Page::open(self.inner.clone(), None, false, None, None).await?;
         let read = async {
-            page.goto("chrome://version", WaitUntil::Load, None).await?;
-            page.evaluate(
-                "navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness', \
-                 'formFactors', 'fullVersionList', 'model', 'platformVersion', 'wow64'])",
-            )
-            .await
+            if page
+                .goto("chrome://version", WaitUntil::Load, None)
+                .await
+                .is_ok()
+            {
+                let values = page.evaluate(HINTS).await?;
+                if values.is_object() {
+                    return Ok(values);
+                }
+            }
+            let mut routes = page.route().await?;
+            tokio::spawn(async move {
+                while let Some(route) = routes.recv().await {
+                    let _ = route.fulfill(200, &[], b"").await;
+                }
+            });
+            page.goto("https://netweir.invalid/", WaitUntil::Load, None)
+                .await?;
+            page.evaluate(HINTS).await
         }
         .await;
         page.close().await?;
