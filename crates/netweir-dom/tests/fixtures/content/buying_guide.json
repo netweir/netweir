@@ -1,0 +1,23 @@
+{
+  "url": "https://gadgetdesk.example/best-office-chairs",
+  "kept": [
+    "We sat in thirty-one office chairs",
+    "The best chair for most people",
+    "Every chair is assembled by the same tester",
+    "Which chair is best for back pain?"
+  ],
+  "dropped": [
+    "Save $100 on a standing desk",
+    "part of a media group"
+  ],
+  "markdown": [
+    "### 1. Ergo Pro"
+  ],
+  "article": {
+    "title": "Best office chairs of 2026",
+    "byline": "Jo Carter",
+    "published": null,
+    "image": "https://gadgetdesk.example/c/1.jpg",
+    "language": "en"
+  }
+}

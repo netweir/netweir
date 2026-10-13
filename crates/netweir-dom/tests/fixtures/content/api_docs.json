@@ -1,0 +1,7 @@
+{
+  "url": "https://api.petstore.example/docs",
+  "kept": ["Adds a pet to the store", "What the pet is called", "201 Created", "the species is not one the store sells"],
+  "dropped": ["List pets"],
+  "markdown": ["```json\n{\"id\": 7, \"name\": \"Rex\", \"species\": \"dog\"}\n```"],
+  "article": {"title": "Create a pet - Petstore API", "byline": null, "published": null, "image": null, "language": "en"}
+}

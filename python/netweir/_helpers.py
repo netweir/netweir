@@ -1,5 +1,5 @@
-"""Prices and dates as pages write them. The reading is done in Rust; this
-gives the results their Python types."""
+"""Prices, dates and articles as pages write them. The reading is done in
+Rust; this gives the results their Python types."""
 
 from __future__ import annotations
 
@@ -91,3 +91,36 @@ def parse_date(
         return found + step
     # Aware datetimes add on the clock face; elapsed time is added in UTC.
     return (found.astimezone(datetime.timezone.utc) + step).astimezone(found.tzinfo)
+
+
+@dataclass(frozen=True)
+class Article:
+    """What a page says about the article on it, each field None when the
+    page doesn't say.
+
+    ``text`` is the main content as a reader sees it, paragraphs separated
+    by blank lines, and ``html`` the same content's HTML; both leave out
+    the boilerplate inside it (share buttons, related links, ads) and are
+    None when the page has no main content. ``published`` is a datetime,
+    read as ``parse_date`` reads it. ``image`` is absolute."""
+
+    title: str | None = None
+    byline: str | None = None
+    published: datetime.datetime | None = None
+    image: str | None = None
+    language: str | None = None
+    text: str | None = None
+    html: str | None = None
+
+
+def _article(
+    title: str | None,
+    byline: str | None,
+    published: str | None,
+    image: str | None,
+    language: str | None,
+    text: str | None,
+    html: str | None,
+) -> Article:
+    when = parse_date(published) if published else None
+    return Article(title, byline, when, image, language, text, html)

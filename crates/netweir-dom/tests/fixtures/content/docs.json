@@ -1,0 +1,35 @@
+{
+  "url": "https://docs.example/docs/retries/",
+  "kept": [
+    "Retries and backoff",
+    "Tidewater retries a request that fails",
+    "This one tries five times",
+    "client = Client(retry=Retry(attempts=5, backoff=0.5))",
+    "A request with a body is only retried",
+    "Seconds before the second attempt",
+    "When the last attempt fails"
+  ],
+  "dropped": [
+    "Quick start",
+    "Installing",
+    "Logging",
+    "Search the docs",
+    "Created using a documentation generator",
+    "Timeouts »",
+    "¶"
+  ],
+  "markdown": [
+    "# Retries and backoff\n\nTidewater retries",
+    "```python\nfrom tidewater import Client, Retry\n\nclient = Client(retry=Retry(attempts=5, backoff=0.5))\n```",
+    "| Option | Default | Meaning |\n| --- | --- | --- |\n| `attempts` | 3 | How many times to try, the first included. |",
+    "| `statuses` | `{502, 503, 504}` | Statuses worth retrying. Use `a\\|b` sets to combine. |",
+    "a `5xx` status"
+  ],
+  "article": {
+    "title": "Retries and backoff",
+    "byline": null,
+    "published": null,
+    "image": null,
+    "language": "en"
+  }
+}

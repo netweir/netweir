@@ -1,0 +1,7 @@
+{
+  "url": "https://riverside.example/study/computer-science",
+  "kept": ["three-year course", "In your first year", "Tuition fees for home students", "Entry requirements", "Three A-levels", "How to apply", "admissions test", "Can I study abroad?", "partner universities"],
+  "dropped": ["open days", "Research"],
+  "markdown": ["## Entry requirements\n\nThree A-levels"],
+  "article": {"title": "Computer Science", "byline": null, "published": null, "image": null, "language": "en"}
+}

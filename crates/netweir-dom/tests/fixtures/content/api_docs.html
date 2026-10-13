@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Create a pet - Petstore API</title></head>
+<body>
+<div class="menu-content"><ul><li><a href="#op/listPets">List pets</a></li><li><a href="#op/createPet">Create a pet</a></li><li><a href="#op/getPet">Get a pet</a></li></ul></div>
+<div class="api-content">
+  <div id="operation/createPet" class="operation">
+    <h2>Create a pet</h2>
+    <p>Adds a pet to the store. The name must be unique within the store, and the species must be one the store already sells; anything else is rejected with a 400.</p>
+    <section id="request-body"><h3>Request body</h3><table><tr><th>Field</th><th>Type</th><th>Description</th></tr>
+      <tr><td><code>name</code></td><td>string</td><td>What the pet is called, at most 64 characters.</td></tr>
+      <tr><td><code>species</code></td><td>string</td><td>One of the species listed by the species endpoint.</td></tr></table></section>
+    <section id="responses" class="responses-wrapper"><h3>Responses</h3>
+      <div class="response"><h4>201 Created</h4><p>The pet was stored. Its new id is in the Location header, and the body holds the pet as stored.</p>
+      <pre><code class="language-json">{"id": 7, "name": "Rex", "species": "dog"}</code></pre></div>
+      <div class="response"><h4>400 Bad Request</h4><p>A required field is missing, the name is taken, or the species is not one the store sells.</p></div>
+    </section>
+  </div>
+</div>
+</body></html>

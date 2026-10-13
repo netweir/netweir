@@ -1,0 +1,7 @@
+{
+  "url": "https://margin.letters.example/p/wrong",
+  "kept": ["On being wrong in public", "Three years ago I started keeping a public list", "What surprised me is how few of the mistakes"],
+  "dropped": ["Subscribe for free", "This is the post I send", "Privacy and terms", "Sign in"],
+  "markdown": ["# On being wrong in public"],
+  "article": {"title": "On being wrong in public", "byline": "Hana Sato", "published": "2026-09-29T20:04:06+00:00", "image": "https://cdn.letters.example/margin/wrong.png", "language": "en"}
+}

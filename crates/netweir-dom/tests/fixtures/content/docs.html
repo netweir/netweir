@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Retries and backoff — Tidewater 3.2 documentation</title>
+</head>
+<body>
+<div class="topbar"><a href="/" class="brand">Tidewater</a> <a href="/docs/">Docs</a> <a href="/api/">API</a> <a href="https://code.example/tidewater">Source</a> <input type="search" placeholder="Search the docs"></div>
+<div class="wrapper">
+  <div class="sphinxsidebar" role="navigation">
+    <h3>Contents</h3>
+    <ul>
+      <li><a href="/docs/install/">Installing</a></li>
+      <li><a href="/docs/quickstart/">Quick start</a></li>
+      <li><a class="current" href="/docs/retries/">Retries and backoff</a></li>
+      <li><a href="/docs/timeouts/">Timeouts</a></li>
+      <li><a href="/docs/logging/">Logging</a></li>
+    </ul>
+  </div>
+  <div class="document">
+    <div class="body" role="main">
+      <section id="retries-and-backoff">
+        <h1>Retries and backoff<a class="headerlink" href="#retries-and-backoff" title="Link to this heading">¶</a></h1>
+        <p>Tidewater retries a request that fails with a connection error or a <code>5xx</code> status, waiting longer before each attempt. You choose how many attempts it makes and how the wait grows.</p>
+        <section id="a-first-example">
+          <h2>A first example<a class="headerlink" href="#a-first-example" title="Link to this heading">¶</a></h2>
+          <p>Pass a <code>Retry</code> to the client. This one tries five times, doubling the wait from half a second:</p>
+          <div class="highlight-python notranslate"><div class="highlight"><pre class="language-python"><span class="kn">from</span> <span class="nn">tidewater</span> <span class="kn">import</span> <span class="n">Client</span><span class="p">,</span> <span class="n">Retry</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="n">Client</span><span class="p">(</span><span class="n">retry</span><span class="o">=</span><span class="n">Retry</span><span class="p">(</span><span class="n">attempts</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">backoff</span><span class="o">=</span><span class="mf">0.5</span><span class="p">))</span>
+</pre></div></div>
+          <div class="admonition note"><p class="admonition-title">Note</p><p>A request with a body is only retried when the body can be sent again: bytes and files can, generators can’t.</p></div>
+        </section>
+        <section id="options">
+          <h2>Options<a class="headerlink" href="#options" title="Link to this heading">¶</a></h2>
+          <p>Every option has a default that suits most services:</p>
+          <table class="docutils">
+            <thead><tr><th>Option</th><th>Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>attempts</code></td><td>3</td><td>How many times to try, the first included.</td></tr>
+              <tr><td><code>backoff</code></td><td>1.0</td><td>Seconds before the second attempt; doubled after each one.</td></tr>
+              <tr><td><code>statuses</code></td><td><code>{502, 503, 504}</code></td><td>Statuses worth retrying. Use <code>a|b</code> sets to combine.</td></tr>
+            </tbody>
+          </table>
+          <p>The wait is capped at <code>max_backoff</code>, sixty seconds unless you change it, so a long run of failures never leaves a request waiting for hours.</p>
+        </section>
+        <section id="giving-up">
+          <h2>Giving up<a class="headerlink" href="#giving-up" title="Link to this heading">¶</a></h2>
+          <p>When the last attempt fails, the client raises <code>RetryError</code> with every failure attached, oldest first, so you can see whether the service was down or merely slow.</p>
+        </section>
+      </section>
+    </div>
+    <div class="related" role="navigation"><a href="/docs/quickstart/">« Quick start</a> | <a href="/docs/timeouts/">Timeouts »</a></div>
+  </div>
+</div>
+<div class="footer">© Copyright 2026, the Tidewater authors. Created using a documentation generator.</div>
+</body>
+</html>

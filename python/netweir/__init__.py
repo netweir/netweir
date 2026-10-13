@@ -15,7 +15,7 @@ from netweir._errors import (
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._files import files, images
 from netweir._form import File, Form
-from netweir._helpers import Price, parse_date, parse_price
+from netweir._helpers import Article, Price, parse_date, parse_price
 from netweir._jmespath import jmespath
 from netweir._monitor import Checks, validate
 from netweir._native import (
@@ -40,6 +40,7 @@ from netweir._request import Request
 from netweir._rules import Follow, Item, css, xpath
 
 __all__ = [
+    "Article",
     "Blocked",
     "Browser",
     "BrowserContext",

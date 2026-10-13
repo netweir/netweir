@@ -1,0 +1,24 @@
+{
+  "url": "http://valves.example/projects/3",
+  "kept": [
+    "this week was all about the electrolytic capacitors",
+    "I replaced the main smoothing can",
+    "It settled at 62 mA",
+    "Next time: aligning the IF stages"
+  ],
+  "dropped": [
+    "Valve Workshop",
+    "Part 4",
+    "Sign the guestbook"
+  ],
+  "markdown": [
+    "![Chassis after recapping](http://valves.example/projects/img/chassis-top.jpg)"
+  ],
+  "article": {
+    "title": "Restoring a 1960s valve radio, part 3",
+    "byline": null,
+    "published": null,
+    "image": "http://valves.example/projects/img/chassis-top.jpg",
+    "language": null
+  }
+}

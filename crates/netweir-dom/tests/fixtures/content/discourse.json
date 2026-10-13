@@ -1,0 +1,7 @@
+{
+  "url": "https://talk.langtalk.example/t/should-the-formatter-wrap/1182",
+  "kept": ["Should the formatter wrap long string literals?", "split them at word boundaries", "Byte strings and f-strings would need care", "I will write up the escape sequence cases"],
+  "dropped": ["Loading", "Guidelines", "best viewed with JavaScript"],
+  "markdown": ["# [Should the formatter wrap long string literals?](https://talk.langtalk.example/t/should-the-formatter-wrap/1182)"],
+  "article": {"title": "Should the formatter wrap long string literals?", "byline": "kestrel", "published": "2026-07-29T15:40:42Z", "image": null, "language": "en"}
+}

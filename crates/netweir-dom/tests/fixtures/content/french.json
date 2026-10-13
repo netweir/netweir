@@ -1,0 +1,25 @@
+{
+  "url": "https://quotidien.example/lyon/croix-rousse-ateliers",
+  "kept": [
+    "les pentes de la Croix-Rousse retrouvent leurs ateliers",
+    "Ébénistes, relieurs et céramistes",
+    "« Les plafonds de quatre mètres",
+    "Des loyers encore abordables"
+  ],
+  "dropped": [
+    "Nous utilisons des cookies",
+    "S’abonner",
+    "Les traboules rouvrent",
+    "Tous droits réservés"
+  ],
+  "markdown": [
+    "## Des loyers encore abordables"
+  ],
+  "article": {
+    "title": "À Lyon, les pentes de la Croix-Rousse retrouvent leurs ateliers",
+    "byline": "Camille Durand",
+    "published": "2026-10-05T06:00:00+02:00",
+    "image": null,
+    "language": "fr"
+  }
+}

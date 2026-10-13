@@ -324,6 +324,131 @@ once has a list of its values. A parsed document has it too:
 `netweir.parse(html).metadata(base_url)`.
 
 
+## Reading an article, and Markdown
+
+Most of a news page isn't the news. There's the menu, a cookie banner,
+share buttons, an advert halfway down, a box of related stories, a
+sidebar of the most read, and a few hundred comments. When what you want
+is the story itself, ask for the main content:
+
+```python
+page = netweir.get("https://courier.example/news/local/harbour-wall")
+
+page.main_content()              # <Node article>, the element holding the story
+page.markdown(main_only=True)    # the story as Markdown
+page.clean_text(main_only=True)  # the story as plain text
+```
+
+`main_content()` gives the element that holds the page's content: the
+article, the blog post, the docs page, the thread, the product's
+description. It weighs every block of text on the page: paragraphs of
+prose count for the element they're in, links count against it, and
+anything inside navigation, sidebars, footers, comments, share and
+related boxes, ads or cookie banners counts against whatever holds it.
+The element that comes out ahead is the content. The
+[design note](design/content.md) has the details.
+
+You get None when nothing stands out: a page with only a few sentences
+on it, or a listing, where the text is spread across a grid of cards
+(three or more, each with a linked heading or a linked image above a
+linked headline). A category page, a search result or a news homepage
+has no one main content, and Netweir won't pretend it does. A page that
+builds itself in JavaScript sometimes keeps a plain copy for crawlers in
+`<noscript>`, as Discourse forums do; when nothing else on the page
+stands out, that copy is read, unless it's only a notice asking you to
+turn JavaScript on. A shop's grid of products counts as a listing too,
+and so does a homepage full of headline cards, even with a stray
+paragraph of small print beside them.
+
+With `main_only=True`, the boilerplate inside the content is left out
+too: the share buttons under the headline, the related links between
+paragraphs, the tags at the end. Without it, you get the whole page (or
+element) as it is, minus what nobody sees. Either way, scripts, styles,
+form controls, screen-reader-only labels and hidden widgets (a modal, a
+cookie banner, a form that pops up) are skipped. What a page folds away
+until you click, such as an accordion's panels, a tab or a FAQ's answers,
+is still its content and is kept.
+
+### Articles
+
+`page.article()` puts the rest of what a reader wants next to the text:
+
+```python
+article = page.article()
+article.title      # 'Harbour wall gives way after record tide'
+article.byline     # 'Priya Shah'
+article.published  # datetime.datetime(2026, 10, 11, 7, 45, tzinfo=...)
+article.image      # 'https://courier.example/media/2026/10/harbour-wall.jpg'
+article.language   # 'en-GB'
+article.text       # the story, a blank line between paragraphs
+article.html       # the story's HTML, with the boilerplate taken out
+```
+
+Most fields come from the page's structured data first (JSON-LD's
+`author` and `datePublished`, Open Graph tags) and from its HTML after
+(a `rel="author"` link or a byline, a `<time datetime>` in the content,
+`<html lang>`). The title is the exception: the `<h1>` you'd see on the
+page comes first, then JSON-LD's `headline`, then `og:title`. A byline
+names a person where the page gives one, so an Organization in JSON-LD
+(usually the publication) only fills in when nothing else does. The date is read by
+`parse_date`, so it's a `datetime`, and None if the page wrote something
+Netweir can't read. A field the page doesn't give is None, and so are
+`text` and `html` when there's no main content.
+
+### Markdown
+
+`markdown()` works on a page, a parsed document or any element in one:
+
+```python
+netweir.parse(html).markdown("https://example.com/")  # links made absolute
+page.css("table.specs")[0].markdown()                 # one table
+```
+
+What you get is CommonMark, with GitHub's tables and strikethrough:
+
+- Headings, paragraphs, `*emphasis*`, `**strong**`, `~~struck~~`,
+  blockquotes, `---` for `<hr>`, and a backslash at the end of a line for
+  `<br>`. Two `<br>`s in a row end the paragraph, as old pages use them.
+- Links and images with their titles, made absolute against the page
+  (`page.markdown()` does this for you; on a parsed document, pass the
+  URL). A `javascript:` link becomes its text, and a link with no text
+  is dropped. Lazy-loaded images are found in `data-src` or `srcset`.
+- Lists nest (ten deep at most; deeper ones are written at ten), and an
+  ordered list keeps its `start`. Two lists in a row get different
+  markers (`-` then `*`), or Markdown would merge them.
+- `<pre>` becomes a fenced code block, with the language from a
+  `language-python` or `lang-py` class, and a fence longer than any run
+  of backticks inside. Inline `<code>` is a code span.
+- Tables become pipe tables. A cell spanning columns or rows is written
+  once and the cells it covers are left empty, since Markdown can't
+  merge them. A table inside another, or of a single column, is laid out
+  as blocks instead, because that's a page layout rather than data.
+- Heading permalinks (`¶`, `#`) and wiki `[edit]` links are left out.
+  Emphasis Markdown couldn't open or close where it sits (`a<em>(x)</em>b`)
+  is written as `<em>` HTML.
+- A non-breaking space stays one in Markdown, and is a plain space in
+  `clean_text()`.
+- Text that would read as Markdown is escaped (`2\*3`, `\[note\]`,
+  `1986\. A good year` at the start of a line), whitespace is collapsed as
+  a browser collapses it, and there's never more than one blank line in a
+  row outside code.
+
+The same page always gives the same Markdown, so you can diff it between
+crawls.
+
+### Clean text
+
+`clean_text()` is what a reader sees, as plain text: a blank line between
+paragraphs and headings, one line per list item, a line per table row
+with tabs between the cells, and preformatted text left as it was. It's
+`get_text()` that knows where the blocks are:
+
+```python
+doc = netweir.parse("<h1>Specs</h1><p>Oak,<br>hand finished</p><ul><li>46 cm</li><li>2 kg</li></ul>")
+doc.get_text()    # 'SpecsOak,hand finished46 cm2 kg'
+doc.clean_text()  # 'Specs\n\nOak,\nhand finished\n\n46 cm\n2 kg'
+```
+
 ## Prices, dates and data in scripts
 
 Three things turn up on nearly every job, and each is a regular

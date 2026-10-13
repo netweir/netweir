@@ -1,0 +1,7 @@
+{
+  "url": "https://en.openpedia.example/wiki/Dry_stone_wall",
+  "kept": ["is a wall built from stones without any mortar", "Walls of this kind divide fields", "long through stones laid across both faces", "Walls of the Dales"],
+  "dropped": ["Jump to content", "Random article", "[edit]", "last edited on", "Search Openpedia"],
+  "markdown": ["## Construction\n\nA wall is usually built", "A **dry stone wall** is a wall built", "[\\[1\\]](https://en.openpedia.example/wiki/Dry_stone_wall#cite_note-1)", "*Walls of the Dales*"],
+  "article": {"title": "Dry stone wall", "byline": "Contributors to Openpedia projects", "published": "2004-03-11T09:12:44Z", "image": "https://upload.example/Dry_stone_wall.jpg", "language": "en"}
+}

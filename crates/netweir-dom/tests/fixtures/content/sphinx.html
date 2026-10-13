@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" data-content_root="../">
+<head><meta charset="utf-8"><title>batched — Grouping items from an iterable &#8212; Pylib 3.15 documentation</title>
+<meta property="og:title" content="batched — Grouping items from an iterable"></head>
+<body>
+<div class="related" role="navigation" aria-label="Related"><h3>Navigation</h3><ul><li class="right"><a href="../genindex.html" title="General Index">index</a></li><li><a href="../index.html">Pylib 3.15 documentation</a> &#187;</li><li><a href="index.html">The Library</a> &#187;</li></ul></div>
+<div class="document">
+  <div class="documentwrapper"><div class="bodywrapper"><div class="body" role="main">
+  <section id="batched-grouping-items-from-an-iterable">
+  <h1><code class="xref py py-mod docutils literal notranslate"><span class="pre">batched</span></code> — Grouping items from an iterable<a class="headerlink" href="#batched-grouping-items-from-an-iterable" title="Link to this heading">¶</a></h1>
+  <p>This module groups the items of any iterable into tuples of a fixed size, which is useful when an API accepts at most a certain number of records in one request.</p>
+  <dl class="py function"><dt class="sig sig-object py" id="batched.batched"><span class="sig-name descname"><span class="pre">batched</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">iterable</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#batched.batched" title="Link to this definition">¶</a></dt>
+  <dd><p>Yield tuples of <em>n</em> items from <em>iterable</em>. The last tuple may be shorter when the items run out before it fills.</p>
+  <div class="highlight-python3 notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="nb">list</span><span class="p">(</span><span class="n">batched</span><span class="p">(</span><span class="s1">'ABCDEFG'</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="go">[('A', 'B', 'C'), ('D', 'E', 'F'), ('G',)]</span>
+</pre></div></div>
+  <div class="admonition note"><p class="admonition-title">Note</p><p>Passing <code class="docutils literal notranslate"><span class="pre">n</span></code> less than one raises <a class="reference internal" href="#ValueError"><code class="xref py py-exc docutils literal notranslate"><span class="pre">ValueError</span></code></a>.</p></div>
+  </dd></dl>
+  <section id="recipes"><h2>Recipes<a class="headerlink" href="#recipes" title="Link to this heading">¶</a></h2>
+  <p>Batching pairs well with a thread pool when you want to send records to a slow service a few hundred at a time without holding them all in memory.</p>
+  </section>
+  </section>
+  </div></div></div>
+  <div class="sphinxsidebar" role="navigation" aria-label="Main"><div class="sphinxsidebarwrapper"><h3>Previous topic</h3><p class="topless"><a href="chain.html" title="previous chapter"><code>chain</code> — Joining iterables</a></p><div role="note" aria-label="source link"><h3>This page</h3><ul><li><a href="../_sources/batched.rst.txt">Show source</a></li></ul></div></div></div>
+</div>
+<div class="footer">© Copyright 2001 Pylib Foundation. This page is licensed under a free licence. Last updated on Oct 12, 2026.</div>
+</body></html>

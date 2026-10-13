@@ -49,6 +49,13 @@ Working today:
   ago`; `page.js_data("__INITIAL_STATE__")` reads the JavaScript objects
   pages keep their data in. All three work as `into=` in an item. See
   [docs/selecting.md](docs/selecting.md#prices-dates-and-data-in-scripts).
+- Articles and Markdown: `page.main_content()` finds the story, post or
+  description among the menus, sidebars, comments and ads (or tells you a
+  listing has none), `page.article()` gives its title, byline, date,
+  image and text, and `page.markdown()` writes the page or just its
+  content as Markdown, tables and code blocks included. All in Rust, in a
+  few milliseconds on a 1 MB page. See
+  [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Middlewares, signals and

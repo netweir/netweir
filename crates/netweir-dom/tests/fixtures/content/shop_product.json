@@ -1,0 +1,7 @@
+{
+  "url": "https://northside.example/products/court-low-navy",
+  "kept": ["A low-top court shoe in heavyweight canvas", "Vulcanised rubber outsole", "Runs true to size"],
+  "dropped": ["Your cart is empty", "back in stock", "consent to its processing", "added to the cart", "New arrivals"],
+  "markdown": ["- Canvas upper\n- Padded collar"],
+  "article": {"title": "Canvas Court Low", "byline": null, "published": null, "image": "https://cdn.northside.example/court-low-navy.jpg", "language": "en"}
+}

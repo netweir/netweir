@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Should the formatter wrap long string literals? - Ideas - Langtalk</title>
+<meta property="og:title" content="Should the formatter wrap long string literals?">
+<meta property="article:published_time" content="2026-07-29T15:40:42+00:00">
+<script type="application/ld+json">{"@context": "http://schema.org", "@type": "DiscussionForumPosting", "headline": "Should the formatter wrap long string literals?", "author": {"@type": "Person", "name": "kestrel"}, "datePublished": "2026-07-29T15:40:42Z"}</script>
+</head>
+<body class="crawler">
+<section id="main"><div id="splash"><p>Loading…</p></div></section>
+<noscript data-path="/t/should-the-formatter-wrap/1182">
+<header><a href="/"><img src="/logo.png" alt="Langtalk"></a></header>
+<div id="main-outlet" class="wrap" role="main">
+  <div id="topic-title"><h1><a href="/t/should-the-formatter-wrap/1182">Should the formatter wrap long string literals?</a></h1>
+  <div class="topic-category"><a href="/c/ideas/6">Ideas</a></div></div>
+  <div class="topic-body crawler-post" id="post_1" itemprop="mainEntity">
+    <div class="crawler-post-meta"><span class="creator" itemprop="author"><a href="/u/kestrel"><span itemprop="name">kestrel</span></a></span>
+    <time datetime="2026-07-29T15:40:42Z" class="post-time">July 29, 2026</time></div>
+    <div class="post" itemprop="text"><p>At the moment the formatter leaves string literals alone however long they are, so a single error message can push a line well past the limit. I would like it to split them at word boundaries using implicit concatenation.</p>
+    <p>The obvious risk is changing the meaning of code that relies on the exact layout, but I cannot think of a case where adjacent literals behave differently from one long literal.</p></div>
+  </div>
+  <div class="topic-body crawler-post" id="post_2" itemprop="comment">
+    <div class="crawler-post-meta"><span class="creator" itemprop="author"><a href="/u/oldspoke"><span itemprop="name">oldspoke</span></a></span></div>
+    <div class="post" itemprop="text"><p>Byte strings and f-strings would need care, and splitting inside an escape sequence would be a nasty bug to ship. I would rather see it behind an option first, so that people can try it on real code bases.</p></div>
+  </div>
+  <div class="topic-body crawler-post" id="post_3" itemprop="comment">
+    <div class="crawler-post-meta"><span class="creator" itemprop="author"><a href="/u/kestrel"><span itemprop="name">kestrel</span></a></span></div>
+    <div class="post" itemprop="text"><p>An option seems fair. I will write up the escape sequence cases in the proposal so the behaviour is pinned down before anyone implements it.</p></div>
+  </div>
+</div>
+<footer class="container wrap"><nav class="crawler-nav"><ul><li><a href="/">Home</a></li><li><a href="/categories">Categories</a></li><li><a href="/guidelines">Guidelines</a></li></ul></nav>
+<p class="powered-by-link">Powered by forum software, best viewed with JavaScript enabled</p></footer>
+</noscript>
+<script>Forum.start()</script>
+</body></html>

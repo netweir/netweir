@@ -1,0 +1,37 @@
+{
+  "url": "https://courier.example/news/local/harbour-wall",
+  "kept": [
+    "Harbour wall gives way after record tide",
+    "A forty-metre stretch of the harbour wall at Northshore collapsed",
+    "Coastguard teams evacuated twenty-six homes",
+    "The core has washed out behind the facing stones",
+    "We heard a crack like thunder",
+    "Residents who need somewhere to stay"
+  ],
+  "dropped": [
+    "We use cookies",
+    "Subscribe for £1",
+    "Advertisement: Switch your energy supplier",
+    "Council warned of sea wall weakness",
+    "I have lived on the quay for forty years",
+    "Most read",
+    "morning briefing",
+    "All rights reserved",
+    "Share on Social",
+    "window.analytics"
+  ],
+  "markdown": [
+    "# Harbour wall gives way after record tide",
+    "## Repairs could take months",
+    "> We heard a crack like thunder and then the sea was in the street.",
+    "[Tom Okafor](https://courier.example/people/tom-okafor)",
+    "![The collapsed section of the harbour wall at low tide](https://courier.example/media/2026/10/harbour-wall.jpg)"
+  ],
+  "article": {
+    "title": "Harbour wall gives way after record tide",
+    "byline": "Priya Shah",
+    "published": "2026-10-11T07:45:00+01:00",
+    "image": "https://courier.example/media/2026/10/harbour-wall.jpg",
+    "language": "en-GB"
+  }
+}

@@ -684,6 +684,78 @@ impl Node {
         }
     }
 
+    /// The element holding the main content at and below this node (an
+    /// article, a post, a product's description), or None when no part of
+    /// it stands out, as on a listing.
+    fn main_content(&self, py: Python<'_>) -> Option<Node> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        // SAFETY: `id` belongs to `doc`.
+        let found = py.detach(move || {
+            netweir_dom::content::main_content(unsafe { doc.node(id) }).map(|m| m.node.id())
+        });
+        found.map(|id| self.sibling(id))
+    }
+
+    /// The node as Markdown, links and images absolute against
+    /// `base_url`. With main_only=True, only the main content without its
+    /// boilerplate, or None when there's no main content.
+    #[pyo3(signature = (base_url=None, main_only=false))]
+    fn markdown(&self, py: Python<'_>, base_url: Option<&str>, main_only: bool) -> Option<String> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        let base = base_url.and_then(|b| url::Url::parse(b).ok());
+        py.detach(move || {
+            // SAFETY: `id` belongs to `doc`.
+            let node = unsafe { doc.node(id) };
+            match main_only {
+                true => netweir_dom::content::main_content(node).map(|m| m.markdown(base.as_ref())),
+                false => Some(netweir_dom::markdown::markdown(node, base.as_ref())),
+            }
+        })
+    }
+
+    /// The text a reader sees, a blank line between blocks and a line per
+    /// list item and table row. With main_only=True, only the main
+    /// content without its boilerplate, or None when there's no main
+    /// content.
+    #[pyo3(signature = (main_only=false))]
+    fn clean_text(&self, py: Python<'_>, main_only: bool) -> Option<String> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        py.detach(move || {
+            // SAFETY: `id` belongs to `doc`.
+            let node = unsafe { doc.node(id) };
+            match main_only {
+                true => netweir_dom::content::main_content(node).map(|m| m.clean_text()),
+                false => Some(netweir_dom::markdown::clean_text(node)),
+            }
+        })
+    }
+
+    /// The article on the page: its main content's text and HTML, and the
+    /// title, byline, date, lead image and language the page gives for
+    /// it, as a netweir.Article.
+    #[pyo3(signature = (base_url=None))]
+    fn article(&self, py: Python<'_>, base_url: Option<&str>) -> PyResult<Py<PyAny>> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        let base = base_url.and_then(|b| url::Url::parse(b).ok());
+        // SAFETY: `id` belongs to `doc`.
+        let a = py
+            .detach(move || netweir_dom::content::article(unsafe { doc.node(id) }, base.as_ref()));
+        // The date is read, and the dataclass made, in Python.
+        Ok(py
+            .import("netweir._helpers")?
+            .getattr("_article")?
+            .call1((
+                a.title,
+                a.byline,
+                a.published,
+                a.image,
+                a.language,
+                a.text,
+                a.html,
+            ))?
+            .unbind())
+    }
+
     /// The node as HTML.
     #[getter]
     fn html(&self, py: Python<'_>) -> String {

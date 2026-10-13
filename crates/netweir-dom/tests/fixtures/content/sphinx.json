@@ -1,0 +1,7 @@
+{
+  "url": "https://docs.pylib.example/3.15/library/batched.html",
+  "kept": ["This module groups the items of any iterable", "Yield tuples of n items", "Batching pairs well with a thread pool"],
+  "dropped": ["¶", "Show source", "Previous topic", "Last updated on", "General Index"],
+  "markdown": ["# `batched` — Grouping items from an iterable\n\n", "```python3\n>>> list(batched('ABCDEFG', 3))\n[('A', 'B', 'C'), ('D', 'E', 'F'), ('G',)]\n```", "## Recipes\n\n"],
+  "article": {"title": "batched — Grouping items from an iterable", "byline": null, "published": null, "image": null, "language": "en"}
+}

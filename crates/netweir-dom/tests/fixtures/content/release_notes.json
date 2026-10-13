@@ -1,0 +1,7 @@
+{
+  "url": "https://blog.gearbox.example/2026/10/09/gearbox-2.4/",
+  "kept": ["The Gearbox team is happy to announce", "Incremental builds now reuse the cache", "Stabilized APIs", "Ipv4Addr::BITS", "Many people came together"],
+  "dropped": ["Code of conduct", "Learn"],
+  "markdown": ["- [`BufRead::skip_until`](https://doc.example/std/BufRead::skip_until)", "#### Faster incremental builds"],
+  "article": {"title": "Announcing Gearbox 2.4", "byline": null, "published": null, "image": null, "language": "en"}
+}

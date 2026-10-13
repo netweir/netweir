@@ -1,0 +1,29 @@
+{
+  "url": "https://lumen.example/p/arden",
+  "kept": [
+    "turned from a single piece of English oak",
+    "It takes any E27 bulb up to 40 W",
+    "Specifications",
+    "Shade diameter"
+  ],
+  "dropped": [
+    "Free delivery on orders over",
+    "Basket (0)",
+    "Mira Brass Floor Lamp",
+    "You may also like",
+    "Prices include VAT",
+    "Add to basket",
+    "Natural oak"
+  ],
+  "markdown": [
+    "| Height | 46 cm |\n| --- | --- |\n| Shade diameter | 28 cm |",
+    "## Specifications"
+  ],
+  "article": {
+    "title": "Arden Oak Desk Lamp",
+    "byline": null,
+    "published": null,
+    "image": "https://cdn.lumen.example/p/arden/1.jpg",
+    "language": "en"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "url": "https://gear.example/best-desk-lamps",
+  "kept": ["We tested twenty-three desk lamps", "The best lamp for most people", "let down by an app"],
+  "dropped": ["Best office chairs", "Home office"],
+  "markdown": ["## [1. Arden Oak](https://shop.example/arden)"],
+  "article": {"title": "The five best desk lamps of 2026", "byline": "Sam Lee", "published": null, "image": null, "language": "en"}
+}

@@ -1,0 +1,23 @@
+{
+  "url": "https://minato.example/local/bookshop",
+  "kept": [
+    "小さな町の本屋が再開",
+    "昨年の春に閉店した駅前の古い本屋",
+    "子どものころに通った店をなくしたくなかった"
+  ],
+  "dropped": [
+    "スポーツ",
+    "港の花火大会",
+    "Copyright"
+  ],
+  "markdown": [
+    "# 小さな町の本屋が再開"
+  ],
+  "article": {
+    "title": "小さな町の本屋が再開",
+    "byline": null,
+    "published": "2026-10-09",
+    "image": null,
+    "language": "ja"
+  }
+}

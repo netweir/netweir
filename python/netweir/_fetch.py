@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urljoin
 from netweir import _jmespath, _track
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
+from netweir._helpers import Article
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
 from netweir._request import Request
 
@@ -205,6 +206,20 @@ class Page:
         tags; a key given more than once has a list). Relative URLs are
         resolved against the page."""
         return self.root.metadata(self.urljoin(""))
+
+    def markdown(self, main_only: bool = False) -> str | None:
+        """The page as Markdown, links and images absolute. With
+        ``main_only=True``, only its main content (see ``main_content``),
+        without the boilerplate inside it; None when there's no main
+        content."""
+        return self.root.markdown(self.urljoin(""), main_only)
+
+    def article(self) -> Article:
+        """The article on the page: its title, byline, publication date,
+        lead image and language, from its structured data first and its
+        HTML after, and the main content's text and HTML. Fields the page
+        doesn't give are None."""
+        return self.root.article(self.urljoin(""))
 
     def js_data(self, name: str | None = None) -> Any:
         """Data the page keeps in its ``<script>`` elements, read as
