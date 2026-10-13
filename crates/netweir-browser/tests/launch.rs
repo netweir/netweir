@@ -83,11 +83,13 @@ async fn a_chrome_that_wont_start_says_why() {
 }
 
 /// The SIDs an ACL grants access to, as PowerShell reads them: the names
-/// icacls prints are translated.
+/// icacls prints are translated. Asked for as SIDs, not names turned into
+/// SIDs: "ALL APPLICATION PACKAGES" doesn't translate back, and the rule
+/// would quietly drop out.
 #[cfg(windows)]
 fn granted_sids(dir: &std::path::Path) -> String {
     let script = format!(
-        "(Get-Acl -LiteralPath '{}').Access | ForEach-Object {{ $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }}",
+        "(Get-Acl -LiteralPath '{}').GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {{ $_.IdentityReference.Value }}",
         dir.display()
     );
     // Started from PowerShell 7 (as CI's steps are), Windows PowerShell
