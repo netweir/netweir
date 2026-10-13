@@ -71,6 +71,78 @@ pub(crate) fn installed_chrome(home: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Written into an install once Chrome's sandbox has been given access to
+/// it.
+const SANDBOX_GRANTED: &str = ".netweir-sandbox-access";
+
+/// What `icacls` is given to let Chrome's sandboxed processes read and run
+/// what's in `dir`: read and execute, inherited by everything in it, for
+/// ALL APPLICATION PACKAGES (S-1-15-2-1) and ALL RESTRICTED APPLICATION
+/// PACKAGES (S-1-15-2-2), by SID, since the names are translated.
+pub fn sandbox_grant_args(dir: &Path) -> Vec<std::ffi::OsString> {
+    vec![
+        dir.as_os_str().to_owned(),
+        "/grant".into(),
+        "*S-1-15-2-1:(OI)(CI)(RX)".into(),
+        "/grant".into(),
+        "*S-1-15-2-2:(OI)(CI)(RX)".into(),
+        "/Q".into(),
+    ]
+}
+
+/// The version folder of a Chrome `netweir install chrome` put under
+/// `home`, if `executable` is one.
+pub(crate) fn install_dir_of(executable: &Path, home: &Path) -> Option<PathBuf> {
+    let root = home.join("chrome");
+    let rest = executable.strip_prefix(&root).ok()?;
+    let mut parts = rest.components();
+    let version = parts.next()?;
+    // A version folder holds the build; the executable is inside it.
+    parts.next()?;
+    Some(root.join(version))
+}
+
+/// Lets Chrome's sandbox read the Chrome installed in `dir`, once. On
+/// Windows, Chrome runs its network service and other helpers in an
+/// AppContainer, which can read only what grants app packages access;
+/// Chrome's own installer grants it, and an unpacked download has none,
+/// so the network service can't start, and every navigation under way
+/// when it fails is aborted. Elsewhere there's nothing to do.
+pub fn grant_sandbox_access(dir: &Path) -> std::result::Result<(), String> {
+    if !cfg!(windows) || dir.join(SANDBOX_GRANTED).is_file() {
+        return Ok(());
+    }
+    let out = Command::new("icacls")
+        .args(sandbox_grant_args(dir))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| {
+            format!(
+                "can't run icacls to give Chrome's sandbox access to {}: {e}",
+                dir.display()
+            )
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            "icacls couldn't give Chrome's sandbox access to {} ({}): {}",
+            dir.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    std::fs::write(dir.join(SANDBOX_GRANTED), "")
+        .map_err(|e| format!("can't mark {} as done: {e}", dir.display()))
+}
+
+/// [`grant_sandbox_access`] for `executable`, if it's a Chrome netweir
+/// installed; one installed elsewhere is never touched.
+pub(crate) fn grant_if_ours(executable: &Path) -> Result<()> {
+    match install_dir_of(executable, &netweir_home()) {
+        Some(dir) => grant_sandbox_access(&dir).map_err(Error::Launch),
+        None => Ok(()),
+    }
+}
+
 /// More Chrome switches, from `$NETWEIR_CHROME_ARGS`, for every Chrome
 /// netweir launches: what a machine needs whatever the code says, such as
 /// `--disable-gpu` on a virtual Mac whose GPU hangs.
@@ -363,6 +435,41 @@ mod tests {
         );
         assert!(switches_from(Some("   ".into())).is_empty());
         assert!(switches_from(None).is_empty());
+    }
+
+    #[test]
+    fn the_sandbox_grant_names_app_packages_by_sid() {
+        let args: Vec<String> = sandbox_grant_args(Path::new("C:/n/chrome/154.0.1.2"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "C:/n/chrome/154.0.1.2",
+                "/grant",
+                "*S-1-15-2-1:(OI)(CI)(RX)",
+                "/grant",
+                "*S-1-15-2-2:(OI)(CI)(RX)",
+                "/Q",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_chrome_netweir_installed_counts_as_its_own() {
+        let home = Path::new("/h/.netweir");
+        let exe = home.join("chrome/154.0.1.2/chrome-win64/chrome.exe");
+        assert_eq!(
+            install_dir_of(&exe, home),
+            Some(home.join("chrome").join("154.0.1.2"))
+        );
+        assert_eq!(
+            install_dir_of(Path::new("/Program Files/Google/Chrome/chrome.exe"), home),
+            None
+        );
+        // Not one of netweir's versions, though under its folder.
+        assert_eq!(install_dir_of(&home.join("chrome/chrome.exe"), home), None);
     }
 
     #[test]

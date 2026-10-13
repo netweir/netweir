@@ -293,6 +293,32 @@ looks there after `$NETWEIR_CHROME` and before the system installs, newest
 version first. `--headless-shell` installs `chrome-headless-shell`
 instead, which is lighter but easier to tell from a real browser.
 
+**Chrome's sandbox on Windows.** Chrome runs its network service and
+other helpers in an AppContainer, which can read an executable only if
+its folder grants read and execute to ALL APPLICATION PACKAGES
+(S-1-15-2-1) and ALL RESTRICTED APPLICATION PACKAGES (S-1-15-2-2).
+Chrome's installer grants both; an unpacked Chrome for Testing has
+neither. Then the network service can't start, and Chrome restarts it
+again and again, aborting whatever navigation was under way
+(`ERR_ABORTED`). Chrome's stderr, which a failed navigation's error now
+carries, said so on a CI runner:
+
+```
+ERROR:sandbox\policy\win\sandbox_win.cc:804] Sandbox cannot access executable
+C:\Users\runneradmin\.netweir\chrome\154.0.8037.92\chrome-win64\chrome.exe.
+Check filesystem permissions are valid. ...: Access is denied. (0x5)
+ERROR:content\browser\network_service_instance_impl.cc:653] Network service
+crashed or was terminated, restarting service.
+```
+
+So `netweir install chrome` runs `icacls <version folder> /grant
+*S-1-15-2-1:(OI)(CI)(RX) /grant *S-1-15-2-2:(OI)(CI)(RX)` (by SID, since
+the group names are translated), fails the install if that fails, and
+leaves a marker file once it's done. Launching a Chrome under netweir's
+own install folder without the marker grants it then, so an install
+from before this works without reinstalling. A Chrome anywhere else is
+never touched.
+
 **Connecting to a running browser.** `netweir.browser(connect=url)` drives
 a Chrome that's already running, or anything else that speaks CDP, over
 a WebSocket: a `ws://` URL as Chrome prints it, an `http://host:port`

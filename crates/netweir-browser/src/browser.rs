@@ -120,6 +120,8 @@ impl Browser {
             Some(path) => path,
             None => launch::find_chrome()?,
         };
+        // An install from before netweir granted this is fixed in place.
+        launch::grant_if_ours(&executable)?;
         let keep_profile = options.user_data_dir.is_some();
         let profile = match &options.user_data_dir {
             Some(dir) => std::fs::create_dir_all(dir).map(|()| dir.clone()),

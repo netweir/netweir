@@ -14,7 +14,10 @@ mod page;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};
 pub use frame::{Frame, Pick};
-pub use launch::{cft_executable, cft_platform, find_chrome, netweir_home};
+pub use launch::{
+    cft_executable, cft_platform, find_chrome, grant_sandbox_access, netweir_home,
+    sandbox_grant_args,
+};
 pub use network::{Continue, NetworkEvent, Request, Route, glob_match, resource_types};
 pub use page::{Cookie, Page, Response, WaitUntil};
 

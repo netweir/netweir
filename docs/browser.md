@@ -44,6 +44,14 @@ client does. `--headless-shell` installs `chrome-headless-shell` instead,
 which is lighter and faster but easier to tell from a real browser; pass
 its path as `executable` to use it.
 
+On Windows, the install also lets Chrome's sandbox read the folder, as
+Chrome's own installer does: Chrome runs its network service and other
+helpers in a sandbox that can only read folders granted to app packages,
+and without that, pages fail to load with `ERR_ABORTED`. A Chrome
+installed by an earlier netweir gets the same access the first time it's
+started, so there's no need to install it again. netweir never changes
+the access of a Chrome it didn't install.
+
 On Ubuntu 23.10 and later, Chrome for Testing may not start at all:
 Ubuntu stops the user namespaces its sandbox needs unless an AppArmor
 profile allows them, and only the Google Chrome package installs one. If

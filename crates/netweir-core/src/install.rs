@@ -100,6 +100,8 @@ pub async fn install_chrome(
     let dir = home.join("chrome").join(&version);
     let executable = dir.join(cft_executable(platform, headless_shell));
     if executable.is_file() {
+        // One installed before netweir granted the sandbox access gets it.
+        netweir_browser::grant_sandbox_access(&dir)?;
         return Ok(Installed {
             version,
             executable,
@@ -164,6 +166,7 @@ pub async fn install_chrome(
     if !executable.is_file() {
         return Err(format!("{url} didn't hold {}", executable.display()));
     }
+    netweir_browser::grant_sandbox_access(&dir)?;
     Ok(Installed {
         version,
         executable,
