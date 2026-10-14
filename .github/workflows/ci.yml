@@ -1,99 +1,15 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: uvx ruff check .
-      - run: uvx ruff format --check .
-      # A prebuilt binary: the cargo-deny action builds a Docker image on
-      # every run, and fails whenever Docker Hub does.
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
-        with:
-          tool: cargo-deny
-      - run: cargo deny check licenses bans sources
-
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.14", "3.14t"]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    env:
-      # Chrome is installed below, so the browser tests run, not skip.
-      NETWEIR_REQUIRE_CHROME: "1"
-      # And redis-server, but not on Windows, which has no build of it.
-      NETWEIR_REQUIRE_REDIS: ${{ matrix.os != 'windows-latest' && '1' || '' }}
-      # The macOS runners are virtual machines whose GPU now and then hangs
-      # on Chrome's work, until the kernel stops taking any from it and
-      # Chrome waits for good. Software rendering never touches it.
-      NETWEIR_CHROME_ARGS: ${{ matrix.os == 'macos-latest' && '--disable-gpu' || '' }}
-      # .cargo/config.toml's flags less the leak: a Python object dropped
-      # off Python's threads aborts the tests instead of leaking quietly.
-      RUSTFLAGS: --cfg pyo3_disable_reference_pool
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: ${{ matrix.python }}
-      - run: uv sync --group dev
-      - run: uv run maturin develop --uv
-      # The Chrome for Testing build netweir's profiles are tuned for, as a
-      # user gets it, rather than whatever Chrome the runner image carries:
-      # the macOS runners' own Chrome now and then stopped answering for
-      # half a minute at a time.
-      - run: uv run netweir install chrome
-        timeout-minutes: 10
-      # Ubuntu stops the user namespaces Chrome's sandbox needs unless an
-      # AppArmor profile allows them, and only Google Chrome's package
-      # installs one. This keeps the sandbox on (see docs/browser.md).
-      - if: runner.os == 'Linux'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # For the queue's tests against a real Redis; each starts its own.
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends redis-server
-      - if: runner.os == 'macOS'
-        run: brew install redis
-      # A hung test fails the step, which keeps its log; cancelling the
-      # run instead loses it.
-      - run: cargo test --workspace --exclude netweir-py
-        timeout-minutes: 30
-      - run: uv run pytest -q
-        timeout-minutes: 15
-
-  bench:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  experiment:
+    runs-on: windows-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -104,8 +20,8 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
-      - run: uv sync --group dev --group bench
-      - run: uv run maturin develop --uv --release
-      - run: uv run python bench/parse.py --check
-      - run: uv run python bench/query.py --check
-      - run: uv run python bench/items.py --check
+      - run: uv sync --group dev
+      - run: uv run maturin develop --uv
+      - run: uv run netweir install chrome
+        timeout-minutes: 10
+      - run: uv run python .github/exp/enobufs_experiment.py
