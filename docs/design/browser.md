@@ -199,6 +199,21 @@ These are rules of the driver, not options, and tests enforce them:
   ahead outside the page's sessions; a person can have the setting off,
   and a page can't tell. Why, and the evidence, are in the network
   design, under "Pages fetched ahead".
+- Chrome's own feature switches that change what a server sees stay as
+  Chrome ships them. One of them, `TcpPortRandomizationWin`, makes
+  `goto()` retry. From Windows 11 22H2, and on the Windows Server 2025
+  CI runners, it sets `SO_RANDOMIZE_PORT` before each connect
+  (`net/socket/tcp_socket_win.cc`, enabled by default in
+  `net/base/features.cc`). A random port still in TIME_WAIT fails the
+  connect at once with WSAENOBUFS, which `net_errors_win.cc` maps to
+  `net::ERR_NO_BUFFER_SPACE`. Others report about one connect in 2,500;
+  here it failed a first navigation to the loopback test server in about
+  one Windows CI job in forty, with ports, pool memory and handles far
+  from running out. Turning the feature off would fix it, but a server
+  would then see source ports from Windows' sequential allocator next to
+  client hints saying Windows 11. So `goto()` asks again, up to twice,
+  after 50 ms: the connect never happened, the far end saw nothing, and
+  the next attempt gets another port.
 - Headless Chrome puts `HeadlessChrome` in its user agent, though not in
   its client hints. Each page's user agent is overridden with the same
   string reading `Chrome`, together with the client-hint metadata Chrome

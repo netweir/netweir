@@ -577,13 +577,27 @@ impl Page {
         timeout: Option<Duration>,
     ) -> Result<Response> {
         let deadline = Instant::now() + self.timeout(timeout);
-        // Held to this navigation's own deadline, which may be longer than
-        // the browser's timeout.
-        let navigate = self.call_unbounded("Page.navigate", json!({"url": url}));
-        let r = tokio::time::timeout_at(deadline, navigate)
-            .await
-            .map_err(|_| Error::Timeout(format!("navigating to {url}")))??;
-        if let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
+        let mut retries = 0;
+        let r = loop {
+            // Held to this navigation's own deadline, which may be longer
+            // than the browser's timeout.
+            let navigate = self.call_unbounded("Page.navigate", json!({"url": url}));
+            let r = tokio::time::timeout_at(deadline, navigate)
+                .await
+                .map_err(|_| Error::Timeout(format!("navigating to {url}")))??;
+            let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) else {
+                break r;
+            };
+            // A connection that never started, so the far end saw nothing:
+            // asked again, as a person would reload, it gets another port.
+            if crate::retry_navigation(e) && retries < 2 {
+                retries += 1;
+                tokio::time::sleep_until(
+                    (Instant::now() + Duration::from_millis(50)).min(deadline),
+                )
+                .await;
+                continue;
+            }
             return Err(Error::Navigation {
                 url: url.to_string(),
                 error: e.to_string(),
@@ -591,7 +605,7 @@ impl Page {
                 // stderr sometimes does.
                 said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
             });
-        }
+        };
         let Some(loader) = r["loaderId"].as_str().map(str::to_string) else {
             // Within the same document (a #fragment): nothing to wait for.
             return Ok(self.response_for(None));

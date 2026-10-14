@@ -168,7 +168,10 @@ Closing a context closes its pages; closing the browser closes everything.
 second. It returns a `BrowserResponse` with the `status`, final `url` and
 `headers` of the document. A 404 is returned like any page; a page that
 couldn't be reached at all raises `netweir.FetchError`, as `netweir.get()`
-does.
+does. One failure is tried again before you see it: on Windows 11, Chrome
+now and then can't get a local port for a connection and fails with
+`net::ERR_NO_BUFFER_SPACE` before sending anything. `goto()` asks again,
+up to twice, as a reload would, and raises only if that fails too.
 
 `page.url` is where the page is now, `await page.title()` its title and
 `await page.content()` its HTML as Chrome currently has it.

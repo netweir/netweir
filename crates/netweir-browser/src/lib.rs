@@ -129,6 +129,8 @@ impl Error {
             NetFailure::Tls
         } else if has(&[
             "CONNECTION",
+            // WSAENOBUFS from connect(): a local port it couldn't have.
+            "NO_BUFFER_SPACE",
             "NAME_NOT_RESOLVED",
             "ADDRESS",
             "INTERNET_DISCONNECTED",
@@ -142,6 +144,15 @@ impl Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Whether a navigation that failed with Chrome's net error `error` is
+/// asked again at once. Only ERR_NO_BUFFER_SPACE: on Windows 11 22H2 and
+/// later Chrome sets SO_RANDOMIZE_PORT on each connection, and a random
+/// port still in TIME_WAIT fails the connect with WSAENOBUFS before
+/// anything is sent. The next attempt gets another port.
+pub(crate) fn retry_navigation(error: &str) -> bool {
+    error == "net::ERR_NO_BUFFER_SPACE"
+}
 
 #[cfg(test)]
 mod tests {
@@ -185,5 +196,26 @@ mod tests {
         );
         assert!(text.contains("SSL handshake failed"), "{text}");
         assert_eq!(Error::Closed.net_failure(), None);
+        // The connection never started.
+        assert_eq!(
+            failed("http://a/", "net::ERR_NO_BUFFER_SPACE", None).net_failure(),
+            Some(NetFailure::Connect)
+        );
+    }
+
+    #[test]
+    fn only_a_port_windows_wouldnt_give_is_asked_again() {
+        assert!(retry_navigation("net::ERR_NO_BUFFER_SPACE"));
+        // These reached the far end, or will fail the same way again.
+        for error in [
+            "net::ERR_CONNECTION_REFUSED",
+            "net::ERR_CONNECTION_RESET",
+            "net::ERR_NAME_NOT_RESOLVED",
+            "net::ERR_TIMED_OUT",
+            "net::ERR_ABORTED",
+            "net::ERR_BLOCKED_BY_CLIENT",
+        ] {
+            assert!(!retry_navigation(error), "{error}");
+        }
     }
 }
