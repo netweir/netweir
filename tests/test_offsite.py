@@ -45,6 +45,7 @@ def base():
     yield f"http://127.0.0.1:{servers[0].server_port}"
     for server in servers:
         server.shutdown()
+        server.server_close()
 
 
 def test_allowed_domains_keeps_a_spider_on_its_sites(base, caplog):

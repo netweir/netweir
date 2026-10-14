@@ -72,6 +72,7 @@ def index():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield base + "/index.json"
     server.shutdown()
+    server.server_close()
 
 
 def test_chrome_installs_into_netweirs_folder(index, tmp_path):

@@ -181,6 +181,7 @@ def base():
     yield f"http://127.0.0.1:{servers[0].server_port}"
     for server in servers:
         server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture
@@ -317,6 +318,7 @@ async def test_a_proxy_with_a_login_carries_the_pages():
             assert (await page.parse()).css("#via::text").get() == "http://shop.test/item"
     finally:
         server.shutdown()
+        server.server_close()
 
 
 async def test_a_running_chrome_can_be_driven_and_is_left_running(base, tmp_path):

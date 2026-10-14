@@ -15,7 +15,7 @@ class _V6(ThreadingHTTPServer):
 
 def serve(handler):
     """Starts serving with `handler`; returns the servers, whose first one
-    has the port. Each must be shut down."""
+    has the port. Each must be shut down, then closed."""
     servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler)]
     # No IPv6 loopback here: localhost can only be 127.0.0.1.
     with contextlib.suppress(OSError):

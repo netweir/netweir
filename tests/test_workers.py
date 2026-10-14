@@ -69,6 +69,7 @@ def base():
     BASE_URL[:] = [f"http://127.0.0.1:{server.server_port}"]
     yield BASE_URL[0]
     server.shutdown()
+    server.server_close()
 
 
 def settings(**kw):

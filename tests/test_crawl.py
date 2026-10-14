@@ -71,6 +71,7 @@ def base():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}"
     server.shutdown()
+    server.server_close()
 
 
 FAST = netweir.Settings(throttle=False, start_delay=0, backoff_base=0.01, backoff_max=0.02)

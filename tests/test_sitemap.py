@@ -72,6 +72,7 @@ def base():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield base
     server.shutdown()
+    server.server_close()
 
 
 def crawl(spider_cls):

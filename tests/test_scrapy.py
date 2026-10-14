@@ -136,6 +136,7 @@ def base():
     server, url = serve(Site)
     yield url
     server.shutdown()
+    server.server_close()
 
 
 def crawl(tmp_path, spider_body, settings=None, env=None):
@@ -275,6 +276,7 @@ def test_meta_proxy_with_a_login(base, tmp_path):
         )
     finally:
         server.shutdown()
+        server.server_close()
     assert items == [{"via": "proxy", "url": "http://shop.test/a"}]
     assert Proxy.logins == ["Basic " + base64.b64encode(b"ann:p@ss").decode()]
 
@@ -367,6 +369,7 @@ def test_no_proxy_means_none_not_the_system_s(base, tmp_path):
         )
     finally:
         server.shutdown()
+        server.server_close()
     assert items[0]["path"] == "/direct" and Proxy.logins == []
 
 
@@ -386,6 +389,7 @@ def test_a_proxy_login_that_isn_t_ascii(base, tmp_path):
         )
     finally:
         server.shutdown()
+        server.server_close()
     assert items == [{"via": "proxy", "url": "http://shop.test/a"}]
     # Not dropped: sent, as UTF-8, which is how netweir sends a login.
     assert Proxy.logins == ["Basic " + base64.b64encode("ann:päss".encode()).decode()]
