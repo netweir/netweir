@@ -205,6 +205,11 @@ An edit waits until queries already running on other threads finish, and
 queries that start while it waits let it go first, so nothing ever reads
 a half-edited tree. An edit itself takes microseconds.
 
+On free-threaded Python the queries really do run side by side, on one
+page or a page each. If you find a node on one thread and read it on
+another, Python counts its references the slow way, though, so look nodes
+up on the thread that reads them.
+
 What you can't do is edit a page from inside a query: a function passed
 to `find_all()` that removes nodes, from that page or any other, raises
 `RuntimeError`. (Two threads each editing the other's page from inside a

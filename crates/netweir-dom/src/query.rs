@@ -207,12 +207,11 @@ impl Part {
             unsafe { (*ctx.cast::<Vec<*mut RawNode>>()).push(node) }
         }
         let mut raw: Vec<*mut RawNode> = Vec::new();
+        // Threads may match on one document at once: lexbor's matcher
+        // keeps all its state in the lxb_selectors_t (this thread's own),
+        // and only reads the tree, the selector list and the document's
+        // name tables.
         {
-            let _guard = scope
-                .doc
-                .select_lock
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let mut run = |m: &Matcher| {
                 // Only fails when lexbor cannot allocate; return what was found.
                 unsafe {

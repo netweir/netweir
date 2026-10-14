@@ -29,6 +29,12 @@ uv run maturin develop --uv
 After you change any Rust, run `uv run maturin develop --uv` again before
 testing from Python.
 
+If you set `RUSTFLAGS` yourself, it replaces the flags in
+`.cargo/config.toml`, so add `--cfg pyo3_disable_reference_pool` to it.
+Without that, threads on free-threaded Python barely scale, and
+`tests/test_parse.py` fails to tell you
+([docs/design/threads.md](docs/design/threads.md)).
+
 ## Checking your change
 
 These are what CI runs, so running them first saves a round trip:

@@ -1,0 +1,11 @@
+# PyO3 without its pool of references dropped outside Python: with the
+# pool, every call from Python into Rust takes one process-wide lock, and
+# threads on free-threaded Python barely scale (docs/design/threads.md).
+# Netweir drops Python objects only on attached threads (aio.rs release);
+# one it misses is leaked rather than taken down with the process. CI's
+# tests build without the second flag, so a miss aborts them instead.
+[build]
+rustflags = [
+    "--cfg", "pyo3_disable_reference_pool",
+    "--cfg", "pyo3_leak_on_drop_without_reference_pool",
+]

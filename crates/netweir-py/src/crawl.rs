@@ -1192,7 +1192,7 @@ impl Crawler {
             delta_key: netweir_core::DeltaKey::Off,
         };
         let done = self.engine.core.download(request);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::aio::future_into_py(py, async move {
             let done = done.await;
             Python::attach(|py| -> PyResult<Py<PyAny>> {
                 let s =

@@ -53,6 +53,9 @@ jobs:
       # on Chrome's work, until the kernel stops taking any from it and
       # Chrome waits for good. Software rendering never touches it.
       NETWEIR_CHROME_ARGS: ${{ matrix.os == 'macos-latest' && '--disable-gpu' || '' }}
+      # .cargo/config.toml's flags less the leak: a Python object dropped
+      # off Python's threads aborts the tests instead of leaking quietly.
+      RUSTFLAGS: --cfg pyo3_disable_reference_pool
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

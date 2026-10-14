@@ -125,6 +125,12 @@ fn _robots_sitemaps(body: &str) -> Vec<String> {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Built without PyO3's reference pool, as threads need
+    // (docs/design/threads.md); tests check every wheel was.
+    m.add(
+        "_reference_pool_disabled",
+        cfg!(pyo3_disable_reference_pool),
+    )?;
     // Before Python shuts down, Rust threads still in it get to finish;
     // a forked child has none of its parent's (aio.rs).
     let wait = wrap_pyfunction!(aio::_wait_for_rust_threads, m)?;

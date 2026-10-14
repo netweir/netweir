@@ -53,10 +53,12 @@ manifest-path = "crates/netweir-py/Cargo.toml"
 python-source = "python"
 module-name = "netweir._native"
 # Browser profiles and block signatures are compiled into netweir-core but
-# live at the top level.
+# live at the top level. The cargo config carries the PyO3 flags that let
+# threads scale (docs/design/threads.md), so a build from source gets them.
 include = [
     { path = "profiles/*.toml", format = "sdist" },
     { path = "signatures/*.toml", format = "sdist" },
+    { path = ".cargo/config.toml", format = "sdist" },
 ]
 
 [tool.uv]

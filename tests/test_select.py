@@ -142,6 +142,51 @@ def test_threads_share_xpath_and_css(page):
     assert errors == []
 
 
+def test_sixteen_threads_read_what_one_thread_reads():
+    # Selector matching on one page runs on many threads at once, and
+    # readers count themselves in per-thread slots: every answer must be
+    # the one a single thread gets, on a shared page and on pages of
+    # their own.
+    html = "".join(
+        f'<article class="p{i % 3}" data-id="{i}"><h3><a href="/{i}" title="T{i}">N{i}</a></h3>'
+        f"<p class='price'>£{i}.00</p><ul><li>a</li><li>b{i}</li></ul></article>"
+        for i in range(60)
+    )
+
+    def answers(doc):
+        return [
+            doc.css("article.p1 h3 a::attr(title)").getall(),
+            doc.css("li:nth-child(2)::text").getall(),
+            doc.css("article:not(.p0) p.price::text").getall(),
+            doc.css("[data-id$='7'] a::attr(href)").getall(),
+            doc.xpath("//article[@data-id > 50]//a/text()").getall(),
+            [n.tag for n in doc.css("article")[10].children],
+            doc.css("article")[5].text,
+            len(doc.find_all("li")),
+        ]
+
+    shared = netweir.parse(html)
+    expected = answers(shared)
+    start = threading.Barrier(16)
+    errors = []
+
+    def work(own):
+        try:
+            doc = netweir.parse(html) if own else shared
+            start.wait()
+            for _ in range(30):
+                assert answers(doc) == expected
+        except Exception as e:  # noqa: BLE001 - report any failure from the thread
+            errors.append(e)
+
+    threads = [threading.Thread(target=work, args=(i % 2 == 0,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+
+
 def test_threads_build_a_fresh_documents_indexes_together():
     for _ in range(20):
         doc = netweir.parse(PAGE)

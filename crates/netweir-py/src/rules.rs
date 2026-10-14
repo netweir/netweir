@@ -97,6 +97,15 @@ pub(crate) struct ItemInner {
     defaults: Vec<Py<PyAny>>,
 }
 
+// The last reference to an Item's spec can go on a runtime thread: a
+// rule page's parse job keeps the engine, and its rules, until it ends,
+// even when the next() that started it was cancelled.
+impl Drop for ItemInner {
+    fn drop(&mut self) {
+        crate::aio::release(std::mem::take(&mut self.defaults));
+    }
+}
+
 impl ItemInner {
     pub(crate) fn extract(&self, root: netweir_dom::Node<'_>) -> Vec<Value> {
         self.spec.extract(root)

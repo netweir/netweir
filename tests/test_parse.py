@@ -133,3 +133,12 @@ def test_the_version_is_the_one_installed():
     from importlib.metadata import version
 
     assert netweir.__version__ == version("netweir")
+
+
+def test_built_without_pyo3s_reference_pool():
+    # With the pool, every call into Rust takes one process-wide lock and
+    # threads on free-threaded Python barely scale (docs/design/threads.md).
+    # A RUSTFLAGS of your own replaces .cargo/config.toml's, flag and all.
+    from netweir import _native
+
+    assert _native._reference_pool_disabled

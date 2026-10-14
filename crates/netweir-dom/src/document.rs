@@ -2,7 +2,7 @@ use std::cell::{Cell, UnsafeCell};
 use std::ffi::{c_char, c_int, c_void};
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -16,9 +16,6 @@ use crate::index::Index;
 /// elements are added, and misnested tags are repaired.
 pub struct Document {
     raw: *mut RawDocument,
-    /// Selector runs take this lock. lexbor does not promise that its matcher
-    /// is safe with concurrent readers of one document, so we don't assume it.
-    pub(crate) select_lock: Mutex<()>,
     /// A flat, document-order index of every node, built on first use and
     /// dropped by every edit (which has the document to itself).
     index: UnsafeCell<OnceLock<Index>>,
@@ -26,9 +23,16 @@ pub struct Document {
     /// yet placed. The index covers their subtrees too, so a handle to one
     /// keeps working. Pruned whenever the index is built.
     detached: Mutex<Vec<usize>>,
-    /// Readers holding a [`Reading`], or `WRITING` while an edit runs;
-    /// `WAITING` while an edit waits for readers to finish.
+    /// Readers holding a [`Reading`] taken the slow way, or `WRITING`
+    /// while an edit runs; `WAITING` while an edit waits for readers to
+    /// finish.
     access: AtomicU32,
+    /// Readers holding a [`Reading`] taken the fast way, counted on a
+    /// line of their thread's own: a count every thread changed would
+    /// bounce one cache line between their cores on every read, and
+    /// threads reading one page would barely scale. A reader only reads
+    /// `access`, which stays in every core's cache until an edit comes.
+    readers: [Slot; SLOTS],
     /// Readers held back by an edit (running, or waiting and deferred to):
     /// the high half counts edits finished, the low half the readers held
     /// back since the last one finished. Finishing an edit takes the count
@@ -60,14 +64,22 @@ const WAITING: u32 = 1 << 30;
 const TURN: u32 = 1 << 29;
 const READERS: u32 = TURN - 1;
 
+/// Reader counts per document, each on its own cache line (128 bytes, the
+/// line of Apple's chips, two of x86's). A thread uses one slot for every
+/// document; more threads than slots share them, which is still correct.
+const SLOTS: usize = 16;
+
+#[repr(align(128))]
+struct Slot(AtomicU32);
+
 /// How many times a new reader yields to a waiting edit before reading
 /// anyway. Without it, readers that follow one another closely could keep
 /// an edit out forever; with no limit, a reader that holds Python's GIL
 /// could wait for an edit that waits for a reader needing the GIL.
 const PATIENCE: u32 = 2000;
 
-// SAFETY: reading never changes the tree; selector matching, which keeps
-// state in lexbor, is serialised by `select_lock`. Edits change it, and
+// SAFETY: reading never changes the tree; selector matching keeps its
+// state in a matcher of its own per call (query.rs). Edits change it, and
 // their callers promise that other threads reading at the time hold a
 // `Reading`, which an edit waits for. No node is freed before the
 // document is, so a pointer into it never dangles.
@@ -81,21 +93,51 @@ thread_local! {
     /// for each other. A plain counter in thread-local storage, so threads
     /// never touch each other's memory.
     static HELD: Cell<u32> = const { Cell::new(0) };
+    /// This thread's reader slot plus one, handed out in turn on first
+    /// use; 0 until then. Lazy by hand: a lazily initialised thread-local
+    /// checks a state flag on every access, and this is on every read.
+    static SLOT: Cell<usize> = const { Cell::new(0) };
 }
+
+fn my_slot() -> usize {
+    SLOT.with(|s| match s.get() {
+        0 => {
+            let slot = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % SLOTS;
+            s.set(slot + 1);
+            slot
+        }
+        n => n - 1,
+    })
+}
+
+static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 /// Holds off edits to a document while it lives. See [`Document::read`].
 pub struct Reading<'a> {
     doc: &'a Document,
+    /// The slot it's counted in, if it came in the fast way.
+    slot: Option<&'a Slot>,
     // The thread-local bookkeeping must be undone on the same thread.
     _not_send: PhantomData<*const ()>,
 }
 
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
-        let before = self.doc.access.fetch_sub(1, Ordering::Release);
         HELD.with(|h| h.set(h.get() - 1));
+        if let Some(slot) = self.slot {
+            // SeqCst, against the edit that sets WAITING and then looks at
+            // the slots: either it sees this reader gone, or this reader
+            // sees it waiting and wakes it. No reader can tell if it's the
+            // last, so each wakes it (only while an edit waits).
+            slot.0.fetch_sub(1, Ordering::SeqCst);
+            if self.doc.access.load(Ordering::SeqCst) & WAITING != 0 {
+                self.doc.wake();
+            }
+            return;
+        }
+        let before = self.doc.access.fetch_sub(1, Ordering::Release);
         // The last reader out wakes an edit waiting for it.
-        if before & WAITING != 0 && before & READERS == 1 {
+        if before & WAITING != 0 && before & READERS == 1 && self.doc.slots_empty() {
             self.doc.wake();
         }
     }
@@ -209,6 +251,27 @@ impl Document {
     /// on the thread that edits needs none. Cheap: one atomic add, and no
     /// waiting unless an edit is running.
     pub fn read(&self) -> Reading<'_> {
+        // The fast way, when no edit is running, waiting or letting in the
+        // readers it held back: count this reader in its thread's slot,
+        // then check that still holds. SeqCst on both, against an edit
+        // doing the same the other way round (see Reading's drop).
+        let slot = &self.readers[my_slot()];
+        slot.0.fetch_add(1, Ordering::SeqCst);
+        if self.access.load(Ordering::SeqCst) & (WRITING | WAITING | TURN) == 0 {
+            HELD.with(|h| h.set(h.get() + 1));
+            return Reading {
+                doc: self,
+                slot: Some(slot),
+                _not_send: PhantomData,
+            };
+        }
+        // An edit is about: step back, and take the way that queues
+        // behind it fairly. An edit that saw this count waits for it to
+        // go, so tell it.
+        slot.0.fetch_sub(1, Ordering::SeqCst);
+        if self.access.load(Ordering::SeqCst) & WAITING != 0 {
+            self.wake();
+        }
         // A read nested in one this thread holds never waits: an edit it
         // would let in may be waiting for the outer read to end.
         let nested = HELD.with(|h| h.get()) > 0;
@@ -264,8 +327,15 @@ impl Document {
         HELD.with(|h| h.set(h.get() + 1));
         Reading {
             doc: self,
+            slot: None,
             _not_send: PhantomData,
         }
+    }
+
+    /// No reader is in by the fast way. Called after setting WAITING, so a
+    /// reader counted after this looks sees it and steps back.
+    fn slots_empty(&self) -> bool {
+        self.readers.iter().all(|s| s.0.load(Ordering::SeqCst) == 0)
     }
 
     /// Runs `edit` with the document to itself, then drops the index, which
@@ -278,8 +348,9 @@ impl Document {
         loop {
             // Ask new readers to hold back, then take the document once
             // the ones reading are done.
-            let now = self.access.fetch_or(WAITING, Ordering::Relaxed) | WAITING;
+            let now = self.access.fetch_or(WAITING, Ordering::SeqCst) | WAITING;
             if now == WAITING
+                && self.slots_empty()
                 && self
                     .access
                     .compare_exchange_weak(now, WRITING, Ordering::Acquire, Ordering::Relaxed)
@@ -302,7 +373,9 @@ impl Document {
             // Set WAITING again rather than only looking: an edit that got
             // in first cleared it, and then whoever leaves next (that edit,
             // or the last reader) wouldn't know to wake us.
-            if self.access.fetch_or(WAITING, Ordering::Relaxed) & !WAITING != 0 {
+            if self.access.fetch_or(WAITING, Ordering::SeqCst) & !WAITING != 0
+                || !self.slots_empty()
+            {
                 #[cfg(test)]
                 let wakes = self.wakes.load(Ordering::Relaxed);
                 // The timeout only covers a wake-up this reasoning missed.
@@ -367,8 +440,9 @@ impl Document {
             return gate;
         }
         tests::TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-        let clear =
-            |d: &Document| d.access.load(Ordering::Relaxed) & (READERS | TURN | WRITING) == 0;
+        let clear = |d: &Document| {
+            d.access.load(Ordering::Relaxed) & (READERS | TURN | WRITING) == 0 && d.slots_empty()
+        };
         if !clear(self) || self.wakes.load(Ordering::Relaxed) != wakes {
             return gate;
         }
@@ -708,10 +782,10 @@ fn parse_in_chunks(html: &str, budget: Duration, chunk: usize) -> Result<Documen
     assert!(!raw.is_null(), "lexbor failed to allocate a document");
     let doc = Document {
         raw,
-        select_lock: Mutex::new(()),
         index: UnsafeCell::new(OnceLock::new()),
         detached: Mutex::new(Vec::new()),
         access: AtomicU32::new(0),
+        readers: std::array::from_fn(|_| Slot(AtomicU32::new(0))),
         queue: AtomicU64::new(0),
         turn_left: AtomicU32::new(0),
         #[cfg(test)]
@@ -1193,6 +1267,88 @@ mod tests {
         assert!(
             slowest < Duration::from_millis(200),
             "an edit waited {slowest:?}"
+        );
+    }
+
+    /// A reader that came in the fast way, counted only in its thread's
+    /// slot, holds an edit off just as one counted in `access` does.
+    #[test]
+    fn an_edit_waits_for_a_reader_counted_in_its_slot() {
+        let doc = Arc::new(Document::parse("<p>x</p>"));
+        let reading = doc.read();
+        assert!(
+            reading.slot.is_some(),
+            "no edit was about, yet it came in slowly"
+        );
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let edit = {
+            let (doc, done) = (doc.clone(), done.clone());
+            std::thread::spawn(move || {
+                // SAFETY: the reader holds a Reading.
+                unsafe {
+                    let p = doc.create_element("p", &[]).unwrap();
+                    doc.remove(p).unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the edit ran while a reader was in"
+        );
+        drop(reading);
+        edit.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// More threads than slots, so readers share them, against edits: each
+    /// read sees a whole tree (the page, plus at most one paragraph per
+    /// editor mid-edit), and no edit sleeps unwoken.
+    #[test]
+    fn readers_sharing_slots_and_edits_agree() {
+        const EDITORS: usize = 4;
+        const THREADS: usize = SLOTS + 8;
+        let doc = Arc::new(Document::parse(&"<p>x</p>".repeat(100)));
+        let count = |d: &Document| {
+            d.root()
+                .descendants()
+                .filter(|n| n.tag() == Some("p"))
+                .count()
+        };
+        let base = count(&doc);
+        let body = doc.root().descendants().find(|n| n.tag() == Some("body"));
+        let body = body.unwrap().id();
+        let lost = LOST.load(Ordering::Relaxed);
+        let threads: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let doc = doc.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..2_000 {
+                        if t < EDITORS {
+                            // SAFETY: the readers hold a Reading.
+                            unsafe {
+                                let p = doc.create_element("p", &[]).unwrap();
+                                doc.insert(body, None, &[p]).unwrap();
+                                doc.remove(p).unwrap();
+                            }
+                        } else {
+                            let _reading = doc.read();
+                            let n = count(&doc);
+                            assert!((base..=base + EDITORS).contains(&n), "read {n} paragraphs");
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(count(&doc), base);
+        assert_eq!(
+            LOST.load(Ordering::Relaxed),
+            lost,
+            "a waiting edit was never woken"
         );
     }
 

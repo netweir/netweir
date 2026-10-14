@@ -694,6 +694,7 @@ impl Node {
         let (doc, id) = (self.doc.clone(), self.id);
         // SAFETY: `id` belongs to `doc`.
         let found = py.detach(move || {
+            let _reading = doc.read();
             netweir_dom::content::main_content(unsafe { doc.node(id) }).map(|m| m.node.id())
         });
         found.map(|id| self.sibling(id))
@@ -707,6 +708,7 @@ impl Node {
         let (doc, id) = (self.doc.clone(), self.id);
         let base = base_url.and_then(|b| url::Url::parse(b).ok());
         py.detach(move || {
+            let _reading = doc.read();
             // SAFETY: `id` belongs to `doc`.
             let node = unsafe { doc.node(id) };
             match main_only {
@@ -724,6 +726,7 @@ impl Node {
     fn clean_text(&self, py: Python<'_>, main_only: bool) -> Option<String> {
         let (doc, id) = (self.doc.clone(), self.id);
         py.detach(move || {
+            let _reading = doc.read();
             // SAFETY: `id` belongs to `doc`.
             let node = unsafe { doc.node(id) };
             match main_only {
@@ -741,8 +744,10 @@ impl Node {
         let (doc, id) = (self.doc.clone(), self.id);
         let base = base_url.and_then(|b| url::Url::parse(b).ok());
         // SAFETY: `id` belongs to `doc`.
-        let a = py
-            .detach(move || netweir_dom::content::article(unsafe { doc.node(id) }, base.as_ref()));
+        let a = py.detach(move || {
+            let _reading = doc.read();
+            netweir_dom::content::article(unsafe { doc.node(id) }, base.as_ref())
+        });
         // The date is read, and the dataclass made, in Python.
         Ok(py
             .import("netweir._helpers")?

@@ -21,3 +21,7 @@ regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 url = "2"
+
+[lints.rust]
+# Set by .cargo/config.toml for PyO3; lib.rs reports it.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(pyo3_disable_reference_pool)"] }

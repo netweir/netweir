@@ -65,8 +65,11 @@ or looking up the same tables would race with it. So each document has a
 small reader/writer lock: an `AtomicU32` holding a reader count and two
 flags.
 
-- Every read from Python takes a `Reading` (`Document::read()`): one
-  compare-and-swap in, one subtraction out. `Node::get()` in the bindings
+- Every read from Python takes a `Reading` (`Document::read()`). With no
+  edit about, that's an add to a counter on the reading thread's own
+  cache line and a look at the lock word; otherwise one compare-and-swap
+  in and one subtraction out, as below ([threads.md](threads.md) has
+  why the fast way exists). `Node::get()` in the bindings
   returns the node together with its `Reading`, so the many small getters
   can't forget it, and every closure that releases the GIL takes one
   first. A `read()` and its drop cost 5.0 to 5.6 ns in a release build,
@@ -74,7 +77,9 @@ flags.
   version kept a per-thread `Vec` of the documents held; the vectors' heap
   buffers shared cache lines between threads, and the same loop took 30
   to 57 ns on 4 and 8 threads. A per-thread counter fixed that.) Parse and
-  query benchmarks didn't move.
+  query benchmarks didn't move. Threads sharing one page all wrote the
+  lock word, though, and paid 164 ns a read on 4 threads; the per-thread
+  slots that fixed that made a read 11 ns everywhere.
 - An edit runs without the GIL. It sets `WAITING`, waits for the reader
   count to reach zero, sets `WRITING`, does its work, drops the index and
   clears `WRITING`. It waits by yielding a few dozen times, then
@@ -329,8 +334,8 @@ thread now keeps one, and `nw_select` cleans it after each run
 (`lxb_selectors_clean` keeps the first block of its two arenas and frees
 the rest), so a big query doesn't leave a big matcher behind. A thread
 never uses its matcher twice at once: nothing a match calls reaches back
-into `select`. The document's `select_lock` stays, since it was never
-about the matcher. It's made on a thread's first query; if lexbor can't
+into `select`. (The document's `select_lock` went later, as lexbor's
+matching only reads the document: [threads.md](threads.md).) It's made on a thread's first query; if lexbor can't
 allocate it, `Query::try_run` returns `OutOfMemory` (Python sees
 `MemoryError`) and the next query tries again.
 

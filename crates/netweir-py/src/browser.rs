@@ -198,8 +198,13 @@ impl BrowserContext {
         let context = slf.get().inner.clone();
         let me = slf.clone().unbind();
         crate::aio::future_into_py(slf.py(), async move {
-            let inner = context.new_page().await.map_err(raise)?;
-            Ok(BrowserPage::new(inner, Some(me)))
+            match context.new_page().await {
+                Ok(inner) => Ok(BrowserPage::new(inner, Some(me))),
+                Err(e) => {
+                    crate::aio::release(me);
+                    Err(raise(e))
+                }
+            }
         })
     }
 
@@ -632,9 +637,10 @@ impl BrowserPage {
         let url = url.map(|u| u.unbind());
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let frames = page.frames().await.map_err(raise)?;
-            crate::aio::attach(|py| -> PyResult<Option<BrowserFrame>> {
-                for inner in frames {
+            let frames = page.frames().await;
+            // `url` is let go of in here, attached.
+            crate::aio::attach(move |py| -> PyResult<Option<BrowserFrame>> {
+                for inner in frames.map_err(raise)? {
                     if name.as_deref().is_some_and(|n| n != inner.name()) {
                         continue;
                     }

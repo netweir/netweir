@@ -517,6 +517,12 @@ uv run pytest
 uv installs the dependencies and maturin builds Netweir, so after changing
 any Rust, rerun `uv run maturin develop --uv` before testing.
 
+If you set `RUSTFLAGS` yourself, it replaces the flags in
+`.cargo/config.toml`, so add `--cfg pyo3_disable_reference_pool` to it.
+Without that, threads on free-threaded Python barely scale, and
+`tests/test_parse.py` fails to tell you
+([docs/design/threads.md](docs/design/threads.md)).
+
 ## Contributing
 
 Issues, fixes and new browser profiles are all welcome.

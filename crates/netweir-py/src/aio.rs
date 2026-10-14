@@ -27,8 +27,10 @@
 
 use std::any::Any;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use pyo3::IntoPyObjectExt;
@@ -51,15 +53,24 @@ const EXIT_WAIT: Duration = Duration::from_secs(1);
 /// Runs `f` attached to Python, counted in [`ATTACHED`] for the `atexit`
 /// hook.
 pub(crate) fn attach<R>(f: impl FnOnce(Python<'_>) -> R) -> R {
-    struct In;
-    impl Drop for In {
-        fn drop(&mut self) {
-            ATTACHED.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-    ATTACHED.fetch_add(1, Ordering::SeqCst);
-    let _in = In;
+    let _in = In::new();
     Python::attach(f)
+}
+
+/// Counts this thread in [`ATTACHED`] while it lives.
+struct In;
+
+impl In {
+    fn new() -> In {
+        ATTACHED.fetch_add(1, Ordering::SeqCst);
+        In
+    }
+}
+
+impl Drop for In {
+    fn drop(&mut self) {
+        ATTACHED.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Registered with `atexit` when the module loads: waits, without the GIL,
@@ -102,20 +113,72 @@ where
     let future = event_loop.call_method0("create_future")?;
     let (to_loop, to_future) = (event_loop.unbind(), future.clone().unbind());
     let runtime = pyo3_async_runtimes::tokio::get_runtime();
-    let work = runtime.spawn(fut);
+    // Cancelled, the work is dropped on a runtime thread, and may hold
+    // Python objects (a `self` to return, say).
+    let work = runtime.spawn(Release(Some(Box::pin(fut))));
     let abort = work.abort_handle();
     runtime.spawn(async move {
         let result = match work.await {
             Ok(result) => result,
             Err(e) if e.is_panic() => Err(PanicException::new_err(panic_message(e.into_panic()))),
             // Cancelled from Python: the future is already done.
-            Err(_) => return,
+            Err(_) => return release((to_loop, to_future)),
         };
         // Waiting for the GIL would hold up a runtime thread.
         tokio::task::spawn_blocking(move || hand_over(to_loop, to_future, result));
     });
     future.call_method1("add_done_callback", (Abort(abort),))?;
     Ok(future)
+}
+
+/// Lets go of Python objects from a thread that isn't in Python.
+///
+/// The extension is built without PyO3's pool of references dropped
+/// outside Python: with it, every call from Python into Rust took one
+/// process-wide lock, the whole of what kept threads from scaling on
+/// free-threaded Python (docs/design/threads.md). So nothing may drop a
+/// Python object on a thread that isn't attached. A runtime thread hands
+/// them to a blocking thread, as waiting for the GIL would hold it up.
+/// Once Python is shutting down they are leaked, as the pool did.
+pub(crate) fn release<T: Send + 'static>(objects: T) {
+    fn now<T>(objects: T) {
+        let mut objects = Some(objects);
+        // Counted like attach(), so Python's exit waits for this thread
+        // to leave (a task cancelled as asyncio.run() ends lands here).
+        let _in = In::new();
+        if Python::try_attach(|_| drop(objects.take())).is_none() {
+            std::mem::forget(objects);
+        }
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => drop(runtime.spawn_blocking(move || now(objects))),
+        Err(_) => now(objects),
+    }
+}
+
+/// A future that, dropped before it finishes, drops what it holds through
+/// [`release`].
+struct Release<F: Send + 'static>(Option<Pin<Box<F>>>);
+
+impl<F: Future + Send + 'static> Future for Release<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let fut = self.0.as_mut().expect("polled after it finished");
+        let out = fut.as_mut().poll(cx);
+        if out.is_ready() {
+            self.0 = None;
+        }
+        out
+    }
+}
+
+impl<F: Send + 'static> Drop for Release<F> {
+    fn drop(&mut self) {
+        if let Some(fut) = self.0.take() {
+            release(fut);
+        }
+    }
 }
 
 fn panic_message(panic: Box<dyn Any + Send>) -> String {
