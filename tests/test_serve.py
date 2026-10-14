@@ -843,8 +843,9 @@ def test_a_slow_request_is_cut_off(tmp_path, project, monkeypatch):
 
             threading.Thread(target=trickle, daemon=True).start()
             # Closed with the trickle unread, the socket may be reset
-            # rather than ended: either way, cut off.
-            with contextlib.suppress(ConnectionResetError):
+            # rather than ended (aborted, as Windows names it): any way,
+            # cut off.
+            with contextlib.suppress(ConnectionResetError, ConnectionAbortedError):
                 assert conn.recv(1) == b""
             assert time.monotonic() - started < 5
         # Others are answered as before.
