@@ -41,10 +41,26 @@ fn main() {
     };
     add_c_files(&mut build, &source.join("lexbor/ports").join(port));
     build.file("csrc/shim.c");
+    println!("cargo:rustc-env=LEXBOR_VERSION={}", lexbor_version(source));
     build.compile("lexbor");
 
     println!("cargo:rerun-if-changed=csrc/shim.c");
     println!("cargo:rerun-if-changed=lexbor/source");
+}
+
+/// lexbor's version, as its `core/base.h` defines it.
+fn lexbor_version(source: &Path) -> String {
+    let header = std::fs::read_to_string(source.join("lexbor/core/base.h"))
+        .expect("reading lexbor/core/base.h");
+    let part = |name: &str| {
+        let define = format!("#define LEXBOR_VERSION_{name} ");
+        header
+            .lines()
+            .find_map(|line| line.strip_prefix(&define))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| panic!("lexbor/core/base.h has no LEXBOR_VERSION_{name}"))
+    };
+    format!("{}.{}.{}", part("MAJOR"), part("MINOR"), part("PATCH"))
 }
 
 fn add_c_files(build: &mut cc::Build, dir: &Path) {

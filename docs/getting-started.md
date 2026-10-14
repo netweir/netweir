@@ -85,6 +85,9 @@ the file `books.csv` or `books.parquet` to get that format instead.
   spider.
 - [Crawling](crawling.md): requests, callbacks, pipelines, exporters and
   the command line.
+- [Projects](project.md): several spiders sharing settings, made with
+  `netweir genspider`, tried with `netweir parse` and checked with
+  `netweir check`.
 - [Declarative spiders](declarative.md): describe items and links, and let
   Rust do the crawl without running Python on each page.
 - [Self-healing](self-healing.md): block recovery, crash-safe resume and

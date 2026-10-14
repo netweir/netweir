@@ -4,6 +4,7 @@
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles and Markdown, prices, dates and the data in scripts.
 - [Item loaders](loaders.md): filling items as Scrapy's loaders do, with input and output processors.
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
+- [Projects](project.md): `startproject`, `genspider`, `list`, `parse`, `check` (Scrapy's contracts) and `version`.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
 - [Crawling](crawling.md): spiders, requests, pipelines, downloading files and images, middlewares, signals, exporters and the command line.
 - [Declarative spiders](declarative.md): items and rules that run in Rust.
@@ -36,3 +37,4 @@ The designs behind it, for anyone working on Netweir:
 - [design/content.md](design/content.md): finding a page's main content, reading it as an article, and Markdown.
 - [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.
 - [design/serve.md](design/serve.md): the job service.
+- [design/project.md](design/project.md): projects, generated spiders, contracts and the other Scrapy-style commands.

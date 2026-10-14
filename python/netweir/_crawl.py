@@ -426,6 +426,9 @@ class Spider:
     #: Checks run once the crawl has ended: netweir.Checks, or functions of
     #: (stats, spider) returning None, a message or a list of messages.
     checks: list[Any] = []
+    #: Contracts of your own for ``netweir check``, besides the built-in
+    #: ones: subclasses of netweir.contracts.Contract.
+    contracts: list[Any] = []
     #: After a run: what the checks found wrong (empty if they all passed),
     #: how many items each field was present and not empty in, and how many
     #: validation errors each field had.

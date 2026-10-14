@@ -33,6 +33,9 @@ line:
 netweir serve --project shop=spiders/ --project news=news/feeds.py
 ```
 
+`netweir startproject` makes a project in this shape: serve its
+`spiders/` directory ([Projects](project.md)).
+
 In a directory, every `.py` file directly in it is read; subdirectories
 aren't, so helpers can live there. A spider's name is its `name`
 attribute, or its class name when it has none, the same name

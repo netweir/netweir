@@ -20,6 +20,9 @@ pub mod similar;
 pub mod track;
 mod xpath;
 
+/// The version of lexbor compiled in.
+pub const LEXBOR_VERSION: &str = env!("LEXBOR_VERSION");
+
 pub use cache::{QUERY_CACHE_SIZE, QUERY_CACHE_TEXT};
 pub use document::{Content, Document, EditError, Node, NodeId, NodeKind, ParseTimeout, Reading};
 pub use query::{Hit, OutOfMemory, Output, Query, QueryError};

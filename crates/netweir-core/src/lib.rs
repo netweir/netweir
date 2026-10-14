@@ -33,4 +33,6 @@ pub use fetch::{
     FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, Outgoing, Response, check_proxy,
     masked,
 };
-pub use profile::{DEFAULT as DEFAULT_PROFILE, Profile, ProfileError};
+pub use profile::{
+    DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, built_in as built_in_profiles,
+};

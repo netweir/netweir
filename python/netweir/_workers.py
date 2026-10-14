@@ -67,12 +67,11 @@ def _load(spec: tuple[str, ...]) -> type:
         _, path, name, qualname = spec
         module = sys.modules.get(name)
         if module is None:
-            loader = importlib.util.spec_from_file_location(name, path)
-            if loader is None or loader.loader is None:
-                raise ImportError(f"can't load {path}")
-            module = importlib.util.module_from_spec(loader)
-            sys.modules[name] = module
-            loader.loader.exec_module(module)
+            # As netweir crawl loaded it: its folder's settings.py and
+            # files beside it importable while it runs.
+            from netweir._cli import _exec_file
+
+            module = _exec_file(name, path)
     else:
         _, name, qualname = spec
         module = importlib.import_module(name)

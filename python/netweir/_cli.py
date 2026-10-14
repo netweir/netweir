@@ -1,6 +1,10 @@
 """The ``netweir`` command.
 
 netweir crawl spider.py -o items.jsonl -s concurrency=32
+netweir startproject books && cd books && netweir genspider shop shop.example
+netweir crawl shop -o items.jsonl
+netweir check
+netweir parse https://shop.example/item/1 --spider shop -c item
 netweir serve --project books=spiders/
 netweir fetch https://example.com/ --headers
 netweir view https://example.com/
@@ -56,15 +60,9 @@ def _spiders_in(path: str) -> list:
     if not Path(path).is_file():
         raise _Usage(f"no such file: {path}")
     # A name of its own, so a file called netweir.py can't shadow the
-    # package, registered before running it, as dataclasses and pickle
-    # look modules up by name.
+    # package.
     module_name = "netweir_spider_" + "".join(c if c.isalnum() else "_" for c in Path(path).stem)
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise _Usage(f"can't load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    module = _exec_file(module_name, path)
     return [
         obj
         for obj in vars(module).values()
@@ -73,6 +71,67 @@ def _spiders_in(path: str) -> list:
         and obj is not Spider
         and obj.__module__ == module.__name__
     ]
+
+
+#: The folder this process loads spider files from: one per process.
+_loaded_folder: str | None = None
+_load_lock = threading.RLock()
+
+
+class _OtherFolder(_Usage):
+    """A spider file from a second folder, in a process that has one."""
+
+
+def _exec_file(module_name: str, path: str):
+    """Runs a spider file as module ``module_name``, registered before it
+    runs, as dataclasses and pickle look modules up by name.
+
+    Its folder goes first on sys.path for the rest of the process, as when
+    Python runs a script, so the files beside it (a project's settings.py,
+    helpers) can be imported, at load time and later in callbacks. Their
+    modules are cached by their bare names, so a process holds one
+    project: a file from a second folder is refused. Commands given files
+    from several folders run a process for each."""
+    global _loaded_folder
+    folder = str(Path(path).resolve().parent)
+    with _load_lock:
+        if _loaded_folder is None:
+            sys.path.insert(0, folder)
+            _loaded_folder = folder
+        elif _loaded_folder != folder:
+            raise _OtherFolder(
+                f"{path} is in {folder}, but this process has loaded spiders from"
+                f" {_loaded_folder}: one folder of spiders per process, as the modules"
+                " beside them (settings.py, helpers) are shared by name"
+            )
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise _Usage(f"can't load {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            raise
+        return module
+
+
+def _forget_loaded() -> None:
+    """Undoes what loading spider files did to this process: for tests,
+    which load spiders from many folders in one."""
+    global _loaded_folder
+    with _load_lock:
+        if _loaded_folder is None:
+            return
+        folder = Path(_loaded_folder)
+        for name, module in list(sys.modules.items()):
+            file = getattr(module, "__file__", None)
+            if name.startswith("netweir_spider_") or (file and Path(file).parent == folder):
+                del sys.modules[name]
+        while _loaded_folder in sys.path:
+            sys.path.remove(_loaded_folder)
+        _loaded_folder = None
 
 
 def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
@@ -108,8 +167,10 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="netweir")
     commands = parser.add_subparsers(dest="command", required=True)
-    crawl = commands.add_parser("crawl", help="run a spider")
-    crawl.add_argument("file", help="a Python file defining a Spider subclass")
+    crawl = commands.add_parser("crawl", aliases=["runspider"], help="run a spider")
+    crawl.add_argument(
+        "file", help="a Python file defining a Spider subclass, or a spider's name in a project"
+    )
     crawl.add_argument(
         "-o", "--output", help="write items to a .jsonl, .json, .xml, .csv or .parquet file"
     )
@@ -206,7 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow --bind to a non-loopback address without a username and password",
     )
+    _project_commands(commands)
     args = parser.parse_args(argv)
+    if args.command in ("startproject", "genspider", "list", "check", "parse", "version"):
+        from netweir import _project
+
+        return _project.main(args)
     if args.command == "serve":
         from netweir import _serve
 
@@ -226,6 +292,14 @@ def main(argv: list[str] | None = None) -> int:
     except (_Usage, ValueError, OSError) as e:
         print(f"netweir: {e}", file=sys.stderr)
         return 2
+    except Exception as e:
+        # A project's spider file that raised as it was read.
+        from netweir._project import _Failed
+
+        if not isinstance(e, _Failed):
+            raise
+        print(f"netweir: {e}", file=sys.stderr)
+        return 1
     from netweir import QueueError
 
     # A service manager's stop, or `kill`, ends the crawl as Ctrl-C does,
@@ -253,6 +327,50 @@ def main(argv: list[str] | None = None) -> int:
                 json.dump({**spider.stats, "finish_reason": reason}, f, indent=2, default=str)
     # A failed check is a failed crawl, for a scheduler or CI job.
     return 1 if spider.check_failures else 0
+
+
+def _project_commands(commands) -> None:
+    """Scrapy's project commands; they run in netweir._project."""
+    start = commands.add_parser("startproject", help="make a project: spiders/ and a README")
+    start.add_argument("name", help="the project's name")
+    start.add_argument("dir", nargs="?", help="where to make it (./NAME)")
+    gen = commands.add_parser("genspider", help="write a new spider from a template")
+    gen.add_argument("name", nargs="?", help="the spider's name, and its file's")
+    gen.add_argument("domain", nargs="?", help="the site's domain, or a URL to start from")
+    gen.add_argument("-t", "--template", default="basic", help="basic, crawl or sitemap")
+    gen.add_argument("-l", "--list", action="store_true", help="list the templates")
+    gen.add_argument("--force", action="store_true", help="write over a file that's there")
+    commands.add_parser("list", help="the spiders in this project")
+    check = commands.add_parser("check", help="run the contracts in callbacks' docstrings")
+    check.add_argument("spiders", nargs="*", metavar="SPIDER", help="names or files (all)")
+    check.add_argument("-l", "--list", action="store_true", help="list the contracted callbacks")
+    check.add_argument("-v", "--verbose", action="store_true", help="a line for every contract")
+    # A process checking one folder's spiders for another that started it.
+    check.add_argument("--results", help=argparse.SUPPRESS)
+    parse = commands.add_parser("parse", help="run a page through a spider's callback")
+    parse.add_argument("url")
+    parse.add_argument("--spider", help="a spider's name or file (the one whose domains cover URL)")
+    parse.add_argument("-c", "--callback", help="the method to call (parse, or the rules)")
+    parse.add_argument("-r", "--rules", action="store_true", help="let the rules pick the callback")
+    parse.add_argument("-d", "--depth", type=int, default=1, help="levels of requests to follow")
+    parse.add_argument("-m", "--meta", metavar="JSON", help="the request's meta")
+    parse.add_argument("--cbkwargs", metavar="JSON", help="keyword arguments for the callback")
+    parse.add_argument("--pipelines", action="store_true", help="send items through pipelines")
+    parse.add_argument("--noitems", action="store_true", help="don't show items")
+    parse.add_argument("--nolinks", action="store_true", help="don't show requests")
+    parse.add_argument("-v", "--verbose", action="store_true", help="show every depth level")
+    for command in (check, parse):
+        command.add_argument(
+            "-s", "--set", action="append", default=[], metavar="KEY=VALUE", help="a setting"
+        )
+        command.add_argument(
+            "-a", dest="arguments", action="append", default=[], metavar="NAME=VALUE",
+            help="set an attribute of the spider",
+        )  # fmt: skip
+    version = commands.add_parser("version", help="Netweir's version")
+    version.add_argument(
+        "-v", "--verbose", action="store_true", help="and Python's, Rust's, lexbor's, profiles"
+    )
 
 
 def _queue(args) -> int:
@@ -328,7 +446,14 @@ def _prepare(args):
     from netweir import Settings, export
     from netweir._crawl import _check_outputs
 
-    spider_cls = _load_spider(args.file, args.spider)
+    if Path(args.file).is_file() or args.file.endswith(".py"):
+        spider_cls = _load_spider(args.file, args.spider)
+    else:
+        from netweir import _project
+
+        if args.spider:
+            raise _Usage(f"--spider picks from a file's spiders; {args.file} is a spider's name")
+        spider_cls = _project.by_name(args.file)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
     if args.queue is not None:

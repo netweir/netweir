@@ -122,6 +122,17 @@ fn _robots_sitemaps(body: &str) -> Vec<String> {
         .to_vec()
 }
 
+/// What `netweir version -v` prints that only the build knows: the Rust
+/// compiler, lexbor's version and the built-in profiles.
+#[pyfunction]
+fn _build_info(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    let info = pyo3::types::PyDict::new(py);
+    info.set_item("rustc", env!("NETWEIR_RUSTC"))?;
+    info.set_item("lexbor", netweir_dom::LEXBOR_VERSION)?;
+    info.set_item("profiles", netweir_core::built_in_profiles())?;
+    Ok(info)
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -148,6 +159,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aio::_test_sleep, m)?)?;
     m.add_function(wrap_pyfunction!(aio::_test_panic, m)?)?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
+    m.add_function(wrap_pyfunction!(_build_info, m)?)?;
     m.add_function(wrap_pyfunction!(fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(_sitemap, m)?)?;
     m.add_function(wrap_pyfunction!(_robots_sitemaps, m)?)?;

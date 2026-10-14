@@ -82,6 +82,12 @@ Working today:
 - `netweir shell URL`, `fetch` and `view`: the page Netweir gets, at a
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).
+- Scrapy's project commands, so your hands already know them:
+  `startproject`, `genspider` (plain, rules or sitemap spiders), `list`,
+  `crawl NAME`, `parse URL` to see what a callback makes of one page, and
+  `check`, which runs Scrapy-style contracts from your docstrings,
+  custom ones included, and exits 1 when a redesign broke a spider. See
+  [docs/project.md](docs/project.md).
 - Validating items against a dataclass or a JSON Schema, and checks at
   the end of a crawl (item counts, error rate, field coverage) that make
   `netweir crawl` exit 1 when a crawl finished but didn't work.

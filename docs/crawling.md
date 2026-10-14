@@ -151,6 +151,10 @@ From the shell:
 netweir crawl quotes.py -o quotes.jsonl -s concurrency=16 -s max_depth=3
 ```
 
+Inside a [project](project.md), give a spider's name instead of a file:
+`netweir crawl quotes -o quotes.jsonl`. `netweir runspider` is another name
+for `netweir crawl`, as in Scrapy.
+
 `-s` sets any [setting](settings.md); `--spider NAME` picks one when the file
 defines several; `--queue redis://host:6379/0` shares the crawl with
 processes on other machines ([One crawl, many machines](distributed.md));
@@ -1018,6 +1022,9 @@ same crawler as `spider.crawler` while the crawl runs, in the main
 process.
 
 ## Coming from Scrapy
+
+`startproject`, `genspider`, `list`, `parse`, `check` and `version` are
+there, contracts included; see [Projects](project.md).
 
 Pipelines, middlewares, spider middlewares and signal handlers written
 for Scrapy carry over: `process_item`, `open_spider`, `close_spider`,

@@ -39,6 +39,18 @@ const LATEST: &[(&str, &str)] = &[
     ("safari", "safari-27-macos"),
 ];
 
+/// The profiles shipped with netweir, each with the short name that means
+/// it today ("chrome" for the newest Chrome), if one does.
+pub fn built_in() -> Vec<(&'static str, Option<&'static str>)> {
+    BUILT_IN
+        .iter()
+        .map(|(name, _)| {
+            let short = LATEST.iter().find(|(_, n)| n == name).map(|(s, _)| *s);
+            (*name, short)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
