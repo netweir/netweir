@@ -4,7 +4,9 @@ tries as ::1 first: with nothing listening there, every such request
 started with a refused connection."""
 
 import contextlib
+import pathlib
 import socket
+import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -23,3 +25,18 @@ def serve(handler):
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     return servers
+
+
+def socket_state():
+    """The machine's sockets, pool memory and Chrome processes, as
+    socket_state.ps1 next to this file reports them. Windows only."""
+    script = pathlib.Path(__file__).with_name("socket_state.ps1")
+    try:
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"couldn't read it: {e}"

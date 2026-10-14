@@ -1,6 +1,8 @@
 import signal
+import sys
 
 import pytest
+from local_server import socket_state
 
 from netweir import _cli
 
@@ -28,3 +30,14 @@ def _one_folder_of_spiders_per_test():
     process of its own as far as that goes."""
     yield
     _cli._forget_loaded()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    # Windows runners now and then refuse a connection to the test server
+    # with WSAENOBUFS. What ran out is only visible while it lasts, so a
+    # test failing that way reports the machine's state with its failure.
+    report = yield
+    if sys.platform == "win32" and report.failed and "ERR_NO_BUFFER_SPACE" in report.longreprtext:
+        report.sections.append(("socket state", socket_state()))
+    return report

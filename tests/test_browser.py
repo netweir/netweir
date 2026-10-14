@@ -11,7 +11,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from local_server import serve
+from local_server import serve, socket_state
 
 import netweir
 
@@ -524,3 +524,11 @@ async def test_a_feed_still_growing_when_time_runs_out_says_how_far_it_got(brows
     with pytest.raises(netweir.BrowserTimeout) as other:
         await page.wait_for("#nothing", timeout=0.2)
     assert other.value.rounds is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the report is read with PowerShell on Windows")
+async def test_a_windows_socket_report_names_the_browser_this_process_started(browser):
+    # What a test failing with ERR_NO_BUFFER_SPACE reports (see conftest.py).
+    said = socket_state()
+    assert "TCP: " in said and "Nonpaged pool: " in said, said
+    assert re.search(rf"browser \d+ started \S+ by python[^(\s]*\({os.getpid()}\)", said), said

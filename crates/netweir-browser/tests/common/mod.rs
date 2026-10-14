@@ -176,6 +176,7 @@ pub struct Turn(());
 static TURNS: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(2), std::sync::Condvar::new());
 
 pub fn turn() -> Turn {
+    report_socket_state_on_enobufs();
     let mut free = TURNS.0.lock().unwrap_or_else(|e| e.into_inner());
     while *free == 0 {
         free = TURNS.1.wait(free).unwrap_or_else(|e| e.into_inner());
@@ -189,6 +190,36 @@ impl Drop for Turn {
         *TURNS.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         TURNS.1.notify_one();
     }
+}
+
+/// Windows runners now and then refuse a connection to the test server
+/// with WSAENOBUFS. What ran out is only visible while it lasts, so a test
+/// that panics that way prints the machine's state as
+/// tests/socket_state.ps1 reports it. Nothing anywhere else.
+fn report_socket_state_on_enobufs() {
+    if !cfg!(windows) {
+        return;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous(info);
+            if !info.to_string().contains("ERR_NO_BUFFER_SPACE") {
+                return;
+            }
+            let script =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/socket_state.ps1");
+            let said = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                .arg(script)
+                .output();
+            match said {
+                Ok(out) => eprintln!("socket state:\n{}", String::from_utf8_lossy(&out.stdout)),
+                Err(e) => eprintln!("socket state: couldn't read it: {e}"),
+            }
+        }));
+    });
 }
 
 /// A launched Chrome, with its turn, for the test.
