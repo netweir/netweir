@@ -49,6 +49,11 @@ Working today:
   ago`; `page.js_data("__INITIAL_STATE__")` reads the JavaScript objects
   pages keep their data in. All three work as `into=` in an item. See
   [docs/selecting.md](docs/selecting.md#prices-dates-and-data-in-scripts).
+- Item loaders, as Scrapy's: `add_css()`, `add_xpath()`, `add_jmes()`,
+  `MapCompose`, `TakeFirst` and the rest, into dicts, dataclasses, attrs
+  classes or Scrapy Items. Change the imports and your loaders carry
+  over; they load a page's items in about three quarters of the time
+  itemloaders and parsel take. See [docs/loaders.md](docs/loaders.md).
 - Articles and Markdown: `page.main_content()` finds the story, post or
   description among the menus, sidebars, comments and ads (or tells you a
   listing has none), `page.article()` gives its title, byline, date,

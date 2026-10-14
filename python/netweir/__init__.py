@@ -1,6 +1,6 @@
 """Fast web scraping with a Rust engine."""
 
-from netweir import export, repair, signals
+from netweir import export, loader, repair, signals
 from netweir._browser import browser
 from netweir._crawl import Settings, Spider
 from netweir._errors import (
@@ -86,6 +86,7 @@ __all__ = [
     "get",
     "images",
     "jmespath",
+    "loader",
     "js_data",
     "parse",
     "parse_date",

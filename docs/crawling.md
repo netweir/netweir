@@ -1044,6 +1044,12 @@ for Scrapy carry over: `process_item`, `open_spider`, `close_spider`,
 - `CloseSpider` from a pipeline ends the crawl; Scrapy only sends
   `item_error`.
 
+Item loaders carry over with a change of import, to
+[`netweir.loader`](loaders.md): `ItemLoader`, `MapCompose`, `TakeFirst`
+and the rest of the processors, nested loaders and context all work as in
+Scrapy, on dicts, dataclasses, attrs classes and Scrapy Items. The
+[differences](loaders.md#coming-from-scrapy) are few and deliberate.
+
 FilesPipeline and ImagesPipeline become [`netweir.files` and
 `netweir.images`](#downloading-files-and-images): the same fields, the same
 results and the same layout in the store. Their settings are arguments:

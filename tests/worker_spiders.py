@@ -1,10 +1,12 @@
 """Spiders for the worker tests, in a module of their own so that worker
 processes can import them."""
 
+import dataclasses
 import os
 import time
 
 import netweir
+from netweir import loader
 
 BASE = os.environ.get("NETWEIR_TEST_BASE", "")
 
@@ -118,3 +120,35 @@ class Linked(netweir.Spider):
     def parse(self, page):
         yield {"url": page.url}
         yield from page.follow_all(page.css("a::attr(href)"))
+
+
+@dataclasses.dataclass
+class Listing:
+    name: str | None = None
+    price: netweir.Price | None = None
+    url: str | None = None
+    tags: list[str] = dataclasses.field(
+        default_factory=list, metadata={"output_processor": loader.Identity()}
+    )
+
+
+class ListingLoader(loader.ItemLoader):
+    default_item_class = Listing
+    default_output_processor = loader.TakeFirst()
+    name_in = loader.MapCompose(str.strip)
+    price_in = loader.MapCompose(netweir.parse_price)
+
+
+class Loads(netweir.Spider):
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        yield from page.follow_all(page.css("a.item::attr(href)"), callback="product")
+
+    def product(self, page):
+        item = ListingLoader(response=page)
+        item.add_css("name", "h1::text")
+        item.add_css("price", ".price::text")
+        item.add_value("url", page.url)
+        item.add_css("tags", "li::text")
+        yield item.load_item()
