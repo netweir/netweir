@@ -18,6 +18,7 @@ pub fn chrome() -> Option<PathBuf> {
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct Reply {
@@ -38,10 +39,11 @@ pub fn html(body: &str) -> Reply {
 pub type Seen = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
 
 /// A local HTTP/1.1 server for the given paths; anything else is a 404.
-/// Records each request's path and headers.
+/// Records each request's path and headers. Stops listening when dropped.
 pub struct Server {
     pub url: String,
     pub seen: Seen,
+    _listening: Listening,
 }
 
 impl Server {
@@ -59,7 +61,7 @@ impl Server {
 pub fn serve(routes: Vec<(&'static str, Reply)>) -> Server {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let port = listen(move |mut stream| {
+    let listening = listen(move |mut stream| {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         // Chrome opens connections ahead of need and closes some
@@ -109,32 +111,60 @@ pub fn serve(routes: Vec<(&'static str, Reply)>) -> Server {
         let _ = stream.write_all(out.as_bytes());
     });
     Server {
-        url: format!("http://127.0.0.1:{port}"),
+        url: format!("http://127.0.0.1:{}", listening.port),
         seen,
+        _listening: listening,
     }
 }
 
 /// Listens on 127.0.0.1 at a free port and, where the machine has it, on
-/// [::1] at the same one, each connection handled on a thread of its own.
+/// [::1] at the same one, each connection handled on a thread of its own,
+/// until what it returns is dropped.
 /// Pages reach test servers as localhost too, which Windows tries as ::1
 /// first: with nothing listening there, every such request started with a
 /// refused connection.
-fn listen(handle: impl Fn(TcpStream) + Send + Sync + 'static) -> u16 {
+fn listen(handle: impl Fn(TcpStream) + Send + Sync + 'static) -> Listening {
     let v4 = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = v4.local_addr().unwrap().port();
     let v6 = TcpListener::bind(("::1", port)).ok();
     let handle = Arc::new(handle);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut addrs = Vec::new();
     for listener in std::iter::once(v4).chain(v6) {
+        addrs.push(listener.local_addr().unwrap());
         let handle = handle.clone();
+        let stop = stop.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 let Ok(stream) = stream else { continue };
                 let handle = handle.clone();
                 std::thread::spawn(move || handle(stream));
             }
         });
     }
-    port
+    Listening { port, stop, addrs }
+}
+
+/// A test server's listeners. Without this they'd stay open, each with a
+/// thread, until the test binary ended.
+struct Listening {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    addrs: Vec<std::net::SocketAddr>,
+}
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wakes each accept, which then sees the flag and ends its loop,
+        // closing the listener.
+        for addr in &self.addrs {
+            let _ = TcpStream::connect(addr);
+        }
+    }
 }
 
 /// A headless browser for a test, or None when there's no Chrome.
@@ -201,10 +231,11 @@ pub async fn browser() -> Option<TestBrowser> {
 /// with a page naming the URL it was asked for.
 pub struct Proxy {
     pub url: String,
+    _listening: Listening,
 }
 
 pub fn proxy() -> Proxy {
-    let port = listen(|mut stream| {
+    let listening = listen(|mut stream| {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         loop {
             let mut line = String::new();
@@ -248,6 +279,7 @@ pub fn proxy() -> Proxy {
         }
     });
     Proxy {
-        url: format!("http://127.0.0.1:{port}"),
+        url: format!("http://127.0.0.1:{}", listening.port),
+        _listening: listening,
     }
 }
