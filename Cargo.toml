@@ -13,7 +13,7 @@ rust-version = "1.88"
 lto = "thin"
 codegen-units = 1
 
-# Chrome 154's handshake (ML-DSA and GREASE signature algorithms, trust
+# Chrome's handshake since 154 (ML-DSA and GREASE signature algorithms, trust
 # anchors) needs wreq and btls commits that are not on crates.io yet. These
 # are the exact revisions their maintainer pins for the same purpose.
 [patch.crates-io]

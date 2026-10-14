@@ -100,11 +100,13 @@ page a rule extracted the item from, too). Never a navigation.
 Chrome's and Firefox's shapes are written from recordings, kept beside
 the profiles as `*.image.capture.json` and `*.image.http1.capture.json`,
 and the fingerprint test sends the same request and compares it, as it
-does navigations and forms. They were recorded from Google Chrome 155
-and Firefox 157.0.1, a version on from the profiles, so the test takes
-the headers that name a version (User-Agent, client hints, and Chrome's
-Accept, to which 155 added `image/jxl`) from the profile and holds the
-rest, order and HTTP/2 priority included, to the recording. Chrome sent
+does navigations and forms. Chrome 155's and Firefox 158's were
+recorded from those versions. Chrome 154's and Firefox 156's were
+recorded from Google Chrome 155 and Firefox 157.0.1, a version on, so for
+those the test takes the headers that name a version (User-Agent, client
+hints, and Chrome's Accept, to which 155 added `image/jxl`; Firefox added
+it in 158) from the profile and holds the rest, order and HTTP/2
+priority included, to the recording. Chrome sent
 `priority: u=2, i` at HTTP/2 weight 182 in five runs of six; the sixth,
 an image alone on a new connection, went at `u=1, i`. Firefox sends
 `Priority: u=4, i` over both protocols and weight 13 over HTTP/2.

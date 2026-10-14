@@ -17,7 +17,7 @@ A browser sends a POST in one of two ways, and a server can tell them apart:
   navigation carries, and orders the rest differently.
 
 `form=` sends the first kind; `json=` and `body=` send the second. Chrome
-154, Firefox 156 and Safari 27 were recorded doing both, and following a
+155, Firefox 158 and Safari 27 were recorded doing both, and following a
 link, and loading the page a login redirects to; Netweir's tests check its
 requests match them byte for byte, header order included.
 

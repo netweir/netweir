@@ -24,7 +24,7 @@ of those words will mean when it is:
 
 Working today:
 
-- Fetching that is indistinguishable from Chrome 154, Firefox 156 or
+- Fetching that is indistinguishable from Chrome 155, Firefox 158 or
   Safari 27 on the wire, over HTTP/2 and HTTP/1.1, with cookies and
   redirects. Below: how that's proved, and the one known exception.
 - Forms, logins and JSON APIs: POST and any other method, sent the way
@@ -344,7 +344,7 @@ extensions arrive, what the HTTP/2 settings frame says, which headers come
 first. A Python HTTP library gives itself away before it has
 asked for anything.
 
-Netweir sends what Chrome 154 sends. Not something close to it: the same
+Netweir sends what Chrome 155 sends. Not something close to it: the same
 ClientHello, the same HTTP/2 settings and priorities, the same headers in
 the same order and the same capitalisation over HTTP/1.1. Cookies go where
 Chrome puts them, and redirects are followed hop by hop the way Chrome
@@ -357,10 +357,12 @@ netweir-core` has Netweir do the same four and fails if any request differs
 from Chrome's. The public checker at tls.peet.ws reports the same JA4
 fingerprint for both: `t13d1517h2_8daaf6152771_cb7bf5808d99`.
 
-Firefox 156 is there too: `netweir.get(url, profile="firefox")`, or
+Firefox 158 is there too: `netweir.get(url, profile="firefox")`, or
 `profile="firefox"` in a spider's settings. Firefox sends its TLS extensions
 in a fixed order, with no GREASE, and the same test checks that order
 against a recording of the real browser, as well as everything above.
+Haven't updated yet? The versions before stay, as `chrome-154-macos` and
+`firefox-156-macos`, and are tested the same way.
 
 So is Safari 27, as `profile="safari"`. It has two habits of its own, and
 Netweir copies both. Two cookies with the same path go out newest first.

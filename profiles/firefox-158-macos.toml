@@ -1,0 +1,228 @@
+# Firefox 158 on macOS, as a top-level navigation.
+#
+# Written from profiles/firefox-158-macos.capture.json and
+# firefox-158-macos.http1.capture.json, which the capture tool recorded from
+# Firefox 158.0 over HTTP/2 and HTTP/1.1, driven through the same four
+# navigations as the Chrome profile: a page that sets a cookie, a revisit, a
+# cross-site redirect and a same-site redirect. netweir-core's fingerprint
+# test replays them and fails if any request differs, extension order
+# included.
+
+name = "firefox-158-macos"
+
+# Sent on every request, in this order and with this capitalisation, unless
+# the caller overrides one. Firefox sends Priority over HTTP/1.1 as well as
+# HTTP/2, and orders headers the same way after a redirect.
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Connection", "keep-alive"],
+    ["Cookie", ""],
+    ["Upgrade-Insecure-Requests", "1"],
+    ["Sec-Fetch-Dest", "document"],
+    ["Sec-Fetch-Mode", "navigate"],
+    ["Sec-Fetch-Site", "none"],
+    ["Sec-Fetch-User", "?1"],
+    ["Priority", "u=0, i"],
+]
+
+# Firefox sends this only over HTTP/2, last.
+http2_headers = [
+    ["te", "trailers"],
+]
+
+[tls]
+ciphers = [
+    "TLS_AES_128_GCM_SHA256",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_AES_256_GCM_SHA384",
+    "ECDHE-ECDSA-AES128-GCM-SHA256",
+    "ECDHE-RSA-AES128-GCM-SHA256",
+    "ECDHE-ECDSA-CHACHA20-POLY1305",
+    "ECDHE-RSA-CHACHA20-POLY1305",
+    "ECDHE-ECDSA-AES256-GCM-SHA384",
+    "ECDHE-RSA-AES256-GCM-SHA384",
+    "ECDHE-RSA-AES128-SHA",
+    "ECDHE-RSA-AES256-SHA",
+    "AES128-GCM-SHA256",
+    "AES256-GCM-SHA384",
+    "AES128-SHA",
+    "AES256-SHA",
+]
+# Firefox puts ChaCha20 between the two AES-GCM ciphers.
+preserve_tls13_cipher_order = true
+groups = ["X25519MLKEM768", "X25519", "P-256", "P-384", "P-521"]
+key_shares = ["X25519MLKEM768", "X25519", "P-256"]
+signature_algorithms = [
+    "ecdsa_secp256r1_sha256",
+    "ecdsa_secp384r1_sha384",
+    "ecdsa_secp521r1_sha512",
+    "rsa_pss_rsae_sha256",
+    "rsa_pss_rsae_sha384",
+    "rsa_pss_rsae_sha512",
+    "rsa_pkcs1_sha256",
+    "rsa_pkcs1_sha384",
+    "rsa_pkcs1_sha512",
+    "ecdsa_sha1",
+    "rsa_pkcs1_sha1",
+]
+delegated_credentials = [
+    "ecdsa_secp256r1_sha256",
+    "ecdsa_secp384r1_sha384",
+    "ecdsa_secp521r1_sha512",
+    "ecdsa_sha1",
+]
+record_size_limit = 16385
+alpn = ["h2", "http/1.1"]
+alps = []
+alps_new_codepoint = false
+certificate_compression = ["zlib", "brotli", "zstd"]
+# Firefox neither GREASEs nor shuffles: its extensions always go in this
+# order (server_name, extended_master_secret, renegotiation_info,
+# supported_groups, ec_point_formats, session_ticket, ALPN, status_request,
+# delegated_credentials, signed_certificate_timestamp, key_share,
+# supported_versions, signature_algorithms, psk_key_exchange_modes,
+# record_size_limit, compress_certificate, encrypted_client_hello).
+grease = false
+grease_signature_algorithms = false
+permute_extensions = false
+extension_order = [0, 23, 65281, 10, 11, 35, 16, 5, 34, 18, 51, 43, 13, 45, 28, 27, 65037]
+ech_grease = true
+ocsp_stapling = true
+signed_certificate_timestamps = true
+session_ticket = true
+# The captures show it: Firefox's second connection to localhost resumed
+# the first one's session, sending pre_shared_key last and leaving
+# session_ticket out. The fingerprint test makes netweir resume too and
+# holds that handshake to Firefox's.
+pre_shared_key = true
+resume_without_session_ticket = true
+
+[http2]
+# (setting id, value) in the order Firefox sends them.
+settings = [[1, 65536], [2, 0], [4, 131072], [5, 16384]]
+window_update = 12517377
+pseudo_header_order = ["method", "path", "authority", "scheme"]
+headers_priority = { exclusive = false, depends_on = 0, weight = 41 }
+
+# What Firefox sends following a link, submitting a form, running a page's
+# fetch(), and after a form's redirect; written from
+# firefox-158-macos.post.capture.json and .post.http1.capture.json, which
+# recorded Firefox 158.0 doing each. Empty values are filled per request.
+# Unlike Chrome, Firefox drops the form's Cache-Control after a redirect.
+[link]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Connection", "keep-alive"],
+    ["Referer", ""],
+    ["Cookie", ""],
+    ["Upgrade-Insecure-Requests", "1"],
+    ["Sec-Fetch-Dest", "document"],
+    ["Sec-Fetch-Mode", "navigate"],
+    ["Sec-Fetch-Site", ""],
+    ["Sec-Fetch-User", "?1"],
+    ["Priority", "u=0, i"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]
+
+[form]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Content-Type", ""],
+    ["Content-Length", ""],
+    ["Origin", ""],
+    ["Connection", "keep-alive"],
+    ["Referer", ""],
+    ["Cookie", ""],
+    ["Upgrade-Insecure-Requests", "1"],
+    ["Sec-Fetch-Dest", "document"],
+    ["Sec-Fetch-Mode", "navigate"],
+    ["Sec-Fetch-Site", ""],
+    ["Sec-Fetch-User", "?1"],
+    ["Priority", "u=0, i"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]
+
+[fetch]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "*/*"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Referer", ""],
+    ["Content-Type", ""],
+    ["Content-Length", ""],
+    ["Origin", ""],
+    ["Connection", "keep-alive"],
+    ["Cookie", ""],
+    ["Sec-Fetch-Dest", "empty"],
+    ["Sec-Fetch-Mode", "cors"],
+    ["Sec-Fetch-Site", ""],
+    ["Priority", "u=4"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]
+# A script's requests go at a lower HTTP/2 weight, to match Priority: u=4.
+headers_priority = { exclusive = false, depends_on = 0, weight = 21 }
+
+# An <img> on a page loading its picture. Written from
+# firefox-158-macos.image.capture.json and .image.http1.capture.json, which
+# recorded Firefox 158.0 loading the capture tool's /image page.
+[image]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Connection", "keep-alive"],
+    ["Referer", ""],
+    ["Cookie", ""],
+    ["Sec-Fetch-Dest", "image"],
+    ["Sec-Fetch-Mode", "no-cors"],
+    ["Sec-Fetch-Site", ""],
+    ["Priority", "u=4, i"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]
+# Images go at a lower HTTP/2 weight still than a script's requests.
+headers_priority = { exclusive = false, depends_on = 0, weight = 13 }
+
+[after_form_redirect]
+headers = [
+    ["Host", ""],
+    ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
+    ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
+    ["Accept-Language", "en-US,en;q=0.9"],
+    ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Referer", ""],
+    ["Connection", "keep-alive"],
+    ["Cookie", ""],
+    ["Upgrade-Insecure-Requests", "1"],
+    ["Sec-Fetch-Dest", "document"],
+    ["Sec-Fetch-Mode", "navigate"],
+    ["Sec-Fetch-Site", ""],
+    ["Sec-Fetch-User", "?1"],
+    ["Priority", "u=0, i"],
+]
+http2_headers = [
+    ["te", "trailers"],
+]

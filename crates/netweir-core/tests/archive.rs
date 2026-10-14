@@ -767,7 +767,17 @@ fn comparable(c: &netweir_fingerprint::Capture, port: u16) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn archiving_changes_nothing_sent_and_records_exactly_what_was() {
     let dir = temp_dir("scenario");
-    for profile in ["chrome-154-macos", "firefox-156-macos", "safari-27-macos"] {
+    // Every profile netweir ships: one per profiles/*.toml.
+    let profiles = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles");
+    let shipped: Vec<String> = std::fs::read_dir(profiles)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".toml").map(str::to_string)
+        })
+        .collect();
+    assert!(!shipped.is_empty());
+    for profile in shipped.iter().map(String::as_str) {
         for http1 in [false, true] {
             let mut runs = Vec::new();
             for archived in [false, true] {

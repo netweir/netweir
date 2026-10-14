@@ -16,8 +16,16 @@ use wreq::{Emulation, Group};
 /// Profiles shipped with netweir, by name.
 const BUILT_IN: &[(&str, &str)] = &[
     (
+        "chrome-155-macos",
+        include_str!("../../../profiles/chrome-155-macos.toml"),
+    ),
+    (
         "chrome-154-macos",
         include_str!("../../../profiles/chrome-154-macos.toml"),
+    ),
+    (
+        "firefox-158-macos",
+        include_str!("../../../profiles/firefox-158-macos.toml"),
     ),
     (
         "firefox-156-macos",
@@ -30,12 +38,12 @@ const BUILT_IN: &[(&str, &str)] = &[
 ];
 
 /// What `profile="chrome"` means today.
-pub const DEFAULT: &str = "chrome-154-macos";
+pub const DEFAULT: &str = "chrome-155-macos";
 
 /// The newest profile of each browser, by its short name.
 const LATEST: &[(&str, &str)] = &[
     ("chrome", DEFAULT),
-    ("firefox", "firefox-156-macos"),
+    ("firefox", "firefox-158-macos"),
     ("safari", "safari-27-macos"),
 ];
 
@@ -128,6 +136,10 @@ pub struct Tls {
     pub signed_certificate_timestamps: bool,
     pub session_ticket: bool,
     pub pre_shared_key: bool,
+    /// Leave session_ticket out of a handshake that resumes a session, as
+    /// Firefox does; it still goes in a fresh one.
+    #[serde(default)]
+    pub resume_without_session_ticket: bool,
     pub trust_anchors: Option<String>,
     /// The exact order of the ClientHello's extensions, by number, for a
     /// browser that doesn't shuffle them. Empty: BoringSSL's order.
@@ -308,7 +320,8 @@ impl Profile {
             .enable_ocsp_stapling(t.ocsp_stapling)
             .enable_signed_cert_timestamps(t.signed_certificate_timestamps)
             .session_ticket(t.session_ticket)
-            .pre_shared_key(t.pre_shared_key);
+            .pre_shared_key(t.pre_shared_key)
+            .psk_skip_session_ticket(t.resume_without_session_ticket);
         if !t.extension_order.is_empty() {
             let order: Vec<ExtensionType> = t.extension_order.iter().map(|&e| e.into()).collect();
             tls = tls.extension_permutation(order);
@@ -534,6 +547,7 @@ mod tests {
     fn every_built_in_profile_loads_and_builds() {
         for (name, _) in BUILT_IN {
             let p = Profile::named(name).unwrap();
+            assert_eq!(&p.name, name, "the file listed as {name} names itself");
             p.emulation().unwrap();
         }
         assert_eq!(Profile::named("chrome").unwrap().name, DEFAULT);
@@ -554,12 +568,12 @@ mod tests {
     #[test]
     fn unknown_names_list_the_known_ones() {
         let err = Profile::named("netscape").unwrap_err();
-        assert!(err.0.contains("chrome-154-macos"), "{err}");
+        assert!(err.0.contains("chrome-155-macos"), "{err}");
     }
 
     #[test]
     fn typos_in_a_profile_are_errors() {
-        let src = include_str!("../../../profiles/chrome-154-macos.toml").replace(
+        let src = include_str!("../../../profiles/chrome-155-macos.toml").replace(
             r#"key_shares = ["X25519MLKEM768""#,
             r#"key_shares = ["X25519MLKEM769""#,
         );
@@ -569,7 +583,7 @@ mod tests {
             "{}
 speed = 11
 ",
-            include_str!("../../../profiles/chrome-154-macos.toml")
+            include_str!("../../../profiles/chrome-155-macos.toml")
         );
         assert!(Profile::from_toml(&extra).is_err());
     }
@@ -578,6 +592,8 @@ speed = 11
     fn chrome_brands_come_from_the_profile_of_that_version() {
         let brands = Profile::chrome_brands("154").unwrap();
         assert!(brands.contains("\"Google Chrome\";v=\"154\""), "{brands}");
+        let brands = Profile::chrome_brands("155").unwrap();
+        assert!(brands.contains("\"Google Chrome\";v=\"155\""), "{brands}");
         assert_eq!(Profile::chrome_brands("1"), None);
     }
 }

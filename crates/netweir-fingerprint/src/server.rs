@@ -370,6 +370,12 @@ async fn handle(
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
+            // `/close` answers and hangs up, so the client's next request
+            // opens a new connection, which may resume this one's session.
+            let close = path.split('?').next() == Some("/close");
+            if close {
+                reply_headers.push(("connection", "close".to_string()));
+            }
             reply_headers.push(("content-length", body.len().to_string()));
             let reason = if status == 302 { "Found" } else { "OK" };
             let mut head = format!("HTTP/1.1 {status} {reason}\r\n");
@@ -380,6 +386,10 @@ async fn handle(
             tls.write_all(head.as_bytes()).await?;
             tls.write_all(&body).await?;
             tls.flush().await?;
+            if close {
+                tls.shutdown().await?;
+                return Ok(());
+            }
         }
     }
 }

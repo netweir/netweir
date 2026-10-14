@@ -20,7 +20,7 @@ body:
     attributes:
       label: Profile
       description: The `profile` setting, or "browser driver" if it's Chrome itself.
-      placeholder: chrome-154-macos
+      placeholder: chrome-155-macos
     validations:
       required: true
   - type: textarea

@@ -236,7 +236,9 @@ def test_profiles_by_browser_or_version(base):
         "chrome",
         "firefox",
         "safari",
+        "chrome-155-macos",
         "chrome-154-macos",
+        "firefox-158-macos",
         "firefox-156-macos",
         "safari-27-macos",
     ):

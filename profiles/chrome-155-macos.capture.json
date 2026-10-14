@@ -1,0 +1,1233 @@
+[
+  {
+    "connection": 0,
+    "request": 0,
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        27242,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        35466,
+        13,
+        65037,
+        45,
+        17613,
+        23,
+        10,
+        43,
+        0,
+        18,
+        27,
+        5,
+        11,
+        35,
+        51764,
+        16,
+        51,
+        65281,
+        47802
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        47802,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        47802,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        47802,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/?set=nw",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/?set=nw"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 0,
+    "request": 0,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        6682,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        56026,
+        16,
+        18,
+        5,
+        51764,
+        17613,
+        51,
+        10,
+        43,
+        65281,
+        13,
+        11,
+        65037,
+        35,
+        0,
+        27,
+        23,
+        45,
+        2570,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        27242,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        27242,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        39578,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "cookie",
+        "nw=1"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 0,
+    "request": 2,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        6682,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        56026,
+        16,
+        18,
+        5,
+        51764,
+        17613,
+        51,
+        10,
+        43,
+        65281,
+        13,
+        11,
+        65037,
+        35,
+        0,
+        27,
+        23,
+        45,
+        2570,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        27242,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        27242,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        39578,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/redirect?to=https://127.0.0.1:8443/after&set=r",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/redirect?to=https://127.0.0.1:8443/after&set=r"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "cookie",
+        "nw=1"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 0,
+    "ja4": "t13i1516h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        31354,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        2570,
+        23,
+        65037,
+        27,
+        45,
+        35,
+        10,
+        5,
+        11,
+        51,
+        65281,
+        17613,
+        18,
+        13,
+        16,
+        51764,
+        43,
+        19018
+      ],
+      "server_name": null,
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        31354,
+        772,
+        771
+      ],
+      "supported_groups": [
+        64250,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        64250,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        2570,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/after",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "127.0.0.1:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/after"
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 0,
+    "request": 3,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        6682,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        56026,
+        16,
+        18,
+        5,
+        51764,
+        17613,
+        51,
+        10,
+        43,
+        65281,
+        13,
+        11,
+        65037,
+        35,
+        0,
+        27,
+        23,
+        45,
+        2570,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        27242,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        27242,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        39578,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/redirect?to=https://localhost:8443/final&set=s",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/redirect?to=https://localhost:8443/final&set=s"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "cookie",
+        "nw=1"
+      ],
+      [
+        "cookie",
+        "r=1"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 0,
+    "request": 4,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        6682,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        56026,
+        16,
+        18,
+        5,
+        51764,
+        17613,
+        51,
+        10,
+        43,
+        65281,
+        13,
+        11,
+        65037,
+        35,
+        0,
+        27,
+        23,
+        45,
+        2570,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        27242,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        27242,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        39578,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          1,
+          65536
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          6291456
+        ],
+        [
+          6,
+          262144
+        ]
+      ],
+      "window_update": 15663105,
+      "priority_frames": [],
+      "headers_priority": [
+        true,
+        0,
+        255
+      ],
+      "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
+    "path": "/final",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8443"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/final"
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "cookie",
+        "nw=1"
+      ],
+      [
+        "cookie",
+        "r=1"
+      ],
+      [
+        "cookie",
+        "s=1"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  }
+]
