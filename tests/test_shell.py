@@ -28,6 +28,8 @@ PAGE = (
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    #: Set once /slow has been asked for.
+    slow = threading.Event()
 
     def log_message(self, *args):
         pass
@@ -60,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
             body = "<p>café</p>".encode("latin-1")
             self.send(200, body, [("Content-Type", "text/html; charset=ISO-8859-1")])
         elif self.path == "/slow":
+            Handler.slow.set()
             time.sleep(20)
             self.send(200, b"late")
         elif self.path == "/big":
@@ -472,8 +475,10 @@ def command(*args):
 
 @posix
 def test_ctrl_c_stops_a_fetch_at_once(base):
+    Handler.slow.clear()
     proc = subprocess.Popen(command("fetch", f"{base}/slow"), stderr=subprocess.PIPE, text=True)
-    time.sleep(1.5)
+    # Mid-fetch, however long a loaded machine takes to start Python.
+    assert Handler.slow.wait(60), "the fetch never reached the server"
     proc.send_signal(signal.SIGINT)
     started = time.monotonic()
     _, err = proc.communicate(timeout=10)
