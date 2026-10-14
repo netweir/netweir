@@ -143,6 +143,8 @@ mod tests {
             record_size_limit: None,
             delegated_credentials: None,
             trust_anchors: None,
+            grease_extension_lengths: vec![],
+            grease_key_share_lengths: vec![],
         };
         let first = ja4(&hello);
         hello.signature_algorithms[0] = 0xdada;

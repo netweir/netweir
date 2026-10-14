@@ -34,6 +34,14 @@ pub struct ClientHello {
     pub delegated_credentials: Option<Vec<u16>>,
     /// Raw body of the trust_anchors extension (0xca34), hex-encoded.
     pub trust_anchors: Option<String>,
+    /// Payload length of each GREASE extension, in the order sent. Empty in
+    /// captures from before it was kept.
+    #[serde(default)]
+    pub grease_extension_lengths: Vec<usize>,
+    /// Key length of each GREASE key share, in the order sent. Empty in
+    /// captures from before it was kept.
+    #[serde(default)]
+    pub grease_key_share_lengths: Vec<usize>,
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -117,11 +125,16 @@ impl ClientHello {
             record_size_limit: None,
             delegated_credentials: None,
             trust_anchors: None,
+            grease_extension_lengths: Vec::new(),
+            grease_key_share_lengths: Vec::new(),
         };
         let mut exts = Reader(r.vec16().unwrap_or(&[]));
         while let Some(id) = exts.u16() {
             let data = exts.vec16()?;
             hello.extensions.push(id);
+            if is_grease(id) {
+                hello.grease_extension_lengths.push(data.len());
+            }
             let mut d = Reader(data);
             match id {
                 0x0000 => {
@@ -147,7 +160,10 @@ impl ClientHello {
                 0x0033 => {
                     let mut shares = Reader(d.vec16()?);
                     while let Some(group) = shares.u16() {
-                        shares.vec16()?;
+                        let key = shares.vec16()?;
+                        if is_grease(group) {
+                            hello.grease_key_share_lengths.push(key.len());
+                        }
                         hello.key_share_groups.push(group);
                     }
                 }
@@ -229,6 +245,35 @@ pub fn bytes_needed(data: &[u8]) -> Result<Option<usize>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grease_payload_and_key_lengths_are_kept() {
+        let mut exts = vec![0x1a, 0x1a, 0, 0]; // empty GREASE extension
+        let mut shares = vec![0x2a, 0x2a, 0, 1, 0]; // GREASE, 1-byte key
+        shares.extend_from_slice(&[0, 0x1d, 0, 32]); // x25519
+        shares.extend_from_slice(&[7; 32]);
+        exts.extend_from_slice(&[0, 0x33]);
+        exts.extend_from_slice(&(shares.len() as u16 + 2).to_be_bytes());
+        exts.extend_from_slice(&(shares.len() as u16).to_be_bytes());
+        exts.extend_from_slice(&shares);
+        exts.extend_from_slice(&[0x3a, 0x3a, 0, 1, 0]); // 1-byte GREASE extension
+        let mut body = vec![3, 3];
+        body.extend_from_slice(&[0; 32]); // random
+        body.extend_from_slice(&[0, 0, 2, 0x13, 0x01, 1, 0]); // session id, ciphers, compression
+        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+        body.extend_from_slice(&exts);
+        let mut handshake = vec![1, 0];
+        handshake.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        handshake.extend_from_slice(&body);
+        let mut record = vec![0x16, 3, 1];
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        let hello = ClientHello::parse(&record).unwrap();
+        assert_eq!(hello.extensions, [0x1a1a, 0x0033, 0x3a3a]);
+        assert_eq!(hello.key_share_groups, [0x2a2a, 0x001d]);
+        assert_eq!(hello.grease_extension_lengths, [0, 1]);
+        assert_eq!(hello.grease_key_share_lengths, [1]);
+    }
 
     #[test]
     fn plain_http_is_rejected_at_the_first_byte() {
