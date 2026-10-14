@@ -11,6 +11,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from local_server import serve
 
 import netweir
 
@@ -176,10 +177,10 @@ class Proxy(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def base():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
+    servers = serve(Handler)
+    yield f"http://127.0.0.1:{servers[0].server_port}"
+    for server in servers:
+        server.shutdown()
 
 
 @pytest.fixture

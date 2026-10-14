@@ -1,8 +1,8 @@
 import logging
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
+from local_server import serve
 
 import netweir
 
@@ -40,11 +40,11 @@ class Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def base():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    Handler.port = server.server_port
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
+    servers = serve(Handler)
+    Handler.port = servers[0].server_port
+    yield f"http://127.0.0.1:{servers[0].server_port}"
+    for server in servers:
+        server.shutdown()
 
 
 def test_allowed_domains_keeps_a_spider_on_its_sites(base, caplog):

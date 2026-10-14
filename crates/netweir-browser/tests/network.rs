@@ -877,6 +877,9 @@ async fn a_workers_requests_are_routed_and_heard() {
 
 /// Chrome holds every kind of target it attaches while it waits for a
 /// debugger, worklets included: each must be let go, or it never runs.
+/// One held shows as a timeout here. Nothing is routed, so Netweir pauses
+/// no request: a quick network error is Chrome failing to reach the test
+/// server, and the failure says what the network did.
 #[tokio::test]
 async fn worklets_still_load_in_the_page_and_in_a_frame_from_another_site() {
     let Some(browser) = browser().await else {
@@ -884,26 +887,66 @@ async fn worklets_still_load_in_the_page_and_in_a_frame_from_another_site() {
     };
     let server = framed();
     let page = browser.new_page().await.unwrap();
-    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+    if let Err(e) = page
+        .goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
         .await
-        .unwrap();
+    {
+        panic!("{e}; {}", what_the_network_did(&browser, &server));
+    }
     let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
+    let sent = browser.methods_sent();
+    assert!(!sent.iter().any(|m| m.starts_with("Fetch.")), "{sent:?}");
     let audio = "new OfflineAudioContext(1, 1, 44100).audioWorklet.addModule('/audio.js')\
                  .then(() => 'loaded', e => String(e))";
     // Paint worklets may not exist headless: then there's nothing to load.
     let paint = "'paintWorklet' in CSS ? CSS.paintWorklet.addModule('/paint.js')\
                  .then(() => 'loaded', e => String(e)) : 'loaded'";
     for script in [audio, paint] {
-        let on_page = tokio::time::timeout(Duration::from_secs(20), page.evaluate(script)).await;
-        assert_eq!(on_page.map(Result::unwrap), Ok(json!("loaded")), "{script}");
-        let in_frame = tokio::time::timeout(Duration::from_secs(20), frame.evaluate(script)).await;
-        assert_eq!(
-            in_frame.map(Result::unwrap),
-            Ok(json!("loaded")),
-            "{script}"
-        );
+        for (place, run) in [("page", &page.main_frame()), ("frame", &frame)] {
+            let said = tokio::time::timeout(Duration::from_secs(20), run.evaluate(script))
+                .await
+                .map(Result::unwrap);
+            assert_eq!(
+                said,
+                Ok(json!("loaded")),
+                "in the {place}, {script}; {}",
+                what_the_network_did(&browser, &server)
+            );
+        }
     }
     browser.close().await.unwrap();
+}
+
+/// What a test that failed on the network should say: what Netweir
+/// asked of Fetch (nothing, unless something routes), what the server
+/// saw and from which host, and the machine's TCP sockets by state, which
+/// show whether it ran out of ports.
+fn what_the_network_did(browser: &netweir_browser::Browser, server: &common::Server) -> String {
+    let fetch: Vec<String> = browser
+        .methods_sent()
+        .into_iter()
+        .filter(|m| m.starts_with("Fetch."))
+        .collect();
+    let seen: Vec<String> = server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(path, headers)| {
+            let host = headers.iter().find(|(k, _)| k == "host");
+            format!("{}{path}", host.map_or("?", |(_, v)| v.as_str()))
+        })
+        .collect();
+    let mut states = std::collections::BTreeMap::<String, usize>::new();
+    if let Ok(out) = std::process::Command::new("netstat").arg("-an").output() {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if line.trim_start().to_ascii_uppercase().starts_with("TCP") {
+                let state = line.split_whitespace().last().unwrap_or("?");
+                *states.entry(state.to_string()).or_default() += 1;
+            }
+        }
+    }
+    format!("Fetch was sent {fetch:?}, the server saw {seen:?}, TCP sockets: {states:?}")
 }
 
 /// The guard sees only the page's own documents, but a frame from another

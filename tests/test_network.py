@@ -10,9 +10,10 @@ import os
 import re
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
+from local_server import serve
 
 import netweir
 
@@ -98,10 +99,10 @@ def headers_for(path):
 
 @pytest.fixture(scope="module")
 def base():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
+    servers = serve(Handler)
+    yield f"http://127.0.0.1:{servers[0].server_port}"
+    for server in servers:
+        server.shutdown()
 
 
 @pytest.fixture

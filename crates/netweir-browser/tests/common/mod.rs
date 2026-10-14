@@ -17,7 +17,7 @@ pub fn chrome() -> Option<PathBuf> {
 }
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 pub struct Reply {
@@ -57,68 +57,84 @@ impl Server {
 }
 
 pub fn serve(routes: Vec<(&'static str, Reply)>) -> Server {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let routes = Arc::new(routes);
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let routes = routes.clone();
-            let log = log.clone();
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                // Chrome opens connections ahead of need and closes some
-                // unused: one that sends nothing is no request for "/".
-                if !matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
-                    return;
-                }
-                let path = line.split(' ').nth(1).unwrap_or("/").to_string();
-                let mut headers = Vec::new();
-                loop {
-                    let mut h = String::new();
-                    if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
-                        break;
-                    }
-                    if let Some((k, v)) = h.trim_end().split_once(':') {
-                        headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
-                    }
-                }
-                log.lock().unwrap().push((path.clone(), headers));
-                let missing = Reply {
-                    status: 404,
-                    headers: vec![("Content-Type", "text/html".into())],
-                    body: "<p>not here</p>".into(),
-                };
-                let reply = routes
-                    .iter()
-                    .find(|(p, _)| *p == path)
-                    .map(|(_, r)| r)
-                    .unwrap_or(&missing);
-                // A test asks for a slow answer with this header, which
-                // isn't sent.
-                let mut reply_headers = reply.headers.clone();
-                if let Some(i) = reply_headers.iter().position(|(k, _)| *k == "X-Delay-Ms") {
-                    let (_, ms) = reply_headers.remove(i);
-                    std::thread::sleep(std::time::Duration::from_millis(ms.parse().unwrap()));
-                }
-                let mut out = format!(
-                    "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-                    reply.status,
-                    reply.body.len()
-                );
-                for (k, v) in &reply_headers {
-                    out.push_str(&format!("{k}: {v}\r\n"));
-                }
-                out.push_str("\r\n");
-                out.push_str(&reply.body);
-                let _ = stream.write_all(out.as_bytes());
-            });
+    let port = listen(move |mut stream| {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        // Chrome opens connections ahead of need and closes some
+        // unused: one that sends nothing is no request for "/".
+        if !matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
+            return;
         }
+        let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+        let mut headers = Vec::new();
+        loop {
+            let mut h = String::new();
+            if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = h.trim_end().split_once(':') {
+                headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+        log.lock().unwrap().push((path.clone(), headers));
+        let missing = Reply {
+            status: 404,
+            headers: vec![("Content-Type", "text/html".into())],
+            body: "<p>not here</p>".into(),
+        };
+        let reply = routes
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, r)| r)
+            .unwrap_or(&missing);
+        // A test asks for a slow answer with this header, which
+        // isn't sent.
+        let mut reply_headers = reply.headers.clone();
+        if let Some(i) = reply_headers.iter().position(|(k, _)| *k == "X-Delay-Ms") {
+            let (_, ms) = reply_headers.remove(i);
+            std::thread::sleep(std::time::Duration::from_millis(ms.parse().unwrap()));
+        }
+        let mut out = format!(
+            "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+            reply.status,
+            reply.body.len()
+        );
+        for (k, v) in &reply_headers {
+            out.push_str(&format!("{k}: {v}\r\n"));
+        }
+        out.push_str("\r\n");
+        out.push_str(&reply.body);
+        let _ = stream.write_all(out.as_bytes());
     });
-    Server { url, seen }
+    Server {
+        url: format!("http://127.0.0.1:{port}"),
+        seen,
+    }
+}
+
+/// Listens on 127.0.0.1 at a free port and, where the machine has it, on
+/// [::1] at the same one, each connection handled on a thread of its own.
+/// Pages reach test servers as localhost too, which Windows tries as ::1
+/// first: with nothing listening there, every such request started with a
+/// refused connection.
+fn listen(handle: impl Fn(TcpStream) + Send + Sync + 'static) -> u16 {
+    let v4 = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = v4.local_addr().unwrap().port();
+    let v6 = TcpListener::bind(("::1", port)).ok();
+    let handle = Arc::new(handle);
+    for listener in std::iter::once(v4).chain(v6) {
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let handle = handle.clone();
+                std::thread::spawn(move || handle(stream));
+            }
+        });
+    }
+    port
 }
 
 /// A headless browser for a test, or None when there's no Chrome.
@@ -188,55 +204,50 @@ pub struct Proxy {
 }
 
 pub fn proxy() -> Proxy {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                        return;
-                    }
-                    let target = line.split(' ').nth(1).unwrap_or("").to_string();
-                    let mut authorised = false;
-                    loop {
-                        let mut h = String::new();
-                        if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
-                            break;
-                        }
-                        // "user:secret", base64-encoded.
-                        if h.to_ascii_lowercase().starts_with("proxy-authorization:")
-                            && h.contains("dXNlcjpzZWNyZXQ=")
-                        {
-                            authorised = true;
-                        }
-                    }
-                    let reply = if authorised {
-                        // Scripts, for the workers a page starts.
-                        let (kind, body) = if target.ends_with(".js") {
-                            (
-                                "application/javascript",
-                                "postMessage('worker ran')".to_string(),
-                            )
-                        } else {
-                            ("text/html", format!("<p id=via>via proxy: {target}</p>"))
-                        };
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
-                            body.len()
-                        )
-                    } else {
-                        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n".to_string()
-                    };
-                    if stream.write_all(reply.as_bytes()).is_err() {
-                        return;
-                    }
+    let port = listen(|mut stream| {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let target = line.split(' ').nth(1).unwrap_or("").to_string();
+            let mut authorised = false;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                    break;
                 }
-            });
+                // "user:secret", base64-encoded.
+                if h.to_ascii_lowercase().starts_with("proxy-authorization:")
+                    && h.contains("dXNlcjpzZWNyZXQ=")
+                {
+                    authorised = true;
+                }
+            }
+            let reply = if authorised {
+                // Scripts, for the workers a page starts.
+                let (kind, body) = if target.ends_with(".js") {
+                    (
+                        "application/javascript",
+                        "postMessage('worker ran')".to_string(),
+                    )
+                } else {
+                    ("text/html", format!("<p id=via>via proxy: {target}</p>"))
+                };
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n".to_string()
+            };
+            if stream.write_all(reply.as_bytes()).is_err() {
+                return;
+            }
         }
     });
-    Proxy { url }
+    Proxy {
+        url: format!("http://127.0.0.1:{port}"),
+    }
 }
