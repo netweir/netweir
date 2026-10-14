@@ -309,6 +309,11 @@ pub enum Submitted {
     /// Sent to the shared queue, from which this process or another
     /// leases it (`Event::Leased`).
     Pushed,
+    /// Passed every check, and seen from now on, but not queued: the
+    /// caller already has its response (`claim`).
+    Answered,
+    /// `claim` only: `max_pages` pages have been sent or served already.
+    Capped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -469,6 +474,8 @@ pub struct Stats {
     pub offsite: u64,
     /// Pages served from the cache rather than fetched.
     pub cache_hits: u64,
+    /// Pages the caller answered requests with, never fetched (`claim`).
+    pub served: u64,
     /// Responses written to the cache.
     pub cache_stores: u64,
     /// Times a proxy was benched.
@@ -776,6 +783,31 @@ struct Host {
     recent: VecDeque<bool>,
 }
 
+impl Host {
+    fn new(settings: &CrawlSettings) -> Self {
+        Host {
+            queue: BinaryHeap::new(),
+            in_flight: 0,
+            next_at: Instant::now(),
+            delay: if settings.throttle {
+                settings.start_delay
+            } else {
+                settings.min_delay
+            },
+            floor: Duration::ZERO,
+            listed: false,
+            download_listed: false,
+            timer: None,
+            accepted: 0,
+            session: None,
+            proxy: None,
+            options: None,
+            via: Lru::new(HOST_VIA),
+            recent: VecDeque::new(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Origin {
     robots: Gate<Robots>,
@@ -971,6 +1003,15 @@ impl Crawler {
     /// JSON) with it in the checkpoint, if there is one.
     pub fn submit_with(&self, request: CrawlRequest, payload: &str) -> Submitted {
         self.admit(request, Persist::New(payload))
+    }
+
+    /// Checks a request as `submit` does, and counts it as seen and as a
+    /// page toward `max_pages` and `max_pages_per_domain`, but doesn't
+    /// queue it: the caller answers it without a fetch (a Python
+    /// middleware with a response in hand). `Answered` if it passed,
+    /// `Capped` if `max_pages` pages have already been sent or served.
+    pub fn claim(&self, request: CrawlRequest) -> Submitted {
+        self.admit(request, Persist::Answered)
     }
 
     /// Queues a request read back from the checkpoint (`saved().pending`),
@@ -1299,7 +1340,10 @@ impl Crawler {
                 return Submitted::Delta;
             }
         }
-        if let (Some(link), Persist::New(payload)) = (&self.shared.queue, &persist) {
+        let answered = matches!(persist, Persist::Answered);
+        // An answered request has nothing to fetch, so nothing to push.
+        if let (Some(link), Persist::New(payload), false) = (&self.shared.queue, &persist, answered)
+        {
             // The queue's own duplicate filter has the last word, and
             // max_pages_per_domain counts what each process leases.
             let pending = Box::new(pending_of(&request, payload, 0));
@@ -1317,6 +1361,22 @@ impl Crawler {
             state.stats.skipped_domain_full += 1;
             return Submitted::DomainFull;
         }
+        if answered {
+            // A page all the same, for every limit that counts pages.
+            if state.capped(settings) {
+                state.seen.remove(&fp);
+                return Submitted::Capped;
+            }
+            state.sent += 1;
+            state.stats.served += 1;
+            let host = host.to_string();
+            state
+                .hosts
+                .entry(host)
+                .or_insert_with(|| Host::new(settings))
+                .accepted += 1;
+            return Submitted::Answered;
+        }
         // Chrome hands the callback a live page, which no kept response
         // can stand in for.
         let cache = self
@@ -1333,6 +1393,7 @@ impl Crawler {
         let saving = self.shared.checkpoint.as_ref().map(|cp| {
             let row = match persist {
                 Persist::Restored(row) => row,
+                Persist::Answered => unreachable!("an answered request returns before this"),
                 Persist::New(payload) => {
                     let row = state.next_row;
                     state.next_row += 1;
@@ -1618,6 +1679,8 @@ pub fn offsite(url: &Url, allowed: &[String]) -> bool {
 enum Persist<'a> {
     New(&'a str),
     Restored(i64),
+    /// Checked and seen, never queued: see `claim`.
+    Answered,
 }
 
 /// `request` as the checkpoint and the shared queue keep it.
@@ -2058,26 +2121,10 @@ fn enqueue(
     };
     // The host is made either way: it counts the request toward
     // max_pages_per_domain, and a hit the cache no longer has goes there.
-    let host_entry = state.hosts.entry(host.clone()).or_insert_with(|| Host {
-        queue: BinaryHeap::new(),
-        in_flight: 0,
-        next_at: Instant::now(),
-        delay: if settings.throttle {
-            settings.start_delay
-        } else {
-            settings.min_delay
-        },
-        floor: Duration::ZERO,
-        listed: false,
-        download_listed: false,
-        timer: None,
-        accepted: 0,
-        session: None,
-        proxy: None,
-        options: None,
-        via: Lru::new(HOST_VIA),
-        recent: VecDeque::new(),
-    });
+    let host_entry = state
+        .hosts
+        .entry(host.clone())
+        .or_insert_with(|| Host::new(settings));
     if hit {
         state.hits.push(queued);
     } else {
@@ -3919,6 +3966,67 @@ mod tests {
             proxy: None,
             delta_key: Default::default(),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claimed_request_is_screened_and_seen_but_never_queued() {
+        let settings = CrawlSettings {
+            max_depth: Some(1),
+            ..CrawlSettings::default()
+        };
+        let crawler = Crawler::new(
+            FetchOptions::new(Profile::named("chrome").unwrap()),
+            settings,
+        )
+        .unwrap();
+        let url = "http://127.0.0.1:1/answered";
+        assert_eq!(crawler.claim(request(url)), Submitted::Answered);
+        // Seen: neither a second claim nor a submit gets past it.
+        assert_eq!(crawler.claim(request(url)), Submitted::Duplicate);
+        assert_eq!(crawler.submit(request(url)), Submitted::Duplicate);
+        let deep = CrawlRequest {
+            depth: 2,
+            ..request("http://127.0.0.1:1/deep")
+        };
+        assert_eq!(crawler.claim(deep), Submitted::TooDeep);
+        // Nothing was queued, so the crawl is over at once.
+        assert_eq!(crawler.stats().queued, 0);
+        assert_eq!(crawler.stats().served, 1);
+        assert!(crawler.next(10).await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claimed_request_counts_toward_the_page_limits() {
+        let settings = CrawlSettings {
+            max_pages: Some(2),
+            max_pages_per_domain: Some(1),
+            ..CrawlSettings::default()
+        };
+        let crawler = Crawler::new(
+            FetchOptions::new(Profile::named("chrome").unwrap()),
+            settings,
+        )
+        .unwrap();
+        assert_eq!(
+            crawler.claim(request("http://a.test/1")),
+            Submitted::Answered
+        );
+        assert_eq!(
+            crawler.claim(request("http://a.test/2")),
+            Submitted::DomainFull
+        );
+        assert_eq!(
+            crawler.submit(request("http://a.test/3")),
+            Submitted::DomainFull
+        );
+        assert_eq!(
+            crawler.claim(request("http://b.test/1")),
+            Submitted::Answered
+        );
+        assert!(crawler.capped());
+        assert_eq!(crawler.claim(request("http://c.test/1")), Submitted::Capped);
+        // Not seen: refused the same way again.
+        assert_eq!(crawler.claim(request("http://c.test/1")), Submitted::Capped);
     }
 
     #[tokio::test(flavor = "multi_thread")]

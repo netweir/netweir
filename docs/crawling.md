@@ -746,8 +746,9 @@ async, which work as Scrapy's downloader middlewares do:
 class Middleware:
     def process_request(self, request, spider):
         """Before a request is queued. Return None to go on with it (after
-        changing it, if you like), or another Request to go on with
-        instead. Raise netweir.IgnoreRequest to drop it."""
+        changing it, if you like), a Page to answer it without fetching
+        anything, or another Request to schedule in its place. Raise
+        netweir.IgnoreRequest to drop it."""
         request.headers["Authorization"] = "Bearer ..."
 
     def process_response(self, request, page, spider):
@@ -758,9 +759,9 @@ class Middleware:
             return netweir.Request(page.url, callback=request.callback, dont_filter=True)
 
     def process_exception(self, request, error, spider):
-        """When a request failed. Return a Request to queue instead of
-        calling the errback, or None to carry on to the errback. Raise
-        netweir.IgnoreRequest to drop the request without an errback."""
+        """When a request failed, or process_request dropped it. Return a
+        Request to queue instead of calling the errback, a Page to answer
+        the request with, or None to carry on to the errback."""
 
 
 class Books(netweir.Spider):
@@ -771,21 +772,46 @@ A request's `headers` reach `process_request` as a dict (an empty one if
 it had none), or as the list of pairs it was made with. `process_request`
 runs in the list's order, and `process_response` and
 `process_exception` in reverse, as in Scrapy: the first middleware is the
-one nearest your spider. Each gets what the one before passed on. A
-request or page that's dropped is counted in the stats as
-`requests_dropped` or `responses_dropped`. A page given in place of
-another answers the same request, so it keeps the request's `depth` and
-`meta`, and a request given in place of another keeps its depth.
+one nearest your spider. Each gets what the one before passed on.
 
-An exception in `process_request` or `process_response`, or a result
-that isn't a Request, a Page or None, is counted and logged as a
-callback's error would be, and drops the request or page. One in
-`process_exception` is counted and logged, and the error goes on to the
-next middleware. With `fail_fast=True`, any of them stops the crawl.
+Say you keep pages on disk and want to crawl them without touching the
+site: return them from `process_request`, and nothing is fetched. The
+page still goes through every middleware's `process_response` and on to
+its callback, with the request's `depth` and `meta`. The crawl still
+checks the request as if it were going to fetch it, so a duplicate, an
+offsite request or one past `max_depth` gets no page, and a store of
+pages that link to each other can't send the spider round in circles.
+Each served page counts toward `max_pages` and `max_pages_per_domain`
+as a fetched one does, and in the stats as `pages_served`. On a rules
+spider, the rules read a served page of a request with no callback, as
+they read a fetched one. A served request isn't kept in a checkpoint, so
+a resumed crawl asks the middleware for it again.
+
+A Request that `process_request` returns is scheduled in place of the one
+it was given, and goes through the middlewares again from the first, as
+in Scrapy. A middleware that returns the request it was given carries on
+with it.
+
+`IgnoreRequest` ends at the request's errback, as in Scrapy, which gets
+the exception as `error`; without an errback, the request is dropped
+quietly. From `process_request` it goes through `process_exception`
+first, which can still save the request; from `process_response` or
+`process_exception` it goes straight to the errback. A request or page
+that's dropped is counted in the stats as `requests_dropped` or
+`responses_dropped`. A page given in place of another answers the same
+request, so it keeps the request's `depth` and `meta`, and a request
+given in place of another keeps its depth.
+
+An exception other than `IgnoreRequest` in `process_request` or
+`process_response`, or a result that isn't a Request, a Page or None, is
+counted and logged as a callback's error would be, and drops the request
+or page. One in `process_exception` is counted and logged, and the error
+goes on to the next middleware. With `fail_fast=True`, any of them stops
+the crawl.
 
 Middlewares see the requests your code makes, start requests and those a
-callback yields, and the pages that come back to your callbacks. They
-don't see:
+callback or signal handler yields, and the pages that come back to your
+callbacks. They don't see:
 
 - requests that link rules follow, which Rust queues itself, and pages a
   `Follow` without a callback or an `Item` rule handles in Rust. The
@@ -796,32 +822,101 @@ don't see:
 With `workers`, middlewares run in the main process, before a page goes
 to a worker.
 
+### Spider middlewares
+
+Scrapy's other kind of middleware sits between the crawl and your
+callbacks, and sees what goes in and what comes out. List them in
+`spider_middlewares`, in the order of their numbers in Scrapy's
+`SPIDER_MIDDLEWARES`, lowest first:
+
+```python
+class OnlyInStock:
+    async def process_spider_output(self, response, result, spider):
+        """What the callback gave, on its way out: yield what goes on."""
+        async for out in result:
+            if isinstance(out, dict) and out.get("stock") == 0:
+                continue
+            yield out
+
+    def process_spider_exception(self, response, exception, spider):
+        """The callback raised: return items and requests to give instead,
+        or None to leave the error as it is."""
+        spider.logger.warning("%s: %s", response.url, exception)
+        return []
+
+
+class Books(netweir.Spider):
+    spider_middlewares = [OnlyInStock()]
+```
+
+`process_spider_input(response, spider)` runs before the callback and
+returns None or raises; an exception goes to the request's errback, or
+without one to `process_spider_exception`. `process_spider_output` can be
+an async generator, which gets the output as it comes, or a plain
+generator, which gets it as a list once the callback has finished.
+`process_start(start)`, an async generator, sees `start()`'s requests
+before they're queued, and Scrapy's older `process_start_requests(
+start_requests, spider)` works too.
+
+`process_spider_input` runs in the list's order and the rest in reverse,
+as in Scrapy: the first is nearest the crawl, the last nearest your
+callback. An exception goes to the `process_spider_exception` of the
+middlewares nearer the crawl than where it was raised, and what one of
+them returns goes on through the `process_spider_output` of the
+middlewares nearer the crawl than it. An exception none of them takes is
+the callback's error, counted and logged as before.
+
+They see what callbacks get, whether a page was fetched, sent to a
+callback by a rule, or given by a middleware, but not errbacks for failed
+requests or `on_block`, as in Scrapy. With `workers`, they run in the
+main process, around the callback that runs in the worker.
+
 ## Signals
 
-An object in `middlewares` or `pipelines` hears about the crawl by having
-methods with these names, sync or async. Each is given the arguments its
-parameters name, as Scrapy gives them, so take the ones you need:
+An object in `middlewares`, `spider_middlewares` or `pipelines` hears
+about the crawl by having methods with these names, sync or async. Each
+is given the arguments its parameters name, as Scrapy gives them, so take
+the ones you need:
 
 | method | when | arguments |
 |---|---|---|
 | `spider_opened` | before anything is fetched | `spider` |
-| `spider_closed` | once the crawl has ended | `spider`, `reason` |
+| `engine_started` | after `spider_opened`, before the start requests | |
+| `request_scheduled` | your code made a request; raise `IgnoreRequest` to drop it | `request`, `spider` |
+| `request_dropped` | a middleware dropped a request, or the crawl refused it (a duplicate, offsite, too deep) | `request`, `spider` |
+| `response_downloaded` | a page was fetched, before any middleware | `response`, `request`, `spider` |
+| `request_left_downloader` | a fetch ended, with a page or an error | `request`, `spider` |
+| `response_received` | a page is on its way to its callback, after the middlewares | `response`, `request`, `spider` |
 | `item_scraped` | an item came out of every pipeline | `item`, `response`, `spider` |
 | `item_dropped` | a pipeline dropped an item | `item`, `response`, `exception`, `spider` |
-| `request_dropped` | a middleware dropped a request | `request`, `spider` |
+| `item_error` | a pipeline raised something other than `DropItem` | `item`, `response`, `failure`, `spider` |
+| `spider_error` | a callback or errback raised | `failure`, `response`, `spider` |
+| `spider_idle` | nothing is queued or being fetched | `spider` |
+| `spider_closed` | once the crawl has ended | `spider`, `reason` |
+| `engine_stopped` | last of all | |
 
-`response` is the page the item came from, or None for an item that
-didn't come from a callback's page: one a link rule made in Rust, one a
-callback yielded in a worker, or one an errback or `on_block` yielded. `exception` is the
-`DropItem` a pipeline raised, or None if it returned None.
+`response` is the page, or None where there isn't one: for an item a
+link rule made in Rust, one a callback yielded in a worker, or one an
+errback or `on_block` yielded. `exception` is the `DropItem` a pipeline
+raised, or None if it returned None. `failure` is the exception wrapped
+as Scrapy's handlers expect it: `failure.value` is the exception (and
+`exception`, for a handler that names it, is the same).
+
+Scrapy's `request_reached_downloader`, `headers_received` and
+`bytes_received` aren't sent. The fetching happens in Rust, which hands
+Python whole responses, a batch at a time: stopping between a response's
+headers and its body, or between its chunks, to call Python would cost
+every page what the Rust engine is there to save. `response.headers` and
+`len(response.body)` are there once the page arrives.
 
 They come in Scrapy's order: every pipeline's `open_spider`, then
-`spider_opened`; at the end, once the output files are complete, every
-`close_spider`, then `spider_closed`. The spider itself can define
-`opened()` and `closed(reason)`, called after the others. `reason` is
-`spider.finish_reason` (`"finished"`, or the limit that stopped the crawl),
-`"error"` when an exception ended it, or `"interrupted"` after Ctrl-C (or
-SIGTERM, under `netweir crawl`).
+`spider_opened`, then `engine_started`; at the end, once the output files
+are complete, every `close_spider`, then `spider_closed`, then
+`engine_stopped`. The spider itself can define `opened()` and
+`closed(reason)`, called after `spider_opened` and `spider_closed`.
+`reason` is `spider.finish_reason` (`"finished"`, or the limit that
+stopped the crawl), `"error"` when an exception ended it, or
+`"interrupted"` after Ctrl-C (or SIGTERM, under `netweir crawl`).
 
 ```python
 class Counter:
@@ -840,30 +935,114 @@ crawl before anything is fetched or any output file is touched; whatever
 had already opened is still closed. One in any other signal is logged
 and the crawl carries on.
 
+### When the crawl runs out
+
+`spider_idle` comes when there's nothing left to fetch, and it's the
+place to find more: a spider that reads URLs from somewhere else can
+schedule the next lot there.
+
+```python
+class Feed(netweir.Spider):
+    def opened(self):
+        self.crawler.signals.connect(self.idle, signal=netweir.signals.spider_idle)
+
+    def idle(self, spider):
+        for url in next_urls():
+            self.crawler.engine.crawl(netweir.Request(url))
+```
+
+If anything it schedules is queued, the crawl carries on. Raise
+`netweir.DontCloseSpider` to keep it open with nothing to do (the signal
+comes again five seconds later), or `netweir.CloseSpider("reason")` to
+end it with that reason. `CloseSpider` works from a callback, an errback
+or `start()` too, and `spider.finish_reason` is then its reason
+(`"cancelled"` if it gave none).
+
 With `workers`, signals and `opened()`/`closed()` run in the main
 process. A worker makes its own copy of the spider, which `opened()`
 never ran on, so set up what callbacks need in `__init__` instead.
 
+### from_crawler
+
+List a class rather than an object, in `middlewares`,
+`spider_middlewares` or `pipelines`, and the crawl makes it when it
+starts: with `from_crawler(crawler)` if the class has one, as Scrapy
+does, and with no arguments if not. Raising `NotConfigured` (Netweir's
+or Scrapy's) leaves it out. So a Scrapy component like this carries over
+unchanged:
+
+```python
+from scrapy import signals
+
+
+class Timing:
+    @classmethod
+    def from_crawler(cls, crawler):
+        made = cls(crawler.settings.getint("TIMING_EVERY", 100))
+        crawler.signals.connect(made.spider_closed, signal=signals.spider_closed)
+        made.stats = crawler.stats
+        return made
+
+    def __init__(self, every):
+        self.every = every
+
+    def process_response(self, request, response, spider):
+        self.stats.inc_value("timing/responses")
+        return response
+
+    def spider_closed(self, spider, reason):
+        spider.logger.info("done: %s", reason)
+```
+
+The crawler has:
+
+- `crawler.spider`;
+- `crawler.settings`, whose `get()`, `getbool()`, `getint()`,
+  `getfloat()`, `getlist()` and `getdict()` read the spider's
+  `custom_settings` dict, and whose attributes are Netweir's settings
+  (`crawler.settings.concurrency`). Scrapy's own setting names
+  (`CONCURRENT_REQUESTS` and the rest) aren't translated, so reading one
+  gives the default you pass;
+- `crawler.signals.connect(handler, signal)` and `disconnect`, for
+  `netweir.signals.<name>`, a signal's name as a string, or Scrapy's
+  `scrapy.signals` objects;
+- `crawler.stats`, with `get_value`, `set_value`, `inc_value`,
+  `max_value`, `min_value` and `get_stats`; what you set is in the stats
+  `run()` returns;
+- `crawler.engine.crawl(request)` and
+  `crawler.engine.close_spider(spider, reason)`.
+
+An object `from_crawler` made hears only the signals it connects, as in
+Scrapy, not every method that shares a signal's name. The spider has the
+same crawler as `spider.crawler` while the crawl runs, in the main
+process.
+
 ## Coming from Scrapy
 
-Simple pipelines, middlewares and signal handlers written for Scrapy carry
-over as they are: `process_item`, `open_spider`, `close_spider`,
-`DropItem`, `process_request` setting headers, `IgnoreRequest`,
+Pipelines, middlewares, spider middlewares and signal handlers written
+for Scrapy carry over: `process_item`, `open_spider`, `close_spider`,
+`DropItem`, every downloader and spider middleware method, `IgnoreRequest`,
+`CloseSpider`, `DontCloseSpider`, `NotConfigured`, `from_crawler`,
 `spider.logger` and `request.replace()` all work. The differences:
 
-- They're listed as objects (`pipelines = [Database()]`), not as dotted
-  paths in settings, and nothing calls `from_crawler`: give an object what
-  it needs when you make it. There's no `spider.settings.get()`; settings
-  are attributes, as `spider.settings.concurrency`.
-- `process_request` can't return a response to skip the fetch, and
-  `process_exception` can't return one in place of the error.
-- A Request that `process_request` returns carries on through the
-  middlewares after it, rather than starting the chain again.
-- `IgnoreRequest` from `process_request` or `process_response` drops the
-  request there; Scrapy passes it on to `process_exception` and the
-  errback.
-- Spider middlewares (`process_spider_output` and the rest) and signals
-  other than the five above aren't there.
+- They're listed as classes or objects (`pipelines = [Database]`), not as
+  dotted paths in settings, in the order of their numbers there. There's
+  no `spider.settings.get()`; settings are attributes, as
+  `spider.settings.concurrency`, and `crawler.settings.get()` reads only
+  the spider's `custom_settings`.
+- `process_request` runs when your code makes the request, before the
+  duplicate filter, rather than just before the fetch: the engine keeps
+  the queue in Rust. An exception other than `IgnoreRequest` there is
+  counted as an error, not passed to `process_exception`.
+- `response` in a handler or middleware is a Netweir `Page`, and an
+  errback gets `(request, error)` rather than a Twisted failure; signal
+  handlers get a `failure` with `value`, as Scrapy's do.
+- `request_reached_downloader`, `headers_received` and `bytes_received`
+  aren't sent (see [Signals](#signals)), and `request_dropped` is sent
+  for every request that went nowhere (a middleware's drop, offsite, too
+  deep), not only for a duplicate.
+- `CloseSpider` from a pipeline ends the crawl; Scrapy only sends
+  `item_error`.
 
 FilesPipeline and ImagesPipeline become [`netweir.files` and
 `netweir.images`](#downloading-files-and-images): the same fields, the same
@@ -987,7 +1166,7 @@ class Books(netweir.Spider):
 | check | fails when |
 |---|---|
 | `min_items` | fewer items than this |
-| `max_error_rate` | failed fetches and callback errors, out of pages fetched plus failed fetches, are more than this fraction |
+| `max_error_rate` | failed fetches and callback errors, out of pages fetched or served by a middleware plus failed fetches, are more than this fraction |
 | `max_invalid` | items that failed `validate`, out of those it checked, are more than this fraction |
 | `coverage` | a field is there, and not empty, in less than its fraction of items (None, "", [] and {} are empty) |
 | `finish_reasons` | the crawl ended for another reason, such as a limit |

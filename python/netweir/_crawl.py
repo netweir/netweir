@@ -8,6 +8,7 @@ runs your callbacks and pipelines on them.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -20,12 +21,12 @@ import os
 import re
 import time
 import weakref
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _files, _memory, _monitor, _track
+from netweir import _files, _hooks, _memory, _monitor, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs
 from netweir._native import (
@@ -394,10 +395,21 @@ class Spider:
     #: Objects with any of ``process_request(request, spider)``,
     #: ``process_response(request, page, spider)`` and
     #: ``process_exception(request, error, spider)``, sync or async; see
-    #: docs/crawling.md. They, and pipeline objects, also get the signals
-    #: they have methods for: ``spider_opened``, ``spider_closed``,
-    #: ``item_scraped``, ``item_dropped`` and ``request_dropped``.
+    #: docs/crawling.md. They, spider middlewares and pipeline objects
+    #: also get the signals they have methods for (netweir.signals). A
+    #: class here, or in spider_middlewares or pipelines, is made when the
+    #: crawl starts, with ``from_crawler(crawler)`` if it has one.
     middlewares: list[Any] = []
+    #: Scrapy's spider middlewares, in the order of their numbers there
+    #: (the first nearest the engine): objects with any of
+    #: ``process_spider_input``, ``process_spider_output``,
+    #: ``process_spider_exception`` and ``process_start``.
+    spider_middlewares: list[Any] = []
+    #: Scrapy's per-spider settings, which ``crawler.settings.get()`` reads.
+    custom_settings: dict[str, Any] = {}
+    #: While a crawl runs, the crawler ``from_crawler`` was given: its
+    #: ``signals``, ``stats`` and ``engine``, as on Scrapy's spiders.
+    crawler: Any = None
     #: Domains the crawl may go to, each with its subdomains; a domain with
     #: a port allows only that port. Requests elsewhere are dropped (and
     #: counted as "offsite") unless they have dont_filter=True. Empty for
@@ -721,12 +733,20 @@ def _check_resumable(stage: Any, size: int, tail: str | None = None) -> None:
 
 
 class _Stop(BaseException):
-    """A limit was reached. A BaseException, so that the callback or
-    pipeline it's raised under doesn't take it for its own error."""
+    """A limit was reached, or something asked for the crawl to end
+    (CloseSpider, crawler.engine.close_spider), which isn't a limit. A
+    BaseException, so that the callback or pipeline it's raised under
+    doesn't take it for its own error."""
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, limit: bool = True):
         super().__init__(reason)
         self.reason = reason
+        self.limit = limit
+
+
+def _closed(error: BaseException) -> _Stop:
+    """The _Stop for a CloseSpider, Netweir's or Scrapy's."""
+    return _Stop(getattr(error, "reason", None) or "cancelled", limit=False)
 
 
 def _warn_if_priced(page: Page) -> None:
@@ -747,14 +767,32 @@ class _Run:
         self.spider = spider
         self.pipelines = pipelines
         self.settings = spider.settings
-        middlewares = list(spider.middlewares)
-        # process_request in order; process_response and process_exception
-        # in reverse, the first middleware being nearest the spider.
-        self.on_request = _methods(middlewares, "process_request")
-        self.on_response = _methods(middlewares[::-1], "process_response")
-        self.on_exception = _methods(middlewares[::-1], "process_exception")
-        #: What gets signals: middlewares, then pipeline stages.
-        self.listeners = [*middlewares, *pipelines]
+        #: What crawler.stats was given, added to the crawl's stats.
+        self.custom_stats: dict[str, Any] = {}
+        #: Requests crawler.engine.crawl() was given, to queue.
+        self.scheduled: collections.deque[Request] = collections.deque()
+        #: Work a middleware handed back while a callback was running (a
+        #: page to answer a request with, an errback to call), done once it
+        #: has finished, so one callback never runs inside another.
+        self.ready: collections.deque[Callable[[], Any]] = collections.deque()
+        #: The reason crawler.engine.close_spider() gave, once it's called.
+        self.closing: str | None = None
+        #: Signal handlers connected by hand, by signal, and the handlers of
+        #: each signal, found once.
+        self.connected: dict[str, list[Callable[..., Any]]] = {}
+        self.found: dict[str, list[Callable[..., Any]]] = {}
+        #: Objects from_crawler made, which hear only what they connect.
+        self.built: list[Any] = []
+        #: Requests the engine has taken (or answered without a fetch): a
+        #: spider_idle handler that adds to it keeps the crawl going.
+        self.accepted = 0
+        #: A served page was refused for max_pages: the crawl ends there once
+        #: everything in hand is done, as it does for fetched pages.
+        self.capped_out = False
+        #: The exception a pipeline raised, so the callback it ends isn't
+        #: reported as a spider error too.
+        self.item_failure: BaseException | None = None
+        self.engine_started = False
         #: Pipeline stages whose open_spider worked, for close_spider.
         self.opened: list[Any] = []
         #: Whether open() got as far as spider_opened, and the spider's
@@ -866,10 +904,86 @@ class _Run:
             "lost": 0,
             "repair_proposals": 0,
         }
+        # Last, so a from_crawler can read the stats.
+        self.crawler = _hooks.Crawler(self)
+        spider.crawler = self.crawler
+        try:
+            middlewares = self.build(spider.middlewares)
+            spider_middlewares = self.build(spider.spider_middlewares)
+            # In place: the crawl closes what's in this list.
+            pipelines[:] = self.build(pipelines)
+        except BaseException:
+            # The crawl never starts, so nothing else closes these.
+            self.engine.close()
+            if state:
+                store.close()
+            raise
+        # process_request in order; process_response and process_exception
+        # in reverse, the first middleware being nearest the engine.
+        self.on_request = _methods(middlewares, "process_request")
+        self.on_response = _methods(middlewares[::-1], "process_response")
+        self.on_exception = _methods(middlewares[::-1], "process_exception")
+        self.spider_mw = _hooks.SpiderMiddlewares(spider_middlewares, spider)
+        #: Whether pages' callbacks go through spider middlewares.
+        self.layered = bool(self.spider_mw)
+        #: What gets signals: middlewares, spider middlewares, then
+        #: pipeline stages.
+        self.listeners = [*middlewares, *spider_middlewares, *pipelines]
         # Stages that download what items link to fetch through this crawl.
         for stage in pipelines:
             if isinstance(stage, _files._Media):
                 stage._attach(self)
+
+    def build(self, components: list[Any]) -> list[Any]:
+        """The objects a list of components stands for: a class is made with
+        ``from_crawler(crawler)`` if it has one and ``cls()`` if not, as
+        Scrapy makes its components, and left out if it raises
+        NotConfigured; anything else is itself."""
+        made = []
+        for component in components:
+            if not isinstance(component, type):
+                made.append(component)
+                continue
+            from_crawler = getattr(component, "from_crawler", None)
+            try:
+                if callable(from_crawler):
+                    made.append(from_crawler(self.crawler))
+                    self.built.append(made[-1])
+                else:
+                    made.append(component())
+            except Exception as e:
+                if not _named(e, "NotConfigured"):
+                    raise
+                log.info("%s left out: %s", component.__qualname__, e or "not configured")
+        return made
+
+    def connect(self, name: str, receiver: Callable[..., Any]) -> None:
+        self.connected.setdefault(name, []).append(receiver)
+        self.found.clear()
+
+    def disconnect(self, name: str, receiver: Callable[..., Any]) -> None:
+        with contextlib.suppress(ValueError):
+            self.connected.get(name, []).remove(receiver)
+        self.found.clear()
+
+    def handlers(self, name: str) -> list[Callable[..., Any]]:
+        """Who hears signal ``name``: the methods of that name of the
+        middlewares and pipelines (but not of those from_crawler made,
+        which hear only what they connect, as in Scrapy), then what was
+        connected by hand, each once."""
+        found = self.found.get(name)
+        if found is None:
+            found = []
+            for listener in self.listeners:
+                method = getattr(listener, name, None)
+                if callable(method) and not any(listener is b for b in self.built):
+                    found.append(method)
+            for receiver in self.connected.get(name, []):
+                # A bound method is a new object each time: == finds it.
+                if receiver not in found:
+                    found.append(receiver)
+            self.found[name] = found
+        return found
 
     async def download(self, url: str, kind: str, referer: str | None) -> tuple | None:
         """Fetches a file an item links to through the engine, ahead of the
@@ -931,7 +1045,12 @@ class _Run:
         """What keeps requests as data: for messages."""
         return "checkpoint" if self.saving else "queue"
 
-    def submit(self, request: Request, row: int | None = None) -> None:
+    def submit(
+        self, request: Request, row: int | None = None, answered: bool = False
+    ) -> str | None:
+        """Hands ``request`` to the engine; with ``answered``, only to be
+        screened, as a middleware has its page. What the engine said, or
+        None for a request it was never given."""
         payload = self.payload(request) if row is None else "{}"
         rid = next(self.ids)
         # A request with no callback on a rules spider is the rules' to read.
@@ -954,7 +1073,7 @@ class _Run:
             if self.settings.fail_fast:
                 raise TypeError(message)
             log.error("%s", message)
-            return
+            return None
         outcome = self.engine.submit(
             rid,
             request.url,
@@ -976,7 +1095,10 @@ class _Run:
             proxy=proxy,
             delta=delta[0],
             delta_key=delta[1],
+            answered=answered,
         )
+        if outcome in ("queued", "pushed", "answered"):
+            self.accepted += 1
         if outcome == "queued":
             self.waiting[rid] = request
         elif outcome == "delta":
@@ -991,6 +1113,7 @@ class _Run:
                 " with any login percent-encoded); skipped",
                 request.url,
             )
+        return outcome
 
     def resolve(
         self, fn: Callable[..., Any] | str | None, default: str | None
@@ -1039,6 +1162,8 @@ class _Run:
 
     def check_limits(self) -> None:
         """Raises _Stop if the crawl has reached one of its limits."""
+        if self.closing is not None:
+            raise _Stop(self.closing, limit=False)
         settings = self.settings
         if settings.max_items is not None and self.counts["items"] >= settings.max_items:
             raise _Stop("max_items")
@@ -1126,25 +1251,30 @@ class _Run:
                 self.pool = _workers.Pool(
                     self.spider, self.settings, state or _track.default_path()
                 )
-            start = self.spider.start()
-            if inspect.isasyncgen(start):
-                async for request in start:
-                    await self.queue(request)
-            else:
-                for request in start:
-                    await self.queue(request)
             try:
+                # A spider_opened handler may have raised CloseSpider, in
+                # which case the engine never starts, as in Scrapy.
+                self.check_limits()
+                # As Scrapy's engine starts once the spider is open.
+                await self.signal("engine_started")
+                self.engine_started = True
+                await self.queue_start()
                 while True:
                     self.check_limits()
+                    await self.drain()
                     events = await self.next_events()
                     if not events:
                         # The engine stops sending at max_pages, and ends
                         # the crawl with requests still queued (here, or
                         # in the shared queue, for all this process knows).
-                        if self.engine.stats()["queued"] or (
-                            self.settings.queue is not None and self.engine.capped()
+                        if (
+                            self.engine.stats()["queued"]
+                            or self.capped_out
+                            or (self.settings.queue is not None and self.engine.capped())
                         ):
                             raise _Stop("max_pages")
+                        if await self.idle():
+                            continue
                         break
                     if self.pool is None:
                         # Each page goes through the middlewares as its turn
@@ -1163,7 +1293,10 @@ class _Run:
                 abandoned = False
             except _Stop as stop:
                 self.spider.finish_reason = stop.reason
-                log.info("stopping the crawl: %s reached", stop.reason)
+                if stop.limit:
+                    log.info("stopping the crawl: %s reached", stop.reason)
+                else:
+                    log.info("stopping the crawl: %s", stop.reason)
         finally:
             if self.pool is not None:
                 # Stopping early (fail_fast, an interrupt) doesn't wait for
@@ -1179,8 +1312,66 @@ class _Run:
         )
         return stats
 
-    def stats(self) -> dict[str, int]:
-        stats = {**self.engine.stats(), **self.counts}
+    async def queue_start(self) -> None:
+        """The spider's start requests, through the spider middlewares'
+        process_start."""
+        start = self.spider.start()
+        if self.spider_mw.middlewares:
+            start = self.spider_mw.start(start)
+        try:
+            if isinstance(start, AsyncIterable):
+                async for request in start:
+                    await self.queue(request)
+            else:
+                for request in start:
+                    await self.queue(request)
+        except Exception as e:
+            if _named(e, "CloseSpider"):
+                raise _closed(e) from None
+            raise
+
+    async def idle(self) -> bool:
+        """The engine has nothing left: spider_idle, whose handlers may give
+        it more (crawler.engine.crawl), keep the crawl open with
+        DontCloseSpider, or end it with CloseSpider, as in Scrapy. Whether
+        the crawl goes on."""
+        if not self.handlers("spider_idle"):
+            return False
+        before = self.accepted
+        raised = await self.signal(
+            "spider_idle", quiet=("DontCloseSpider", "CloseSpider"), spider=self.spider
+        )
+        await self.drain()
+        # crawler.engine.close_spider() from a handler wins.
+        self.check_limits()
+        if any(_named(e, "DontCloseSpider") for e in raised):
+            if self.accepted == before:
+                # Asked again a while later, as Scrapy's heartbeat does.
+                left = self.time_left()
+                await asyncio.sleep(_IDLE_WAIT if left is None else max(0, min(_IDLE_WAIT, left)))
+            return True
+        if self.accepted != before:
+            return True
+        for e in raised:
+            if _named(e, "CloseSpider"):
+                raise _closed(e)
+        return False
+
+    async def drain(self) -> None:
+        """Requests crawler.engine.crawl() was given, and work middlewares
+        handed back while a callback was running."""
+        while self.scheduled or self.ready:
+            while self.scheduled:
+                await self.queue(self.scheduled.popleft())
+            while self.ready:
+                await self.ready.popleft()()
+                # A page answered without a fetch can lead to more such
+                # pages, on and on, without the engine's batches between.
+                self.check_limits()
+
+    def stats(self) -> dict[str, Any]:
+        # Netweir's own counts win over a component's of the same name.
+        stats = {**self.custom_stats, **self.engine.stats(), **self.counts}
         if "queue_bad" in stats:
             # The engine counts the members it couldn't read; this, those
             # it could but that weren't requests.
@@ -1478,11 +1669,15 @@ class _Run:
         raise failed.result()
 
     async def _dispatch_all(self, events: list[tuple], jobs: list[Any], respond: bool) -> None:
+        # What responding to the batch handed back (an errback for a
+        # dropped page, with workers), before the batch is settled.
+        await self.drain()
         for event, job in zip(events, jobs, strict=True):
             if respond:
                 event = await self.respond(event)
             if event is not None:
                 await self.dispatch(event, job)
+            await self.drain()
             self.check_limits()
 
     def send(self, event: tuple) -> Any:
@@ -1546,10 +1741,10 @@ class _Run:
             _, rule, url, response, root, depth = event[:6]
             callback = self.rules[rule].callback
             request = Request(url, callback=callback, depth=depth)
-            if job is not None:
-                await self.collect(job, callback, request, response.url)
-                return
             page = event[6] if len(event) > 6 else Page(response, request, root)
+            if job is not None:
+                await self.collect(job, callback, request, page)
+                return
             await self.run_callback(callback, None, (page,), url)
         elif kind == "rule_failed":
             _, _, url, error = event
@@ -1573,6 +1768,8 @@ class _Run:
             else:
                 request = Request(url, callback=self.rules[rule].callback)
             page = Page(response, request)
+            if rule is None:
+                await self.left_downloader(request, page)
             await self.run_callback(self.spider.on_block, None, (request, page), url)
         elif kind == "warning":
             log.warning("%s", event[1])
@@ -1597,6 +1794,14 @@ class _Run:
                     raise
         elif kind == "fatal":
             raise QueueError(event[1])
+        elif kind == "input_failed":
+            # A process_spider_input raised, in respond().
+            _, request, page, error, default = event
+            try:
+                await self.run_callback(request.callback, default, (page,), page.url, error)
+            finally:
+                if page.browser is not None:
+                    await page.browser.close()
         elif kind == "paused":
             _, host, seconds = event
             log.warning(
@@ -1606,8 +1811,9 @@ class _Run:
             _, rid, detail, *rest = event
             request = self.waiting.pop(rid)
             if kind == "fetched" and job is not None:
-                _warn_if_priced(Page(detail, request))
-                await self.collect(job, request.callback or "parse", request, detail.url)
+                page = rest[2] if len(rest) > 2 else Page(detail, request)
+                _warn_if_priced(page)
+                await self.collect(job, request.callback or "parse", request, page)
             elif kind == "fetched":
                 if len(rest) > 2:
                     page = rest[2]  # as the middlewares returned it
@@ -1622,23 +1828,8 @@ class _Run:
                     if page.browser is not None:
                         await page.browser.close()
             elif kind == "failed":
-                for process in self.on_exception:
-                    instead = await self.guarded(
-                        process, request, detail, self.spider, allowed=(Request,)
-                    )
-                    if instead is _IGNORED:
-                        self.counts["requests_dropped"] += 1
-                        await self.signal("request_dropped", request=request, spider=self.spider)
-                        return
-                    if isinstance(instead, Request):
-                        instead.depth = request.depth
-                        await self.queue(instead)
-                        return
-                    # None, or an error (already logged): on to the next.
-                if request.errback is None:
-                    log.warning("%s: %s", request.url, detail)
-                else:
-                    await self.run_callback(request.errback, None, (request, detail), request.url)
+                await self.left_downloader(request, None)
+                await self.failed(request, detail)
             else:
                 log.info("skipped %s: %s", request.url, _why(detail))
 
@@ -1702,35 +1893,43 @@ class _Run:
                 await _result(open_spider(self.spider))
             self.opened.append(stage)
         self.signalled = True
-        for listener in self.listeners:
-            spider_opened = getattr(listener, "spider_opened", None)
-            if callable(spider_opened):
+        for spider_opened in self.handlers("spider_opened"):
+            try:
                 await _result(_by_name(spider_opened, spider=self.spider))
+            except Exception as e:
+                # Ends the crawl before anything is fetched, as Scrapy 2.18
+                # does; the rest are still told.
+                if not _named(e, "CloseSpider"):
+                    raise
+                self.closing = self.closing or _closed(e).reason
         self.spider_opened = True
         await _result(self.spider.opened())
 
     async def close(self, reason: str) -> None:
         """The other end of open(), for whatever it reached, in Scrapy's
-        order: close_spider, spider_closed, closed(). An exception here is
-        logged: the crawl is over either way."""
+        order: close_spider, spider_closed, closed(), engine_stopped. An
+        exception here is logged: the crawl is over either way."""
         calls: list[tuple[Any, Callable[[], Any]]] = []
         for stage in self.opened:
             close_spider = self._pipeline_hook(stage, "close_spider")
             if close_spider is not None:
                 calls.append((stage, functools.partial(close_spider, self.spider)))
         if self.signalled:
-            for listener in self.listeners:
-                closed = getattr(listener, "spider_closed", None)
-                if callable(closed):
-                    call = functools.partial(_by_name, closed, spider=self.spider, reason=reason)
-                    calls.append((listener, call))
+            for closed in self.handlers("spider_closed"):
+                call = functools.partial(_by_name, closed, spider=self.spider, reason=reason)
+                calls.append((getattr(closed, "__self__", closed), call))
         if self.spider_opened:
             calls.append((self.spider, functools.partial(self.spider.closed, reason)))
+        if self.engine_started:
+            for stopped in self.handlers("engine_stopped"):
+                calls.append((getattr(stopped, "__self__", stopped), stopped))
         for listener, call in calls:
             try:
                 await _result(call())
             except Exception:  # noqa: BLE001 - closing never hides the crawl's outcome
                 log.exception("error closing %r", listener)
+        # The crawl is over: the spider no longer holds on to it.
+        self.spider.crawler = None
 
     def _pipeline_hook(self, listener: Any, name: str) -> Callable[..., Any] | None:
         """open_spider or close_spider, which only pipeline stages have."""
@@ -1739,26 +1938,39 @@ class _Run:
         method = getattr(listener, name, None)
         return method if callable(method) else None
 
-    async def signal(self, name: str, **arguments: Any) -> None:
-        """Tells every middleware and pipeline with a method called
-        ``name``, giving it the arguments it names, as Scrapy does: a handler
-        written as ``item_scraped(self, item, response, spider)`` and one
-        written as ``item_scraped(self, item)`` both work. An exception there
-        is logged, not raised."""
-        for listener in self.listeners:
-            method = getattr(listener, name, None)
-            if not callable(method):
-                continue
+    async def signal(self, name: str, quiet: tuple[str, ...] = (), **arguments: Any) -> list:
+        """Tells every handler of signal ``name`` (see handlers()), giving
+        each the arguments it names, as Scrapy does: a handler written as
+        ``item_scraped(self, item, response, spider)`` and one written as
+        ``item_scraped(self, item)`` both work. An exception there is
+        logged, not raised; those of the classes named in ``quiet``, which
+        say something to the caller (IgnoreRequest, DontCloseSpider), are
+        returned instead."""
+        raised = []
+        for method in self.handlers(name):
             try:
                 await _result(_by_name(method, **arguments))
-            except Exception:  # noqa: BLE001 - a signal handler never stops the crawl
-                log.exception("error in %s of %r", name, listener)
+            except Exception as e:  # noqa: BLE001 - a signal handler never stops the crawl
+                if any(_named(e, q) for q in quiet):
+                    raised.append(e)
+                else:
+                    log.exception("error in %s of %r", name, getattr(method, "__self__", method))
+        return raised
+
+    async def left_downloader(self, request: Request, page: Page | None) -> None:
+        """response_downloaded, for a fetch that gave a page, then
+        request_left_downloader, as Scrapy's downloader sends them."""
+        if page is not None:
+            await self.signal(
+                "response_downloaded", response=page, request=request, spider=self.spider
+            )
+        await self.signal("request_left_downloader", request=request, spider=self.spider)
 
     async def guarded(self, method: Callable[..., Any], *args: Any, allowed: tuple) -> Any:
         """A middleware method's result: None, or an instance of ``allowed``.
-        IgnoreRequest (Netweir's or Scrapy's) gives _IGNORED. Any other
-        exception, or a result of another type, counts as a callback error
-        (fail_fast stops the crawl) and gives _FAILED."""
+        IgnoreRequest (Netweir's or Scrapy's) gives it in an _Ignored. Any
+        other exception, or a result of another type, counts as a callback
+        error (fail_fast stops the crawl) and gives _FAILED."""
         try:
             result = await _result(method(*args))
             if result is None or isinstance(result, allowed):
@@ -1767,7 +1979,7 @@ class _Run:
             raise TypeError(f"returned a {type(result).__name__}, not {names} or None")
         except Exception as e:
             if _named(e, "IgnoreRequest"):
-                return _IGNORED
+                return _Ignored(e)
             self.counts["callback_errors"] += 1
             if self.settings.fail_fast:
                 raise
@@ -1775,41 +1987,177 @@ class _Run:
             return _FAILED
 
     async def queue(self, request: Request, row: int | None = None) -> None:
-        """Submits a request the spider's code made, through the middlewares'
-        process_request: None goes on with the request as it is, a Request
-        goes on in its place, IgnoreRequest (or an error) drops it. ``row``
-        is a URL pushed to the shared queue from outside, leased under it."""
-        if self.on_request and request.headers is None:
-            # So `request.headers["User-Agent"] = ...` works, as in Scrapy.
-            request.headers = {}
-        for process in self.on_request:
-            result = await self.guarded(process, request, self.spider, allowed=(Request,))
-            if result is _IGNORED or result is _FAILED:
-                self.counts["requests_dropped"] += 1
-                if row is not None:
-                    self.engine.release(row)
-                await self.signal("request_dropped", request=request, spider=self.spider)
-                return
-            if result is not None and result is not request:
+        """Schedules a request the spider's code made: request_scheduled,
+        then the middlewares' process_request, then the engine. None goes
+        on with the request as it is; a Page answers it without a fetch; a
+        new Request is scheduled in its place, from the start, as Scrapy
+        reschedules it; IgnoreRequest goes to process_exception and the
+        errback; an error drops it. ``row`` is a URL pushed to the shared
+        queue from outside, leased under it."""
+        for _ in range(_RESCHEDULES):
+            if self.handlers("request_scheduled"):
+                ignored = await self.signal(
+                    "request_scheduled",
+                    quiet=("IgnoreRequest",),
+                    request=request,
+                    spider=self.spider,
+                )
+                if ignored:
+                    # As in Scrapy: dropped, with no request_dropped.
+                    self.counts["requests_dropped"] += 1
+                    self.release(row)
+                    return
+            if self.on_request and request.headers is None:
+                # So `request.headers["User-Agent"] = ...` works, as in Scrapy.
+                request.headers = {}
+            for process in self.on_request:
+                result = await self.guarded(process, request, self.spider, allowed=(Request, Page))
+                if result is None or result is request:
+                    continue
+                if result is _FAILED:
+                    self.counts["requests_dropped"] += 1
+                    self.release(row)
+                    await self.signal("request_dropped", request=request, spider=self.spider)
+                    return
+                if isinstance(result, _Ignored):
+                    self.release(row)
+                    # After the running callback: an errback may follow.
+                    self.ready.append(
+                        functools.partial(self.failed, request, result.error, admitted=False)
+                    )
+                    return
+                if isinstance(result, Page):
+                    self.release(row)
+                    await self.answer(request, result, admitted=False)
+                    return
                 result.depth = request.depth
                 request = result
-        self.submit(request, row=row)
+                break
+            else:
+                outcome = self.submit(request, row=row)
+                if outcome in _REFUSED and self.handlers("request_dropped"):
+                    await self.signal("request_dropped", request=request, spider=self.spider)
+                return
+        self.counts["callback_errors"] += 1
+        self.release(row)
+        message = (
+            f"{request.url}: process_request gave a new request in place of the last"
+            f" {_RESCHEDULES} times running; dropped"
+        )
+        if self.settings.fail_fast:
+            raise RuntimeError(message)
+        log.error("%s", message)
 
-    async def respond(self, event: tuple) -> tuple | None:
-        """A fetched page, after the middlewares' process_response: the event
-        as it was, the event with the page they gave instead, or None when
-        they dropped it or asked for a request in its place."""
-        if not self.on_response or event[0] not in ("fetched", "ruled"):
+    def release(self, row: int | None) -> None:
+        """Gives a request leased from the shared queue up."""
+        if row is not None:
+            self.engine.release(row)
+
+    async def answer(self, request: Request, page: Page, admitted: bool = True) -> None:
+        """A middleware answered ``request`` with ``page``: it goes through
+        process_response to the callback, as a fetched page would, once the
+        callback running now has finished. A request the engine hasn't seen
+        yet is screened as one to fetch would be (a duplicate, offsite, too
+        deep), so pages from a store can't lead the spider round in
+        circles."""
+        if not admitted:
+            outcome = self.submit(request, answered=True)
+            if outcome == "capped":
+                # Served pages count toward max_pages as fetched ones do:
+                # this one is dropped, as a request past the limit is never
+                # sent, and the crawl ends once what's in hand is done.
+                self.capped_out = True
+                return
+            if outcome != "answered":
+                if outcome in _REFUSED:
+                    await self.signal("request_dropped", request=request, spider=self.spider)
+                return
+        # The crawl's request, so depth and meta carry on; a copy, so a page
+        # a middleware hands out twice keeps its own.
+        mine = Page(page._response, request, page._root)
+        mine.browser = page.browser
+        self.ready.append(functools.partial(self.answered, request, mine))
+
+    async def answered(self, request: Request, page: Page) -> None:
+        if self.rules and request.callback is None:
+            # The rules read it, as they read a fetched page: the links
+            # they find are queued in Rust.
+            error, ignored = self.engine.apply_rules(page._response, request.url, request.depth)
+            if error is not None:
+                log.warning("%s: %s", request.url, error)
+            if ignored is not None:
+                self.counts["pages_ignored"] += 1
+                log.info("rules skipped %s: %s", request.url, ignored)
+            if not self.has_parse:
+                return
+        rid = next(self.ids)
+        self.waiting[rid] = request
+        event = ("fetched", rid, page._response, page._root, page.browser)
+        responded = await self.respond(event, page)
+        if responded is not None:
+            await self.dispatch(responded)
+
+    async def failed(self, request: Request, error: BaseException, admitted: bool = True) -> None:
+        """A request failed, or a process_request raised IgnoreRequest:
+        process_exception, then the errback, as in Scrapy. A Request from a
+        middleware is scheduled instead, a Page answers the request, and
+        IgnoreRequest skips the middlewares left and goes to the errback."""
+        for process in self.on_exception:
+            instead = await self.guarded(
+                process, request, error, self.spider, allowed=(Request, Page)
+            )
+            if isinstance(instead, _Ignored):
+                error = instead.error
+                break
+            if isinstance(instead, Request):
+                instead.depth = request.depth
+                await self.queue(instead)
+                return
+            if isinstance(instead, Page):
+                await self.answer(request, instead, admitted)
+                return
+            # None, or an error (already logged): on to the next.
+        if _named(error, "IgnoreRequest"):
+            self.counts["requests_dropped"] += 1
+            await self.signal("request_dropped", request=request, spider=self.spider)
+        await self.errback(request, error)
+
+    async def errback(self, request: Request, error: BaseException) -> None:
+        """The request's errback, or a warning without one; IgnoreRequest
+        without one is dropped quietly, as in Scrapy."""
+        if request.errback is not None:
+            await self.run_callback(request.errback, None, (request, error), request.url)
+        elif not _named(error, "IgnoreRequest"):
+            log.warning("%s: %s", request.url, error)
+
+    async def respond(self, event: tuple, page: Page | None = None) -> tuple | None:
+        """A page on its way to its callback: the download signals, the
+        middlewares' process_response, response_received, then the spider
+        middlewares' process_spider_input. The event as it was, the event
+        with the page they gave instead, an input_failed event, or None
+        when they dropped it or asked for a request in its place. ``page``
+        is one a middleware answered the request with, never downloaded."""
+        if event[0] not in ("fetched", "ruled"):
+            return event
+        if (
+            page is None
+            and not self.on_response
+            and not self.spider_mw.inputs
+            and not any(self.handlers(name) for name in _RESPONSE_SIGNALS)
+        ):
             return event
         if event[0] == "fetched":
-            _, rid, response, root, live = event
+            _, rid, response, root, live = event[:5]
             request = self.waiting[rid]
+            default: str | None = "parse"
         else:
             _, rule, url, response, root, depth = event
             request = Request(url, callback=self.rules[rule].callback, depth=depth)
-            live = None
-        page = Page(response, request, root)
-        page.browser = live
+            live, default = None, None
+        if page is None:
+            page = Page(response, request, root)
+            page.browser = live
+            await self.left_downloader(request, page)
         for process in self.on_response:
             result = await self.guarded(
                 process, request, page, self.spider, allowed=(Page, Request)
@@ -1834,11 +2182,21 @@ class _Run:
             if isinstance(result, Request):
                 result.depth = request.depth
                 await self.queue(result)
-            else:
-                self.counts["responses_dropped"] += 1
+                return None
+            self.counts["responses_dropped"] += 1
+            if isinstance(result, _Ignored):
+                # Straight to the errback, as Scrapy does from here.
+                self.ready.append(functools.partial(self.errback, request, result.error))
             return None
         if live is not None and page.browser is not live:
             await live.close()  # replaced: its place goes to the next request
+        await self.signal("response_received", response=page, request=request, spider=self.spider)
+        if self.spider_mw.inputs:
+            error = await self.spider_mw.input(page)
+            if error is not None:
+                if event[0] == "fetched":
+                    self.waiting.pop(rid)
+                return ("input_failed", request, page, error, default)
         # The page itself rides along, so the callback gets the very object
         # the middlewares returned; a worker gets its response.
         if event[0] == "fetched":
@@ -1846,8 +2204,17 @@ class _Run:
         return ("ruled", rule, url, page._response, page._root, depth, page)
 
     async def run_callback(
-        self, fn: Callable[..., Any] | str | None, default: str | None, args: tuple, url: str
+        self,
+        fn: Callable[..., Any] | str | None,
+        default: str | None,
+        args: tuple,
+        url: str,
+        failed: BaseException | None = None,
     ) -> None:
+        """Runs a callback, an errback or on_block, and deals with what it
+        gives. A page's callback goes through the spider middlewares;
+        ``failed`` is the exception a process_spider_input raised for it,
+        which goes to the request's errback instead."""
         name = fn if isinstance(fn, str) else getattr(fn, "__name__", default)
         # What it yields is one link further from the start.
         source = args[0]
@@ -1859,8 +2226,21 @@ class _Run:
         self.from_page = self.delta_of(self.page.request) if self.page is not None else None
         self.gave = False
         self.position = 0
+        stream = None
         try:
             fn = self.resolve(fn, default)
+            if self.page is not None and (self.layered or failed is not None):
+                page = self.page
+                stream = await self.spider_mw.scrape(
+                    page,
+                    functools.partial(fn, *args),
+                    functools.partial(self.input_errback, page.request),
+                    failed,
+                )
+                async for out in stream:
+                    await self.handle(out)
+                self.page_done()
+                return
             result = fn(*args)
             if inspect.isasyncgen(result):
                 async for out in result:
@@ -1873,15 +2253,46 @@ class _Run:
                     for out in result if many else [result]:
                         await self.handle(out)
             self.page_done()
-        except Exception:
-            self.counts["callback_errors"] += 1
-            if self.settings.fail_fast:
-                raise
+        except Exception as e:
+            await self.callback_failed(e)
             log.exception("error in %s for %s", name, url)
+        finally:
+            if stream is not None:
+                await stream.aclose()
 
-    async def collect(self, job: Any, fn: Any, request: Request, page_url: str) -> None:
+    def input_errback(self, request: Request, error: BaseException) -> Any:
+        """What a request's errback gives for a process_spider_input's
+        exception; without an errback, the exception goes on to
+        process_spider_exception, as in Scrapy."""
+        if request.errback is None or isinstance(error, _hooks.Invalid):
+            raise error
+        return self.resolve(request.errback, None)(request, error)
+
+    async def callback_failed(self, error: BaseException) -> None:
+        """A callback, an errback, or a pipeline under one, raised: the
+        crawl ends for CloseSpider, and otherwise it's counted, told to
+        spider_error (unless a pipeline raised it, which item_error was
+        told of) and raised again with fail_fast. The caller logs it."""
+        if _named(error, "CloseSpider"):
+            raise _closed(error) from None
+        self.counts["callback_errors"] += 1
+        if error is not self.item_failure:
+            await self.signal(
+                "spider_error",
+                failure=_hooks.Failure(error),
+                exception=error,
+                response=self.page,
+                spider=self.spider,
+            )
+        self.item_failure = None
+        if self.settings.fail_fast:
+            raise error
+
+    async def collect(self, job: Any, fn: Any, request: Request, page: Page) -> None:
         """A worker's results for one page, dealt with as run_callback deals
-        with a callback's: same depth, same item ids, same counts."""
+        with a callback's: same depth, same item ids, same counts, through
+        the spider middlewares here."""
+        page_url = page.url
         name = fn if isinstance(fn, str) else getattr(fn, "__name__", "parse")
         self.depth = request.depth + 1
         self.source = page_url
@@ -1903,20 +2314,35 @@ class _Run:
             _track.report(*report)
         for repair in repairs:
             self.ask_repair(*repair)
-        try:
+
+        async def replay() -> AsyncIterator[Any]:
             for out in outputs:
-                await self.handle(out)
+                yield out
             if error is not None:
                 raise error[0]
+
+        stream = None
+        try:
+            if self.layered:
+                stream = await self.spider_mw.scrape(page, replay, self.input_errback)
+            else:
+                stream = replay()
+            async for out in stream:
+                await self.handle(out)
             self.page_done()
         except Exception as e:
-            self.counts["callback_errors"] += 1
-            if self.settings.fail_fast:
-                raise
+            self.page = page  # for spider_error
+            try:
+                await self.callback_failed(e)
+            finally:
+                self.page = None
             if error is not None and e is error[0] and error[1]:
                 log.error("error in %s for %s (in a worker)\n%s", name, request.url, error[1])
             else:
                 log.exception("error in %s for %s", name, request.url)
+        finally:
+            if stream is not None:
+                await stream.aclose()
 
     async def handle(self, out: Any) -> None:
         if out is None:
@@ -1971,6 +2397,15 @@ class _Run:
                 # Netweir's DropItem, or Scrapy's, from a pipeline written
                 # for Scrapy (subclasses too): a drop, not an error.
                 if not _named(e, "DropItem"):
+                    self.item_failure = e
+                    await self.signal(
+                        "item_error",
+                        item=given,
+                        response=self.page,
+                        spider=self.spider,
+                        failure=_hooks.Failure(e),
+                        exception=e,
+                    )
                     raise
                 log.debug("item dropped by %r: %s", stage, e)
                 item, dropped = None, e
@@ -2038,10 +2473,31 @@ def _delta_meta(meta: dict[str, Any]) -> tuple[bool, bytes | None] | None:
     return None
 
 
-#: What guarded() gives for a middleware that raised IgnoreRequest, and for
-#: one that failed.
-_IGNORED = object()
+class _Ignored:
+    """What guarded() gives for a middleware that raised IgnoreRequest."""
+
+    def __init__(self, error: BaseException):
+        self.error = error
+
+
+#: What guarded() gives for a middleware that failed.
 _FAILED = object()
+
+#: What the engine says of a request it refused, which request_dropped
+#: hears of, as Scrapy's does of what its scheduler refuses.
+_REFUSED = frozenset({"duplicate", "offsite", "too_deep", "trap", "domain_full", "delta"})
+
+#: Signals of a response on its way to a callback.
+_RESPONSE_SIGNALS = ("response_downloaded", "request_left_downloader", "response_received")
+
+#: How many times running process_request may give a new request in place
+#: of the last before the request is given up: a middleware that always
+#: does would otherwise never end.
+_RESCHEDULES = 100
+
+#: Seconds before spider_idle is sent again after DontCloseSpider, as
+#: Scrapy's engine looks again every five.
+_IDLE_WAIT = 5.0
 
 
 def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
@@ -2126,7 +2582,9 @@ def _parameters(key: Any, method: Callable[..., Any]) -> list[tuple[str, bool]] 
 
 
 #: Every argument a signal gives.
-_SIGNAL_ARGUMENTS = frozenset({"spider", "reason", "item", "response", "exception", "request"})
+_SIGNAL_ARGUMENTS = frozenset(
+    {"spider", "reason", "item", "response", "exception", "request", "failure"}
+)
 
 
 def _methods(objects: list[Any], name: str) -> list[Callable[..., Any]]:
@@ -2139,7 +2597,7 @@ async def _result(value: Any) -> Any:
 
 
 #: Iterable, but one result rather than many.
-_NOT_MANY = (dict, str, bytes, bytearray)
+_NOT_MANY = _hooks._NOT_MANY
 #: Never an item.
 _NOT_ITEMS = (str, bytes, bytearray, int, float, bool, set, frozenset)
 

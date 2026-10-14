@@ -28,6 +28,27 @@ class IgnoreRequest(Exception):
     works too."""
 
 
+class CloseSpider(Exception):
+    """Raised in a callback, an errback, ``start()`` or a ``spider_idle``
+    handler to end the crawl, with ``reason`` as its ``finish_reason``.
+    Scrapy's own CloseSpider works too."""
+
+    def __init__(self, reason: str = "cancelled"):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class DontCloseSpider(Exception):
+    """Raised in a ``spider_idle`` handler to keep the crawl open with
+    nothing to do; the signal comes again a few seconds later. Scrapy's own
+    DontCloseSpider works too."""
+
+
+class NotConfigured(Exception):
+    """Raised in a component's ``from_crawler`` (or its ``__init__``) to
+    leave it out of the crawl. Scrapy's own NotConfigured works too."""
+
+
 class Blocked(Exception):
     """Bot protection turned the request away.
 

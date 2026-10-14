@@ -191,7 +191,8 @@ class Checks:
     """Checks a crawl once it has ended; each is off unless given.
 
     ``min_items``: at least this many items. ``max_error_rate``: failed
-    fetches and callback errors, out of pages fetched plus failed fetches.
+    fetches and callback errors, out of pages fetched or served plus failed
+    fetches.
     ``max_invalid``: items that failed ``validate``, out of those it
     checked. ``coverage``: {field: fraction of items it's present and not
     empty in}. ``finish_reasons``: the reasons the crawl may end for, such
@@ -215,7 +216,8 @@ class Checks:
             failures.append(f"{items} items, fewer than {self.min_items}")
         if self.max_error_rate is not None:
             errors = stats["failed"] + stats["callback_errors"]
-            tried = stats["fetched"] + stats["failed"]
+            # A page a middleware served is a page tried, as a fetched one is.
+            tried = stats["fetched"] + stats.get("pages_served", 0) + stats["failed"]
             rate = errors / tried if tried else 0.0
             if rate > self.max_error_rate:
                 failures.append(f"error rate {rate:.1%}, more than {self.max_error_rate:.1%}")

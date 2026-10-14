@@ -21,7 +21,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/workers.md](design/workers.md): callbacks in worker processes.
 - [design/cache.md](design/cache.md): the development cache.
 - [design/shell.md](design/shell.md): the fetch, view and shell commands.
-- [design/hooks.md](design/hooks.md): middlewares, signals and pipeline lifecycles.
+- [design/hooks.md](design/hooks.md): middlewares, spider middlewares, signals, from_crawler and pipeline lifecycles.
 - [design/exports.md](design/exports.md): JSON, XML, cloud storage and batches.
 - [design/files.md](design/files.md): downloading the files and images items link to, through the crawl.
 - [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.

@@ -268,6 +268,13 @@ pub struct Response {
     inner: Arc<netweir_core::Response>,
 }
 
+impl Response {
+    /// The response itself, for the crawl's rules.
+    pub(crate) fn core(&self) -> &netweir_core::Response {
+        &self.inner
+    }
+}
+
 impl From<netweir_core::Response> for Response {
     fn from(r: netweir_core::Response) -> Response {
         Response { inner: Arc::new(r) }

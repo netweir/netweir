@@ -679,6 +679,37 @@ def test_command_line_stats_file(base, tmp_path):
     assert saved["items"] == 1 and saved["fetched"] == 1
 
 
+def test_command_line_stats_file_with_a_component_s_own_stats(base, tmp_path):
+    # Scrapy's components keep datetimes in the stats (start_time), and may
+    # name one as Netweir names its own.
+    script = tmp_path / "books.py"
+    script.write_text(
+        "import datetime\n"
+        "import netweir\n"
+        "class Clock:\n"
+        "    @classmethod\n"
+        "    def from_crawler(cls, crawler):\n"
+        "        crawler.stats.set_value('start_time', datetime.datetime(2026, 1, 2))\n"
+        "        crawler.stats.set_value('items', 99)\n"
+        "        return cls()\n"
+        "class Books(netweir.Spider):\n"
+        f"    start_urls = ['{base}/page/1']\n"
+        "    middlewares = [Clock]\n"
+        "    def parse(self, page):\n"
+        "        yield {'url': page.url}\n"
+    )
+    stats = tmp_path / "stats.json"
+    done = subprocess.run(
+        [sys.executable, "-m", "netweir", "crawl", str(script), "--stats", str(stats),
+         "-s", "throttle=false", "-s", "start_delay=0"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    saved = json.loads(stats.read_text(encoding="utf-8"))
+    assert saved["start_time"] == "2026-01-02 00:00:00"
+    assert saved["items"] == 1
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_sigterm_stops_a_crawl_as_ctrl_c_does(base, tmp_path):
     script = tmp_path / "slow.py"

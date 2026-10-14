@@ -1,15 +1,18 @@
 """Fast web scraping with a Rust engine."""
 
-from netweir import export, repair
+from netweir import export, repair, signals
 from netweir._browser import browser
 from netweir._crawl import Settings, Spider
 from netweir._errors import (
     Blocked,
     BrowserError,
     BrowserTimeout,
+    CloseSpider,
+    DontCloseSpider,
     DropItem,
     FetchError,
     IgnoreRequest,
+    NotConfigured,
     QueueError,
 )
 from netweir._fetch import Client, Page, get, post, request, submit
@@ -52,6 +55,8 @@ __all__ = [
     "BrowserTimeout",
     "Checks",
     "Client",
+    "CloseSpider",
+    "DontCloseSpider",
     "DropItem",
     "Follow",
     "File",
@@ -63,6 +68,7 @@ __all__ = [
     "Spider",
     "FetchError",
     "Node",
+    "NotConfigured",
     "Page",
     "ParseTimeout",
     "Price",
@@ -87,6 +93,7 @@ __all__ = [
     "post",
     "repair",
     "request",
+    "signals",
     "submit",
     "validate",
     "xpath",

@@ -58,9 +58,10 @@ Working today:
   [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
-  storage, in one file or in batches. Middlewares, signals and
-  pipelines with `open_spider`/`close_spider` work as Scrapy's do, so
-  simple Scrapy pipelines and middlewares carry over as they are.
+  storage, in one file or in batches. Downloader and spider
+  middlewares, most of Scrapy's signals, `from_crawler`, and pipelines
+  with `open_spider`/`close_spider` work as Scrapy's do, so most Scrapy
+  pipelines and middlewares carry over unchanged.
   `allowed_domains` keeps a crawl on the sites you meant; `max_items`,
   `max_pages`, `max_errors`, `max_time` and `max_memory` stop it when
   you've seen enough.

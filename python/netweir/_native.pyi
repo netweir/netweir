@@ -410,6 +410,7 @@ class Crawler:
         proxy: str | None = None,
         delta_key: bytes | None = None,
         delta: bool = True,
+        answered: bool = False,
     ) -> Literal[
         "queued",
         "duplicate",
@@ -421,7 +422,12 @@ class Crawler:
         "bad_proxy",
         "delta",
         "pushed",
+        "answered",
+        "capped",
     ]: ...
+    def apply_rules(
+        self, response: Response, url: str, depth: int
+    ) -> tuple[str | None, str | None]: ...
     def download(
         self,
         id: int,

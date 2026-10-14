@@ -249,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGTERM, previous)
         if args.stats:
             with open(args.stats, "w", encoding="utf-8") as f:
-                json.dump({**spider.stats, "finish_reason": reason}, f, indent=2)
+                # default=str: a Scrapy component's stats may hold a datetime.
+                json.dump({**spider.stats, "finish_reason": reason}, f, indent=2, default=str)
     # A failed check is a failed crawl, for a scheduler or CI job.
     return 1 if spider.check_failures else 0
 

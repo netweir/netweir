@@ -1055,8 +1055,10 @@ impl Crawler {
     /// otherwise. `method`, `kind` ("navigate", "form", "fetch" or "image"), `body`,
     /// `content_type` and `referer` say what to send, as Fetcher.send
     /// takes them. `proxy` sends it through that proxy, whatever the
-    /// rotation.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true))]
+    /// rotation. With `answered`, the request is checked and seen but
+    /// not queued, as the caller has its response: "answered" if it
+    /// passed.
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -1080,6 +1082,7 @@ impl Crawler {
         proxy: Option<String>,
         delta_key: Option<Vec<u8>>,
         delta: bool,
+        answered: bool,
     ) -> PyResult<&'static str> {
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
@@ -1088,7 +1091,7 @@ impl Crawler {
         if id >= RULE_IDS {
             return Err(PyValueError::new_err("request ids must be below 2**62"));
         }
-        if apply_rules {
+        if apply_rules && !answered {
             self.engine.tags().insert(
                 id,
                 Tag {
@@ -1118,6 +1121,7 @@ impl Crawler {
             },
         };
         let outcome = match row {
+            _ if answered => self.engine.core.claim(request),
             Some(row) => self.engine.core.resubmit(request, row),
             None => self.engine.core.submit_with(request, payload),
         };
@@ -1135,6 +1139,8 @@ impl Crawler {
             Submitted::BadProxy => "bad_proxy",
             Submitted::Delta => "delta",
             Submitted::Pushed => "pushed",
+            Submitted::Answered => "answered",
+            Submitted::Capped => "capped",
         })
     }
 
@@ -1316,6 +1322,39 @@ impl Crawler {
         Ok(Some(out))
     }
 
+    /// Reads a page Python answered a request with, as the rules read a
+    /// fetched page of a request with no callback: the links they find are
+    /// queued, one deeper than `depth`. Returns (error, ignored): why the
+    /// page couldn't be read, or why the rules left it alone, if either.
+    fn apply_rules(
+        &self,
+        py: Python<'_>,
+        response: &Response,
+        url: String,
+        depth: u32,
+    ) -> (Option<String>, Option<String>) {
+        let rules = self
+            .engine
+            .rules
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let tag = Tag {
+            rule: None,
+            apply_rules: true,
+            to_python: false,
+            url,
+            depth,
+        };
+        let response = response.core().clone();
+        let engine = self.engine.clone();
+        py.detach(move || {
+            let done = engine.process(&rules, 0, tag, response);
+            engine.submit_links(&rules, done.links, depth + 1);
+            (done.error, done.ignored)
+        })
+    }
+
     /// Tracked Item fields keep their fingerprints in `store`, and are
     /// relocated when they score at least `threshold`.
     fn set_tracks(&self, store: &TrackStore, threshold: f64) {
@@ -1462,6 +1501,7 @@ impl Crawler {
         d.set_item("offsite", s.offsite)?;
         d.set_item("cache_hits", s.cache_hits)?;
         d.set_item("cache_stores", s.cache_stores)?;
+        d.set_item("pages_served", s.served)?;
         d.set_item("proxies_benched", s.proxies_benched)?;
         d.set_item("archive_errors", s.archive_errors)?;
         if self.engine.core.has_queue() {
