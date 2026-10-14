@@ -17,7 +17,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(src) = std::str::from_utf8(data) else {
         return;
     };
-    if let Ok(xpath) = XPath::new(src) {
+    if let Ok(xpath) = XPath::cached(src) {
         let _ = xpath.run(DOC.root());
     }
 });

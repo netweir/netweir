@@ -9,7 +9,9 @@ use netweir_dom::{Document, Query};
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let (query, html) = text.split_once('\n').unwrap_or((&text, "<p class=a>x</p>"));
-    let Ok(query) = Query::new(query) else {
+    // Cached, as Python runs queries, so a compiled query and the thread's
+    // matcher are reused across documents.
+    let Ok(query) = Query::cached(query) else {
         return;
     };
     let Ok(doc) = Document::parse_within(html, Duration::from_secs(1)) else {

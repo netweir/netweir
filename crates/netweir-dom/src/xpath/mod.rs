@@ -7,7 +7,9 @@ mod lexer;
 mod parser;
 
 use std::fmt;
+use std::sync::Arc;
 
+use crate::cache::{self, Cache};
 use crate::document::Node;
 use crate::query::Hit;
 
@@ -33,6 +35,9 @@ impl std::error::Error for XPathError {}
 pub struct XPath {
     src: String,
     expr: parser::Expr,
+    /// The `$variables` the expression uses, found once here rather than
+    /// on every run.
+    variables: Vec<String>,
 }
 
 impl XPath {
@@ -40,10 +45,20 @@ impl XPath {
         let tokens = lexer::tokenize(src)?;
         let mut expr = parser::parse(src, tokens)?;
         parser::memoize(&mut expr);
+        let mut variables = Vec::new();
+        expr.variables(&mut variables);
         Ok(XPath {
             src: src.to_string(),
             expr,
+            variables,
         })
+    }
+
+    /// [`XPath::new`], from this thread's cache of recently used
+    /// expressions (see [`crate::QUERY_CACHE_SIZE`]).
+    pub fn cached(src: &str) -> Result<Arc<XPath>, XPathError> {
+        thread_local!(static CACHE: Cache<XPath> = Default::default());
+        cache::lookup(&CACHE, src, XPath::new)
     }
 
     /// Evaluates with `scope` as the context node. Node-set results come
@@ -61,9 +76,11 @@ impl XPath {
         scope: Node<'a>,
         vars: &[(String, XValue)],
     ) -> Result<Vec<Hit<'a>>, XPathError> {
-        let mut used = Vec::new();
-        self.expr.variables(&mut used);
-        if let Some(missing) = used.iter().find(|v| !vars.iter().any(|(k, _)| k == *v)) {
+        if let Some(missing) = self
+            .variables
+            .iter()
+            .find(|v| !vars.iter().any(|(k, _)| k == *v))
+        {
             return Err(XPathError {
                 query: self.src.clone(),
                 reason: format!("no value given for ${missing}"),

@@ -1,10 +1,11 @@
-# Editing the tree, similar elements and JMESPath
+# Editing the tree, similar elements, JMESPath and the query cache
 
 Three things people reach for in other libraries and didn't find here:
 Beautiful Soup's tree editing (`decompose()` before `get_text()`, mostly),
 Scrapling's `find_similar()`, and parsel's `.jmespath()`. This note is why
-each works the way it does. The user-facing description is in
-[selecting.md](../selecting.md).
+each works the way it does. The last section is about speed instead: why
+a query written inside a loop costs no more than one hoisted out of it.
+The user-facing description is in [selecting.md](../selecting.md).
 
 ## Editing
 
@@ -254,3 +255,109 @@ returning the list you asked for is what people use `.get()` and
 `.getall()` to get anyway. `Selection.jmespath()` gives one value per
 result, leaving out Nones, rather than flattening lists the way parsel
 does, so a list result stays the list it was.
+
+## The query cache
+
+`for card in page.css("article"): card.css("h3 a::attr(title)").get()` is
+how most people pull items out of a page, and it's what parsel's docs
+show. Every call used to compile its query from scratch. On one small
+card, that was most of the bill. Here's where 3.3 µs went, for that call on
+the generated shop page:
+
+| | Before | After |
+|---|---|---|
+| Compiling the selector (lexbor's parser, and freeing it) | 2.2 µs | 0 (a hash lookup) |
+| Making and freeing lexbor's matcher | 0.4 µs | 0 |
+| Matching inside the card | 0.4 µs | 0.4 µs |
+| Python call, `Selection`, `get()`'s string | 0.3 µs | 0.3 µs |
+
+XPath was gentler, since our parser is ours and cheap, but compiling was
+still about half of a 2.2 µs `.//p[@class='price_color']/text()`.
+
+So compiled queries are cached, keyed by the query text. XPath variables
+are bound when the query runs, not when it's compiled, so they aren't part
+of the key, and there are no namespaces to key on. Errors aren't cached;
+they raise, and nobody loops over a query that raises.
+
+**Per thread, not shared.** A compiled `Query` is safe to share (its
+`Sync` comment has the lexbor reading), so this is about speed. A shared
+map needs a lock, and on free-threaded Python every query from every
+thread would take it. A thread-local map takes none. The cost is
+duplication: each thread compiles its own copy of the queries it uses.
+
+**Bounded.** Each thread keeps up to 64 CSS queries and 64 XPath ones
+(`QUERY_CACHE_SIZE`), and at most 8 KB of query text in each cache
+(`QUERY_CACHE_TEXT`). Both limits matter, because a compiled query's
+memory grows with its text:
+
+| Query | Memory |
+|---|---|
+| `h3 a::attr(title)` | 6.3 KB |
+| 60 comma-separated selectors (2 KB of text) | 45 KB |
+| `:is()` with 400 branches | 99 KB |
+| a typical XPath | 1.5 KB |
+| densest CSS or XPath (`a,a,a,...`, stacked predicates) | about 130 bytes per byte of text |
+
+Ordinary queries hit the count first: a full pair of caches is about
+0.5 MB per thread. Pathological ones hit the text limit: about 1.1 MB per
+cache, 2.2 MB a thread at worst. Either way, times the number of threads
+that query: 32 MB for a 64-thread executor that has filled every cache
+with ordinary queries. Nothing shrinks until the thread exits. When a cache is full it's
+emptied rather than trimmed to the least recently used. A loop of unique queries (an id pasted into each
+selector) thrashes an LRU just as badly, and hot queries cost one compile
+each to come back. If a real workload has more than 64 hot queries, LRU is
+the upgrade.
+
+The 6 KB used to be 80 KB, which would have made a full cache 5 MB a
+thread. lexbor's default memory for a selector list
+(`lxb_css_memory_init`) is sized for a stylesheet, and most of it isn't
+the arenas but the free-block index inside each of its two `mraw`
+allocators: `lexbor_mraw_init` always gives that index room for 512
+entries, about 28 KB apiece, before anything is freed. A compiled list
+frees next to nothing. So the shim builds the memory itself
+(`nw_css_memory_new`): 1 KB arenas, room for 16 selector objects and an
+8-entry free-block index, each of which grows if a long selector needs
+it. And one query gets one memory, shared by all its comma-separated
+parts (each part is compiled separately, for its own `::text` or
+`::attr()` ending). With a memory per part, a 60-selector list held
+376 KB; shared, 45 KB. The query frees the memory, and with it every
+part's list, when it's dropped.
+
+**The matcher.** `nw_select` used to create and destroy an
+`lxb_selectors_t` on every call, which cost more than the match. Each
+thread now keeps one, and `nw_select` cleans it after each run
+(`lxb_selectors_clean` keeps the first block of its two arenas and frees
+the rest), so a big query doesn't leave a big matcher behind. A thread
+never uses its matcher twice at once: nothing a match calls reaches back
+into `select`. The document's `select_lock` stays, since it was never
+about the matcher. It's made on a thread's first query; if lexbor can't
+allocate it, `Query::try_run` returns `OutOfMemory` (Python sees
+`MemoryError`) and the next query tries again.
+
+XPath's `run_with` also stopped walking the expression for `$variables` on
+every call; `XPath::new` lists them once.
+
+`bench/items.py` times the pattern: 998 cards, four fields each, every
+library parsing outside the timing:
+
+| Per query | CSS | XPath |
+|---|---|---|
+| Netweir, before | 3.3 µs | 2.2 µs |
+| Netweir, after | 0.8 µs | 1.3 µs |
+| selectolax (`css_first`) | 1.2 µs | |
+| parsel | 7.0 µs | 5.6 µs |
+| lxml (`cssselect`, `xpath`) | 10.3 µs | 6.0 µs |
+
+Before, selectolax was three times faster per item; whole-page queries were
+never affected, and `bench/parse.py` and `bench/query.py` read the same
+before and after.
+
+### Not fixed here: threads
+
+Queries scale badly across threads on free-threaded Python, and it isn't
+the cache: four threads, each reading `.tag` from its own document, get
+about a sixth of one thread's per-thread rate. Profiles of the query loop
+on four threads show a third of the time waiting on one mutex, PyO3's
+deferred-decref pool (`ReferencePool::drop_deferred_references`), which
+every call into Rust locks once anything has ever dropped a Python object
+while detached. That's its own piece of work.

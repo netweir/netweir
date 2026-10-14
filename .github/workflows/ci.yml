@@ -105,3 +105,4 @@ jobs:
       - run: uv run maturin develop --uv --release
       - run: uv run python bench/parse.py --check
       - run: uv run python bench/query.py --check
+      - run: uv run python bench/items.py --check

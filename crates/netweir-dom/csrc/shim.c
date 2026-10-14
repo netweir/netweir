@@ -257,27 +257,75 @@ int nw_serialize_one(lxb_dom_node_t *n, nw_chunk_fn chunk, void *ctx) {
 
 /* ---- CSS ---------------------------------------------------------------- */
 
-/* The returned list owns its memory and outlives the parser that made it. */
-lxb_css_selector_list_t *nw_css_compile(const char *css, size_t len) {
+/* An mraw whose free-block index starts small. lexbor_mraw_init always
+ * gives that index (a binary tree in its own pools) room for 512 entries,
+ * about 28 KB, before anything is freed into it. A compiled selector list
+ * frees next to nothing, and the index grows if it does. */
+static lexbor_mraw_t *nw_small_mraw(size_t chunk) {
+    lexbor_mraw_t *mraw = lexbor_mraw_create();
+    if (lexbor_mraw_init(mraw, chunk) != LXB_STATUS_OK) {
+        return lexbor_mraw_destroy(mraw, true);
+    }
+    lexbor_bst_destroy(mraw->cache, true);
+    mraw->cache = lexbor_bst_create();
+    if (lexbor_bst_init(mraw->cache, 8) != LXB_STATUS_OK) {
+        return lexbor_mraw_destroy(mraw, true);
+    }
+    return mraw;
+}
+
+/* Memory for one query: every selector list it compiles lives here, and
+ * is freed with it by nw_css_memory_free. lexbor's own
+ * (lxb_css_memory_init) is sized for a stylesheet, about 80 KB; this one
+ * starts near 5 KB and grows if long selectors need it.
+ *
+ * This mirrors lxb_css_memory_init (lexbor/css/css.c) field by field, with
+ * smaller sizes. Recheck it against that function when lexbor is upgraded:
+ * a field added there would be missing here. */
+lxb_css_memory_t *nw_css_memory_new(void) {
+    static const size_t obj_size = sizeof(lxb_css_selector_t) > sizeof(lxb_css_selector_list_t)
+                                       ? sizeof(lxb_css_selector_t)
+                                       : sizeof(lxb_css_selector_list_t);
+    lxb_css_memory_t *memory = lxb_css_memory_create();
+    if (memory == NULL) {
+        return NULL;
+    }
+    memory->objs = lexbor_dobject_create();
+    if (lexbor_dobject_init(memory->objs, 16, obj_size) != LXB_STATUS_OK) {
+        return lxb_css_memory_destroy(memory, true);
+    }
+    memory->tree = nw_small_mraw(1024);
+    memory->mraw = nw_small_mraw(1024);
+    if (memory->tree == NULL || memory->mraw == NULL) {
+        return lxb_css_memory_destroy(memory, true);
+    }
+    memory->ref_count = 1;
+    return memory;
+}
+
+void nw_css_memory_free(lxb_css_memory_t *memory) {
+    lxb_css_memory_destroy(memory, true);
+}
+
+/* Compiles one selector list into `memory`, which owns it from then on: it
+ * outlives the parser, and is freed only with the memory. On failure
+ * whatever was half-built stays in `memory` until then; the caller drops
+ * the whole query. */
+lxb_css_selector_list_t *nw_css_compile(lxb_css_memory_t *memory, const char *css, size_t len) {
     lxb_css_parser_t *parser = lxb_css_parser_create();
     if (lxb_css_parser_init(parser, NULL) != LXB_STATUS_OK) {
         lxb_css_parser_destroy(parser, true);
         return NULL;
     }
+    /* lexbor's parser doesn't free memory it was handed. */
+    lxb_css_parser_memory_set(parser, memory);
     lxb_css_selector_list_t *list =
         lxb_css_selectors_parse(parser, (const lxb_char_t *) css, len);
     if (parser->status != LXB_STATUS_OK) {
-        if (list != NULL) {
-            lxb_css_selector_list_destroy_memory(list);
-        }
         list = NULL;
     }
     lxb_css_parser_destroy(parser, true);
     return list;
-}
-
-void nw_css_free(lxb_css_selector_list_t *list) {
-    lxb_css_selector_list_destroy_memory(list);
 }
 
 typedef void (*nw_found_fn)(lxb_dom_node_t *node, void *ctx);
@@ -294,19 +342,32 @@ static lxb_status_t nw_on_match(lxb_dom_node_t *node, lxb_css_selector_specifici
     return LXB_STATUS_OK;
 }
 
-/*
- * Calls `found` once per element below `root` (not `root` itself) that matches
- * any selector in `list`, in document order. Returns 0 on success.
- */
-int nw_select(lxb_dom_node_t *root, lxb_css_selector_list_t *list, nw_found_fn found, void *ctx) {
+/* A matcher for nw_select, kept and reused by one thread: making one costs
+ * more than matching a selector inside a small element. NULL if lexbor
+ * cannot allocate. */
+lxb_selectors_t *nw_matcher_new(void) {
     lxb_selectors_t *sel = lxb_selectors_create();
     if (lxb_selectors_init(sel) != LXB_STATUS_OK) {
         lxb_selectors_destroy(sel, true);
-        return -1;
+        return NULL;
     }
     lxb_selectors_opt_set(sel, LXB_SELECTORS_OPT_MATCH_FIRST);
+    return sel;
+}
+
+void nw_matcher_free(lxb_selectors_t *sel) {
+    lxb_selectors_destroy(sel, true);
+}
+
+/*
+ * Calls `found` once per element below `root` (not `root` itself) that matches
+ * any selector in `list`, in document order. Returns 0 on success. `sel` is
+ * left clean for the next call, keeping only its first block of memory.
+ */
+int nw_select(lxb_selectors_t *sel, lxb_dom_node_t *root, lxb_css_selector_list_t *list,
+              nw_found_fn found, void *ctx) {
     nw_found_t f = {found, ctx};
     lxb_status_t status = lxb_selectors_find(sel, root, list, nw_on_match, &f);
-    lxb_selectors_destroy(sel, true);
+    lxb_selectors_clean(sel);
     return status == LXB_STATUS_OK ? 0 : -1;
 }

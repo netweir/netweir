@@ -68,6 +68,26 @@ Indexing gives a `Node` for an element and a `str` for text or an
 attribute's value. `extract()` and `extract_first()` are the older names
 for `getall()` and `get()`.
 
+### Queries inside a loop
+
+Write them inline, the way you would with parsel:
+
+```python
+for book in doc.css("li.book"):
+    yield {
+        "title": book.css("a::attr(title)").get(),
+        "price": book.css(".price::text").get(),
+    }
+```
+
+There's nothing to hoist or precompile. Each thread keeps up to 64 CSS
+and 64 XPath queries it has compiled, so from the second book on, a query
+goes straight to matching. Building a fresh query string every time (an id
+pasted into the selector, say) still works; each one is compiled, and once
+a thread has 64 (or 8 KB of query text) the cache starts over. A full
+cache is about 0.5 MB per thread, times the number of threads that query;
+very long selector lists can take it to about 2 MB.
+
 ## Beautiful Soup style
 
 The same document answers Beautiful Soup's methods:

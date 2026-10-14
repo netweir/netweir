@@ -23,6 +23,16 @@ pub struct RawSelectorList {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+pub struct RawCssMemory {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct RawMatcher {
+    _private: [u8; 0],
+}
+
 pub type FoundFn = extern "C" fn(node: *mut RawNode, ctx: *mut c_void);
 pub type ChunkFn = extern "C" fn(data: *const c_char, len: usize, ctx: *mut c_void);
 
@@ -89,9 +99,17 @@ unsafe extern "C" {
     pub fn nw_attr_name(a: *mut RawAttr, len: *mut usize) -> *const c_char;
     pub fn nw_attr_value(a: *mut RawAttr, len: *mut usize) -> *const c_char;
 
-    pub fn nw_css_compile(css: *const c_char, len: usize) -> *mut RawSelectorList;
-    pub fn nw_css_free(list: *mut RawSelectorList);
+    pub fn nw_css_memory_new() -> *mut RawCssMemory;
+    pub fn nw_css_memory_free(memory: *mut RawCssMemory);
+    pub fn nw_css_compile(
+        memory: *mut RawCssMemory,
+        css: *const c_char,
+        len: usize,
+    ) -> *mut RawSelectorList;
+    pub fn nw_matcher_new() -> *mut RawMatcher;
+    pub fn nw_matcher_free(sel: *mut RawMatcher);
     pub fn nw_select(
+        sel: *mut RawMatcher,
         root: *mut RawNode,
         list: *mut RawSelectorList,
         found: FoundFn,

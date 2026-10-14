@@ -8,7 +8,9 @@ use netweir_dom::extract::{TrackContext, Tracker, Tracking};
 use netweir_dom::{
     Content, Document, EditError, Hit, NodeId, NodeKind, Query, Reading, XPath, XValue,
 };
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyIndexError, PyKeyError, PyMemoryError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySlice, PyString, PyTuple};
 
@@ -197,17 +199,18 @@ fn css_entries(
     scopes: Vec<NodeId>,
     css: &str,
 ) -> PyResult<Vec<Entry>> {
-    let query = Query::new(css).map_err(|e| SelectorError::new_err(e.to_string()))?;
+    let query = Query::cached(css).map_err(|e| SelectorError::new_err(e.to_string()))?;
     let doc = doc.clone();
-    Ok(py.detach(move || {
+    py.detach(move || {
         let _reading = doc.read();
         let mut out = Vec::new();
         for id in scopes {
             // SAFETY: every scope id came from `doc`.
-            out.extend(entries_of(query.run(unsafe { doc.node(id) })));
+            out.extend(entries_of(query.try_run(unsafe { doc.node(id) })?));
         }
-        out
-    }))
+        Ok::<_, netweir_dom::OutOfMemory>(out)
+    })
+    .map_err(|e| PyMemoryError::new_err(e.to_string()))
 }
 
 /// css(track=...) and xpath(track=...) on a bare Node: netweir._track knows
@@ -254,7 +257,7 @@ fn xpath_entries(
     query: &str,
     vars: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Vec<Entry>> {
-    let xpath = XPath::new(query).map_err(|e| XPathError::new_err(e.to_string()))?;
+    let xpath = XPath::cached(query).map_err(|e| XPathError::new_err(e.to_string()))?;
     let vars = xpath_vars(vars)?;
     let doc = doc.clone();
     py.detach(move || {

@@ -411,7 +411,22 @@ asks six XPath questions, or six Beautiful Soup ones:
 Look at lxml across the row: three times the page took eleven times as long.
 Netweir builds a flat index of the document on the first query, so `//x` is
 a scan over a few arrays, and its time grows with the page and no faster.
-Both benchmarks run in CI, and the build fails if any library beats Netweir.
+
+Most spiders don't query the whole page, though. They loop over cards and
+ask each one for a few fields, and on an element that small, a query's
+cost is mostly overhead. `bench/items.py` does that for the shop page's
+998 cards, four fields each:
+
+| Per query | CSS | XPath |
+|---|---|---|
+| Netweir | 0.8 µs | 1.3 µs |
+| selectolax | 1.2 µs | |
+| parsel | 7.0 µs | 5.6 µs |
+| lxml | 10.3 µs | 6.0 µs |
+
+You can write the query inline; each thread keeps the ones it has
+compiled. All three benchmarks run in CI, and the build fails if any
+library beats Netweir.
 
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
