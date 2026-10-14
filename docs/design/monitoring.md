@@ -93,4 +93,5 @@ a check that can't tell isn't a pass.
 
 Spidermon's actions (email, Slack, Sentry) and its HTML reports: a
 `closed()` method or a `spider_closed` handler does the sending, with
-`check_failures` in hand. Periodic checks while a crawl runs.
+`check_failures` in hand. Periodic checks while a crawl runs (the live
+stats they'd read are in [metrics.md](metrics.md)).

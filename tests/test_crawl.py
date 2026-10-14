@@ -680,8 +680,7 @@ def test_command_line_stats_file(base, tmp_path):
 
 
 def test_command_line_stats_file_with_a_component_s_own_stats(base, tmp_path):
-    # Scrapy's components keep datetimes in the stats (start_time), and may
-    # name one as Netweir names its own.
+    # Scrapy's components keep datetimes in the stats (start_time).
     script = tmp_path / "books.py"
     script.write_text(
         "import datetime\n"
@@ -690,7 +689,6 @@ def test_command_line_stats_file_with_a_component_s_own_stats(base, tmp_path):
         "    @classmethod\n"
         "    def from_crawler(cls, crawler):\n"
         "        crawler.stats.set_value('start_time', datetime.datetime(2026, 1, 2))\n"
-        "        crawler.stats.set_value('items', 99)\n"
         "        return cls()\n"
         "class Books(netweir.Spider):\n"
         f"    start_urls = ['{base}/page/1']\n"

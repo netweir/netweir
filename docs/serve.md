@@ -136,8 +136,10 @@ with its `log_url` and `items_url`, and its `outcome` once it's finished.
 Items URLs end in `.jl`, as scrapyd's do; the same file is there as
 `.jsonl` too.
 `jobstats.json` is Netweir's own: the job's crawl stats, the same numbers
-`netweir crawl` logs at the end, with `finish_reason` among them. A job
-still running has none yet.
+`netweir crawl` logs at the end, with `finish_reason` among them. While a
+job runs you get its stats so far, at most 5 seconds old, with
+`finish_reason` null; in its first 5 seconds, none yet. A job killed
+before it could finish keeps the last stats it wrote.
 
 Logs and items can be fetched while the job is still going; you get as
 much as had been written when you asked.

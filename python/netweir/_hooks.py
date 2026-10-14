@@ -126,35 +126,6 @@ def signal_name(signal: Any) -> str | None:
     raise ValueError(f"{signal!r} isn't a signal: use netweir.signals or scrapy.signals")
 
 
-class Stats:
-    """``crawler.stats``, as Scrapy's stats collector: what a component
-    sets is in the stats the crawl returns."""
-
-    def __init__(self, run: Any):
-        self._run = run
-
-    def get_stats(self) -> dict[str, Any]:
-        return self._run.stats()
-
-    def get_value(self, key: str, default: Any = None) -> Any:
-        return self.get_stats().get(key, default)
-
-    def set_value(self, key: str, value: Any) -> None:
-        self._run.custom_stats[key] = value
-
-    def inc_value(self, key: str, count: int = 1, start: int = 0) -> None:
-        stats = self._run.custom_stats
-        stats[key] = stats.get(key, start) + count
-
-    def max_value(self, key: str, value: Any) -> None:
-        stats = self._run.custom_stats
-        stats[key] = max(stats.get(key, value), value)
-
-    def min_value(self, key: str, value: Any) -> None:
-        stats = self._run.custom_stats
-        stats[key] = min(stats.get(key, value), value)
-
-
 class Engine:
     """``crawler.engine``: schedule a request from a signal handler, or end
     the crawl."""
@@ -177,7 +148,8 @@ class Crawler:
         self.spider = run.spider
         self.settings = Settings(run.settings, getattr(run.spider, "custom_settings", None))
         self.signals = Signals(run)
-        self.stats = Stats(run)
+        #: The spider's stats (spider.stats), live while the crawl runs.
+        self.stats = run.live
         self.engine = Engine(run)
 
 

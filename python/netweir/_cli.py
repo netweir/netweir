@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import code
+import contextlib
 import dataclasses
 import html
 import importlib.util
@@ -30,6 +31,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -307,9 +309,23 @@ def main(argv: list[str] | None = None) -> int:
     main_thread = threading.current_thread() is threading.main_thread()
     previous = signal.signal(signal.SIGTERM, _interrupt) if main_thread else None
     reason = "error"
+    from netweir._stats import PortTaken
+
+    # The stats file is rewritten every few seconds while the crawl runs,
+    # for whoever watches it (netweir serve's jobstats.json).
+    stop_writing = threading.Event()
+    writer = None
+    if args.stats:
+        writer = threading.Thread(
+            target=_keep_writing, args=(args.stats, spider, stop_writing), daemon=True
+        )
+        writer.start()
     try:
         spider.run(output=output)
         reason = spider.finish_reason
+    except PortTaken as e:
+        print(f"netweir: {e}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         reason = "interrupted"
         print("netweir: interrupted", file=sys.stderr)
@@ -321,10 +337,10 @@ def main(argv: list[str] | None = None) -> int:
         # None for a handler that wasn't set from Python, which can't be put back.
         if main_thread and previous is not None:
             signal.signal(signal.SIGTERM, previous)
-        if args.stats:
-            with open(args.stats, "w", encoding="utf-8") as f:
-                # default=str: a Scrapy component's stats may hold a datetime.
-                json.dump({**spider.stats, "finish_reason": reason}, f, indent=2, default=str)
+        if writer is not None:
+            stop_writing.set()
+            writer.join()
+            _write_stats(args.stats, spider.stats, reason, tries=40)
     # A failed check is a failed crawl, for a scheduler or CI job.
     return 1 if spider.check_failures else 0
 
@@ -371,6 +387,46 @@ def _project_commands(commands) -> None:
     version.add_argument(
         "-v", "--verbose", action="store_true", help="and Python's, Rust's, lexbor's, profiles"
     )
+
+
+#: Seconds between rewrites of the --stats file while a crawl runs.
+STATS_FILE_INTERVAL = 5.0
+
+
+def _keep_writing(path: str, spider, stop: threading.Event) -> None:
+    from netweir import Stats
+
+    while not stop.wait(STATS_FILE_INTERVAL):
+        # The class's empty dict until the crawl has started.
+        if isinstance(spider.stats, Stats):
+            # A write that fails is skipped; the next comes soon.
+            with contextlib.suppress(OSError):
+                _write_stats(path, spider.stats, None)
+
+
+def _write_stats(path: str, stats, reason: str | None, tries: int = 1) -> None:
+    """Writes the stats, with ``finish_reason`` (None while the crawl
+    runs), in place of the file at ``path`` whole, so a reader never sees
+    half of one."""
+    # One snapshot, not one per key.
+    stats = stats.get_stats() if hasattr(stats, "get_stats") else dict(stats)
+    temporary = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            # default=str: a Scrapy component's stats may hold a datetime.
+            json.dump({**stats, "finish_reason": reason}, f, indent=2, default=str)
+        for attempt in range(tries):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                # Windows refuses while a reader has the file open.
+                if attempt == tries - 1:
+                    raise
+                time.sleep(0.05)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temporary)
 
 
 def _queue(args) -> int:

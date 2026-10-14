@@ -91,6 +91,10 @@ Working today:
 - Validating items against a dataclass or a JSON Schema, and checks at
   the end of a crawl (item counts, error rate, field coverage) that make
   `netweir crawl` exit 1 when a crawl finished but didn't work.
+- Watching a crawl while it runs: a progress line in the log every
+  minute, live `spider.stats` with Scrapy's `inc_value` and friends, and
+  an optional endpoint Prometheus can scrape. See
+  [docs/crawling.md](docs/crawling.md#watching-a-crawl-as-it-runs).
 - A download handler for Scrapy, so a Scrapy project can fetch as a
   browser does without moving off Scrapy. See
   [docs/crawling.md](docs/crawling.md#or-keep-scrapy-and-fetch-with-netweir).

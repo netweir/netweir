@@ -41,6 +41,7 @@ from netweir._native import (
 )
 from netweir._request import Request
 from netweir._rules import Follow, Item, css, xpath
+from netweir._stats import Stats
 
 __all__ = [
     "Article",
@@ -66,6 +67,7 @@ __all__ = [
     "Request",
     "Settings",
     "Spider",
+    "Stats",
     "FetchError",
     "Node",
     "NotConfigured",

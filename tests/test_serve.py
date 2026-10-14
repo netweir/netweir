@@ -319,6 +319,28 @@ def test_a_cancelled_job_keeps_its_items(tmp_path, project, site):
         )
 
 
+def test_a_running_job_s_stats_are_served_as_it_goes(tmp_path, project, site):
+    with serving(tmp_path, project) as base:
+        jobid = schedule(base, "slow", site)
+
+        def live():
+            _, answer = call(f"{base}/jobstats.json?job={jobid}")
+            assert answer["state"] == "running", answer
+            return answer["stats"]
+
+        # The job rewrites its stats every 5 seconds.
+        stats = wait(live, timeout=30)
+        assert stats["finish_reason"] is None and stats["fetched"] >= 1
+        call(f"{base}/cancel.json", {"project": "shop", "job": jobid})
+        finished(base, jobid)
+        _, answer = call(f"{base}/jobstats.json?job={jobid}")
+        assert answer["stats"]["fetched"] >= stats["fetched"]
+        # Windows ends a cancelled job at once, before it writes its last
+        # stats.
+        if sys.platform != "win32":
+            assert answer["stats"]["finish_reason"] == "interrupted"
+
+
 def test_a_pending_job_can_be_cancelled(tmp_path, project, site):
     with serving(tmp_path, project, max_jobs=1) as base:
         first = schedule(base, "slow", site)
@@ -896,3 +918,52 @@ def test_settings_are_checked_over_the_spider_s_own(tmp_path, project, site):
                 call(f"{base}/cancel.json", {"project": "shop", "job": answer["jobid"]})
             else:
                 assert answer["message"].startswith("setting:"), answer
+
+
+def test_deadlines_need_no_thread_per_connection(tmp_path, project, monkeypatch):
+    # A timer thread per connection left memory behind on every request.
+    def no_timers(*args, **kwargs):
+        raise AssertionError("a thread per connection's deadline")
+
+    monkeypatch.setattr(threading, "Timer", no_timers)
+    with serving(tmp_path, project) as base:
+        for _ in range(20):
+            assert call(f"{base}/daemonstatus.json")[0] == 200
+
+
+def test_the_watchdog_runs_what_s_due_and_survives_what_raises(caplog):
+    watchdog = _serve._Watchdog()
+    ran = []
+    try:
+
+        def boom():
+            raise RuntimeError("broken")
+
+        watchdog.add(0.05, boom)
+        watchdog.add(0.1, lambda: ran.append("later"))
+        cancelled = watchdog.add(0.05, lambda: ran.append("cancelled"))
+        cancelled.cancel()
+        deadline = time.monotonic() + 5
+        while not ran and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ran == ["later"]
+        assert watchdog.due == {}
+        assert any("deadline" in r.getMessage() for r in caplog.records)
+    finally:
+        watchdog.close()
+
+
+def test_a_client_that_goes_away_is_no_error(tmp_path, project, capsys, caplog):
+    service = _serve.Service(tmp_path / "serve", {"shop": project})
+    server = _serve.server(service, "127.0.0.1", 0)
+    try:
+        for error in (BrokenPipeError(), ConnectionResetError()):
+            try:
+                raise error
+            except ConnectionError:
+                server.handle_error(None, ("127.0.0.1", 1))
+    finally:
+        server.server_close()
+        service.close()
+    assert capsys.readouterr().err == ""
+    assert not caplog.records

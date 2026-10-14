@@ -1767,11 +1767,24 @@ def test_close_spider_in_spider_opened_ends_the_crawl_before_it_starts(base, cap
     assert "bandwidth reached" not in caplog.text
 
 
-def test_netweir_s_counts_win_over_a_component_s(base):
+def test_a_component_can_t_set_one_of_netweir_s_counts(base):
     class Counts:
         @classmethod
         def from_crawler(cls, crawler):
+            crawler.stats.inc_value("counts/mine")
+            assert crawler.stats is crawler.spider.stats
             crawler.stats.set_value("items", 1000)
+            return cls()
+
+    Site, _ = spider(base, start="/x", follow=False, middlewares=[Counts])
+    with pytest.raises(ValueError, match="'items' is one of Netweir's own stats"):
+        Site().run()
+
+
+def test_a_component_s_stats_are_in_the_crawl_s(base):
+    class Counts:
+        @classmethod
+        def from_crawler(cls, crawler):
             crawler.stats.inc_value("counts/mine")
             return cls()
 

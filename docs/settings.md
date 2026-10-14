@@ -87,6 +87,15 @@ error, not ignored. Times are in seconds.
 | `fail_fast` | `False` | stop the crawl at the first exception in a callback or pipeline |
 | `workers` | `1` | processes to run callbacks in; see [Crawling](crawling.md#callbacks-in-worker-processes) |
 
+## Watching
+
+| Setting | Default | Does |
+|---|---|---|
+| `stats_interval` | `60.0` | seconds between progress lines in the log (pages and items so far and per minute, errors, the queue, bytes); `None` for none. See [Crawling](crawling.md#watching-a-crawl-as-it-runs) |
+| `metrics_port` | `None` | a port to serve the crawl's stats on while it runs, for Prometheus at `/metrics` and as JSON at `/stats.json`; `0` takes a free one and logs it. `None` for no endpoint. A port that's taken stops the crawl before it starts |
+| `metrics_host` | `"127.0.0.1"` | the address the endpoint listens on; anything other than a loopback address lets other machines read the stats, with no password, and logs a warning saying so |
+| `metrics_allowed_hosts` | `()` | with `metrics_host` other than a loopback address, the host names the endpoint may be asked for; a request naming any other (an IP address is always fine) is refused, so a web page can't reach it through DNS rebinding |
+
 ## Sharing a crawl
 
 | Setting | Default | Does |

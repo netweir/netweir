@@ -152,3 +152,15 @@ class Loads(netweir.Spider):
         item.add_value("url", page.url)
         item.add_css("tags", "li::text")
         yield item.load_item()
+
+
+class Counts(netweir.Spider):
+    """Keeps stats of its own, in whichever worker each page lands."""
+
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        self.stats.inc_value("pages_counted")
+        self.stats.max_value("deepest", page.depth)
+        time.sleep(0.02)
+        yield from page.follow_all(page.css("a::attr(href)"))

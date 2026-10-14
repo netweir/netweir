@@ -24,7 +24,7 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
-from netweir import _memory, _track
+from netweir import _memory, _stats, _track
 from netweir._native import TrackStore
 from netweir._request import Request
 
@@ -105,6 +105,8 @@ def _start(
     _repairing = repairing
     _spider = _load(spec)()
     _spider.settings = settings
+    # Records what callbacks write to it, for the main process to replay.
+    _spider.stats = _stats.Stats()
     # What `netweir crawl -a` set on the main process's spider.
     for name, value in arguments.items():
         setattr(_spider, name, value)
@@ -120,7 +122,8 @@ def run(name: str, response: Any, request: Request) -> tuple:
     """Runs the spider's callback `name` on a page, to the end. Returns
     what it yielded (callbacks by name), what tracked selectors had to
     report, the repairs they asked for, and the error it ended with, if
-    any: (exception, traceback text)."""
+    any: (exception, traceback text). Then the worker's peak memory, and
+    the writes the callback made to ``spider.stats``."""
     from netweir._fetch import Page
 
     outputs: list[Any] = []
@@ -135,6 +138,10 @@ def run(name: str, response: Any, request: Request) -> tuple:
         _asked.add((site, field))
         repairs.append((site, field, kind, query, html() if callable(html) else html, url))
 
+    ops: list[tuple] = []
+    stats = getattr(_spider, "stats", None)
+    if isinstance(stats, _stats.Stats):
+        stats._ops = ops
     told = _track._report_sink.set(reports.append)
     asking = _track._repairs.set(ask if _repairing else None)
     error = None
@@ -171,13 +178,21 @@ def run(name: str, response: Any, request: Request) -> tuple:
             )
             break
         sendable.append(out)
+    try:
+        pickle.loads(pickle.dumps(ops))
+    except Exception as e:  # noqa: BLE001
+        ops = []
+        error = error or (
+            TypeError(f"{name} set a stat that can't go back to the main process: {e}"),
+            traceback.format_exc(),
+        )
     if error is not None:
         try:
             pickle.loads(pickle.dumps(error[0]))
         except Exception:  # noqa: BLE001 - not every exception travels
             error = (RuntimeError(f"{type(error[0]).__name__}: {error[0]}"), error[1])
     # The worker's peak memory, for max_memory in the main process.
-    return sendable, reports, repairs, error, (os.getpid(), _memory.peak())
+    return sendable, reports, repairs, error, (os.getpid(), _memory.peak()), ops
 
 
 async def _drain(results: Any, into: list[Any]) -> None:

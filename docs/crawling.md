@@ -166,7 +166,8 @@ written) exits with status 2 and one line saying why.
 Scrapy's spider arguments do: with `-a category=fiction`, `self.category`
 is `"fiction"`, in worker processes too. `--stats stats.json` writes the
 crawl's stats to a file when it ends, however it ends, with
-`finish_reason` among them.
+`finish_reason` among them, and keeps it up to date while the crawl runs
+([Watching a crawl as it runs](#watching-a-crawl-as-it-runs)).
 
 Ctrl-C stops a crawl cleanly: the items so far are closed off in the
 output file, a checkpoint records where it got to, and the command exits
@@ -1010,9 +1011,10 @@ The crawler has:
 - `crawler.signals.connect(handler, signal)` and `disconnect`, for
   `netweir.signals.<name>`, a signal's name as a string, or Scrapy's
   `scrapy.signals` objects;
-- `crawler.stats`, with `get_value`, `set_value`, `inc_value`,
-  `max_value`, `min_value` and `get_stats`; what you set is in the stats
-  `run()` returns;
+- `crawler.stats`, which is `spider.stats` (see
+  [Watching a crawl](#reading-the-stats-from-your-spider)): `get_value`,
+  `set_value`, `inc_value`, `max_value`, `min_value` and `get_stats`;
+  what you set is in the stats `run()` returns;
 - `crawler.engine.crawl(request)` and
   `crawler.engine.close_spider(spider, reason)`.
 
@@ -1050,6 +1052,20 @@ for Scrapy carry over: `process_item`, `open_spider`, `close_spider`,
   deep), not only for a duplicate.
 - `CloseSpider` from a pipeline ends the crawl; Scrapy only sends
   `item_error`.
+- `crawler.stats` and `spider.stats` are the same collector, live
+  while the crawl runs. A key that's one of Netweir's own stats
+  (`fetched`, `items` and the rest) raises ValueError when you set it, so
+  name yours differently. LogStats is the progress line
+  (`stats_interval` for `LOGSTATS_INTERVAL`), and
+  [`metrics_port`](#from-outside-a-metrics-endpoint-for-prometheus) does
+  what scrapy-prometheus-exporter does, with nothing to install.
+- There's no telnet console. It gives anyone who connects a Python prompt
+  inside the crawl, behind a password sent in clear text, and it's mostly
+  used to read the stats or pause the engine. Read the stats from the
+  metrics endpoint instead. To pause, stop the crawl with Ctrl-C and a
+  [checkpoint](self-healing.md#checkpoints), then run the same command
+  to carry on. To try selectors on a page, use
+  [`netweir shell`](shell.md).
 
 Item loaders carry over with a change of import, to
 [`netweir.loader`](loaders.md): `ItemLoader`, `MapCompose`, `TakeFirst`
@@ -1205,6 +1221,116 @@ a check of your own.
 Every crawl counts its fields, checks or not: `spider.coverage` is
 `{field: items it was present and not empty in}`, to set beside
 `stats["items"]`.
+
+## Watching a crawl as it runs
+
+A crawl that runs for hours shouldn't keep you guessing until it ends.
+Every 60 seconds it logs where it's got to:
+
+```
+INFO crawled 1520 pages (at 412 pages/min), scraped 1490 items (at 405 items/min); 3 errors, 2210 queued, 64 in flight, 41.2 MiB received
+```
+
+The rates are since the line before. Errors are failed fetches plus
+exceptions in callbacks and pipelines. `stats_interval` changes how often
+the line comes, and `stats_interval=None` stops it.
+
+### Reading the stats from your spider
+
+`spider.stats` is live. Read it in a callback, a pipeline or a signal
+handler and you get the numbers as they stand at that moment; once the
+crawl ends, it holds the final stats. It reads like a dict
+(`self.stats["items"]`, `dict(self.stats)`) and has Scrapy's stats
+collector methods. `get_stats()` gives you every number from one moment
+as a plain dict, where `dict(self.stats)` reads each one as it goes;
+hand `get_stats()` to `json.dumps` while the crawl runs. Once it has
+ended, `spider.stats` is a dict holding the final stats, as it was before
+it went live, so `json.dumps`, `pickle` and `copy` work on it directly.
+It's read-only: setting a key raises `TypeError`. You can keep counts of
+your own beside Netweir's:
+
+```python
+class Shop(netweir.Spider):
+    def parse(self, page):
+        if page.css(".out-of-stock"):
+            self.stats.inc_value("out_of_stock")
+        self.stats.max_value("biggest_page", len(page.body))
+        ...
+```
+
+`get_value(key, default)`, `set_value`, `inc_value(key, count=1,
+start=0)`, `max_value` and `min_value` work as Scrapy's do, and take its
+`spider=` argument too. Your stats end
+up wherever Netweir's do: the dict `run()` returns, `--stats`, the last
+log line, checks, and the endpoint below. Netweir's own names (`items`,
+`fetched` and the rest) are refused, so a typo can't quietly overwrite
+the real count.
+
+With workers, a callback's writes travel back with its results and land
+in the main process, so the totals cover every worker. A read inside a
+worker only sees that worker's own writes.
+
+### From outside: a metrics endpoint for Prometheus
+
+Set `metrics_port` and the crawl serves its stats over HTTP while it
+runs:
+
+```
+netweir crawl shop.py -o items.jsonl -s metrics_port=9410
+curl http://127.0.0.1:9410/metrics
+curl http://127.0.0.1:9410/stats.json
+```
+
+`/metrics` is Prometheus' text format. Each count is a counter called
+`netweir_<stat>_total` (`netweir_fetched_total`, `netweir_items_total`,
+`netweir_callback_errors_total`...), the queue and the requests in flight
+are the gauges `netweir_queued` and `netweir_in_flight`, and
+`netweir_start_time_seconds` is when the crawl started. Your own numeric
+stats are one family, `netweir_custom_stat{stat="out_of_stock"}`. Every
+sample is labelled with `spider` and `process` (host name and process
+id). Point a Prometheus job at it:
+
+```yaml
+scrape_configs:
+  - job_name: netweir
+    static_configs:
+      - targets: ["127.0.0.1:9410"]
+```
+
+`/stats.json` gives the same numbers as JSON, with how long the crawl has
+been going. `metrics_port=0` takes any free port and logs which.
+
+It listens on 127.0.0.1, so only this machine can read it. To let
+Prometheus on another machine in, set `metrics_host` (`"0.0.0.0"`, say).
+There's no password, and the crawl logs a warning saying so: anyone who
+can reach the port can read the counts and the spider's name, though no
+URLs, items or settings. Keep the port behind a firewall, or behind a
+proxy that asks for credentials. Requests from web pages are refused,
+as `netweir serve` refuses them. On an address other than 127.0.0.1, a
+request has to name the endpoint by an IP address or by one of the names
+in `metrics_allowed_hosts` (`("metrics.example.com",)`, say): a web page
+can't then reach it under a name of its own pointed at your address. If the port is taken, the crawl stops
+before it fetches anything, rather than running unwatched.
+
+`netweir crawl --stats FILE` rewrites the file every 5 seconds while the
+crawl runs, with `finish_reason` set to null until it ends. That's how
+[`netweir serve`](serve.md#watching-and-fetching) shows a running job's
+stats.
+
+### Workers, shared queues and checkpoints
+
+With workers, there's one set of stats: everything is counted in the
+main process. With a [shared queue](distributed.md), each process has its
+own stats, its own log line and its own endpoint, so give each process on
+one machine its own port. The `process` label keeps them apart, and
+Prometheus adds them up:
+
+```
+sum by (spider) (rate(netweir_fetched_total[5m]))
+```
+
+A crawl resumed from a checkpoint counts from zero again, as its stats
+always have. Prometheus sees that as a restart, and `rate()` copes.
 
 ## Exporters
 

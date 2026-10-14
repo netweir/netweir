@@ -17,16 +17,17 @@ import inspect
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import time
 import weakref
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _files, _hooks, _memory, _monitor, _track
+from netweir import _files, _hooks, _memory, _monitor, _stats, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs
 from netweir._native import (
@@ -172,6 +173,20 @@ class Settings:
     #: ``("image", "font", "media")``: Chrome fails them before they leave
     #: it.
     browser_block: tuple[str, ...] = ()
+    #: Seconds between progress lines in the log ("crawled 120 pages (at
+    #: 60 pages/min), ..."); None for none.
+    stats_interval: float | None = 60.0
+    #: A port to serve the crawl's stats on while it runs, as Prometheus
+    #: metrics at /metrics and as JSON at /stats.json; 0 for any free one.
+    #: None (the default) for no endpoint. It listens on metrics_host,
+    #: this machine only by default, and has no password.
+    metrics_port: int | None = None
+    metrics_host: str = "127.0.0.1"
+    #: Host names the endpoint may be asked for when metrics_host isn't a
+    #: loopback address. Requests naming any other (besides an IP
+    #: address) are refused, so a web page can't reach it by DNS
+    #: rebinding.
+    metrics_allowed_hosts: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.concurrency < 1 or self.per_domain < 1:
@@ -251,6 +266,20 @@ class Settings:
                 )
         if self.workers < 1:
             raise ValueError("workers must be at least 1")
+        if self.stats_interval is not None and not (
+            math.isfinite(self.stats_interval) and self.stats_interval > 0
+        ):
+            raise ValueError("stats_interval must be positive, or None for no progress lines")
+        if self.metrics_port is not None and not 0 <= self.metrics_port <= 65535:
+            raise ValueError("metrics_port must be a port, 0 to 65535, or None for no endpoint")
+        if not self.metrics_host:
+            raise ValueError("metrics_host can't be empty")
+        if isinstance(self.metrics_allowed_hosts, str):
+            raise ValueError(
+                "metrics_allowed_hosts is a tuple of host names, such as"
+                f" ({self.metrics_allowed_hosts!r},)"
+            )
+        object.__setattr__(self, "metrics_allowed_hosts", tuple(self.metrics_allowed_hosts))
         # A list is fine to pass; stored as a tuple, as Settings is frozen.
         object.__setattr__(self, "proxies", tuple(self.proxies))
         rotation = self.proxy_rotation
@@ -438,9 +467,11 @@ class Spider:
     #: After a run: for each proxy of Settings.proxies, then each other
     #: proxy a request named, {"requests": n, "failures": n, "benched": n}.
     proxy_stats: dict[str, dict[str, int]] = {}
-    #: After a run: the stats run() returns, or, for a run that was
-    #: interrupted or raised, those it had got to.
-    stats: dict[str, int] = {}
+    #: The crawl's stats, as a netweir.Stats: read while the crawl runs,
+    #: each read is the stats so far; after a run, the stats run()
+    #: returns, or, for a run that was interrupted or raised, those it had
+    #: got to. ``inc_value`` and the rest keep stats of the spider's own.
+    stats: Mapping[str, Any] = {}
 
     async def start(self) -> AsyncIterator[Request]:
         """The first requests. An async generator by default; a plain
@@ -537,6 +568,9 @@ class Spider:
         raising = False
         stats: dict[str, int] | None = None
         try:
+            # Before anything is opened: a metrics port that's taken stops
+            # the crawl here.
+            run.monitor.start()
             # None, or the state of the output files when items were last
             # recorded: a resumed run cuts each file back to its recorded
             # length, dropping anything half-written or not recorded (which
@@ -604,6 +638,10 @@ class Spider:
             raising = True
             raise
         finally:
+            try:
+                run.monitor.stop()
+            except Exception:  # noqa: BLE001 - the crawl still winds up
+                log.exception("stopping the progress line and metrics endpoint failed")
             # However the crawl ended, what each proxy did is known.
             self.proxy_stats = run.engine.proxy_stats()
             await run.engine.close_browser()
@@ -627,7 +665,7 @@ class Spider:
                 self.check_failures = await _monitor.run_checks(self.checks, stats, self)
                 stats["checks_failed"] = len(self.check_failures)
             # However the crawl ended, what it had done.
-            self.stats = stats if stats is not None else run.stats()
+            run.live._freeze(stats if stats is not None else run.stats())
             # After the exporters: closed() and close_spider find the output
             # files complete.
             await run.close(reason)
@@ -770,8 +808,6 @@ class _Run:
         self.spider = spider
         self.pipelines = pipelines
         self.settings = spider.settings
-        #: What crawler.stats was given, added to the crawl's stats.
-        self.custom_stats: dict[str, Any] = {}
         #: Requests crawler.engine.crawl() was given, to queue.
         self.scheduled: collections.deque[Request] = collections.deque()
         #: Work a middleware handed back while a callback was running (a
@@ -907,6 +943,12 @@ class _Run:
             "lost": 0,
             "repair_proposals": 0,
         }
+        #: spider.stats: live while the crawl runs, final once it has ended.
+        self.live = _stats.Stats(self.live_stats)
+        spider.stats = self.live
+        self.monitor = _stats.Monitor(
+            self.live, self.settings, spider.name or type(spider).__name__
+        )
         # Last, so a from_crawler can read the stats.
         self.crawler = _hooks.Crawler(self)
         spider.crawler = self.crawler
@@ -916,7 +958,9 @@ class _Run:
             # In place: the crawl closes what's in this list.
             pipelines[:] = self.build(pipelines)
         except BaseException:
-            # The crawl never starts, so nothing else closes these.
+            # The crawl never starts, so nothing else closes these, and
+            # spider.stats mustn't read the closed engine.
+            self.live._freeze({})
             self.engine.close()
             if state:
                 store.close()
@@ -1373,14 +1417,20 @@ class _Run:
                 self.check_limits()
 
     def stats(self) -> dict[str, Any]:
-        # Netweir's own counts win over a component's of the same name.
-        stats = {**self.custom_stats, **self.engine.stats(), **self.counts}
+        stats = self.live_stats()
+        for gauge in _stats.GAUGES:
+            stats.pop(gauge, None)
+        return stats
+
+    def live_stats(self) -> dict[str, Any]:
+        """The spider's own stats, then the engine's, gauges included, then
+        the counts. Read from other threads too: the progress line and the
+        metrics endpoint."""
+        stats = {**self.live._custom, **self.engine.stats(), **self.counts}
         if "queue_bad" in stats:
             # The engine counts the members it couldn't read; this, those
             # it could but that weren't requests.
             stats["queue_bad"] += self.queue_bad
-        stats.pop("queued", None)
-        stats.pop("in_flight", None)
         return stats
 
     def settle(self) -> None:
@@ -2306,13 +2356,14 @@ class _Run:
         self.gave = False
         self.position = 0
         try:
-            outputs, reports, repairs, error, (pid, peak) = await job
+            outputs, reports, repairs, error, (pid, peak), ops = await job
         except BrokenProcessPool:
             # One page's callback killed its worker (os._exit, out of
             # memory): the pool is broken, and the crawl with it.
             raise _worker_died(name, request.url) from None
         if peak is not None:
             self.worker_peaks[pid] = peak
+        self.live._replay(ops)
         for report in reports:
             _track.report(*report)
         for repair in repairs:

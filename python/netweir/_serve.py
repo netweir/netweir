@@ -15,6 +15,7 @@ import datetime
 import errno
 import hmac
 import ipaddress
+import itertools
 import json
 import logging
 import math
@@ -151,6 +152,14 @@ def _loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _kill(process: subprocess.Popen) -> None:
@@ -447,6 +456,15 @@ class Service:
             row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (jobid,)).fetchone()
         if row is None:
             raise ValueError(f"no job {jobid}")
+        stats = json.loads(row["stats"]) if row["stats"] else None
+        if row["state"] == "running":
+            # The job rewrites its stats file every few seconds, each time
+            # whole: the stats so far, with finish_reason None.
+            path = self.file("stats", row["project"], row["spider"], row["id"])
+            try:
+                stats = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                stats = None  # not written yet
         return {
             "id": row["id"],
             "project": row["project"],
@@ -454,7 +472,7 @@ class Service:
             "state": row["state"],
             "outcome": row["outcome"],
             "exit_code": row["exit_code"],
-            "stats": json.loads(row["stats"]) if row["stats"] else None,
+            "stats": stats,
         }
 
     def counts(self) -> dict[str, int]:
@@ -779,9 +797,7 @@ class _Handler(BaseHTTPRequestHandler):
         super().setup()
         # Cancelled once the request is read: sending an answer, a big
         # items file say, can take as long as it takes.
-        self.deadline = threading.Timer(REQUEST_DEADLINE, self._cut)
-        self.deadline.daemon = True
-        self.deadline.start()
+        self.deadline = self.server.watchdog.add(REQUEST_DEADLINE, self._cut)
 
     def finish(self) -> None:
         self.deadline.cancel()
@@ -831,16 +847,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _check(self) -> None:
         """Refuses what a web page could send, and anyone without the
         credentials."""
-        # Scrapyd clients don't send Origin; a page's script or form does.
-        if "Origin" in self.headers:
-            raise _Error(403, "requests from web pages are refused")
-        host = self.headers.get("Host")
-        if host and _loopback(self.server.server_address[0]):
-            # A page on a name that resolves to 127.0.0.1 (DNS rebinding)
-            # sends that name.
-            name = host.rsplit(":", 1)[0] if not host.endswith("]") else host
-            if not _loopback(name.strip("[]")):
-                raise _Error(403, f"requests for {host} are refused")
+        self._check_origin()
         credentials = self.server.service.credentials
         if credentials is None:
             return
@@ -852,6 +859,27 @@ class _Handler(BaseHTTPRequestHandler):
         expected = f"{credentials[0]}:{credentials[1]}".encode()
         if kind.lower() != "basic" or not hmac.compare_digest(given, expected):
             raise _Error(401, "this service needs a username and password")
+
+    def _check_origin(self, names: frozenset[str] | None = None) -> None:
+        """Refuses what a web page could send. The crawl's metrics endpoint
+        does too, and on an address other than a loopback one passes
+        ``names``: the host names it may be asked for, besides IP
+        addresses."""
+        # Scrapyd clients don't send Origin; a page's script or form does.
+        if "Origin" in self.headers:
+            raise _Error(403, "requests from web pages are refused")
+        host = self.headers.get("Host")
+        if not host:
+            return
+        # A page on a name that resolves to this machine (DNS rebinding)
+        # sends that name.
+        name = host.rsplit(":", 1)[0] if not host.endswith("]") else host
+        name = name.strip("[]").lower().rstrip(".")
+        if _loopback(self.server.server_address[0]):
+            if not _loopback(name):
+                raise _Error(403, f"requests for {host} are refused")
+        elif names is not None and not (_ip(name) or name in names):
+            raise _Error(403, f"requests for {host} are refused: not an address or a known name")
 
     def _body(self) -> str:
         try:
@@ -918,6 +946,18 @@ class _Server(ThreadingHTTPServer):
     def server_activate(self) -> None:
         super().server_activate()
         self.slots = _Slots(PER_CLIENT, MAX_CONNECTIONS)
+        self.watchdog = _Watchdog()
+
+    def server_close(self) -> None:
+        super().server_close()
+        if hasattr(self, "watchdog"):
+            self.watchdog.close()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # A client that went away mid-answer is no error of the server's.
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        log.exception("answering %s failed", client_address[0])
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self.slots.take(client_address[0]):
@@ -931,6 +971,60 @@ class _Server(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self.slots.give_back(client_address[0])
+
+
+class _Watchdog:
+    """Runs each action that's still due once its deadline passes, on one
+    thread for the whole server. A timer thread per connection would do
+    the same, but each one leaves memory behind that the process doesn't
+    get back, which a metrics endpoint scraped every 15 seconds for days
+    can't afford."""
+
+    def __init__(self) -> None:
+        self.due: dict[int, tuple[float, Any]] = {}
+        self.ids = itertools.count()
+        self.changed = threading.Condition()
+        self.closed = False
+        threading.Thread(target=self._run, name="netweir-deadlines", daemon=True).start()
+
+    def add(self, seconds: float, action: Any) -> _Due:
+        key = next(self.ids)
+        with self.changed:
+            self.due[key] = (time.monotonic() + seconds, action)
+            self.changed.notify()
+        return _Due(self, key)
+
+    def cancel(self, key: int) -> None:
+        with self.changed:
+            self.due.pop(key, None)
+
+    def close(self) -> None:
+        with self.changed:
+            self.closed = True
+            self.changed.notify()
+
+    def _run(self) -> None:
+        with self.changed:
+            while not self.closed:
+                now = time.monotonic()
+                for key, (when, action) in list(self.due.items()):
+                    if when <= now:
+                        del self.due[key]
+                        try:
+                            action()
+                        except Exception:  # noqa: BLE001 - the others still run
+                            log.exception("a request deadline's action failed")
+                soonest = min((when for when, _ in self.due.values()), default=None)
+                self.changed.wait(None if soonest is None else soonest - now)
+
+
+@dataclasses.dataclass
+class _Due:
+    watchdog: _Watchdog
+    key: int
+
+    def cancel(self) -> None:
+        self.watchdog.cancel(self.key)
 
 
 class _Slots:
