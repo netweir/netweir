@@ -1052,9 +1052,22 @@ continued', '\q']"#,
                 .unwrap()
         };
         for (half, full) in cases(250_000).iter().zip(cases(500_000).iter()) {
-            let (small, large) = (time(half), time(full));
+            // A busy machine can stall one timing for longer than the whole
+            // run takes; work that grows faster than its input misses the
+            // bound every time.
+            let fits = |(small, large): (Duration, Duration)| {
+                large < small * 3 + Duration::from_millis(50)
+            };
+            let mut timed = (time(half), time(full));
+            for _ in 0..2 {
+                if fits(timed) {
+                    break;
+                }
+                timed = (time(half), time(full));
+            }
+            let (small, large) = timed;
             assert!(
-                large < small * 3 + Duration::from_millis(50),
+                fits((small, large)),
                 "{:?}...: {:?} for half the input, {:?} for all of it",
                 &full[..20.min(full.len())],
                 small,
