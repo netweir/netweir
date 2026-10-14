@@ -1198,6 +1198,29 @@ mod tests {
 
     #[test]
     fn waiting_edits_are_always_woken() {
+        // How often edits have to sleep depends on the machine: one pass
+        // over these mixes made 58 sleeps on a macOS runner. Passes repeat
+        // until there have been enough to say something, for a minute at
+        // most.
+        let enough = Instant::now() + Duration::from_secs(60);
+        while WAITS.load(Ordering::Relaxed) <= 100 && Instant::now() < enough {
+            woken_pass();
+        }
+        let (waits, timeouts, lost) = (
+            WAITS.load(Ordering::Relaxed),
+            TIMEOUTS.load(Ordering::Relaxed),
+            LOST.load(Ordering::Relaxed),
+        );
+        // Sleeps that outlast a descheduled reader are fine (CI machines
+        // have fewer cores than this test has threads); one nobody woke
+        // isn't.
+        println!("{waits} sleeps, {timeouts} ran out, {lost} wake-ups lost");
+        assert!(waits > 100, "edits never had to sleep");
+        assert_eq!(lost, 0, "{lost} of {waits} sleeps were never woken");
+    }
+
+    /// Writers and readers, short reads and long, in turn.
+    fn woken_pass() {
         for (writers, long_reads) in [(2, false), (4, false), (2, true), (4, true)] {
             let doc = Arc::new(Document::parse(&"<p>x</p>".repeat(200)));
             let body = doc.root().descendants().find(|n| n.tag() == Some("body"));
@@ -1228,17 +1251,6 @@ mod tests {
                 t.join().unwrap();
             }
         }
-        let (waits, timeouts, lost) = (
-            WAITS.load(Ordering::Relaxed),
-            TIMEOUTS.load(Ordering::Relaxed),
-            LOST.load(Ordering::Relaxed),
-        );
-        // Sleeps that outlast a descheduled reader are fine (CI machines
-        // have fewer cores than this test has threads); one nobody woke
-        // isn't.
-        println!("{waits} sleeps, {timeouts} ran out, {lost} wake-ups lost");
-        assert!(waits > 100, "edits never had to sleep");
-        assert_eq!(lost, 0, "{lost} of {waits} sleeps were never woken");
     }
 
     fn shape(doc: &Document) -> Vec<String> {
