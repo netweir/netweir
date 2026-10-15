@@ -65,9 +65,12 @@ response, a popup (a `Page`) or a `Download`. Dialogs have a receiver of
 their own, `Page::dialogs()`, as routes do, because holding one is a
 promise to answer: a program that listens to responses and reads them
 later would otherwise hold every dialog meanwhile, and the page with it.
-Python takes dialogs only while a dialog listener is added; its
-listeners run one after another, each awaited, and then the dialog is
-let go, which answers it the default way if none did.
+Python takes dialogs only while a dialog listener is added. They're read
+on the event loop that added the first dialog listener, and every
+listener runs there, one after another, each awaited (one added from
+another loop runs on the first one's too); then the dialog is let go,
+which answers it the default way if none did. If that loop ends, the
+listeners go with it and dialogs get the default again.
 
 ## Dialogs
 
@@ -82,7 +85,8 @@ nothing new is enabled.
 whoever takes the page's dialogs. One that nobody answers is answered
 for them: at once when nobody takes dialogs, when the last copy of it is
 dropped (in Python, once every dialog listener has returned), or when
-the browser's timeout runs out with a listener still holding it. The default dismisses an alert, a confirm or a prompt, which
+the browser's timeout runs out with a listener still holding it. The
+default dismisses an alert, a confirm or a prompt, which
 is what pressing Escape does, and accepts `beforeunload`: Netweir's own
 `goto()` is what asked to leave, and staying would fail it.
 
@@ -90,11 +94,19 @@ is what pressing Escape does, and accepts `beforeunload`: Netweir's own
 `confirm()` blocked it, and a dialog answered within a millisecond is
 something only a program does. So every answer, the default and the
 listener's alike, is held until a moment after the dialog opened: between
-half a second and a second and a half, picked at random for each dialog.
-A listener that takes longer is answered when it says. A dialog counts
-as answered from the moment `accept` or `dismiss` is called, so a plain
-Python listener can call one without awaiting it; a second answer
-raises.
+half a second and a second and a half by default, picked at random for
+each dialog. A listener that takes longer is answered when it says. A
+dialog counts as answered from the moment `accept` or `dismiss` is
+called, and the answer is sent from a task of its own, so it reaches the
+page even if the caller drops the future, times it out, or (a plain
+Python listener) never awaits it; a second answer raises.
+
+The pause is the browser's to set, as one knob for every reaction a
+person makes: `LaunchOptions::dialog_pause`, in Python
+`netweir.browser(dialog_pause=(0.5, 1.5))`, the least and most in
+seconds. Lowering it makes dialogs cheaper and makes the program easier
+to spot: a page can time `confirm()` with `performance.now()`. There's
+no knob for the default answer: a listener is the way to choose.
 
 **Frames.** Chrome reports a dialog opened by a frame, its own process's
 or another site's, on the page's session, where `Page` is enabled, with
@@ -122,9 +134,13 @@ only to its frames and workers.
 So the browser's own session sends `Target.setAutoAttach` with
 `waitForDebuggerOnStart` and a filter of `page` targets. Chrome then
 attaches every new page and holds it before it runs anything, as it
-holds frames since milestone 34. The browser's handler hears Netweir's
-own `Target.attachToTarget` too, and the pages there already, neither of
-them held; it looks only at those Chrome holds:
+holds frames since milestone 34. It also attaches the pages there
+already, without holding them (the tabs of a browser Netweir connected
+to, say, or the blank tab a launch starts with); the browser's handler
+detaches each of those at once. It hears Netweir's own
+`Target.attachToTarget` too, also unheld, and keeps it: a page Netweir
+makes is noted as it's created, before it's attached. Of the pages
+Chrome holds:
 
 - One whose opener is a page of Netweir's, or a frame from another site
   in one, is a popup. It's set up exactly as `new_page()` sets a page up
@@ -138,13 +154,19 @@ them held; it looks only at those Chrome holds:
   or a tab of someone else's in a browser Netweir connected to. Each is
   held for one round trip.
 
-A held page doesn't answer `Page.enable` until it runs, so setup can't
-wait for each answer before sending the next command, as a frame's
-does. Every setup command is sent at once, in order, then the popup is
-let go, and the answers are waited for after: Chrome takes a session's
-commands in the order they come, so the popup runs only after all of
-them. Pages from `new_page()` are set up the same way now, a few round
-trips sooner. A popup whose setup fails, or outlasts the browser's
+A popup in a process of its own (a `target=_blank` link opens one
+without an opener, so it gets a fresh one) has no renderer running
+while it's held, and the commands a renderer answers (`Page.enable`,
+`Network.enable`, `Page.getFrameTree`) aren't answered until it runs;
+`Fetch.enable` and `Target.setAutoAttach`, which the browser answers,
+are. A popup sharing its opener's process answers all of them while
+held. So setup can't wait for each answer before sending the next
+command, as a frame's does. Every setup command is sent at once, in
+order, the popup is let go straight after, and the answers are waited
+for then: Chrome takes a session's commands in the order they come, so
+the popup runs only after all of them, and nothing waits on a round trip
+while it's held. Pages from `new_page()` are set up the same way now, a
+few round trips sooner. A popup whose setup fails, or outlasts the browser's
 timeout, is closed with a warning, rather than left fetching without
 its rules (or, in a crawl, without the guard that keeps it off what
 robots.txt rules out).
@@ -171,9 +193,10 @@ waiting on frames that never came. A person switches back to a tab
 before using it, so Netweir does too: the pages of one opener and its
 popups share which of them is in front, and an action that sends input
 (`click`, `fill`, `press`, `hover`, `scroll`, and `check` through
-`click`) on one that isn't sends `Page.bringToFront` first. The page sees
-`visibilitychange` to `visible`, as it would. Nothing is sent for a page
-already in front, so pages without popups see no change.
+`click`) on one that isn't sends `Page.bringToFront` first, then waits a
+moment as a person looks at the tab (the same pause as a dialog's). The
+page sees `visibilitychange` to `visible`, as it would. Nothing is sent
+for a page already in front, so pages without popups see no change.
 
 **Reading it.** The popup comes to its listeners once it's running, on
 whatever document Chrome shows first. `wait_for_load()` waits until the
@@ -202,6 +225,13 @@ from `browser.new_page()` closes its context with it); everything goes
 when the browser closes. Pages of a kept profile download into a folder
 of the default context's, the same way. Nothing goes to the user's
 Downloads folder, headless or headed.
+
+On Windows, a context closed while one of its downloads is under way
+can leave its folder behind for a moment: Chrome may still hold the
+partial file open, and Windows won't delete an open file. The removal is
+tried once and given up quietly; the browser's folder, everything in it,
+goes when the browser closes, and the launch sweep takes what a killed
+program left.
 
 Chrome tells the page's session `Page.downloadWillBegin` (the frame, the
 GUID, the URL and the name the server suggested), and the browser's
@@ -234,7 +264,19 @@ Nothing here is visible to page script:
 - A dialog is never answered faster than a person could, as above.
 - A popup is held while it's set up, as DevTools holds it when it's
   open: the page that opened it sees `window.open()` return at once, and
-  the popup's first request starts a few round trips later.
+  the popup's first request starts a few round trips later. Holding a
+  popup that shares its opener's process could stall that process, the
+  opener's timers with it, so a test measures it: the longest gap
+  between ticks of a 5 ms `setInterval` in the opener, from just before
+  the click on a same-site `window.open` until the popup has loaded,
+  three times each, with and without a block for the popup to carry.
+  Measured on an M-series Mac with Chrome for Testing 154, the median of
+  three was 22 to 33 ms held, against 19 to 23 ms with the popup let go
+  at once, as before this milestone; single runs either way reached 40
+  to 200 ms now and then. Opening a tab in front costs the opener a frame
+  or two however it's done, and the hold adds no more than frame jitter,
+  so every popup is held, not only those with rules to carry. The test
+  fails if the median passes 250 ms.
 - Chrome's popup blocker stays on, as a person has it: a popup opened
   without a click is blocked.
 
@@ -259,9 +301,8 @@ Known limit: for a browser Netweir connected to, each context's download
 folder is a path on this machine. A Chrome running elsewhere (in Docker,
 say) saves to that path on its own machine, or fails to.
 
-Known limit: a dialog's default answer, and the human pause before any
-answer, are not configurable: a listener that answers is the way to
-choose. A page that opens dialogs in a loop costs about a second each.
+Known limit: a page that opens dialogs in a loop costs about a second
+each, unless `dialog_pause` is lowered, which a page can notice.
 
 Known limit: which tab is in front is known only for a page and the
 popups it opened, from what Netweir did. A tab a person brings to the
@@ -278,7 +319,9 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   returns `false` after the human pause, and every kind of dialog is
   answered by default, and by a listener with prompt text, in Rust and in
   Python with a plain, an async and a silent listener. A dialog from a
-  frame on another site is heard and answered.
+  frame on another site is heard and answered. An answer whose future is
+  dropped unpolled still reaches the page, and a browser launched with a
+  shorter `dialog_pause` answers in that time.
 - `goto()` away from a page whose `beforeunload` asks, after a click,
   leaves; `close()` doesn't wait on it.
 - A `target=_blank` link and a `window.open` from a click give a popup
@@ -292,4 +335,7 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   in its context's folder, which no other context sees and which goes
   when the context closes. One cancelled, and one whose server hangs
   up, report `canceled`.
-- No forbidden method was sent in any of it.
+- A browser connected to with a tab already open leaves that tab with
+  nobody attached.
+- The opener's timers across a same-site popup, as under Stealth.
+- The protocol client refuses the forbidden methods, as it always has.
