@@ -99,7 +99,21 @@ PAGES = {
   document.write(`<iframe name=other src="http://localhost:${location.port}/inner"></iframe>`);
 </script>
 """,
+    "/asks": b"""<!DOCTYPE html><title>asks</title>
+<button id=b onclick="window.answer = prompt('name?', 'ann')">ask</button>
+""",
+    "/opens": b"""<!DOCTYPE html><title>opens</title>
+<a id=a target=_blank href="/popped">open</a>
+<a id=dl href="/prices.csv">prices</a>
+""",
+    "/popped": b"""<!DOCTYPE html><title>popped</title><p id=p>popped up</p>
+<script>
+  fetch('/api/items?page=1').then(r => r.text()).then(t => document.querySelector('#p').dataset.api = t)
+</script>
+""",
 }
+
+PRICES = b"name,price\ntea,3\n"
 
 # What the server was sent to /upload, and how often it served each page of
 # items; the server's threads write them.
@@ -143,6 +157,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/empty":
             self.send_response(204)
             self.end_headers()
+            return
+        if self.path == "/prices.csv":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv")
+            self.send_header("Content-Disposition", 'attachment; filename="prices.csv"')
+            self.send_header("Content-Length", str(len(PRICES)))
+            self.end_headers()
+            self.wfile.write(PRICES)
             return
         body = PAGES.get(self.path)
         self.send_response(200 if body else 404)
@@ -561,3 +583,104 @@ async def test_a_windows_socket_report_names_the_browser_this_process_started(br
     said = socket_state()
     assert "TCP: " in said and "Nonpaged pool: " in said, said
     assert re.search(rf"browser \d+ started \S+ by python[^(\s]*\({os.getpid()}\)", said), said
+
+
+async def test_a_dialog_nobody_answers_is_dismissed_after_a_human_pause(browser, base):
+    page = await browser.new_page()
+    await page.goto(base + "/asks")
+    started = asyncio.get_running_loop().time()
+    assert await asyncio.wait_for(page.evaluate("confirm('sure?')"), 10) is False
+    assert asyncio.get_running_loop().time() - started >= 0.5
+
+
+async def test_a_dialog_listener_plain_or_async_answers_it(browser, base):
+    page = await browser.new_page()
+    await page.goto(base + "/asks")
+    seen = []
+
+    def plain(dialog):
+        seen.append((dialog.type, dialog.message, dialog.default_value, dialog.url))
+        dialog.accept("bob")
+
+    page.on_dialog(plain)
+    await page.click("#b")
+    assert await _soon(page, "window.answer") == "bob"
+    assert seen == [("prompt", "name?", "ann", base + "/asks")]
+    page.remove_dialog_listener(plain)
+
+    async def dismisses(dialog):
+        await asyncio.sleep(0.1)
+        dismissing = dialog.dismiss()
+        seen.append(dialog.handled)
+        with pytest.raises(netweir.BrowserError, match="already answered"):
+            await dialog.accept()
+        await dismissing
+
+    page.on_dialog(dismisses)
+    assert await asyncio.wait_for(page.evaluate("confirm('sure?')"), 10) is False
+    assert seen[-1] is True
+    page.remove_dialog_listener(dismisses)
+
+    def leaves_it(dialog):
+        seen.append("heard")
+
+    page.on_dialog(leaves_it)
+    assert await asyncio.wait_for(page.evaluate("prompt('again?')"), 10) is None
+    assert seen[-1] == "heard"
+
+
+async def _soon(page, js, timeout=10.0):
+    """``js`` once it's something other than None."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while (value := await page.evaluate(js)) is None:
+        if asyncio.get_running_loop().time() > deadline:
+            break
+        await asyncio.sleep(0.05)
+    return value
+
+
+async def test_a_popup_is_read_and_routed_like_its_opener(browser, base):
+    page = await browser.new_page()
+    await page.route("**/api/items*", lambda route: route.fulfill(body="routed"))
+    await page.goto(base + "/opens")
+    heard = []
+    page.on_popup(heard.append)
+    async with page.expect_popup() as info:
+        await page.click("#a")
+    popup = await info.value
+    response = await popup.wait_for_load()
+    assert (response.status, popup.url) == (200, base + "/popped")
+    assert "popped up" in await popup.content()
+    assert await _soon(popup, "document.querySelector('#p').dataset.api") == "routed"
+    assert not await popup.evaluate("navigator.userAgent.includes('Headless')")
+    assert heard == [popup]
+    page.remove_popup_listener(heard.append)
+    waiting = asyncio.ensure_future(page.wait_for_popup(timeout=10))
+    await page.click("#a")
+    second = await waiting
+    await second.wait_for_load()
+    assert second.url == base + "/popped"
+    await popup.close()
+    assert popup.closed
+
+
+async def test_a_download_is_heard_saved_and_goes_with_its_page(browser, base, tmp_path):
+    page = await browser.new_page()
+    await page.goto(base + "/opens")
+    async with page.expect_download("**/*.csv") as info:
+        await page.click("#dl")
+    download = await info.value
+    assert download.suggested_filename == "prices.csv"
+    assert download.url == base + "/prices.csv"
+    assert await download.body() == PRICES
+    assert await download.failure() is None
+    await download.save_as(tmp_path / "prices.csv")
+    assert (tmp_path / "prices.csv").read_bytes() == PRICES
+    kept = await download.path()
+    assert os.path.exists(kept)
+    await page.close()
+    assert not os.path.exists(kept), "the page's context took its downloads with it"
+    with pytest.raises(netweir.BrowserTimeout, match="download"):
+        other = await browser.new_page()
+        await other.goto(base + "/opens")
+        await other.wait_for_download(timeout=0.5)

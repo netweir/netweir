@@ -111,13 +111,6 @@ pub(crate) fn headers_of(headers: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// What the page told its listeners about.
-#[derive(Debug, Clone)]
-pub enum NetworkEvent {
-    Request(Request),
-    Response(crate::Response),
-}
-
 /// A request the page's routes get to decide about. It has to be decided
 /// once: aborted, continued or fulfilled. One dropped undecided goes on
 /// unchanged, so a request is never left waiting on a route nobody

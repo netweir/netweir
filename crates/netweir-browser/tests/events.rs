@@ -1,0 +1,546 @@
+//! Dialogs, popups and downloads: what a page does that a driven browser
+//! has to answer, follow or catch. See docs/design/dialogs.md.
+
+mod common;
+
+use std::io::{BufRead, BufReader, Write};
+use std::time::{Duration, Instant};
+
+use common::{Reply, browser, html, serve};
+use netweir_browser::{Dialog, Download, Page, PageEvent, WaitUntil};
+use serde_json::json;
+use tokio::sync::mpsc::UnboundedReceiver;
+
+/// The next event `pick` takes, skipping the rest.
+async fn next<T>(
+    events: &mut UnboundedReceiver<PageEvent>,
+    mut pick: impl FnMut(PageEvent) -> Option<T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let event = events.recv().await.expect("the page went away");
+            if let Some(found) = pick(event) {
+                return found;
+            }
+        }
+    })
+    .await
+    .expect("nothing came in 20 seconds")
+}
+
+async fn dialog(dialogs: &mut UnboundedReceiver<Dialog>) -> Dialog {
+    tokio::time::timeout(Duration::from_secs(20), dialogs.recv())
+        .await
+        .expect("no dialog came in 20 seconds")
+        .expect("the page went away")
+}
+
+async fn popup(events: &mut UnboundedReceiver<PageEvent>) -> Page {
+    next(events, |e| match e {
+        PageEvent::Popup(p) => Some(p),
+        _ => None,
+    })
+    .await
+}
+
+async fn download(events: &mut UnboundedReceiver<PageEvent>) -> Download {
+    next(events, |e| match e {
+        PageEvent::Download(d) => Some(d),
+        _ => None,
+    })
+    .await
+}
+
+const ASKS: &str = "<title>asks</title><p>asks</p>";
+
+#[tokio::test]
+async fn a_dialog_nobody_answers_is_dismissed_as_a_person_would() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(ASKS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    for (js, dismissed) in [
+        ("confirm('sure?')", json!(false)),
+        ("prompt('name?', 'ann')", json!(null)),
+        ("alert('hi') === undefined", json!(true)),
+    ] {
+        let started = Instant::now();
+        let answer = tokio::time::timeout(Duration::from_secs(10), page.evaluate(js))
+            .await
+            .unwrap_or_else(|_| panic!("{js} left the page waiting"))
+            .unwrap();
+        assert_eq!(answer, dismissed, "{js}");
+        // Never sooner than a person could read it and press a key.
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(500),
+            "{js} answered in {took:?}"
+        );
+        assert!(took < Duration::from_secs(5), "{js} answered in {took:?}");
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_listener_answers_a_dialog_and_reads_what_it_says() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(ASKS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.dialogs();
+
+    let asking = tokio::spawn({
+        let page = page.clone();
+        async move { page.evaluate("prompt('name?', 'ann')").await }
+    });
+    let d = dialog(&mut events).await;
+    assert_eq!(
+        (d.kind(), d.message(), d.default_value()),
+        ("prompt", "name?", "ann")
+    );
+    assert!(d.url().starts_with(&server.url), "{}", d.url());
+    d.accept(Some("bob")).await.unwrap();
+    assert!(d.accept(None).await.is_err(), "a dialog is answered once");
+    assert_eq!(asking.await.unwrap().unwrap(), json!("bob"));
+
+    let asking = tokio::spawn({
+        let page = page.clone();
+        async move { page.evaluate("confirm('sure?')").await }
+    });
+    let d = dialog(&mut events).await;
+    assert_eq!((d.kind(), d.message()), ("confirm", "sure?"));
+    d.accept(None).await.unwrap();
+    assert_eq!(asking.await.unwrap().unwrap(), json!(true));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_dialog_from_a_frame_on_another_site_is_heard_and_answered() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<script>document.write(`<iframe src="http://localhost:${location.port}/inner"></iframe>`)</script>"#,
+            ),
+        ),
+        ("/inner", html("<p>inner</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let frame = page
+        .frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.url().starts_with("http://localhost:"))
+        .expect("the frame from another site");
+    let mut events = page.dialogs();
+    let asking = tokio::spawn(async move { frame.evaluate("confirm('from the frame')").await });
+    let d = dialog(&mut events).await;
+    assert_eq!(d.message(), "from the frame");
+    assert!(d.url().starts_with("http://localhost:"), "{}", d.url());
+    d.accept(None).await.unwrap();
+    assert_eq!(asking.await.unwrap().unwrap(), json!(true));
+    browser.close().await.unwrap();
+}
+
+const LEAVING: &str = r#"<title>leaving</title><p id=p>stay a while</p>
+<script>addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; })</script>"#;
+
+#[tokio::test]
+async fn a_page_that_asks_before_it_unloads_is_left_and_closed() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(LEAVING)), ("/next", html("<p>next</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    // Chrome only asks once a person has done something on the page.
+    page.click("#p", None).await.unwrap();
+    let r = tokio::time::timeout(
+        Duration::from_secs(15),
+        page.goto(&format!("{}/next", server.url), WaitUntil::Load, None),
+    )
+    .await
+    .expect("leaving waited on the page's question")
+    .unwrap();
+    assert_eq!(r.status, 200, "nobody answered, and the page was left");
+
+    // A listener hears the question, and leaves.
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#p", None).await.unwrap();
+    let mut dialogs = page.dialogs();
+    let heard = tokio::spawn(async move {
+        let d = dialog(&mut dialogs).await;
+        d.accept(None).await.unwrap();
+        d.kind().to_string()
+    });
+    page.goto(&format!("{}/next", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    assert_eq!(heard.await.unwrap(), "beforeunload");
+
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#p", None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), page.close())
+        .await
+        .expect("closing waited on the page's question")
+        .unwrap();
+    browser.close().await.unwrap();
+}
+
+/// A page a popup opens: an image, and a call to an API, both of which
+/// the opener's rules reach.
+const POPPED: &str = r#"<title>popped</title><p id=p>popped up</p>
+<img src="/pop.png">
+<script>fetch('/api').then(r => r.text()).then(t => document.querySelector('#p').dataset.api = t)</script>"#;
+
+#[tokio::test]
+async fn a_popup_from_a_link_is_read_and_carries_its_openers_rules() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<a id=a target=_blank href=/popped>open</a>
+<button id=b onclick="window.open('/popped')">open</button>
+<script>
+  window.seen = [];
+  addEventListener('visibilitychange', () => seen.push(document.visibilityState));
+</script>"#,
+            ),
+        ),
+        ("/popped", html(POPPED)),
+        ("/api", html("from the server")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.block(&["image"], &[]).await.unwrap();
+    let mut routes = page.route().await.unwrap();
+    tokio::spawn(async move {
+        while let Some(route) = routes.recv().await {
+            if route.request().url.ends_with("/api") {
+                route.fulfill(200, &[], b"routed").await.unwrap();
+            }
+        }
+    });
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    for opener in ["#a", "#b"] {
+        page.click(opener, None).await.unwrap();
+        let popped = popup(&mut events).await;
+        let r = popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+        assert_eq!(r.status, 200, "{opener}: the document's own response");
+        assert_eq!(popped.url(), format!("{}/popped", server.url), "{opener}");
+        assert!(
+            popped.content().await.unwrap().contains("popped up"),
+            "{opener}"
+        );
+        let api = popped
+            .wait_for_function_value("document.querySelector('#p').dataset.api")
+            .await;
+        assert_eq!(api, json!("routed"), "{opener}: the opener's route");
+        assert_eq!(
+            popped
+                .evaluate("navigator.userAgent.includes('Headless')")
+                .await
+                .unwrap(),
+            json!(false),
+            "{opener}"
+        );
+        // Left open: the opener opens the next one all the same.
+    }
+    // Each popup hid its opener, as a tab opened in front does, and the
+    // second click brought the opener back first, as a person would.
+    assert_eq!(
+        page.evaluate("seen.slice(0, 2)").await.unwrap(),
+        json!(["hidden", "visible"])
+    );
+    let seen: Vec<String> = server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert!(
+        !seen.iter().any(|p| p == "/pop.png"),
+        "the opener's block: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|p| p == "/api"),
+        "the opener's route: {seen:?}"
+    );
+    let headers = server.headers_for("/popped");
+    let agent = headers.iter().find(|(k, _)| k == "user-agent").unwrap();
+    assert!(!agent.1.contains("Headless"), "{agent:?}");
+    browser.close().await.unwrap();
+}
+
+/// `evaluate` until `js` is something other than null, for at most ten
+/// seconds.
+trait Until {
+    async fn wait_for_function_value(&self, js: &str) -> serde_json::Value;
+}
+
+impl Until for Page {
+    async fn wait_for_function_value(&self, js: &str) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let v = self.evaluate(js).await.unwrap();
+            if !v.is_null() || Instant::now() > deadline {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_popup_of_a_shared_context_is_routed_by_the_context() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        ("/", html("<a id=a target=_blank href=/popped>open</a>")),
+        ("/popped", html(POPPED)),
+    ]);
+    let context = browser.new_context().await.unwrap();
+    let mut routes = context.route().await.unwrap();
+    tokio::spawn(async move {
+        while let Some(route) = routes.recv().await {
+            if route.request().url.ends_with("/popped") {
+                route
+                    .fulfill(200, &[], b"<p id=p>from the context</p>")
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    let page = context.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#a", None).await.unwrap();
+    let popped = popup(&mut events).await;
+    popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    assert!(popped.content().await.unwrap().contains("from the context"));
+    context.close().await.unwrap();
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_popup_from_a_frame_on_another_site_is_its_pages() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<script>document.write(`<iframe src="http://localhost:${location.port}/inner"></iframe>`)</script>"#,
+            ),
+        ),
+        (
+            "/inner",
+            html(r#"<a id=a target=_blank href="/popped">open</a>"#),
+        ),
+        ("/popped", html(POPPED)),
+        ("/api", html("from the server")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let frame = page
+        .frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.url().starts_with("http://localhost:"))
+        .expect("the frame from another site");
+    let mut events = page.listen();
+    frame.click("#a", None).await.unwrap();
+    let popped = popup(&mut events).await;
+    popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    assert!(
+        popped.url().starts_with("http://localhost:"),
+        "{}",
+        popped.url()
+    );
+    assert!(popped.content().await.unwrap().contains("popped up"));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_blank_popup_a_script_writes_into_is_read() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<button id=b onclick="window.open('').document.write('<p>written</p>')">open</button>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#b", None).await.unwrap();
+    let popped = popup(&mut events).await;
+    popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    assert!(popped.content().await.unwrap().contains("written"));
+    browser.close().await.unwrap();
+}
+
+const FILE: &str = "name,price\ntea,3\n";
+
+fn attachment(name: &str) -> Reply {
+    Reply {
+        status: 200,
+        headers: vec![
+            ("Content-Type", "text/csv".into()),
+            (
+                "Content-Disposition",
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        body: FILE.into(),
+    }
+}
+
+#[tokio::test]
+async fn a_download_is_saved_in_its_contexts_own_folder() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<a id=dl href=/prices.csv>prices</a><a id=new target=_blank href=/prices.csv>in a new tab</a>",
+            ),
+        ),
+        ("/prices.csv", attachment("prices.csv")),
+    ]);
+    let mut files = Vec::new();
+    let mut contexts = Vec::new();
+    for _ in 0..2 {
+        let context = browser.new_context().await.unwrap();
+        let page = context.new_page().await.unwrap();
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        let mut events = page.listen();
+        page.click("#dl", None).await.unwrap();
+        let d = download(&mut events).await;
+        assert_eq!(d.suggested_filename(), "prices.csv");
+        assert_eq!(d.url(), format!("{}/prices.csv", server.url));
+        assert_eq!(d.failure().await, None);
+        let path = d.path().await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), FILE.as_bytes());
+        files.push(path);
+        contexts.push(context);
+    }
+    assert_ne!(
+        files[0].parent(),
+        files[1].parent(),
+        "each context downloads into a folder of its own"
+    );
+    contexts[0].close().await.unwrap();
+    assert!(!files[0].exists(), "the folder goes with its context");
+    assert!(files[1].exists());
+
+    // A link to a file that opens a new tab: Chrome closes the tab again,
+    // and the download is the opener's.
+    let page = contexts[1].new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#new", None).await.unwrap();
+    let d = download(&mut events).await;
+    assert_eq!(
+        std::fs::read(d.path().await.unwrap()).unwrap(),
+        FILE.as_bytes()
+    );
+    browser.close().await.unwrap();
+    assert!(!files[1].exists(), "everything goes with the browser");
+}
+
+/// Serves `/slow` as a download that sends ten bytes of a million and
+/// then waits, and `/broken` as one that sends ten and hangs up.
+fn stalling_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = done.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let reply = match path.as_str() {
+                    "/" => {
+                        let body =
+                            "<a id=slow href=/slow>slow</a><a id=broken href=/broken>broken</a>";
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    _ => "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                          Content-Disposition: attachment; filename=\"big.bin\"\r\n\
+                          Content-Length: 1000000\r\nConnection: close\r\n\r\n0123456789"
+                        .to_string(),
+                };
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+                if path == "/slow" {
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            });
+        }
+    });
+    (url, done)
+}
+
+#[tokio::test]
+async fn a_cancelled_or_broken_download_says_it_didnt_finish() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let (url, done) = stalling_server();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+
+    page.click("#slow", None).await.unwrap();
+    let d = download(&mut events).await;
+    d.cancel().await.unwrap();
+    assert_eq!(d.failure().await.as_deref(), Some("canceled"));
+    assert!(d.path().await.is_err());
+
+    page.click("#broken", None).await.unwrap();
+    let d = download(&mut events).await;
+    assert!(d.failure().await.is_some(), "a broken download failed");
+    assert!(d.path().await.is_err());
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    browser.close().await.unwrap();
+}
