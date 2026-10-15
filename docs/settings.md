@@ -9,8 +9,9 @@ class Books(netweir.Spider):
 ```
 
 or from the shell with `-s name=value` (`-s max_depth=none` for `None`,
-and commas between the proxies of `-s proxies=...`). A misspelt name is an
-error, not ignored. Times are in seconds.
+commas between the proxies of `-s proxies=...` and the statuses of
+`-s retry_http_codes=...`, and `-s http_auth=user:password`). A misspelt
+name is an error, not ignored. Times are in seconds.
 
 ## Fetching
 
@@ -22,7 +23,11 @@ error, not ignored. Times are in seconds.
 | `proxy_rotation` | `"on_block"` | how `proxies` are used: `"on_block"` (a site takes the next proxy each time it blocks a session), `"per_request"` (every request takes the next) or `"per_host"` (each site keeps one until a block moves it on); the last two need `proxies` and refuse `proxy`. See [Proxies](self-healing.md#proxies) |
 | `proxy_failures` | `3` | failures in a row after which a proxy is benched: no connection to the proxy, a 407 (or a tunnel refused with one), a tunnel it broke off, or a block page. A site that's down, slow or has a bad certificate doesn't count. See [Proxies](self-healing.md#when-a-proxy-stops-working) |
 | `proxy_cooldown` | `60.0` | how long a benched proxy sits out; twice that each time after, up to 30 minutes |
-| `timeout` | `30.0` | the limit for one whole request |
+| `timeout` | `30.0` | the limit for one whole request; a request's own `timeout` (or Scrapy's `download_timeout` meta key) replaces it |
+| `max_redirects` | `20` | redirects a request follows before it fails with `FetchError(kind="too_many_redirects")`, as Scrapy's `REDIRECT_MAX_TIMES`; Chrome's limit is 20 too |
+| `verify` | `True` | check each site's certificate. `False` skips the check; the path of a PEM file of CA certificates trusts those in place of the bundled ones, for hosts your own CA vouches for. Neither changes anything a site can see |
+| `http_auth` | `None` | a `(user, password)` login sent as HTTP Basic, up front, to `http_auth_domain` and nowhere else, as Scrapy's `HTTPAUTH_USER` and `HTTPAUTH_PASS`. robots.txt is fetched with it too |
+| `http_auth_domain` | `None` | the domain `http_auth` goes to, with its subdomains: every request and redirect there gets it, a request anywhere else doesn't, and nor does plain HTTP after HTTPS. Required with `http_auth`; there's no "send it everywhere" |
 | `max_response_size` | `67108864` | the most bytes of a response body (64 MiB), counted after decompression, so a small compressed answer that unpacks to gigabytes is stopped too; a larger one fails with `FetchError(kind="too_large")`, and `None` reads any size |
 
 ## Pace and politeness
@@ -57,7 +62,8 @@ error, not ignored. Times are in seconds.
 
 | Setting | Default | Does |
 |---|---|---|
-| `retries` | `3` | further tries after a server error, a network error, throttling or a block |
+| `retries` | `3` | further tries after a status in `retry_http_codes`, a network error or a block |
+| `retry_http_codes` | `(408, 429, 500, 502, 503, 504, 522, 524)` | the statuses tried again, as Scrapy's `RETRY_HTTP_CODES` (and the same list). A 429 left out still slows its site down, but goes to your callback. A POST is only tried again after one that says it wasn't processed, unless the request has `retry_post=True` |
 | `backoff_base` | `1.0` | retry n waits a random time up to `backoff_base` × 2ⁿ |
 | `backoff_max` | `60.0` | the most any retry waits |
 | `breaker_window` | `50` | how many of a site's last responses the circuit breaker looks at |

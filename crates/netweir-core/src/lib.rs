@@ -25,13 +25,13 @@ pub mod traps;
 pub use archive::Archive;
 pub use crawl::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler, Downloaded, DropReason, Event, LivePage,
-    ProxyRotation, ProxyStats, Stats, Submitted, allowed_domains, offsite,
+    ProxyRotation, ProxyStats, RETRY_STATUSES, Stats, Submitted, allowed_domains, offsite,
 };
 pub use decode::{decode, meta_content};
 pub use deltafetch::DeltaKey;
 pub use fetch::{
-    FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, Outgoing, Response, check_proxy,
-    masked,
+    Auth, FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, MAX_REDIRECTS, Outgoing,
+    Policy, Response, check_proxy, masked,
 };
 pub use profile::{
     DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, built_in as built_in_profiles,

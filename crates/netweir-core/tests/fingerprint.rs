@@ -605,3 +605,196 @@ fn image_shapes_name_the_profiles_own_versions() {
         Some("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
     );
 }
+
+/// Checking the server's certificate happens on the client, after the
+/// server has the ClientHello: whether it's checked, and against which
+/// CAs, changes nothing a server sees. Each profile fetches from a server
+/// whose certificate only a CA file of its own vouches for, once with the
+/// check off and once trusting that file alone, and both are held to the
+/// browser's recording. With the bundled roots the same server is refused.
+#[tokio::test]
+async fn checking_certificates_or_not_looks_the_same_on_the_wire() {
+    let dir = std::env::temp_dir().join(format!("netweir-ca-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for name in shipped() {
+        let recording = recorded(&name, "").unwrap();
+        let expected = recording.iter().find(|c| c.path == "/?set=nw").unwrap();
+        let mut server = Server::start_trusted(0, false, &dir).await.unwrap();
+        let url = format!("https://localhost:{}/?set=nw", server.port);
+        let mut trusting = FetchOptions::new(Profile::named(&name).unwrap());
+        trusting.ca_certificates = Some(std::fs::read(dir.join("cert.pem")).unwrap());
+        for (what, fetcher) in [
+            ("unchecked", local_fetcher(&name)),
+            ("checked against a CA file", Fetcher::new(trusting).unwrap()),
+        ] {
+            let response = fetcher.get(&url, &[]).await.unwrap();
+            assert_eq!(response.status, 200, "{name} {what}");
+            let actual = server.next().await.unwrap();
+            check(
+                &name,
+                false,
+                std::slice::from_ref(expected),
+                std::slice::from_ref(&actual),
+                what,
+            );
+        }
+        let bundled = Fetcher::new(FetchOptions::new(Profile::named(&name).unwrap())).unwrap();
+        let err = bundled.get(&url, &[]).await.unwrap_err();
+        assert_eq!(err.kind, netweir_core::FetchErrorKind::Tls, "{name}: {err}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The headers of `capture` as a server sees them, without the ones that
+/// name the test server (Host, :authority, :path) and with its port taken
+/// out of the rest, and without `skip`.
+fn headers_of(capture: &Capture, skip: &[&str]) -> Vec<(String, String)> {
+    let unported = |v: &str| {
+        let mut out = String::new();
+        let mut rest = v;
+        while let Some(at) = rest.find("localhost:") {
+            out.push_str(&rest[..at + "localhost".len()]);
+            rest = rest[at + "localhost:".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        out + rest
+    };
+    capture
+        .headers
+        .iter()
+        .filter(|(k, _)| {
+            let k = k.to_ascii_lowercase();
+            !["host", ":authority", ":path"].contains(&k.as_str()) && !skip.contains(&k.as_str())
+        })
+        .map(|(k, v)| (k.clone(), unported(v)))
+        .collect()
+}
+
+/// What the browsers sent once they held a login, in the auth captures:
+/// the page typed in, then the page's script POSTing JSON, its image, and
+/// its form, answered with a redirect. Netweir sends each with the login
+/// up front.
+async fn login_scenario(fetcher: &Fetcher, server: &mut Server) -> Vec<Capture> {
+    let base = format!("https://localhost:{}", server.port);
+    let page = format!("{base}/auth");
+    let ada = || netweir_core::Policy {
+        auth: Some(netweir_core::Auth::new("ada", "secret", None)),
+        ..Default::default()
+    };
+    let with_login = |mut outgoing: Outgoing| {
+        outgoing.policy = ada();
+        outgoing
+    };
+    let steps = [
+        ("/auth", with_login(Outgoing::navigate()), 1),
+        (
+            "/api",
+            with_login(Outgoing::fetch(
+                "POST",
+                Some(br#"{"q":"rust"}"#.to_vec()),
+                Some("application/json".into()),
+                Some(page.clone()),
+            )),
+            1,
+        ),
+        (
+            "/picture.png",
+            with_login(Outgoing::image(Some(page.clone()))),
+            1,
+        ),
+        (
+            "/redirect?to=/after-auth",
+            with_login(Outgoing::form(b"q=rust".to_vec(), None, Some(page.clone()))),
+            2,
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (path, outgoing, requests) in steps {
+        let response = fetcher
+            .send(&format!("{base}{path}"), &outgoing, &[])
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200, "{path}");
+        for _ in 0..requests {
+            seen.push(server.next().await.unwrap());
+        }
+    }
+    seen
+}
+
+/// From a browser's auth recording, the requests `login_scenario` makes:
+/// the last typed visit to /auth that carried the login (Firefox's retry
+/// of the request a 401 answered puts it elsewhere; its revisit is what
+/// holding a login looks like), and then the page's own requests.
+fn login_requests(recording: &[Capture]) -> Vec<Capture> {
+    let carries = |c: &Capture| {
+        c.headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    };
+    let typed = recording
+        .iter()
+        .rev()
+        .find(|c| c.path.starts_with("/auth") && carries(c))
+        .expect("a visit to /auth with the login");
+    let mut out = vec![typed.clone()];
+    for path in [
+        "/api",
+        "/picture.png",
+        "/redirect?to=/after-auth",
+        "/after-auth",
+    ] {
+        let c = recording.iter().find(|c| c.path == path).unwrap();
+        assert!(carries(c), "{path} was recorded without the login");
+        out.push(c.clone());
+    }
+    out
+}
+
+/// Authorization goes where the browser puts it, in every kind of request,
+/// and so does every other header around it. Two things the recorded page
+/// did by script are left out: it added its image from a script, which
+/// Chrome loads at a lower priority than an `<img>` in the HTML, as
+/// netweir's image requests are sent; and it submitted its form from a
+/// script, so no Sec-Fetch-User, which a person pressing the button sends
+/// and netweir does. The image and post tests check both.
+#[tokio::test]
+async fn logins_go_where_the_browser_puts_them() {
+    let mut checked = 0;
+    for name in shipped() {
+        for http1 in [false, true] {
+            let scenario = if http1 { ".auth.http1" } else { ".auth" };
+            let Some(recording) = recorded(&name, scenario) else {
+                continue;
+            };
+            let expected = login_requests(&recording);
+            let mut server = if http1 {
+                Server::start_http1(0).await
+            } else {
+                Server::start().await
+            }
+            .unwrap();
+            let fetcher = local_fetcher(&name);
+            if http1 {
+                let warm = [format!("https://localhost:{}/warm", server.port)];
+                run(&fetcher, &mut server, &warm).await;
+            }
+            let actual = login_scenario(&fetcher, &mut server).await;
+            assert_eq!(expected.len(), actual.len(), "{name}{scenario}");
+            for (e, a) in expected.iter().zip(&actual) {
+                let skip: &[&str] = match e.path.as_str() {
+                    "/picture.png" => &["priority"],
+                    "/redirect?to=/after-auth" | "/after-auth" => &["sec-fetch-user"],
+                    _ => &[],
+                };
+                assert_eq!(
+                    headers_of(a, skip),
+                    headers_of(e, skip),
+                    "{name}{scenario}: {} differs from the browser's",
+                    e.path
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 4, "only {checked} auth recordings replayed");
+}

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import os
 from collections.abc import Iterable, Mapping
 from typing import Any
-from urllib.parse import urlencode, urljoin
+from urllib.parse import unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 from netweir import _jmespath, _track
 from netweir._errors import Blocked
@@ -14,6 +15,10 @@ from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
 from netweir._request import Request
 
 Headers = Mapping[str, str] | Iterable[tuple[str, str]] | None
+Params = Mapping[str, Any] | Iterable[tuple[str, Any]] | None
+Auth = tuple[str, str] | None
+#: True, False, or the path of a PEM file of CA certificates.
+Verify = bool | str | os.PathLike
 
 
 def _pairs(headers: Headers) -> list[tuple[str, str]]:
@@ -22,6 +27,75 @@ def _pairs(headers: Headers) -> list[tuple[str, str]]:
     if isinstance(headers, Mapping):
         return list(headers.items())
     return list(headers)
+
+
+def with_params(url: str, params: Params) -> str:
+    """``url`` with ``params`` added after its own query, as requests adds
+    them: URL-encoded, a list value repeating its key, None left out."""
+    if not params:
+        return url
+    pairs = params.items() if isinstance(params, Mapping) else params
+    query = urlencode([(k, v) for k, v in pairs if v is not None], doseq=True)
+    if not query:
+        return url
+    rest, hash_, fragment = url.partition("#")
+    joint = "" if rest.endswith(("?", "&")) else "&" if "?" in rest else "?"
+    return f"{rest}{joint}{query}{hash_}{fragment}"
+
+
+def login_of(url: str, auth: Auth) -> tuple[str, Auth]:
+    """``url`` without a login written into it (``https://user:pass@host``),
+    and the login to send: ``auth`` if given, else the URL's, as requests
+    reads one."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url, auth
+    url = urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+    if auth is None:
+        auth = (unquote(parts.username or ""), unquote(parts.password or ""))
+    return url, auth
+
+
+def checked_auth(auth: Any) -> tuple[str, str] | None:
+    """``auth`` as a (user, password) tuple, or why it can't be one."""
+    if auth is None:
+        return None
+    if (
+        not isinstance(auth, (tuple, list))
+        or len(auth) != 2
+        or not all(isinstance(part, str) for part in auth)
+    ):
+        raise TypeError("auth is a (user, password) pair of strings")
+    return (auth[0], auth[1])
+
+
+def _follows(allow_redirects: bool, follow_redirects: bool | None) -> bool:
+    """Whether to follow redirects, from requests' name for it or httpx's.
+    allow_redirects defaults to True, so only a False can disagree."""
+    if follow_redirects is None:
+        return allow_redirects
+    if not allow_redirects and follow_redirects:
+        raise ValueError(
+            "allow_redirects and follow_redirects say different things: pass one of them"
+        )
+    return follow_redirects
+
+
+def certificates(verify: Verify) -> tuple[bool, bytes | None]:
+    """Whether to check certificates, and the CA certificates (PEM) to
+    check them against in place of the bundled roots."""
+    if isinstance(verify, bool):
+        return verify, None
+    if isinstance(verify, (str, os.PathLike)):
+        with open(verify, "rb") as f:
+            return True, f.read()
+    raise TypeError(f"verify is True, False or a CA file's path, not {verify!r}")
+
+
+def redirect_limit(n: int | None, name: str = "max_redirects") -> int | None:
+    if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < 0):
+        raise ValueError(f"{name} must be a whole number, 0 or more")
+    return n
 
 
 def payload(
@@ -282,11 +356,39 @@ class Page:
         return f"<Page {self.status} {self.url}>"
 
 
+def _policy(
+    url: str,
+    params: Params,
+    auth: Auth,
+    allow_redirects: bool,
+    follow_redirects: bool | None,
+    max_redirects: int | None,
+    timeout: float | None,
+    fallback_auth: Auth = None,
+) -> tuple[str, dict[str, Any]]:
+    """The URL to send, and how: the keyword arguments of Fetcher.send
+    for the policy a call asks for. ``auth`` wins over a login in the URL,
+    which wins over ``fallback_auth`` (a Client's)."""
+    url, auth = login_of(with_params(url, params), checked_auth(auth))
+    if auth is None:
+        auth = fallback_auth
+    return url, {
+        "follow": _follows(allow_redirects, follow_redirects),
+        "max_redirects": redirect_limit(max_redirects),
+        "timeout": timeout,
+        "auth": None if auth is None else (auth[0], auth[1], None),
+    }
+
+
 class Client:
     """Fetches pages as one browser, reusing connections and cookies.
 
     ``profile`` names the browser to look like (``"chrome"`` is the newest
-    Chrome). ``timeout`` covers a whole request, in seconds.
+    Chrome). ``timeout`` covers each request, in seconds. ``verify`` is
+    True, False (no certificate check), or the path of a PEM file of CA
+    certificates to trust in place of the bundled ones. ``max_redirects``
+    is how many redirects a request follows before it fails, and ``auth``
+    a (user, password) login every call sends unless it has its own.
     """
 
     def __init__(
@@ -295,8 +397,22 @@ class Client:
         proxy: str | None = None,
         timeout: float = 30.0,
         max_size: int | None = None,
+        *,
+        verify: Verify = True,
+        max_redirects: int = 20,
+        auth: Auth = None,
     ):
-        self._fetcher = Fetcher(profile, proxy, timeout, max_size=max_size)
+        check, cas = certificates(verify)
+        self._fetcher = Fetcher(
+            profile,
+            proxy,
+            timeout,
+            verify=check,
+            max_size=max_size,
+            ca_certificates=cas,
+            max_redirects=redirect_limit(max_redirects),
+        )
+        self._auth = checked_auth(auth)
 
     async def get(
         self,
@@ -304,12 +420,15 @@ class Client:
         headers: Headers = None,
         raise_on_block: bool = True,
         referer: str | None = None,
+        **policy: Any,
     ) -> Page:
         """Fetches one page. A block page raises Blocked unless
         ``raise_on_block=False``. With ``referer``, it's sent as following a
-        link on that page."""
+        link on that page. ``params``, ``auth``, ``allow_redirects`` (or
+        ``follow_redirects``), ``max_redirects`` and ``timeout`` work as in
+        ``request``."""
         return await self.request(
-            "GET", url, headers=headers, raise_on_block=raise_on_block, referer=referer
+            "GET", url, headers=headers, raise_on_block=raise_on_block, referer=referer, **policy
         )
 
     async def request(
@@ -323,12 +442,38 @@ class Client:
         headers: Headers = None,
         referer: str | None = None,
         raise_on_block: bool = True,
+        params: Params = None,
+        auth: Auth = None,
+        allow_redirects: bool = True,
+        follow_redirects: bool | None = None,
+        max_redirects: int | None = None,
+        timeout: float | None = None,
     ) -> Page:
         """Sends any request. ``form`` is submitted as a form; ``json`` or a
         raw ``body`` as a page's script would send it. ``referer`` is the
-        page it comes from."""
+        page it comes from.
+
+        ``params`` are added to the URL's query. ``auth`` is a (user,
+        password) login, sent as HTTP Basic to the URL's origin and not
+        past a redirect that leaves it; a login written into the URL is
+        used the same way. ``allow_redirects=False`` (or httpx's
+        ``follow_redirects=False``) returns a redirect as the page.
+        ``max_redirects`` and ``timeout`` replace the client's for this
+        call."""
         how = payload(method, form, json, body)
-        response = await self._fetcher.send(url, headers=_pairs(headers), referer=referer, **how)
+        url, policy = _policy(
+            url,
+            params,
+            auth,
+            allow_redirects,
+            follow_redirects,
+            max_redirects,
+            timeout,
+            self._auth,
+        )
+        response = await self._fetcher.send(
+            url, headers=_pairs(headers), referer=referer, **how, **policy
+        )
         return _checked(Page(response), raise_on_block)
 
     async def post(self, url: str, **kwargs: Any) -> Page:
@@ -341,7 +486,11 @@ class Client:
         """Submits a form read with ``page.form()``, from its page."""
         url, how = _from_form(form)
         response = await self._fetcher.send(
-            url, headers=_pairs(headers), referer=form.referer, **how
+            url,
+            headers=_pairs(headers),
+            referer=form.referer,
+            auth=None if self._auth is None else (*self._auth, None),
+            **how,
         )
         return _checked(Page(response), raise_on_block)
 
@@ -372,13 +521,16 @@ def get(
     raise_on_block: bool = True,
     referer: str | None = None,
     max_size: int | None = None,
+    **policy: Any,
 ) -> Page:
     """Fetches one page and waits for it. For many pages, use Client.
 
     A page from bot protection (a Cloudflare challenge, a DataDome captcha
     and the like) raises Blocked; pass ``raise_on_block=False`` to get it
     as a page, with ``page.blocked`` naming the vendor. With ``referer``,
-    it's sent as following a link on that page."""
+    it's sent as following a link on that page. ``params``, ``auth``,
+    ``allow_redirects`` (or ``follow_redirects``), ``max_redirects`` and
+    ``verify`` work as in ``request``."""
     return request(
         "GET",
         url,
@@ -389,6 +541,7 @@ def get(
         raise_on_block=raise_on_block,
         referer=referer,
         max_size=max_size,
+        **policy,
     )
 
 
@@ -406,14 +559,31 @@ def request(
     raise_on_block: bool = True,
     referer: str | None = None,
     max_size: int | None = None,
+    params: Params = None,
+    auth: Auth = None,
+    allow_redirects: bool = True,
+    follow_redirects: bool | None = None,
+    max_redirects: int = 20,
+    verify: Verify = True,
 ) -> Page:
     """Sends any request and waits for the page. ``form`` is submitted as
     a form (URL-encoded); ``json`` or a raw ``body`` as a page's script
     would send it. ``referer`` is the page the request comes from; a form
-    or a script without one comes from the root of the target's site."""
+    or a script without one comes from the root of the target's site.
+
+    ``params`` are added to the URL's query, as requests adds them.
+    ``auth`` is a (user, password) login, sent as HTTP Basic to the URL's
+    origin and not past a redirect that leaves it; a login written into the
+    URL is used the same way. ``allow_redirects=False`` (or httpx's
+    ``follow_redirects=False``) returns a redirect as the page; more than
+    ``max_redirects`` is FetchError("too_many_redirects"). ``verify`` is
+    True, False (no certificate check), or the path of a PEM file of CA
+    certificates to trust in place of the bundled ones."""
     how = payload(method, form, json, body)
-    fetcher = Fetcher(profile, proxy, timeout, max_size=max_size)
-    response = fetcher.send_blocking(url, headers=_pairs(headers), referer=referer, **how)
+    url, policy = _policy(url, params, auth, allow_redirects, follow_redirects, max_redirects, None)
+    check, cas = certificates(verify)
+    fetcher = Fetcher(profile, proxy, timeout, verify=check, max_size=max_size, ca_certificates=cas)
+    response = fetcher.send_blocking(url, headers=_pairs(headers), referer=referer, **how, **policy)
     return _checked(Page(response), raise_on_block)
 
 

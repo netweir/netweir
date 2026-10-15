@@ -56,6 +56,12 @@ pub struct CrawlSettings {
     /// Further tries after a server error, a network error, throttling or
     /// a block.
     pub retries: u32,
+    /// The statuses retried (Scrapy's RETRY_HTTP_CODES). A throttling
+    /// status left out still slows its host down, but isn't sent again.
+    pub retry_statuses: Vec<u16>,
+    /// A login for every request to its domain (and subdomains), on every
+    /// redirect hop there, robots.txt included; a request's own wins.
+    pub http_auth: Option<crate::Auth>,
     /// Retry n waits a random time up to backoff_base * 2^n, capped at
     /// backoff_max ("full jitter").
     pub backoff_base: Duration,
@@ -234,6 +240,8 @@ impl Default for CrawlSettings {
             max_pages_per_domain: None,
             max_pages: None,
             retries: 3,
+            retry_statuses: RETRY_STATUSES.to_vec(),
+            http_auth: None,
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             proxies: Vec::new(),
@@ -1378,12 +1386,14 @@ impl Crawler {
             return Submitted::Answered;
         }
         // Chrome hands the callback a live page, which no kept response
-        // can stand in for.
-        let cache = self
-            .shared
-            .cache
-            .as_ref()
-            .filter(|_| !wants_browser(settings, &request));
+        // can stand in for; and a kept response may have followed
+        // redirects a request with a limit of its own wouldn't.
+        let policy = &request.outgoing.policy;
+        let cache = self.shared.cache.as_ref().filter(|_| {
+            !wants_browser(settings, &request)
+                && !policy.dont_redirect
+                && policy.max_redirects.is_none()
+        });
         let hit = cache.is_some_and(|c| c.has(&fp));
         let keep = cache.map(|_| Keep {
             key: fp,
@@ -1700,6 +1710,7 @@ fn pending_of(request: &CrawlRequest, payload: &str, row: i64) -> Pending {
         referer: request.outgoing.referer.clone(),
         retry_post: request.retry_post,
         proxy: request.proxy.clone(),
+        policy: request.outgoing.policy.clone(),
     }
 }
 
@@ -2403,10 +2414,20 @@ async fn guarded<T: Send + 'static>(
     }
 }
 
+/// `outgoing` with the crawl's login (`http_auth`) when it has none of its
+/// own; the login decides at each hop whether it goes there.
+fn with_crawl_login(settings: &CrawlSettings, outgoing: &Outgoing) -> Outgoing {
+    let mut outgoing = outgoing.clone();
+    if outgoing.policy.auth.is_none() {
+        outgoing.policy.auth = settings.http_auth.clone();
+    }
+    outgoing
+}
+
 async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let started = Instant::now();
     let (url, headers, hops) = (q.request.url.clone(), q.request.headers.clone(), q.hops);
-    let outgoing = q.request.outgoing.clone();
+    let outgoing = with_crawl_login(&shared.settings, &q.request.outgoing);
     let result = match session {
         Ok(session) => {
             guarded(
@@ -2438,7 +2459,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let mut stored = Ok(false);
     if let (Some(keep), Some(cache), Ok(Hop::Done(r))) = (&q.keep, &shared.cache, &result)
         && !reserved
-        && worth_keeping(r, outcome.as_ref())
+        && worth_keeping(r, outcome.as_ref(), &settings.retry_statuses)
     {
         let (cache, r) = (cache.clone(), r.clone());
         let (key, redirects) = (keep.key, keep.redirects.clone());
@@ -2545,7 +2566,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
                 retry_after,
                 !settings.throttle,
             );
-            if can_retry {
+            if can_retry && settings.retry_statuses.contains(&response.status) {
                 retry(settings, &mut state, q);
                 None
             } else {
@@ -2557,7 +2578,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
             }
         }
         (Ok(Hop::Done(response)), Some(Outcome::HttpError(status)))
-            if can_retry && may_repeat && RETRY_STATUSES.contains(&status) =>
+            if can_retry && may_repeat && settings.retry_statuses.contains(&status) =>
         {
             drop(response);
             retry(settings, &mut state, q);
@@ -2607,6 +2628,10 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
             }
             let id = q.request.id;
             q.attempts = 0;
+            // The crawl's own login is added at each hop, never kept with
+            // the request: a checkpoint holds only what the request asked.
+            let mut then = then;
+            then.policy.auth = q.request.outgoing.policy.auth.take();
             q.request.outgoing = then;
             if enqueue(
                 settings,
@@ -2654,10 +2679,11 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
 /// or a status that would have been retried; nor a 401, a 403 or a 451,
 /// which may be a block no signature knows yet, a 407 from the crawl's own
 /// proxy, or a 304, which only makes sense to the request it answered.
-fn worth_keeping(r: &Response, outcome: Option<&Outcome>) -> bool {
+fn worth_keeping(r: &Response, outcome: Option<&Outcome>, retried: &[u16]) -> bool {
     matches!(outcome, Some(Outcome::Ok | Outcome::HttpError(_)))
         && r.status < 500
         && !RETRY_STATUSES.contains(&r.status)
+        && !retried.contains(&r.status)
         && ![304, 401, 403, 407, 451].contains(&r.status)
 }
 
@@ -2849,7 +2875,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
         (Ok((response, page, ..)), Some(Outcome::HttpError(status)))
             if q.blocked.is_none()
                 && q.attempts < settings.retries
-                && RETRY_STATUSES.contains(&status) =>
+                && settings.retry_statuses.contains(&status) =>
         {
             discard = Some(page);
             drop(response);
@@ -2867,7 +2893,10 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
                 retry_after,
                 !settings.throttle,
             );
-            if q.blocked.is_none() && q.attempts < settings.retries {
+            if q.blocked.is_none()
+                && q.attempts < settings.retries
+                && settings.retry_statuses.contains(&response.status)
+            {
                 discard = Some(page);
                 drop(response);
                 retry(settings, &mut state, q);
@@ -3367,9 +3396,10 @@ fn hand_back(
     warning
 }
 
-/// Server errors worth another try: timeouts and overloaded or unreachable
-/// upstreams (522 and 524 are Cloudflare's).
-const RETRY_STATUSES: [u16; 7] = [408, 500, 502, 503, 504, 522, 524];
+/// Statuses worth another try by default: timeouts, throttling, and
+/// overloaded or unreachable upstreams (522 and 524 are Cloudflare's).
+/// Scrapy's RETRY_HTTP_CODES are the same.
+pub const RETRY_STATUSES: [u16; 8] = [408, 429, 500, 502, 503, 504, 522, 524];
 
 /// Network failures that may pass on another try.
 fn transient(error: &FetchError) -> bool {
@@ -3801,14 +3831,20 @@ async fn gate_get<T>(
     (fetcher, proxy): Route,
     gate: impl FnOnce(&mut Origin) -> &mut Gate<T>,
 ) -> Option<Result<Response, FetchError>> {
+    // Fetched with the crawl's login, as Scrapy's robots.txt requests go
+    // through its auth middleware.
+    let outgoing = with_crawl_login(&shared.settings, &Outgoing::navigate());
     let got = match fetcher {
         Ok(fetcher) => {
-            guarded(async move { fetcher.get(&url, &[]).await }, |why| {
-                Err(FetchError {
-                    kind: FetchErrorKind::Other,
-                    message: format!("the fetch failed inside netweir: {why}"),
-                })
-            })
+            guarded(
+                async move { fetcher.send(&url, &outgoing, &[]).await },
+                |why| {
+                    Err(FetchError {
+                        kind: FetchErrorKind::Other,
+                        message: format!("the fetch failed inside netweir: {why}"),
+                    })
+                },
+            )
             .await
         }
         Err(e) => Err(e),

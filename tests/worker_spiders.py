@@ -154,6 +154,25 @@ class Loads(netweir.Spider):
         yield item.load_item()
 
 
+class Logins(netweir.Spider):
+    """Yields, from a worker, a request with a login, a timeout and a
+    redirect limit of its own."""
+
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        yield page.follow(
+            "/whoami", callback="item", auth=("ada", "secret"), timeout=4, max_redirects=3
+        )
+
+    def item(self, page):
+        yield {
+            "who": page.css("h1::text").get(),
+            "timeout": page.request.timeout,
+            "max_redirects": page.request.max_redirects,
+        }
+
+
 class Counts(netweir.Spider):
     """Keeps stats of its own, in whichever worker each page lands."""
 

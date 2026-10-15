@@ -22,7 +22,7 @@ use crate::canonical::Fingerprint;
 
 /// The layout this build writes. Older files are upgraded on open; newer
 /// ones are refused.
-pub const FORMAT: i64 = 3;
+pub const FORMAT: i64 = 4;
 
 /// A request that was saved and not finished. A shared queue keeps the
 /// same fields, as JSON, without the row.
@@ -47,6 +47,10 @@ pub struct Pending {
     pub retry_post: bool,
     /// The proxy the request asked for, if any. Formats 1 and 2 had none.
     pub proxy: Option<String>,
+    /// Its timeout, redirect limit and login. Formats 1 to 3, and queue
+    /// members written before, had none: the fetcher's own.
+    #[serde(default)]
+    pub policy: crate::Policy,
 }
 
 /// A body as hex in JSON, which has no bytes.
@@ -151,7 +155,8 @@ const SCHEMA: &str = "
         content_type TEXT,
         referer TEXT,
         retry_post INTEGER NOT NULL DEFAULT 0,
-        proxy TEXT
+        proxy TEXT,
+        policy TEXT
     );
     CREATE INDEX IF NOT EXISTS pending ON requests (row) WHERE done = 0;
     CREATE TABLE IF NOT EXISTS seen (fingerprint BLOB PRIMARY KEY) WITHOUT ROWID;
@@ -192,7 +197,8 @@ impl Checkpoint {
                      ALTER TABLE requests ADD COLUMN referer TEXT;
                      ALTER TABLE requests ADD COLUMN retry_post INTEGER NOT NULL DEFAULT 0;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
-                     UPDATE meta SET value = '3' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN policy TEXT;
+                     UPDATE meta SET value = '4' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -201,7 +207,19 @@ impl Checkpoint {
                 conn.execute_batch(
                     "BEGIN;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
-                     UPDATE meta SET value = '3' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN policy TEXT;
+                     UPDATE meta SET value = '4' WHERE key = 'format';
+                     COMMIT;",
+                )
+                .map_err(sql)?;
+            }
+            Some(Ok(3)) => {
+                // Format 3 had no request policies: each was sent with the
+                // crawl's own, which an empty one stands for.
+                conn.execute_batch(
+                    "BEGIN;
+                     ALTER TABLE requests ADD COLUMN policy TEXT;
+                     UPDATE meta SET value = '4' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -376,11 +394,12 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
     let mut saved = Saved::default();
     let mut stmt = conn.prepare(
         "SELECT row, url, priority, headers, dont_filter, depth, payload,
-                method, kind, body, content_type, referer, retry_post, proxy
+                method, kind, body, content_type, referer, retry_post, proxy, policy
          FROM requests WHERE done = 0 ORDER BY row",
     )?;
     let rows = stmt.query_map([], |r| {
         let headers: String = r.get(3)?;
+        let policy: Option<String> = r.get(14)?;
         Ok(Pending {
             row: r.get(0)?,
             url: r.get(1)?,
@@ -396,6 +415,9 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
             referer: r.get(11)?,
             retry_post: r.get(12)?,
             proxy: r.get(13)?,
+            policy: policy
+                .and_then(|p| serde_json::from_str(&p).ok())
+                .unwrap_or_default(),
         })
     })?;
     for row in rows {
@@ -475,8 +497,8 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
     {
         let mut request = tx.prepare_cached(
             "INSERT OR REPLACE INTO requests (row, url, priority, headers, dont_filter, depth, payload,
-                 method, kind, body, content_type, referer, retry_post, proxy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 method, kind, body, content_type, referer, retry_post, proxy, policy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
         let mut seen = tx.prepare_cached("INSERT OR IGNORE INTO seen (fingerprint) VALUES (?1)")?;
         let mut done = tx.prepare_cached("UPDATE requests SET done = 1 WHERE row = ?1")?;
@@ -490,6 +512,9 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
                 Op::Request(fp, p) => {
                     seen.execute(params![fp.as_slice()])?;
                     let headers = serde_json::to_string(&p.headers).unwrap_or_else(|_| "[]".into());
+                    let policy = (p.policy != crate::Policy::default())
+                        .then(|| serde_json::to_string(&p.policy).ok())
+                        .flatten();
                     request.execute(params![
                         p.row,
                         p.url,
@@ -504,7 +529,8 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
                         p.content_type,
                         p.referer,
                         p.retry_post,
-                        p.proxy
+                        p.proxy,
+                        policy
                     ])?;
                 }
                 Op::Seen(fp) => {
@@ -573,7 +599,55 @@ mod tests {
             referer: Some("https://e.com/".into()),
             retry_post: false,
             proxy: Some("http://ann:secret@10.0.0.1:8080".into()),
+            policy: crate::Policy {
+                timeout: Some(Duration::from_millis(2500)),
+                max_redirects: Some(4),
+                dont_redirect: true,
+                auth: Some(crate::Auth::new("ada", "s3cret", Some("e.com".into()))),
+            },
         }
+    }
+
+    #[test]
+    fn a_checkpoint_from_before_request_policies_is_upgraded() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-v3-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The third format's requests table, as 0.3.1 wrote it.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('format', '3');
+                 CREATE TABLE requests (row INTEGER PRIMARY KEY, url TEXT NOT NULL,
+                     priority INTEGER NOT NULL, headers TEXT NOT NULL,
+                     dont_filter INTEGER NOT NULL, depth INTEGER NOT NULL,
+                     payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+                     method TEXT NOT NULL DEFAULT 'GET',
+                     kind TEXT NOT NULL DEFAULT 'navigate', body BLOB,
+                     content_type TEXT, referer TEXT,
+                     retry_post INTEGER NOT NULL DEFAULT 0, proxy TEXT);
+                 INSERT INTO requests (row, url, priority, headers, dont_filter, depth, payload)
+                     VALUES (4, 'https://e.com/a', 0, '[]', 0, 1, '{}');",
+            )
+            .unwrap();
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        assert_eq!(saved.pending[0].policy, crate::Policy::default());
+        cp.request([5; 16], pending(5, "https://e.com/b"));
+        drop(cp);
+        let (_cp, saved) = Checkpoint::open(&path).unwrap();
+        assert_eq!(saved.pending[1], pending(5, "https://e.com/b"));
+        drop(_cp);
+        let conn = Connection::open(&path).unwrap();
+        let format: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'format'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(format, FORMAT.to_string());
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -1246,7 +1246,24 @@ pub(crate) mod tests {
             referer: Some("https://e.com/".into()),
             retry_post: true,
             proxy: Some("http://10.0.1:8080".into()),
+            policy: crate::Policy {
+                timeout: Some(Duration::from_secs(5)),
+                max_redirects: Some(0),
+                dont_redirect: false,
+                auth: Some(crate::Auth::new("ada", "secret", None)),
+            },
         }
+    }
+
+    #[test]
+    fn a_member_from_before_request_policies_reads_with_none() {
+        let mut json = serde_json::to_value(pending("https://e.com/a", 0)).unwrap();
+        json.as_object_mut().unwrap().remove("policy");
+        let read: Pending = serde_json::from_value(json).unwrap();
+        assert_eq!(read.policy, crate::Policy::default());
+        let whole = pending("https://e.com/a", 0);
+        let again: Pending = serde_json::from_str(&serde_json::to_string(&whole).unwrap()).unwrap();
+        assert_eq!(again, whole);
     }
 
     fn fp(n: u8) -> Fingerprint {
