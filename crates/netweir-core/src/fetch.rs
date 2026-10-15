@@ -497,7 +497,18 @@ async fn read_at_most(url: &str, response: wreq::Response, max: u64) -> Result<B
     if declared.is_some_and(|n| n > max) {
         return Err(too_large());
     }
+    // Room for the whole declared body up front. Grown as it arrives, the
+    // last step copies half the body into a buffer the size of all of it,
+    // so both are held at once, and the macOS allocator now and then keeps
+    // the old one resident after it's freed: a 32 MiB body took 72 MiB
+    // at its peak. Known limit: a body of no declared length
+    // (chunked) still grows that way. The length is the server's word, so
+    // the room is asked for, not insisted on: a limit set high and a
+    // length nobody could hold leave the body to grow as it comes instead
+    // of ending the process.
+    let room = declared.map_or(0, |n| usize::try_from(n).unwrap_or(0));
     let mut body = Vec::new();
+    let _ = body.try_reserve_exact(room);
     let mut stream = wreq::Body::from(response);
     while let Some(frame) = stream.frame().await {
         let Ok(chunk) = frame?.into_data() else {
