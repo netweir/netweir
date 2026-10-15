@@ -16,7 +16,6 @@ netweir queue push redis://localhost:6379/0 books https://books.toscrape.com/
 from __future__ import annotations
 
 import argparse
-import asyncio
 import code
 import contextlib
 import dataclasses
@@ -479,13 +478,21 @@ STOPS = (signal.SIGTERM, signal.SIGBREAK) if sys.platform == "win32" else (signa
 
 
 def _interrupt(signum, frame) -> None:
-    """Handles SIGTERM (and SIGBREAK) as whatever handles SIGINT now would: asyncio's
-    handler, while a crawl runs, which cancels it cleanly."""
+    """Handles SIGTERM (and SIGBREAK) as whatever handles SIGINT now would:
+    asyncio's handler, or the crawl's own on Python 3.10, while a crawl
+    runs, which cancels it cleanly."""
+    from netweir import _crawl
+
     handler = signal.getsignal(signal.SIGINT)
-    if not callable(handler):
-        # SIGINT ignored, as in a job started with `nohup ... &`.
+    if callable(handler):
+        handler(signal.SIGINT, frame)
+    elif _crawl._interrupts:
+        # SIGINT ignored, as in a job started with `&` from a script. A
+        # KeyboardInterrupt raised here could land inside asyncio's own
+        # code and leave the crawl hanging.
+        _crawl._interrupts[-1]()
+    else:
         raise KeyboardInterrupt
-    handler(signal.SIGINT, frame)
 
 
 def _install(args) -> int:
@@ -674,7 +681,9 @@ class _Session:
             raise _Usage(f"not a URL or a file: {target}")
         if self.browser:
             url = path.resolve().as_uri() if path else target
-            return _say_if_blocked(Page(asyncio.run(self._in_chrome(url))))
+            from netweir._crawl import _run as run
+
+            return _say_if_blocked(Page(run(self._in_chrome(url))))
         if path:
             # As if fetched from its file: URL, so it decodes and resolves
             # links as a fetched page would.

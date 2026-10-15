@@ -8,7 +8,6 @@ See docs/design/project.md.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import importlib.util
 import inspect
@@ -135,8 +134,10 @@ def _instance(cls: type, args) -> Any:
 
 def _run(spider: Any, requests: list) -> None:
     """Crawls ``requests`` in place of the spider's own start."""
+    from netweir._crawl import _run as run
+
     spider.start = lambda: requests
-    asyncio.run(spider.crawl())
+    run(spider.crawl())
 
 
 # --- startproject and genspider ----------------------------------------------
