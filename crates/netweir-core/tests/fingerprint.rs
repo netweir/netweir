@@ -672,16 +672,16 @@ fn headers_of(capture: &Capture, skip: &[&str]) -> Vec<(String, String)> {
 /// What the browsers sent once they held a login, in the auth captures:
 /// the page typed in, then the page's script POSTing JSON, its image, and
 /// its form, answered with a redirect. Netweir sends each with the login
-/// up front.
-async fn login_scenario(fetcher: &Fetcher, server: &mut Server) -> Vec<Capture> {
+/// up front: `login`, the one the browser was recorded sending.
+async fn login_scenario(
+    fetcher: &Fetcher,
+    server: &mut Server,
+    login: &netweir_core::Auth,
+) -> Vec<Capture> {
     let base = format!("https://localhost:{}", server.port);
     let page = format!("{base}/auth");
-    let ada = || netweir_core::Policy {
-        auth: Some(netweir_core::Auth::new("ada", "secret", None)),
-        ..Default::default()
-    };
     let with_login = |mut outgoing: Outgoing| {
-        outgoing.policy = ada();
+        outgoing.policy.auth = Some(login.clone());
         outgoing
     };
     let steps = [
@@ -719,6 +719,21 @@ async fn login_scenario(fetcher: &Fetcher, server: &mut Server) -> Vec<Capture> 
         }
     }
     seen
+}
+
+/// The login a recorded request carried, read back from its Basic
+/// Authorization header.
+fn recorded_login(capture: &Capture) -> netweir_core::Auth {
+    let value = capture
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, v)| v.strip_prefix("Basic "))
+        .expect("a Basic Authorization header");
+    let pair = data_encoding::BASE64.decode(value.as_bytes()).unwrap();
+    let pair = String::from_utf8(pair).unwrap();
+    let (user, password) = pair.split_once(':').unwrap();
+    netweir_core::Auth::new(user, password, None)
 }
 
 /// From a browser's auth recording, the requests `login_scenario` makes:
@@ -778,7 +793,7 @@ async fn logins_go_where_the_browser_puts_them() {
                 let warm = [format!("https://localhost:{}/warm", server.port)];
                 run(&fetcher, &mut server, &warm).await;
             }
-            let actual = login_scenario(&fetcher, &mut server).await;
+            let actual = login_scenario(&fetcher, &mut server, &recorded_login(&expected[0])).await;
             assert_eq!(expected.len(), actual.len(), "{name}{scenario}");
             for (e, a) in expected.iter().zip(&actual) {
                 let skip: &[&str] = match e.path.as_str() {
