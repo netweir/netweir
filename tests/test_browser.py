@@ -591,6 +591,25 @@ async def test_a_dialog_nobody_answers_is_dismissed_after_a_human_pause(browser,
     started = asyncio.get_running_loop().time()
     assert await asyncio.wait_for(page.evaluate("confirm('sure?')"), 10) is False
     assert asyncio.get_running_loop().time() - started >= 0.5
+    with pytest.raises(TypeError, match="pattern"):
+        await page.wait_for_response(None)
+
+
+async def test_the_pause_before_a_dialog_is_answered_can_be_set(base):
+    with pytest.raises(ValueError, match="dialog_pause"):
+        await netweir.browser(dialog_pause=(1.0, 0.5))
+    try:
+        browser = await netweir.browser(dialog_pause=(0.05, 0.06))
+    except netweir.BrowserError as e:
+        if "no Chrome found" in str(e) and not os.environ.get("NETWEIR_REQUIRE_CHROME"):
+            pytest.skip(str(e))
+        raise
+    async with browser:
+        page = await browser.new_page()
+        await page.goto(base + "/asks")
+        started = asyncio.get_running_loop().time()
+        assert await page.evaluate("confirm('quick?')") is False
+        assert 0.05 <= asyncio.get_running_loop().time() - started < 0.45
 
 
 async def test_a_dialog_listener_plain_or_async_answers_it(browser, base):

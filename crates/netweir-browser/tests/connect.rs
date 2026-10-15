@@ -295,3 +295,52 @@ async fn a_connected_chrome_whose_hints_a_flag_emptied_is_left_as_it_is() {
     );
     browser.close().await.unwrap();
 }
+
+/// Whether DevTools at `ws` says some client is attached to the tab it
+/// was started with.
+async fn first_tab_attached(ws: &str) -> bool {
+    use futures_util::{SinkExt, StreamExt};
+    let (mut socket, _) = tokio_tungstenite::connect_async(ws).await.unwrap();
+    let ask = json!({"id": 1, "method": "Target.getTargets"}).to_string();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::text(ask))
+        .await
+        .unwrap();
+    while let Some(Ok(message)) = socket.next().await {
+        let text = message.to_text().unwrap_or("");
+        let Ok(reply) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        if reply["id"] == 1 {
+            return reply["result"]["targetInfos"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| {
+                    t["type"] == "page" && t["url"] == "about:blank" && t["attached"] == true
+                });
+        }
+    }
+    panic!("DevTools didn't answer");
+}
+
+#[tokio::test]
+async fn a_connected_browsers_own_tabs_are_left_alone() {
+    let Some(chrome) = running() else {
+        return;
+    };
+    assert!(!first_tab_attached(&chrome.ws).await);
+    let browser = Browser::connect(&chrome.ws, LaunchOptions::default())
+        .await
+        .unwrap();
+    // Seen when netweir starts watching for popups, and let go.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while first_tab_attached(&chrome.ws).await && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        !first_tab_attached(&chrome.ws).await,
+        "netweir stayed attached to a tab that isn't its"
+    );
+    browser.close().await.unwrap();
+}

@@ -584,6 +584,7 @@ def launch(
     proxy: str | None = None,
     connect: str | None = None,
     user_data_dir: str | os.PathLike[str] | None = None,
+    dialog_pause: tuple[float, float] = (0.5, 1.5),
 ) -> Awaitable[Browser]: ...
 def find_chrome() -> str: ...
 def install_chrome(

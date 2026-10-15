@@ -1,6 +1,6 @@
 //! A running Chrome and its browser contexts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::{Arc, Mutex, Weak};
@@ -47,6 +47,12 @@ pub struct LaunchOptions {
     /// Pages from [`Browser::new_page`] then share it. Chrome's "Preload
     /// pages" setting is turned off in it, and stays off.
     pub user_data_dir: Option<PathBuf>,
+    /// How long a person takes to react, least and most: no dialog is
+    /// answered sooner after it opened, and a tab brought to the front
+    /// waits as long before it's used, a time picked at random between
+    /// the two each time. Shorter is faster, and a page timing how long
+    /// `confirm()` kept it waiting can tell.
+    pub dialog_pause: (Duration, Duration),
 }
 
 impl std::fmt::Debug for LaunchOptions {
@@ -59,6 +65,7 @@ impl std::fmt::Debug for LaunchOptions {
             .field("proxy", &self.proxy.as_ref().map(|_| "…"))
             .field("brands", &self.brands.as_ref().map(|_| "…"))
             .field("user_data_dir", &self.user_data_dir)
+            .field("dialog_pause", &self.dialog_pause)
             .finish()
     }
 }
@@ -73,6 +80,7 @@ impl Default for LaunchOptions {
             proxy: None,
             brands: None,
             user_data_dir: None,
+            dialog_pause: (Duration::from_millis(500), Duration::from_millis(1500)),
         }
     }
 }
@@ -116,8 +124,13 @@ pub(crate) struct Inner {
     pub proxy_login: Option<(String, String)>,
     /// What the launched Chrome has lately written to stderr.
     pub said: Option<launch::Said>,
+    /// See [`LaunchOptions::dialog_pause`].
+    pub pause: (Duration, Duration),
     /// Every page netweir has, for finding the opener of a popup.
     pub pages: Arc<Mutex<Vec<Weak<PageInner>>>>,
+    /// Pages netweir made and is attaching to itself, whose attaching
+    /// the browser's session hears too.
+    pub attaching: Arc<Mutex<HashSet<String>>>,
     /// Downloads under way, and each context's folder for them.
     pub downloads: Arc<Downloads>,
 }
@@ -230,9 +243,11 @@ impl Browser {
             version: String::new(),
             identity: None,
             timeout: options.timeout,
+            pause: options.dialog_pause,
             proxy_login,
             said: Some(said.clone()),
             pages: Arc::default(),
+            attaching: Arc::default(),
             downloads: Arc::default(),
         };
         Browser::finish(inner, &options, &executable.display().to_string(), hints)
@@ -283,9 +298,11 @@ impl Browser {
             version: String::new(),
             identity: None,
             timeout: options.timeout,
+            pause: options.dialog_pause,
             proxy_login: None,
             said: None,
             pages: Arc::default(),
+            attaching: Arc::default(),
             downloads: Arc::default(),
         };
         Browser::finish(inner, &options, &ws, None).await
@@ -394,8 +411,9 @@ impl Browser {
     async fn watch(&self) -> Result<()> {
         let conn = self.inner.conn.clone();
         let (pages, downloads) = (self.inner.pages.clone(), self.inner.downloads.clone());
+        let attaching = self.inner.attaching.clone();
         let handler: Handler = Arc::new(move |method, params| match method {
-            "Target.attachedToTarget" => popped(&conn, &pages, params),
+            "Target.attachedToTarget" => popped(&conn, &pages, &attaching, params),
             "Browser.downloadProgress" => downloads.progress(params),
             GONE => downloads.gone(),
             _ => {}
@@ -602,20 +620,32 @@ impl Browser {
     }
 }
 
-/// For `Target.attachedToTarget` on the browser's session: a new page,
-/// which Chrome holds. One opened by a page of netweir's, or by a frame from another
-/// site in one, is a popup, taken on by its opener; anything else (a page
-/// netweir made, which it attaches to itself, or someone else's tab) is
-/// let go and left.
-fn popped(conn: &Connection, pages: &Mutex<Vec<Weak<PageInner>>>, params: &Value) {
-    // Netweir's own attaching is heard here too, and so are the pages
-    // there were already, which Chrome attaches without holding: neither
-    // is new.
-    if params["waitingForDebugger"] != true {
-        return;
-    }
+/// For `Target.attachedToTarget` on the browser's session. A new page
+/// Chrome holds: one opened by a page of netweir's, or by a frame from
+/// another site in one, is a popup, taken on by its opener; anything else
+/// (a page netweir made, which it attaches to itself, or someone else's
+/// tab) is let go and left. A page that was there already, which Chrome
+/// attaches without holding (a tab of a browser netweir connected to,
+/// say), is left too. Netweir attaching to a page it made is heard here
+/// as well, and kept.
+fn popped(
+    conn: &Connection,
+    pages: &Mutex<Vec<Weak<PageInner>>>,
+    attaching: &Mutex<HashSet<String>>,
+    params: &Value,
+) {
     let info = &params["targetInfo"];
     let session = str_of(params, "sessionId");
+    if params["waitingForDebugger"] != true {
+        let ours = attaching
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&str_of(info, "targetId"));
+        if !ours {
+            conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
+        }
+        return;
+    }
     let opener = info["openerId"].as_str().and_then(|id| {
         let pages = pages.lock().unwrap_or_else(|e| e.into_inner());
         pages
@@ -939,9 +969,11 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             version: String::new(),
             identity: None,
             timeout: Duration::from_secs(30),
+            pause: LaunchOptions::default().dialog_pause,
             proxy_login: None,
             said: Some(said.clone()),
             pages: Arc::default(),
+            attaching: Arc::default(),
             downloads: Arc::default(),
         }),
     };
