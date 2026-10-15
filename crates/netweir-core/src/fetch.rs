@@ -187,12 +187,16 @@ impl Record {
             started: self.started,
             url: current.to_string(),
             method: outgoing.method.clone(),
-            // The proxy's login is the crawl's own, never sent to the site.
+            // Logins stay out of an archive, which gets shared: the
+            // proxy's, never sent to the site, and the site's own.
             request_headers: std::mem::take(
                 &mut *self.sent.lock().unwrap_or_else(|e| e.into_inner()),
             )
             .into_iter()
-            .filter(|(k, _)| !k.eq_ignore_ascii_case("proxy-authorization"))
+            .filter(|(k, _)| {
+                !k.eq_ignore_ascii_case("proxy-authorization")
+                    && !k.eq_ignore_ascii_case("authorization")
+            })
             .collect(),
             request_body: outgoing.body.clone(),
             version: response.version,
@@ -656,6 +660,49 @@ impl Auth {
             url.scheme() == "http" && started.is_some_and(|s| s.starts_with("https://"));
         (host == domain || host.ends_with(&format!(".{domain}"))) && !downgrade
     }
+}
+
+/// `domain` as a login's domain (Scrapy's `http_auth_domain`): a bare host
+/// name or IP address, lowercased, a leading or trailing dot dropped. One
+/// with a scheme, a port, a path or a login would never match a host, and
+/// the login would silently go nowhere; a public suffix (`com`, `co.uk`)
+/// would send it to every site under it. Both are errors.
+pub fn auth_domain(domain: &str) -> Result<String, String> {
+    let d = domain
+        .trim()
+        .trim_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if d.is_empty() {
+        return Err("a login's domain can't be empty".into());
+    }
+    if d.contains("://") || d.contains(['/', '?', '#', '@', ' ']) {
+        return Err(format!(
+            "a login's domain is a host name, without a scheme, path or login: not {domain:?}"
+        ));
+    }
+    if let Ok(ip) = d.parse::<std::net::IpAddr>() {
+        return Ok(ip.to_string());
+    }
+    if d.contains(':') {
+        return Err(format!(
+            "a login's domain is a host name, without a port: not {domain:?}; it goes to every \
+             port there"
+        ));
+    }
+    let host = match url::Host::parse(&d) {
+        Ok(url::Host::Domain(host)) => host,
+        Ok(other) => return Ok(other.to_string()),
+        Err(_) => return Err(format!("{domain:?} isn't a host name")),
+    };
+    if psl::suffix(host.as_bytes()).is_some_and(|s| s.is_known() && s.as_bytes() == host.as_bytes())
+    {
+        return Err(format!(
+            "{domain:?} is a public suffix: a login for it would go to every site under it"
+        ));
+    }
+    Ok(host)
 }
 
 /// A request beyond typing an address: its method, body and kind, the
@@ -1199,9 +1246,8 @@ impl Fetcher {
     /// One request of a navigation: the response, or where it redirects.
     /// `hop` counts the redirects already followed, which sets the header
     /// order Chrome uses after one and, at the limit, makes another an
-    /// error. A
-    /// crawler that follows redirects itself, so each hop goes through its
-    /// own checks, calls this instead of `get`.
+    /// error. A crawler that follows redirects itself, so each hop goes
+    /// through its own checks, calls this instead of `get`.
     pub async fn hop(
         &self,
         url: &str,

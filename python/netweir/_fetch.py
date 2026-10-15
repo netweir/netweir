@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import math
 import os
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -15,7 +16,7 @@ from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
 from netweir._request import Request
 
 Headers = Mapping[str, str] | Iterable[tuple[str, str]] | None
-Params = Mapping[str, Any] | Iterable[tuple[str, Any]] | None
+Params = Mapping[str, Any] | Iterable[tuple[str, Any]] | str | bytes | None
 Auth = tuple[str, str] | None
 #: True, False, or the path of a PEM file of CA certificates.
 Verify = bool | str | os.PathLike
@@ -31,11 +32,21 @@ def _pairs(headers: Headers) -> list[tuple[str, str]]:
 
 def with_params(url: str, params: Params) -> str:
     """``url`` with ``params`` added after its own query, as requests adds
-    them: URL-encoded, a list value repeating its key, None left out."""
+    them: URL-encoded, a list value repeating its key, None left out (in a
+    list too). A str or bytes is a query already, added as it is."""
     if not params:
         return url
-    pairs = params.items() if isinstance(params, Mapping) else params
-    query = urlencode([(k, v) for k, v in pairs if v is not None], doseq=True)
+    if isinstance(params, (str, bytes)):
+        query = params.decode() if isinstance(params, bytes) else params
+    else:
+        pairs = params.items() if isinstance(params, Mapping) else params
+        kept = []
+        for k, v in pairs:
+            if isinstance(v, (list, tuple)):
+                v = [item for item in v if item is not None]
+            if v is not None:
+                kept.append((k, v))
+        query = urlencode(kept, doseq=True)
     if not query:
         return url
     rest, hash_, fragment = url.partition("#")
@@ -51,9 +62,22 @@ def login_of(url: str, auth: Auth) -> tuple[str, Auth]:
     if "@" not in parts.netloc:
         return url, auth
     url = urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
-    if auth is None:
-        auth = (unquote(parts.username or ""), unquote(parts.password or ""))
+    written = (unquote(parts.username or ""), unquote(parts.password or ""))
+    # An empty one (https://@host/) is no login, as requests reads it.
+    if auth is None and any(written):
+        auth = written
     return url, auth
+
+
+def seconds(value: Any, name: str = "timeout") -> float:
+    """``value`` as a timeout in seconds, or why it can't be one."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number of seconds, not {value!r}") from None
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(f"{name} must be a positive, finite number of seconds, not {value!r}")
+    return value
 
 
 def checked_auth(auth: Any) -> tuple[str, str] | None:

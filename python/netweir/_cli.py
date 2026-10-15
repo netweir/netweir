@@ -184,6 +184,15 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
     return key, raw
 
 
+def _login_from_environment(overrides: dict, fields: dict) -> None:
+    """``http_auth`` from $NETWEIR_HTTP_AUTH (user:password), unless ``-s``
+    gave one: a password on the command line is there for anyone to read
+    in the process list and the shell's history."""
+    login = os.environ.get("NETWEIR_HTTP_AUTH")
+    if login and "http_auth" not in overrides:
+        overrides["http_auth"] = _parse_setting(f"http_auth={login}", fields)[1]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="netweir")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -545,6 +554,7 @@ def _prepare(args):
         spider_cls = _project.by_name(args.file)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
+    _login_from_environment(overrides, fields)
     if args.queue is not None:
         overrides["queue"] = args.queue
     if args.queue_key is not None:

@@ -82,12 +82,26 @@ pub(crate) fn policy(
     dont_redirect: bool,
     auth: Option<AuthPy>,
 ) -> PyResult<Policy> {
+    let auth = match auth {
+        Some((user, password, domain)) => {
+            let domain = domain.as_deref().map(_auth_domain).transpose()?;
+            Some(Auth::new(user, password, domain))
+        }
+        None => None,
+    };
     Ok(Policy {
         timeout: timeout.map(seconds).transpose()?,
         max_redirects,
         dont_redirect,
-        auth: auth.map(|(user, password, domain)| Auth::new(user, password, domain)),
+        auth,
     })
+}
+
+/// A login's domain as netweir_core's `auth_domain` checks it: the bare
+/// host it goes to, or ValueError.
+#[pyfunction]
+pub(crate) fn _auth_domain(domain: &str) -> PyResult<String> {
+    netweir_core::auth_domain(domain).map_err(PyValueError::new_err)
 }
 
 /// A policy as Python gets it back: (timeout, max_redirects,
@@ -441,5 +455,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Fetcher>()?;
     m.add_class::<Response>()?;
     m.add_function(wrap_pyfunction!(_response, m)?)?;
+    m.add_function(wrap_pyfunction!(_auth_domain, m)?)?;
     Ok(())
 }

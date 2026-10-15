@@ -31,11 +31,12 @@ from urllib.parse import urlsplit
 
 from netweir import _files, _hooks, _memory, _monitor, _stats, _track
 from netweir._errors import QueueError
-from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_limit
+from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_limit, seconds
 from netweir._native import (
     _RESOURCE_TYPES,
     Crawler,
     TrackStore,
+    _auth_domain,
     _check_queue_url,
     _robots_sitemaps,
     fingerprint,
@@ -275,8 +276,11 @@ class Settings:
                 "http_auth and http_auth_domain go together: the login is sent only to that"
                 " domain and its subdomains, so a link or redirect elsewhere never gets it"
             )
-        if self.http_auth_domain is not None and not self.http_auth_domain.strip("."):
-            raise ValueError("http_auth_domain can't be empty")
+        if self.http_auth_domain is not None:
+            # A bare host: a port, scheme or path would never match, and a
+            # public suffix would send the login to every site under it.
+            domain = _auth_domain(self.http_auth_domain)
+            object.__setattr__(self, "http_auth_domain", domain)
         if not 0 < self.backoff_base <= self.backoff_max or self.breaker_pause < 0:
             raise ValueError("backoffs must be positive, with backoff_base <= backoff_max")
         if not 0 <= self.breaker_ratio <= 1:
@@ -912,6 +916,9 @@ class _Run:
         self.spider = spider
         self.pipelines = pipelines
         self.settings = spider.settings
+        #: Whether a request's auth= has been logged as winning over its
+        #: meta's http_user, once a crawl.
+        self.warned_login = False
         #: Requests crawler.engine.crawl() was given, to queue.
         self.scheduled: collections.deque[Request] = collections.deque()
         #: Work a middleware handed back while a callback was running (a
@@ -1231,6 +1238,14 @@ class _Run:
                 raise TypeError(message)
             log.error("%s", message)
             return None
+        if request.auth is not None and _meta_login(meta) and not self.warned_login:
+            self.warned_login = True
+            log.warning(
+                "%s: auth= wins over meta's http_user and http_pass, and goes to this"
+                " request's own origin only, whatever meta's http_auth_domain says"
+                " (said once a crawl)",
+                request.url,
+            )
         outcome = self.engine.submit(
             rid,
             request.url,
@@ -2669,25 +2684,35 @@ def _policy(request: Request, meta: Mapping[str, Any], max_redirects: int) -> di
     """The engine's arguments for how ``request`` is handled: its own
     timeout, redirect limit and login, or else the Scrapy meta keys that
     say the same. ``max_redirects`` is the crawl's limit, which
-    ``redirect_ttl`` can lower but not raise, as in Scrapy."""
+    ``redirect_ttl`` can lower but not raise, as in Scrapy. A meta value
+    that can't work is a ValueError."""
     timeout = request.timeout
     if timeout is None and meta.get("download_timeout") is not None:
-        timeout = float(meta["download_timeout"])
+        timeout = seconds(meta["download_timeout"], 'meta["download_timeout"]')
     limit = request.max_redirects
     if limit is None and meta.get("redirect_ttl") is not None:
         limit = min(redirect_limit(meta["redirect_ttl"], "redirect_ttl"), max_redirects)
     auth = None
     if request.auth is not None:
         auth = (*request.auth, None)
-    elif meta.get("http_user") is not None or meta.get("http_pass") is not None:
-        domain = meta.get("http_auth_domain") or urlsplit(request.url).hostname
-        auth = (str(meta.get("http_user") or ""), str(meta.get("http_pass") or ""), domain)
+    elif _meta_login(meta):
+        domain = meta.get("http_auth_domain") or urlsplit(request.url).hostname or ""
+        auth = (
+            str(meta.get("http_user") or ""),
+            str(meta.get("http_pass") or ""),
+            _auth_domain(domain),
+        )
     return {
         "timeout": timeout,
         "max_redirects": limit,
         "dont_redirect": not request.allow_redirects or bool(meta.get("dont_redirect")),
         "auth": auth,
     }
+
+
+def _meta_login(meta: Mapping[str, Any]) -> bool:
+    """Whether ``meta`` holds a login, as Scrapy's http_user and http_pass."""
+    return meta.get("http_user") is not None or meta.get("http_pass") is not None
 
 
 def _restored(

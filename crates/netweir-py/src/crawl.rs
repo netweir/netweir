@@ -956,7 +956,7 @@ impl Crawler {
             retries,
             retry_statuses: retry_http_codes
                 .unwrap_or_else(|| netweir_core::RETRY_STATUSES.to_vec()),
-            http_auth: http_auth.map(|(u, p, d)| netweir_core::Auth::new(u, p, d)),
+            http_auth: policy(None, None, false, http_auth)?.auth,
             backoff_base: seconds("backoff_base", backoff_base)?,
             backoff_max: seconds("backoff_max", backoff_max)?,
             proxies: proxies.unwrap_or_default(),

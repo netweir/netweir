@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir._cli import _parse_argument, _parse_setting, _spiders_in, _Usage
+from netweir._cli import (
+    _login_from_environment,
+    _parse_argument,
+    _parse_setting,
+    _spiders_in,
+    _Usage,
+)
 
 
 class _Failed(Exception):
@@ -97,6 +103,7 @@ def _quiet_settings(base: Any, overrides: list[str]) -> Any:
 
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     changes = dict(_parse_setting(text, fields) for text in overrides)
+    _login_from_environment(changes, fields)
     return dataclasses.replace(
         base,
         **{

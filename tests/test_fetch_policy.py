@@ -126,6 +126,11 @@ def test_params_are_added_to_the_query_as_requests_adds_them(base):
     assert sent(page)["path"] == "/echo?k=1&k=2"
     page = netweir.get(f"{base}/echo", params={})
     assert sent(page)["path"] == "/echo"
+    page = netweir.get(f"{base}/echo", params={"t": ["a", None, "b"], "u": [None]})
+    assert sent(page)["path"] == "/echo?t=a&t=b"
+    for query in ("x=1&y=a%20b", b"x=1&y=a%20b"):
+        page = netweir.get(f"{base}/echo?z=0", params=query)
+        assert sent(page)["path"] == "/echo?z=0&x=1&y=a%20b", "a query is added as it is"
 
 
 def test_auth_is_sent_as_basic_where_chrome_sends_it(base):
@@ -144,6 +149,9 @@ def test_a_login_in_the_url_becomes_auth_and_leaves_the_url(base):
     assert header(page, "authorization") == expected
     assert header(page, "host") == f"127.0.0.1:{port}"
     assert "ada" not in page.url
+    # An empty login is none, as requests reads it.
+    page = netweir.get(f"http://@127.0.0.1:{port}/echo")
+    assert header(page, "authorization") is None
     # auth= wins over the URL's.
     page = netweir.get(f"http://bob:x@127.0.0.1:{port}/echo", auth=("ada", "secret"))
     assert header(page, "authorization") == ADA
@@ -278,7 +286,7 @@ def crawl(requests, parse=None, **kw):
         r.errback = "failed"
     spider = Policy()
     spider.settings = settings(**kw)
-    spider.run()
+    crawl.stats = spider.run()
     return pages, errors
 
 
@@ -375,6 +383,77 @@ def test_a_requests_login_goes_to_its_own_origin_and_scrapys_to_a_domain(base):
     )
     bodies = sorted(p[2] for p in pages)
     assert bodies == [f"<h1>{ADA}</h1>".encode(), b"<h1>nobody</h1>"]
+
+
+def test_a_logins_domain_must_be_a_bare_host_that_isnt_a_public_suffix(base):
+    login = {"http_auth": ("ada", "secret")}
+    for bad in ("127.0.0.1:8080", "http://localhost", "localhost/x", "com", "co.uk"):
+        with pytest.raises(ValueError):
+            netweir.Settings(http_auth_domain=bad, **login)
+    assert netweir.Settings(http_auth_domain=".Intranet.Example.com", **login).http_auth_domain == (
+        "intranet.example.com"
+    )
+    # In meta, the request is skipped and counted, and the crawl goes on.
+    pages, _ = crawl(
+        [
+            netweir.Request(
+                f"{base}/whoami?bad",
+                meta={"http_user": "ada", "http_pass": "x", "http_auth_domain": "127.0.0.1:1"},
+            ),
+            netweir.Request(f"{base}/whoami?good"),
+        ]
+    )
+    assert [p[1] for p in pages] == [f"{base}/whoami?good"]
+    assert crawl.stats["callback_errors"] == 1
+
+
+def test_a_meta_timeout_that_cant_work_skips_its_request_not_the_crawl(base):
+    bad = [0, -1, float("inf"), float("nan"), "soon"]
+    pages, _ = crawl(
+        [
+            netweir.Request(f"{base}/echo?{n}", meta={"download_timeout": t})
+            for n, t in enumerate(bad)
+        ]
+        + [netweir.Request(f"{base}/echo?fine", meta={"download_timeout": "5"})]
+    )
+    assert [p[1] for p in pages] == [f"{base}/echo?fine"]
+    assert crawl.stats["callback_errors"] == len(bad)
+
+
+def test_auth_over_a_meta_login_is_said_once(base, caplog):
+    meta = {"http_user": "bob", "http_pass": "x", "http_auth_domain": "localhost"}
+    with caplog.at_level("WARNING", logger="netweir"):
+        pages, _ = crawl(
+            [
+                netweir.Request(f"{base}/whoami?{n}", auth=("ada", "secret"), meta=meta)
+                for n in range(3)
+            ]
+        )
+    assert {p[2] for p in pages} == {f"<h1>{ADA}</h1>".encode()}
+    said = [r for r in caplog.records if "wins over meta" in r.getMessage()]
+    assert len(said) == 1
+
+
+def test_the_command_reads_the_login_from_the_environment(base, tmp_path, monkeypatch):
+    from netweir import _cli
+
+    port = base.rsplit(":", 1)[1]
+    spider = tmp_path / "who.py"
+    spider.write_text(
+        "import netweir\n"
+        "class Who(netweir.Spider):\n"
+        f"    start_urls = ['http://localhost:{port}/whoami']\n"
+        "    def parse(self, page):\n"
+        "        yield {'who': page.css('h1::text').get()}\n"
+    )
+    out = tmp_path / "who.jsonl"
+    monkeypatch.setenv("NETWEIR_HTTP_AUTH", "ada:secret")
+    settings = ["obey_robots=false", "obey_tdmrep=false", "throttle=false", "start_delay=0"]
+    args = ["crawl", str(spider), "-o", str(out), "-s", "http_auth_domain=localhost"]
+    for s in settings:
+        args += ["-s", s]
+    assert _cli.main(args) == 0
+    assert json.loads(out.read_text())["who"] == ADA
 
 
 def test_a_crawls_login_needs_a_domain():
@@ -497,7 +576,13 @@ def test_a_login_in_a_requests_url_becomes_its_auth():
 
 
 def test_policy_values_that_cannot_work_are_refused():
-    for bad in ({"timeout": 0}, {"timeout": -1}, {"max_redirects": -1}):
+    for bad in (
+        {"timeout": 0},
+        {"timeout": -1},
+        {"timeout": float("inf")},
+        {"timeout": "soon"},
+        {"max_redirects": -1},
+    ):
         with pytest.raises(ValueError):
             netweir.Request("https://e.com/", **bad)
     with pytest.raises(ValueError):
