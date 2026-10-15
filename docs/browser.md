@@ -529,9 +529,17 @@ waits forever. Wrap it in `asyncio.wait_for` if that can happen.
 its bytes; leave out the path to get only the bytes.
 
 `await page.cookies()` returns the cookies of the page's context as dicts
-with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`
-and `same_site`. `await page.set_cookies([...])` takes the same dicts;
-`name`, `value` and `domain` are required.
+with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`,
+`same_site` and `partition_key`. `await page.set_cookies([...])` takes the
+same dicts, or Playwright's (`httpOnly`, `sameSite`); `name`, `value` and
+`domain` are required. A domain with a leading dot is the domain's and its
+subdomains'; without one, the cookie stays that host's alone.
+
+`await context.storage_state(path="state.json")` saves the context's
+cookies and localStorage in Playwright's format, and
+`browser.new_context(storage_state="state.json")` starts a context with
+them. The same file starts a `netweir.Client` logged in. See
+[Sessions and cookies](sessions.md).
 
 ## Reading what the page fetched
 

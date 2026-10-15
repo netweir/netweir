@@ -71,7 +71,8 @@ async with netweir.Client() as client:
 
 Use a `Client` for anything with a session: it keeps the cookies the login
 page set, and the form usually needs them. `netweir.submit(form)` works too,
-but starts without any cookies.
+but starts without any cookies. To keep a login for next time, save it with
+`client.storage_state("state.json")`: see [Sessions and cookies](sessions.md).
 
 Pick the form with a CSS selector or an XPath, or by `formid=`,
 `formname=` or `formnumber=` (the first form otherwise). `data=` replaces

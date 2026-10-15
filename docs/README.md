@@ -7,6 +7,7 @@
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
 - [Projects](project.md): `startproject`, `genspider`, `list`, `parse`, `check` (Scrapy's contracts) and `version`.
 - [Forms, logins and APIs](forms.md): POST and other methods, form submission, JSON APIs.
+- [Sessions and cookies](sessions.md): a client's cookies, storage state files, logging in with Chrome and crawling over HTTP, several users in one crawl.
 - [Crawling](crawling.md): spiders, requests, pipelines, downloading files and images, middlewares, signals, watching a running crawl, exporters and the command line.
 - [Declarative spiders](declarative.md): items and rules that run in Rust.
 - [Self-healing](self-healing.md): blocks, checkpoints, tracked selectors and repair proposals.
@@ -32,6 +33,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.
 - [design/metrics.md](design/metrics.md): live stats, the progress line and the metrics endpoint.
 - [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
+- [design/sessions.md](design/sessions.md): the cookie jar, named jars, storage state and handing cookies between Chrome and HTTP.
 - [design/scrapy.md](design/scrapy.md): Netweir as Scrapy's download handler.
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
