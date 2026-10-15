@@ -359,6 +359,121 @@ async with page.expect_response("**/api/quote*") as info:
 quote = await (await info.value).json()
 ```
 
+## Dialogs, popups and downloads
+
+### Dialogs
+
+An `alert()`, `confirm()` or `prompt()` stops the page until someone
+answers it, and so does the "leave this site?" question a page can ask
+before it unloads. Netweir answers every one, so a page never waits for
+nobody. Alerts, confirms and prompts are dismissed, as pressing Escape
+would. A page asking before it unloads is left: your own `goto()` is
+what asked to leave.
+
+To answer them yourself, add a listener:
+
+```python
+async def answer(dialog):
+    if dialog.type == "prompt":
+        await dialog.accept("Ada")
+    else:
+        await dialog.dismiss()
+
+page.on_dialog(answer)
+```
+
+A dialog has `type` (`"alert"`, `"confirm"`, `"prompt"` or
+`"beforeunload"`), `message`, `default_value` (the text a prompt offers)
+and `url`, the frame that opened it. `accept(prompt_text=None)` presses
+OK, with `prompt_text` in a prompt's box; `dismiss()` presses Cancel.
+A listener can be an `async` function, or a plain one, which can call
+`accept()` or `dismiss()` without awaiting it. One that returns without
+answering, or raises, leaves the dialog to the default, and answering
+twice raises `netweir.BrowserError`. Dialogs opened by frames, other
+sites' included, come to the page's listeners.
+`page.remove_dialog_listener(answer)` goes back to the defaults.
+
+Whoever answers, the answer reaches the page between half a second and
+a second and a half after the dialog opened, picked at random each time.
+A page can time how long `confirm()` kept it waiting, and nobody answers
+in a millisecond. So each dialog costs you about a second.
+
+`close()` never waits on a page's question about leaving: it closes the
+page without asking.
+
+### Popups and new tabs
+
+A link with `target=_blank`, or a script that calls `window.open()` when
+you click, opens a new page. Catch it the way you catch a response:
+
+```python
+async with page.expect_popup() as info:
+    await page.click("a.details")
+popup = await info.value
+await popup.wait_for_load()
+details = await popup.parse()
+```
+
+`await page.wait_for_popup()` waits from when it's called, and
+`page.on_popup(callback)` hears every one. A popup is a `BrowserPage`
+like any other. It reaches you once it's running, before its document
+has loaded, which is what `await popup.wait_for_load()` waits for; it
+returns that document's response. `wait_for_load()` takes `wait=` and
+`timeout=` as `goto()` does, and works on any page: it waits for the
+document showing now, or one that replaced it.
+
+What you set up on the opener reaches the popup from its first request.
+Its `route()` and `block()` apply there, behind any routes the popup
+gets of its own, and so do its context's; the popup shares its
+opener's cookies, and looks no more automated than any other page.
+Listeners don't carry over: add them to the popup. Closing a page from
+`browser.new_page()` closes its popups too.
+
+A new tab opens in front, and Chrome counts the tab it was opened from
+as hidden, as in a window you're looking at. When you act on the opener
+again (`click`, `fill`, `press`, `hover`, `scroll`), Netweir brings its
+tab back to the front first, as you would.
+
+Chrome blocks a popup that isn't opened from a click, for Netweir as for
+anyone, so `page.evaluate("window.open('/x')")` opens nothing. Click
+whatever opens it.
+
+### Downloads
+
+A link to a file, or a response sent as an attachment, downloads
+instead of showing:
+
+```python
+async with page.expect_download("**/*.csv") as info:
+    await page.click("a.export")
+download = await info.value
+await download.save_as("prices.csv")
+```
+
+A download has `url` and `suggested_filename`, the name the site gave
+it. `await download.save_as(path)` copies the file once it has all
+arrived, `await download.body()` gives its bytes, and
+`await download.path()` gives the file itself. They wait for the
+download to finish, and raise `netweir.BrowserError` if it didn't.
+`await download.failure()` waits too, and gives `None`, or `"canceled"`:
+that's what Chrome reports for a download that was cancelled and for one
+whose connection broke. `await download.cancel()` stops one.
+`wait_for_download` and `expect_download` take a pattern as
+`wait_for_response` does, or none for the next download, and
+`on_download(callback)` hears each one.
+
+Each context saves its downloads in a temporary folder of its own,
+removed when the context closes. A page from `browser.new_page()` has a
+context of its own, so its downloads go when the page closes: save what
+you want to keep. Nothing lands in your Downloads folder.
+
+`goto()` to a file raises `netweir.FetchError` with `net::ERR_ABORTED`,
+since no page came back. The download happens all the same, and
+`on_download` hears it.
+
+With `connect=`, the folder is on the machine running Netweir, so a
+Chrome running somewhere else (in Docker, say) can't save there.
+
 ## Running JavaScript
 
 ```python
@@ -648,6 +763,8 @@ Netweir avoids these giveaways:
   can notice, and its own scripts run where the page can't see them.
 - Clicks, keys, hovering and scrolling are real input events, not
   JavaScript calls.
+- A dialog is never answered sooner than a person could answer it, and
+  Chrome's popup blocker stays on.
 
 A test in the repository loads a page that checks the first two from page
 script and the server checks the request headers; the test also fails if
