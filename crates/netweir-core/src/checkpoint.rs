@@ -380,7 +380,35 @@ pub(crate) fn retrying<T>(mut open: impl FnMut() -> rusqlite::Result<T>) -> rusq
 }
 
 /// Opens the file in WAL mode, with the tables in place.
+/// Makes `path` readable and writable by its owner alone, creating it
+/// empty if it isn't there, as are a WAL and shared-memory file already
+/// beside it. SQLite gives the ones it makes the database's own mode. A
+/// checkpoint holds the logins requests were given.
+#[cfg(unix)]
+fn owners_only(path: &Path) -> rusqlite::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let failed = |e: std::io::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(e));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(failed)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let file = Path::new(&name);
+        if file.exists() {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
+                .map_err(failed)?;
+        }
+    }
+    Ok(())
+}
+
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
+    #[cfg(unix)]
+    owners_only(path)?;
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     // WAL with NORMAL is crash-safe for the process dying; a power cut may
@@ -415,9 +443,19 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
             referer: r.get(11)?,
             retry_post: r.get(12)?,
             proxy: r.get(13)?,
-            policy: policy
-                .and_then(|p| serde_json::from_str(&p).ok())
-                .unwrap_or_default(),
+            // Unreadable, the request would go out without its login or
+            // limits: the resume stops and says which.
+            policy: match policy {
+                None => crate::Policy::default(),
+                Some(p) => serde_json::from_str(&p).map_err(|e| {
+                    let url: String = r.get(1).unwrap_or_default();
+                    rusqlite::Error::FromSqlConversionFailure(
+                        14,
+                        rusqlite::types::Type::Text,
+                        format!("the saved policy of {url} can't be read ({e})").into(),
+                    )
+                })?,
+            },
         })
     })?;
     for row in rows {
@@ -610,6 +648,51 @@ mod tests {
                 )),
             },
         }
+    }
+
+    /// A checkpoint holds requests' logins: only its owner may read it,
+    /// nor its write-ahead log.
+    #[cfg(unix)]
+    #[test]
+    fn a_checkpoint_is_its_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("netweir-cp-mode-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cp, _) = Checkpoint::open(&path).unwrap();
+        cp.request([5; 16], pending(5, "https://e.com/b"));
+        cp.flush().unwrap();
+        for file in ["crawl.sqlite3", "crawl.sqlite3-wal", "crawl.sqlite3-shm"] {
+            let mode = std::fs::metadata(dir.join(file))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{file}");
+        }
+        drop(cp);
+        // One made before, readable by anyone, is closed off on opening.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(Checkpoint::open(&path).unwrap());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_policy_that_cant_be_read_stops_the_resume() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-bad-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cp, _) = Checkpoint::open(&path).unwrap();
+        cp.request([5; 16], pending(5, "https://e.com/b"));
+        drop(cp);
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE requests SET policy = '{\"timeout\": \"soon\"' ", [])
+            .unwrap();
+        let err = Checkpoint::open(&path).err().unwrap().to_string();
+        assert!(err.contains("https://e.com/b"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
