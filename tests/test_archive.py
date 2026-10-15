@@ -527,6 +527,11 @@ MEMORY = """
 import os, resource, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import netweir
+import http.server
+from netweir import _serve
+
+# Without http.server's lookup of a name (conftest.py).
+http.server.HTTPServer.server_bind = _serve._Server.server_bind
 
 SIZE = int(sys.argv[2])
 BODY = bytes(range(256)) * (SIZE // 256)

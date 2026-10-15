@@ -96,7 +96,7 @@ jobs:
           shell=$(uv run python -c "from netweir._native import install_chrome; print(install_chrome(headless_shell=True)[1])")
           echo "NETWEIR_TEST_HEADLESS_SHELL=$shell" >> "$GITHUB_ENV"
         timeout-minutes: 10
-      # The macOS runners take over 14 minutes for the suite. A hung test
+      # The slowest runners take about 9 minutes for the suite. A hung test
       # prints every thread's stack after five (faulthandler_timeout), and
       # the slowest tests are listed, so the limit can stay loose.
       - run: uv run pytest -q --durations=20

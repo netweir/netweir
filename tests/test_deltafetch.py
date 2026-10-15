@@ -857,6 +857,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import netweir
 from netweir import _crawl
 from netweir._native import Crawler
+import http.server
+from netweir import _serve
+
+# Without http.server's lookup of a name (conftest.py).
+http.server.HTTPServer.server_bind = _serve._Server.server_bind
 
 d, kill, port = sys.argv[1], sys.argv[2] == "kill", int(sys.argv[3])
 

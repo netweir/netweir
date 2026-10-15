@@ -1,10 +1,11 @@
+import http.server
 import signal
 import sys
 
 import pytest
 from local_server import socket_state
 
-from netweir import _cli
+from netweir import _cli, _serve
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -30,6 +31,18 @@ def _one_folder_of_spiders_per_test():
     process of its own as far as that goes."""
     yield
     _cli._forget_loaded()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _test_servers_look_up_no_names():
+    """http.server looks up a name for the address it binds, which no test
+    reads. On a Mac whose resolver doesn't answer for the machine's name,
+    one lookup for 127.0.0.1 now and then took 35 s, and CI's macOS runs
+    spent minutes on them. Scripts the tests start as processes of their
+    own skip it the same way."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(http.server.HTTPServer, "server_bind", _serve._Server.server_bind)
+        yield
 
 
 @pytest.hookimpl(wrapper=True)
