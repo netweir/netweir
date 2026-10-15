@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -349,6 +350,8 @@ async def test_a_running_chrome_can_be_driven_and_is_left_running(base, tmp_path
             for line in chrome.stderr
             if "DevTools listening on " in line
         )
+        # Whatever Chrome writes from here on, it never waits on a full pipe.
+        threading.Thread(target=chrome.stderr.read, daemon=True).start()
         async with netweir.browser(connect=ws) as b:
             page = await b.new_page()
             await page.goto(base + "/")
@@ -359,8 +362,34 @@ async def test_a_running_chrome_can_be_driven_and_is_left_running(base, tmp_path
         with pytest.raises(ValueError, match="already running"):
             await netweir.browser(connect=ws, headless=False)
     finally:
-        chrome.kill()
-        chrome.wait()
+        _kill_tree(chrome)
+
+
+def _kill_tree(process):
+    """Kills a Chrome this test started, helpers too, and fails rather
+    than waiting for good if it doesn't go: once on a Windows runner,
+    Chrome was killed and its handle never signalled, and the job sat
+    there until its time ran out."""
+    if sys.platform == "win32":
+        # Its helpers, while they can still be found as its children.
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, timeout=60
+        )
+    process.kill()
+    try:
+        process.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        left = ""
+        if sys.platform == "win32":
+            left = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-Process -Id {process.pid}).Threads | Format-Table Id,ThreadState,"
+                 "WaitReason -AutoSize | Out-String -Width 200; Get-CimInstance Win32_Process"
+                 " -Filter \"Name='chrome.exe'\" | Format-Table ProcessId,ParentProcessId"
+                 " -AutoSize | Out-String -Width 200"],
+                capture_output=True, text=True, timeout=120,
+            ).stdout  # fmt: skip
+        pytest.fail(f"Chrome (pid {process.pid}) still ran 60 s after it was killed\n{left}")
 
 
 async def test_scrolling_an_endless_feed_reads_every_page_of_its_api(browser, base):
