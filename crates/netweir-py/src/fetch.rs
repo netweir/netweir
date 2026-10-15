@@ -157,6 +157,79 @@ impl Fetcher {
         Ok(Fetcher { inner })
     }
 
+    /// Every cookie in the jar, oldest first, as dicts.
+    fn cookies(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::cookies::cookie_list(py, &self.inner.jar().all())
+    }
+
+    /// The cookies named `name`, of `domain` (a host's own and the
+    /// domain's; with a leading dot only the domain's) and `path` if given.
+    #[pyo3(signature = (name, domain=None, path=None))]
+    fn find_cookies(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        domain: Option<&str>,
+        path: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::cookies::cookie_list(py, &self.inner.jar().find(name, domain, path))
+    }
+
+    /// Adds cookie dicts, as `cookies()` gives them, or a browser does.
+    fn add_cookies(&self, cookies: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
+        let cookies = cookies
+            .iter()
+            .map(|c| crate::cookies::cookie_from(c, false))
+            .collect::<PyResult<Vec<_>>>()?;
+        for c in &cookies {
+            self.inner
+                .jar()
+                .add(c, None)
+                .map_err(PyValueError::new_err)?;
+        }
+        Ok(())
+    }
+
+    /// Removes the cookies `find_cookies` would find; how many.
+    #[pyo3(signature = (name, domain=None, path=None))]
+    fn remove_cookies(&self, name: &str, domain: Option<&str>, path: Option<&str>) -> usize {
+        self.inner.jar().remove(name, domain, path)
+    }
+
+    /// Removes every cookie, or those of `domain` and its subdomains; how
+    /// many.
+    #[pyo3(signature = (domain=None))]
+    fn clear_cookies(&self, domain: Option<&str>) -> usize {
+        self.inner.jar().clear(domain)
+    }
+
+    /// The jar as a storage state dict (Playwright's form, no origins);
+    /// with `path`, also written there, readable by its owner alone.
+    #[pyo3(signature = (path=None))]
+    fn storage_state(
+        &self,
+        py: Python<'_>,
+        path: Option<std::path::PathBuf>,
+    ) -> PyResult<Py<PyAny>> {
+        let state = netweir_browser::StorageState {
+            cookies: self.inner.jar().all(),
+            origins: Vec::new(),
+        };
+        crate::cookies::storage_state_out(py, &state, path)
+    }
+
+    /// Adds a storage state's cookies: a path to its file, or its dict.
+    fn load_storage_state(&self, source: Bound<'_, PyAny>) -> PyResult<()> {
+        let state = crate::cookies::storage_state_from(&source)?;
+        for c in &state.cookies {
+            self.inner
+                .jar()
+                .add(c, None)
+                .map_err(PyValueError::new_err)?;
+        }
+        Ok(())
+    }
+
     /// Awaitable GET. Resolves to a Response.
     #[pyo3(signature = (url, headers=None))]
     fn get<'py>(

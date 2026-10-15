@@ -1181,9 +1181,11 @@ class _Run:
         callback = json.dumps(self.method_name(request.callback))
         errback = json.dumps(self.method_name(request.errback))
         browser = json.dumps(request.browser)
+        # A request still waiting when the crawl stops keeps its cookies.
+        cookies = f', "cookies": {json.dumps(request.cookies)}' if request.cookies else ""
         return (
             f'{{"callback": {callback}, "errback": {errback}, "meta": {meta}, '
-            f'"browser": {browser}}}'
+            f'"browser": {browser}{cookies}}}'
         )
 
     def method_name(self, fn: Callable[..., Any] | str | None) -> str | None:
@@ -1268,6 +1270,9 @@ class _Run:
             delta_key=delta[1],
             answered=answered,
             **policy,
+            jar=_jar_name(meta),
+            cookies=request.cookies,
+            dont_merge_cookies=bool(meta.get("dont_merge_cookies")),
         )
         if outcome in ("queued", "pushed", "answered"):
             self.accepted += 1
@@ -2733,6 +2738,20 @@ def _meta_login(meta: Mapping[str, Any]) -> bool:
     return meta.get("http_user") is not None or meta.get("http_pass") is not None
 
 
+def _jar_name(meta: dict[str, Any]) -> str | None:
+    """The jar ``meta["cookiejar"]`` names, as the engine keys it: its JSON,
+    so 1 and "1" are two jars as in Scrapy. None for the crawl's own."""
+    key = meta.get("cookiejar")
+    if key is None:
+        return None
+    try:
+        return json.dumps(key, sort_keys=True)
+    except TypeError:
+        raise TypeError(
+            f'meta["cookiejar"] must be a JSON value (a str, a number...), not {type(key).__name__}'
+        ) from None
+
+
 def _restored(
     head: tuple, sent: tuple, policy: tuple = (None, None, False, None)
 ) -> tuple[Request, dict[str, Any]]:
@@ -2768,6 +2787,7 @@ def _restored(
         max_redirects=max_redirects,
         allow_redirects=not dont_redirect,
         auth=auth[:2] if auth is not None and auth[2] is None else None,
+        cookies=data.get("cookies"),
     )
     return request, data
 

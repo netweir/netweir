@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use netweir_browser::{
-    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Dialog as CoreDialog,
+    Browser as CoreBrowser, Context as CoreContext, Continue, Dialog as CoreDialog,
     Download as CoreDownload, Error, Frame as CoreFrame, LaunchOptions, NetFailure,
     Page as CorePage, PageEvent, Pick, Request as CoreRequest, Response as CoreResponse,
     Route as CoreRoute, WaitUntil,
@@ -160,11 +160,28 @@ impl Browser {
         })
     }
 
-    /// A context whose pages share cookies and storage.
-    fn new_context<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// A context whose pages share cookies and storage. `storage_state` (a
+    /// path to a file `storage_state()` or Playwright saved, or its dict)
+    /// starts it with those cookies and localStorage.
+    #[pyo3(signature = (storage_state=None))]
+    fn new_context<'py>(
+        &self,
+        py: Python<'py>,
+        storage_state: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = storage_state
+            .filter(|s| !s.is_none())
+            .map(|s| crate::cookies::storage_state_from(&s))
+            .transpose()?;
         let browser = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             let inner = browser.new_context().await.map_err(raise)?;
+            if let Some(state) = &state
+                && let Err(e) = inner.set_storage_state(state).await
+            {
+                let _ = inner.close().await;
+                return Err(raise(e));
+            }
             Ok(BrowserContext {
                 inner,
                 network: OnceLock::new(),
@@ -276,7 +293,7 @@ impl BrowserContext {
         let context = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             let cookies = context.cookies().await.map_err(raise)?;
-            crate::aio::attach(|py| cookie_list(py, &cookies))
+            crate::aio::attach(|py| crate::cookies::cookie_list(py, &cookies))
         })
     }
 
@@ -287,11 +304,27 @@ impl BrowserContext {
     ) -> PyResult<Bound<'py, PyAny>> {
         let cookies = cookies
             .iter()
-            .map(cookie_from)
+            .map(|c| crate::cookies::cookie_from(c, false))
             .collect::<PyResult<Vec<_>>>()?;
         let context = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             context.set_cookies(&cookies).await.map_err(raise)
+        })
+    }
+
+    /// The context's cookies and the localStorage of every origin its
+    /// pages loaded, as a dict in Playwright's storage state form; with
+    /// `path`, also written there, readable by its owner alone.
+    #[pyo3(signature = (path=None))]
+    fn storage_state<'py>(
+        &self,
+        py: Python<'py>,
+        path: Option<PathBuf>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let state = context.storage_state().await.map_err(raise)?;
+            crate::aio::attach(|py| crate::cookies::storage_state_out(py, &state, path))
         })
     }
 
@@ -727,7 +760,7 @@ impl BrowserPage {
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             let cookies = page.cookies().await.map_err(raise)?;
-            crate::aio::attach(|py| cookie_list(py, &cookies))
+            crate::aio::attach(|py| crate::cookies::cookie_list(py, &cookies))
         })
     }
 
@@ -738,11 +771,27 @@ impl BrowserPage {
     ) -> PyResult<Bound<'py, PyAny>> {
         let cookies = cookies
             .iter()
-            .map(cookie_from)
+            .map(|c| crate::cookies::cookie_from(c, false))
             .collect::<PyResult<Vec<_>>>()?;
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             page.set_cookies(&cookies).await.map_err(raise)
+        })
+    }
+
+    /// The page's context's cookies and the localStorage of the origins
+    /// its documents came from, as a dict in Playwright's storage state
+    /// form; with `path`, also written there, readable by its owner alone.
+    #[pyo3(signature = (path=None))]
+    fn storage_state<'py>(
+        &self,
+        py: Python<'py>,
+        path: Option<PathBuf>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let state = page.storage_state().await.map_err(raise)?;
+            crate::aio::attach(|py| crate::cookies::storage_state_out(py, &state, path))
         })
     }
 
@@ -1880,59 +1929,6 @@ impl Route {
 #[pyfunction]
 fn _glob_match(pattern: &str, url: &str) -> bool {
     netweir_browser::glob_match(pattern, url)
-}
-
-fn cookie_list(py: Python<'_>, cookies: &[Cookie]) -> PyResult<Py<PyAny>> {
-    let list = PyList::empty(py);
-    for c in cookies {
-        let d = PyDict::new(py);
-        d.set_item("name", &c.name)?;
-        d.set_item("value", &c.value)?;
-        d.set_item("domain", &c.domain)?;
-        d.set_item("path", &c.path)?;
-        d.set_item("expires", c.expires)?;
-        d.set_item("http_only", c.http_only)?;
-        d.set_item("secure", c.secure)?;
-        d.set_item("same_site", &c.same_site)?;
-        list.append(d)?;
-    }
-    Ok(list.into_any().unbind())
-}
-
-fn cookie_from(d: &Bound<'_, PyAny>) -> PyResult<Cookie> {
-    let d = d
-        .cast::<PyDict>()
-        .map_err(|_| PyTypeError::new_err("each cookie must be a dict"))?;
-    let text = |key: &str| -> PyResult<Option<String>> {
-        d.get_item(key)?
-            .filter(|v| !v.is_none())
-            .map(|v| v.extract())
-            .transpose()
-    };
-    let flag = |key: &str| -> PyResult<bool> {
-        Ok(d.get_item(key)?
-            .map(|v| v.is_truthy())
-            .transpose()?
-            .unwrap_or(false))
-    };
-    let required = |key: &str| -> PyResult<String> {
-        text(key)?.ok_or_else(|| PyValueError::new_err(format!("a cookie needs a {key:?}")))
-    };
-    Ok(Cookie {
-        name: required("name")?,
-        value: required("value")?,
-        domain: required("domain")?,
-        path: text("path")?.unwrap_or_else(|| "/".into()),
-        expires: d
-            .get_item("expires")?
-            .filter(|v| !v.is_none())
-            .map(|v| v.extract())
-            .transpose()?
-            .unwrap_or(-1.0),
-        http_only: flag("http_only")?,
-        secure: flag("secure")?,
-        same_site: text("same_site")?,
-    })
 }
 
 /// JSON as Python values.

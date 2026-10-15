@@ -1348,6 +1348,28 @@ impl Context {
         set_context_cookies(&self.browser, Some(&self.id), cookies).await
     }
 
+    /// The context's cookies, and the localStorage of every origin its
+    /// pages loaded a document from, as Playwright's `storageState` has
+    /// them. Each origin is read in a page opened for it, whose requests
+    /// never leave Chrome.
+    pub async fn storage_state(&self) -> Result<crate::StorageState> {
+        let origins: Vec<String> = self
+            .rules
+            .origins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        crate::storage::state_of(&self.browser, Some(&self.id), &origins).await
+    }
+
+    /// Sets a storage state's cookies and localStorage in the context, as
+    /// a new Playwright context made with `storage_state` has them.
+    pub async fn set_storage_state(&self, state: &crate::StorageState) -> Result<()> {
+        crate::storage::set_state(&self.browser, Some(&self.id), &self.rules.origins, state).await
+    }
+
     /// Closes the context and every page in it.
     pub async fn close(&self) -> Result<()> {
         match self

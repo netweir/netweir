@@ -1,6 +1,6 @@
 //! Making requests that look like the profile's browser made them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -12,6 +12,7 @@ use wreq::{Proxy, Uri, Version, redirect};
 use wreq_proto::ext::{OnPreserveHeaderCallback, ReasonPhrase};
 
 use crate::archive::{Archive, Exchange};
+use crate::cookies::{self, Jar};
 use crate::decode::decode;
 use crate::profile::{Profile, Shape};
 
@@ -66,65 +67,44 @@ impl FetchOptions {
     }
 }
 
-/// The jar, with cookies in the order the profile's browser sends them:
-/// longest path first, then oldest first (Chrome, Firefox) or newest first
-/// (Safari).
-struct OrderedJar {
-    jar: Arc<wreq::cookie::Jar>,
+/// A jar as one request sees it: what the request's context lets it
+/// carry and set, in the order the profile's browser sends cookies.
+struct JarView {
+    jar: Arc<Jar>,
     newest_first: bool,
+    context: cookies::Context,
 }
 
-impl wreq::cookie::CookieStore for OrderedJar {
+impl wreq::cookie::CookieStore for JarView {
     fn set_cookies(&self, cookie_headers: &mut dyn Iterator<Item = &HeaderValue>, uri: &Uri) {
-        self.jar.set_cookies(cookie_headers, uri);
+        let Ok(url) = Url::parse(&uri.to_string()) else {
+            return;
+        };
+        for value in cookie_headers {
+            if let Ok(value) = value.to_str() {
+                self.jar.set_cookie(value, &url, &self.context);
+            }
+        }
     }
 
     fn cookies(&self, uri: &Uri, version: Version) -> wreq::cookie::Cookies {
-        if !self.newest_first {
-            return self.jar.cookies(uri, version);
-        }
-        // The jar sends longest path first, then oldest first, and only it
-        // knows which is older. So take its order and reverse each run of
-        // equal path length. The run boundaries come from the matching
-        // cookies' paths; a cookie with the same name and value under two
-        // paths reads the same either way, so give each the longest unused.
-        let wreq::cookie::Cookies::Uncompressed(oldest_first) =
-            self.jar.cookies(uri, Version::HTTP_2)
-        else {
+        let Ok(url) = Url::parse(&uri.to_string()) else {
             return wreq::cookie::Cookies::Empty;
         };
-        let mut paths: HashMap<String, Vec<usize>> = HashMap::new();
-        for c in self.jar.matches(uri.clone()) {
-            let pair = format!("{}={}", c.name(), c.value());
-            paths
-                .entry(pair)
-                .or_default()
-                .push(c.path().unwrap_or("/").len());
-        }
-        let mut sent: Vec<(usize, HeaderValue)> = Vec::with_capacity(oldest_first.len());
-        for value in oldest_first {
-            let longest = value.to_str().ok().and_then(|pair| {
-                let lengths = paths.get_mut(pair)?;
-                let i = (0..lengths.len()).max_by_key(|&i| lengths[i])?;
-                Some(lengths.swap_remove(i))
-            });
-            match longest {
-                Some(length) => sent.push((length, value)),
-                // The jar changed between the two reads; this one request
-                // goes out in the jar's own order.
-                None => return self.jar.cookies(uri, version),
-            }
-        }
-        if sent.is_empty() {
+        let pairs = self.jar.header(&url, &self.context, self.newest_first);
+        if pairs.is_empty() {
             return wreq::cookie::Cookies::Empty;
         }
-        for run in sent.chunk_by_mut(|a, b| a.0 == b.0) {
-            run.reverse();
-        }
+        // Over HTTP/2 each cookie is a field of its own, as Chrome's HPACK
+        // encoder splits the header into crumbs.
         if matches!(version, Version::HTTP_2 | Version::HTTP_3) {
-            wreq::cookie::Cookies::Uncompressed(sent.into_iter().map(|(_, v)| v).collect())
+            wreq::cookie::Cookies::Uncompressed(
+                pairs
+                    .iter()
+                    .filter_map(|p| HeaderValue::from_str(p).ok())
+                    .collect(),
+            )
         } else {
-            let pairs: Vec<&str> = sent.iter().filter_map(|(_, v)| v.to_str().ok()).collect();
             HeaderValue::from_str(&pairs.join("; "))
                 .map(wreq::cookie::Cookies::Compressed)
                 .unwrap_or(wreq::cookie::Cookies::Empty)
@@ -152,7 +132,11 @@ pub struct Fetcher {
     /// https origins (`host:port`) that answered over HTTP/1.1, so get no
     /// HTTP/2-only headers.
     http1_hosts: Arc<Mutex<HashSet<String>>>,
-    jar: Arc<wreq::cookie::Jar>,
+    jar: Arc<Jar>,
+    /// Whether requests carry and keep cookies at all.
+    cookies: bool,
+    /// Safari sends cookies of equal path length newest first.
+    newest_first: bool,
     /// Whether to offer only http/1.1 to origins known to answer with it.
     remembers_http1: bool,
     /// The headers of requests other than typing an address.
@@ -255,7 +239,12 @@ async fn dispatch(
     request: wreq::RequestBuilder,
     order: OrigHeaderMap,
     sent: Option<&Sent>,
+    view: Option<JarView>,
 ) -> Result<wreq::Response, FetchError> {
+    let request = match view {
+        Some(view) => request.cookie_provider(Arc::new(view)),
+        None => request,
+    };
     let Some(sent) = sent else {
         return Ok(request.orig_headers(order).send().await?);
     };
@@ -840,6 +829,30 @@ impl Outgoing {
         !matches!(self.method.as_str(), "POST" | "PATCH")
     }
 
+    /// What the jar needs to know of this request to `url`: whether it's
+    /// cross-site to the page it comes from (or any redirect on the way),
+    /// a top-level navigation, a safe method, and the top-level site.
+    pub fn cookie_context(&self, url: &Url) -> cookies::Context {
+        if self.typed() {
+            return cookies::Context::typed(url);
+        }
+        let referer = self.referer_url(url);
+        let relation = referer
+            .as_ref()
+            .map(|r| self.furthest.max(Relation::between(r, url)));
+        let navigation = matches!(self.kind, Kind::Navigate | Kind::Form);
+        let top = match (&referer, navigation) {
+            (Some(r), false) => r,
+            _ => url,
+        };
+        cookies::Context {
+            cross_site: relation == Some(Relation::CrossSite),
+            navigation,
+            safe_method: matches!(self.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE"),
+            top_level_site: Some(cookies::site_of(top)),
+        }
+    }
+
     /// Typing an address: the headers the profile lists first.
     fn typed(&self) -> bool {
         self.kind == Kind::Navigate
@@ -1024,16 +1037,31 @@ pub const MAX_REDIRECTS: u32 = 20;
 
 impl Fetcher {
     pub fn new(options: FetchOptions) -> Result<Fetcher, FetchError> {
-        Fetcher::with_jar(options, Arc::new(wreq::cookie::Jar::default()))
+        Fetcher::made_with(options, Arc::new(Jar::new()))
     }
 
     /// A Fetcher with `options` that keeps its cookies in `other`'s jar:
     /// the same visitor, through another proxy.
     pub fn sharing_cookies(options: FetchOptions, other: &Fetcher) -> Result<Fetcher, FetchError> {
-        Fetcher::with_jar(options, other.jar.clone())
+        Fetcher::made_with(options, other.jar.clone())
     }
 
-    fn with_jar(options: FetchOptions, jar: Arc<wreq::cookie::Jar>) -> Result<Fetcher, FetchError> {
+    /// This Fetcher, its connections and all, with its cookies in `jar`:
+    /// another visitor through the same client. The jar is applied per
+    /// request, so this costs a clone.
+    pub fn with_jar(&self, jar: Arc<Jar>) -> Fetcher {
+        Fetcher {
+            jar,
+            ..self.clone()
+        }
+    }
+
+    /// The jar its requests carry and keep cookies in.
+    pub fn jar(&self) -> &Arc<Jar> {
+        &self.jar
+    }
+
+    fn made_with(options: FetchOptions, jar: Arc<Jar>) -> Result<Fetcher, FetchError> {
         let profile = &options.profile;
         let emulation = profile
             .emulation()
@@ -1058,12 +1086,6 @@ impl Fetcher {
                 .tls_cert_verification(options.verify_certificates);
             if let Some(cas) = &cas {
                 builder = builder.tls_cert_store(cas.clone());
-            }
-            if options.cookies {
-                builder = builder.cookie_provider(Arc::new(OrderedJar {
-                    jar: jar.clone(),
-                    newest_first: profile.cookies_newest_first,
-                }));
             }
             if options.proxy.is_none() && !options.system_proxy {
                 builder = builder.no_proxy();
@@ -1113,6 +1135,8 @@ impl Fetcher {
             redirect_order: Arc::new(profile.header_order(true)),
             http1_hosts: Arc::default(),
             jar,
+            cookies: options.cookies,
+            newest_first: profile.cookies_newest_first,
             remembers_http1: profile.remembers_http1,
             shapes: Arc::new(Shapes {
                 profile: profile.name.clone(),
@@ -1154,67 +1178,46 @@ impl Fetcher {
         }
     }
 
-    /// GETs `url`, following redirects like a browser's navigation does.
-    /// `headers` replace the profile's header of the same name in its usual
-    /// position; new names go after the profile's own, keeping the caller's
-    /// capitalisation on HTTP/1.1.
     /// Adds cookies a browser holds, as if the browser's responses had
-    /// set them here.
+    /// set them here. One that won't go in (no domain) is left out.
     pub fn add_cookies(&self, cookies: &[netweir_browser::Cookie]) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0.0, |d| d.as_secs_f64());
         for c in cookies {
-            // A leading dot marks a cookie for the domain and its
-            // subdomains; without it, the cookie is the host's alone.
-            let host = c.domain.trim_start_matches('.');
-            let mut line = format!("{}={}; Path={}", c.name, c.value, c.path);
-            if c.domain.starts_with('.') {
-                line.push_str(&format!("; Domain={host}"));
-            }
-            if c.expires >= 0.0 {
-                line.push_str(&format!("; Max-Age={}", (c.expires - now).max(0.0) as u64));
-            }
-            if c.secure {
-                line.push_str("; Secure");
-            }
-            if c.http_only {
-                line.push_str("; HttpOnly");
-            }
-            if let Some(same_site) = &c.same_site {
-                line.push_str(&format!("; SameSite={same_site}"));
-            }
-            let scheme = if c.secure { "https" } else { "http" };
-            self.jar.add(line, format!("{scheme}://{host}{}", c.path));
+            let _ = self.jar.add(c, None);
         }
     }
 
     /// Drops every cookie that would be sent to `host`, its parent
     /// domains' among them, as a new session would start without them.
     pub fn forget(&self, host: &str) {
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
-        for c in self.jar.get_all() {
-            let path = c.path().unwrap_or("/");
-            // A cookie without a domain is its host's alone, and kept under
-            // that host; one with a domain is kept under the domain.
-            let domain = match c.domain().map(|d| d.trim_start_matches('.')) {
-                None => host.as_str(),
-                Some(d) if host == d || host.ends_with(&format!(".{d}")) => d,
-                Some(_) => continue,
-            };
-            self.jar
-                .remove(c.name().to_string(), format!("https://{domain}{path}"));
-        }
+        self.jar.forget(host);
     }
 
-    /// Adds cookies as if a response from `url` had set them with these
-    /// Set-Cookie values.
-    pub fn add_set_cookies(&self, url: &str, values: &[String]) {
+    /// Adds cookies as if a response from `url` to a request sent as
+    /// `outgoing` had set them with these Set-Cookie values.
+    pub fn add_set_cookies(&self, url: &str, outgoing: &Outgoing, values: &[String]) {
+        let Ok(url) = Url::parse(url) else {
+            return;
+        };
+        let context = outgoing.cookie_context(&url);
         for value in values {
-            self.jar.add(value.clone(), url.to_string());
+            self.jar.set_cookie(value, &url, &context);
         }
     }
 
+    /// What `outgoing` to `url` hands the jar: the request's own view of
+    /// it, or none when this Fetcher keeps no cookies.
+    fn jar_view(&self, url: &Url, outgoing: &Outgoing) -> Option<JarView> {
+        self.cookies.then(|| JarView {
+            jar: self.jar.clone(),
+            newest_first: self.newest_first,
+            context: outgoing.cookie_context(url),
+        })
+    }
+
+    /// GETs `url`, following redirects like a browser's navigation does.
+    /// `headers` replace the profile's header of the same name in its usual
+    /// position; new names go after the profile's own, keeping the caller's
+    /// capitalisation on HTTP/1.1.
     pub async fn get(
         &self,
         url: &str,
@@ -1330,6 +1333,7 @@ impl Fetcher {
             .parse()
             .map_err(|_| FetchError::invalid(format!("bad URL {url:?}")))?;
         let sent: Option<Sent> = self.archive.as_ref().map(|_| Sent::default());
+        let view = self.jar_view(&current, outgoing);
         let (started, clock) = (SystemTime::now(), Instant::now());
         let response = if outgoing.typed() {
             self.send_typed(
@@ -1338,11 +1342,20 @@ impl Fetcher {
                 hop > 0,
                 sent.as_ref(),
                 outgoing.policy.timeout,
+                view,
             )
             .await?
         } else {
-            self.send_shaped(&uri, &current, outgoing, &caller, hop > 0, sent.as_ref())
-                .await?
+            self.send_shaped(
+                &uri,
+                &current,
+                outgoing,
+                &caller,
+                hop > 0,
+                sent.as_ref(),
+                view,
+            )
+            .await?
         };
         let wait = clock.elapsed();
         self.note_version(&uri, response.version());
@@ -1452,6 +1465,7 @@ impl Fetcher {
         redirected: bool,
         sent: Option<&Sent>,
         timeout: Option<Duration>,
+        view: Option<JarView>,
     ) -> Result<wreq::Response, FetchError> {
         let base = if redirected {
             &self.redirect_order
@@ -1486,12 +1500,13 @@ impl Fetcher {
         for (_, name, value) in caller {
             request = request.header(name.clone(), value.clone());
         }
-        dispatch(request, order, sent).await
+        dispatch(request, order, sent, view).await
     }
 
     /// Any request but typing an address: the headers of the profile's
     /// captured shape for it, with the per-request ones filled in as the
     /// browser fills them.
+    #[allow(clippy::too_many_arguments)]
     async fn send_shaped(
         &self,
         uri: &Uri,
@@ -1500,6 +1515,7 @@ impl Fetcher {
         caller: &[(&str, HeaderName, HeaderValue)],
         redirected: bool,
         sent: Option<&Sent>,
+        view: Option<JarView>,
     ) -> Result<wreq::Response, FetchError> {
         let shapes = &self.shapes;
         let (shape, what, without) = match outgoing.kind {
@@ -1629,7 +1645,7 @@ impl Fetcher {
         if let Some(body) = &outgoing.body {
             request = request.body(body.clone());
         }
-        dispatch(request, order, sent).await
+        dispatch(request, order, sent, view).await
     }
 }
 
@@ -2018,34 +2034,40 @@ mod tests {
         let a = fetcher();
         let b = Fetcher::sharing_cookies(FetchOptions::new(Profile::named("chrome").unwrap()), &a)
             .unwrap();
-        a.add_set_cookies("https://www.shop.example/", &["own=1; Path=/".into()]);
+        let typed = Outgoing::navigate();
+        a.add_set_cookies(
+            "https://www.shop.example/",
+            &typed,
+            &["own=1; Path=/".into()],
+        );
         a.add_set_cookies(
             "https://www.shop.example/cart/",
+            &typed,
             &["deep=1; Path=/cart".into()],
         );
         a.add_set_cookies(
             "https://www.shop.example/",
+            &typed,
             &["wide=1; Domain=shop.example".into()],
         );
-        a.add_set_cookies("https://other.example/", &["own=2".into()]);
-        a.add_set_cookies("https://api.shop.example/", &["api=1".into()]);
+        a.add_set_cookies("https://other.example/", &typed, &["own=2".into()]);
+        a.add_set_cookies("https://api.shop.example/", &typed, &["api=1".into()]);
         let names = |f: &Fetcher| {
-            let mut n: Vec<String> = f.jar.get_all().map(|c| c.name().to_string()).collect();
+            let mut n: Vec<String> = f.jar().all().into_iter().map(|c| c.name).collect();
             n.sort();
             n
         };
         assert_eq!(names(&b), ["api", "deep", "own", "own", "wide"], "shared");
         b.forget("www.shop.example");
         assert_eq!(names(&a), ["api", "own"]);
-        assert!(
-            a.jar
-                .matches("https://other.example/")
-                .any(|c| c.value() == "2")
-        );
+        // Another jar on the same client is another visitor.
+        let c = a.with_jar(Arc::new(Jar::new()));
+        assert!(c.jar().is_empty());
+        assert_eq!(names(&a), ["api", "own"]);
     }
 
-    fn safari_cookies(jar: &OrderedJar, url: &str, version: Version) -> Vec<String> {
-        match jar.cookies(&url.parse().unwrap(), version) {
+    fn pairs(view: &JarView, url: &str, version: Version) -> Vec<String> {
+        match view.cookies(&url.parse().unwrap(), version) {
             wreq::cookie::Cookies::Uncompressed(v) => {
                 v.iter().map(|h| h.to_str().unwrap().to_owned()).collect()
             }
@@ -2055,34 +2077,61 @@ mod tests {
     }
 
     #[test]
-    fn safari_sends_newest_first_whatever_other_sites_set() {
-        let jar = OrderedJar {
-            jar: Arc::new(wreq::cookie::Jar::default()),
+    fn cookies_are_a_field_each_over_http2_and_one_field_over_http1() {
+        let jar = Arc::new(Jar::new());
+        let url = Url::parse("https://b.example/deep/x").unwrap();
+        let view = JarView {
+            jar: jar.clone(),
             newest_first: true,
+            context: cookies::Context::typed(&url),
         };
-        let set = |url: &str, cookie: &str| {
+        let set = |at: &str, cookie: &str| {
             let value = HeaderValue::from_str(cookie).unwrap();
-            jar.set_cookies(&mut std::iter::once(&value), &url.parse().unwrap());
+            view.set_cookies(&mut std::iter::once(&value), &at.parse().unwrap());
         };
-        // A host-only cookie of the same name, set earlier on another site,
-        // mustn't make this site's sid look older than it is.
         set("https://a.example/", "sid=a; Path=/");
         set("https://b.example/", "t=x; Path=/");
         set("https://b.example/", "sid=b; Path=/");
         set("https://b.example/deep/", "p=1; Path=/deep");
+        // Safari: newest first among equal paths.
         assert_eq!(
-            safari_cookies(&jar, "https://b.example/deep/x", Version::HTTP_2),
+            pairs(&view, url.as_str(), Version::HTTP_2),
             ["p=1", "sid=b", "t=x"]
         );
         assert_eq!(
-            safari_cookies(&jar, "https://b.example/deep/x", Version::HTTP_11),
+            pairs(&view, url.as_str(), Version::HTTP_11),
             ["p=1; sid=b; t=x"]
         );
-        for version in [Version::HTTP_11, Version::HTTP_2] {
-            assert!(matches!(
-                jar.cookies(&"https://c.example/".parse().unwrap(), version),
-                wreq::cookie::Cookies::Empty
-            ));
-        }
+        assert!(pairs(&view, "https://c.example/", Version::HTTP_2).is_empty());
+    }
+
+    #[test]
+    fn a_requests_cookie_context_follows_where_it_comes_from() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        let shop = url("https://shop.example/cart");
+        let typed = Outgoing::navigate().cookie_context(&shop);
+        assert!(!typed.cross_site && typed.navigation && typed.safe_method);
+        let link = Outgoing {
+            referer: Some("https://elsewhere.example/".into()),
+            ..Outgoing::navigate()
+        };
+        let link = link.cookie_context(&shop);
+        assert!(link.cross_site && link.navigation);
+        assert_eq!(link.top_level_site.as_deref(), Some("https://shop.example"));
+        let script = Outgoing::fetch(
+            "POST",
+            None,
+            None,
+            Some("https://www.elsewhere.example/page".into()),
+        )
+        .cookie_context(&shop);
+        assert!(script.cross_site && !script.navigation && !script.safe_method);
+        assert_eq!(
+            script.top_level_site.as_deref(),
+            Some("https://elsewhere.example")
+        );
+        let same = Outgoing::fetch("GET", None, None, Some("https://www.shop.example/".into()))
+            .cookie_context(&shop);
+        assert!(!same.cross_site);
     }
 }

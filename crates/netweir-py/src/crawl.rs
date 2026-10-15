@@ -205,6 +205,33 @@ enum Out {
 }
 
 /// The rule a saved or leased request was made by, if it still exists.
+/// A request's cookies, checked against its URL now, so a bad one is an
+/// error where the request was made rather than lost at sending.
+fn request_cookies(
+    url: &str,
+    jar: Option<String>,
+    cookies: Vec<Bound<'_, PyAny>>,
+    dont_merge: bool,
+) -> PyResult<netweir_core::RequestCookies> {
+    let add = cookies
+        .iter()
+        .map(|c| crate::cookies::cookie_from(c, true))
+        .collect::<PyResult<Vec<_>>>()?;
+    if let (false, Ok(parsed)) = (add.is_empty(), Url::parse(url)) {
+        let scratch = netweir_core::cookies::Jar::new();
+        for c in &add {
+            scratch
+                .add(c, Some(&parsed))
+                .map_err(|e| PyValueError::new_err(format!("{url}: {e}")))?;
+        }
+    }
+    Ok(netweir_core::RequestCookies {
+        jar,
+        add,
+        dont_merge,
+    })
+}
+
 fn rule_of(rules: &[Arc<Rule>], p: &Pending) -> Option<usize> {
     serde_json::from_str::<serde_json::Value>(&p.payload)
         .ok()
@@ -304,6 +331,7 @@ impl Engine {
                 retry_post: false,
                 proxy: None,
                 delta_key: Default::default(),
+                cookies: Default::default(),
             };
             let payload = format!(r#"{{"rule":{at}}}"#);
             if self.core.submit_with(request, &payload) != Submitted::Queued {
@@ -339,6 +367,7 @@ impl Engine {
             retry_post: false,
             proxy: p.proxy,
             delta_key: Default::default(),
+            cookies: Default::default(),
         };
         if self.core.resubmit(request, row) != Submitted::Queued {
             self.tags().remove(&id);
@@ -1085,8 +1114,10 @@ impl Crawler {
     /// not queued, as the caller has its response: "answered" if it
     /// passed. `timeout`, `max_redirects`, `dont_redirect` and `auth`
     /// ((user, password, domain or None)) are its policy, as
-    /// Fetcher.send takes them.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None))]
+    /// Fetcher.send takes them. `jar` names its cookie jar (None for the
+    /// crawl's own), `cookies` are its own, and `dont_merge_cookies`
+    /// leaves the jar out.
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None, jar=None, cookies=None, dont_merge_cookies=false))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -1115,9 +1146,13 @@ impl Crawler {
         max_redirects: Option<u32>,
         dont_redirect: bool,
         auth: Option<AuthPy>,
+        jar: Option<String>,
+        cookies: Option<Vec<Bound<'_, PyAny>>>,
+        dont_merge_cookies: bool,
     ) -> PyResult<&'static str> {
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
+        let cookies = request_cookies(&url, jar, cookies.unwrap_or_default(), dont_merge_cookies)?;
         let mut outgoing =
             netweir_core::Outgoing::from_parts(method, kind, body, content_type, referer);
         outgoing.policy = policy(timeout, max_redirects, dont_redirect, auth)?;
@@ -1152,6 +1187,7 @@ impl Crawler {
                 (true, Some(key)) => netweir_core::DeltaKey::Custom(key),
                 (true, None) => netweir_core::DeltaKey::Fingerprint,
             },
+            cookies,
         };
         let outcome = match row {
             _ if answered => self.engine.core.claim(request),
@@ -1223,6 +1259,7 @@ impl Crawler {
             retry_post: false,
             proxy,
             delta_key: netweir_core::DeltaKey::Off,
+            cookies: Default::default(),
         };
         let done = self.engine.core.download(request);
         crate::aio::future_into_py(py, async move {

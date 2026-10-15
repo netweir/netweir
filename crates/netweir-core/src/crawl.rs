@@ -17,6 +17,7 @@ use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
 use crate::classify::{BlockKind, Outcome, classify};
+use crate::cookies::Jar;
 use crate::deltafetch::{self, DeltaKey, Record};
 use crate::fetch::{
     FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Outgoing, Response, check_proxy, masked,
@@ -144,6 +145,11 @@ pub const OTHER_PROXIES: &str = "other";
 /// each holds a connection pool, so a gateway named with a new login per
 /// request mustn't keep one per request for the whole crawl.
 const VIA_EXTRA: usize = 256;
+
+/// How often a running crawl saves its cookie jars to the checkpoint, at
+/// most. A crash loses what they took in since, which the pages fetched
+/// again set again.
+const JAR_SAVES: Duration = Duration::from_secs(5);
 
 /// Clients a host keeps through proxies its requests named.
 const HOST_VIA: usize = 16;
@@ -293,6 +299,31 @@ pub struct CrawlRequest {
     /// How the deltafetch record knows the request: by its fingerprint
     /// (the default), by a key of the caller's, or not at all.
     pub delta_key: DeltaKey,
+    /// Its own cookies and the jar it shares.
+    pub cookies: RequestCookies,
+}
+
+/// The cookies a request goes with: Scrapy's `Request.cookies`,
+/// `meta["cookiejar"]` and `meta["dont_merge_cookies"]`.
+#[derive(Debug, Clone, Default)]
+pub struct RequestCookies {
+    /// The jar it shares with every request naming the same; None (or
+    /// empty) for the crawl's own.
+    pub jar: Option<String>,
+    /// Put in its jar each time it's sent, as if its URL had set them. An
+    /// empty domain is the URL's host's own, an empty path the URL's
+    /// directory.
+    pub add: Vec<Cookie>,
+    /// Leave the jar out: send `add` alone, and keep nothing the response
+    /// sets.
+    pub dont_merge: bool,
+}
+
+impl RequestCookies {
+    /// The jar's name, if it names one.
+    fn named(&self) -> Option<&str> {
+        self.jar.as_deref().filter(|n| !n.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,6 +437,17 @@ struct Live {
     /// Told when the page's slot frees, so a browser request waiting for
     /// one can start.
     shared: std::sync::Weak<Shared>,
+    /// The named jar the page's cookies go back to when it closes.
+    jar: Option<Arc<Jar>>,
+}
+
+/// Puts what the page's context holds into `jar`, as the page closes.
+async fn give_back(page: &netweir_browser::Page, jar: &Jar) {
+    if let Ok(cookies) = page.cookies().await {
+        for c in &cookies {
+            let _ = jar.add(c, None);
+        }
+    }
 }
 
 impl Live {
@@ -428,6 +470,11 @@ impl LivePage {
     }
 
     pub async fn close(&self) {
+        if let Some(jar) = &self.inner.jar
+            && !self.inner.page.is_closed()
+        {
+            give_back(&self.inner.page, jar).await;
+        }
         let _ = self.inner.page.close().await;
         self.inner.free();
     }
@@ -437,10 +484,31 @@ impl Drop for Live {
     fn drop(&mut self) {
         self.free();
         if !self.page.is_closed() {
-            let page = self.page.clone();
+            let (page, jar) = (self.page.clone(), self.jar.take());
             self.runtime.spawn(async move {
+                if let Some(jar) = jar {
+                    give_back(&page, &jar).await;
+                }
                 let _ = page.close().await;
             });
+        }
+    }
+}
+
+/// The cookies a browser request's page starts with, and the jar they go
+/// back to when it closes: a named jar's, with the request's own added,
+/// or only the request's own, which go nowhere after.
+fn browser_cookies(shared: &Shared, request: &CrawlRequest) -> (Vec<Cookie>, Option<Arc<Jar>>) {
+    match (request.cookies.dont_merge, request.cookies.named()) {
+        (false, Some(name)) => {
+            let jar = shared.jar(Some(name));
+            add_request_cookies(&jar, request);
+            (jar.all(), Some(jar))
+        }
+        _ => {
+            let jar = Jar::new();
+            add_request_cookies(&jar, request);
+            (jar.all(), None)
         }
     }
 }
@@ -544,6 +612,89 @@ struct Shared {
     /// Places for open Chrome pages.
     pages: Arc<Semaphore>,
     runtime: tokio::runtime::Handle,
+    /// The jars requests name (`RequestCookies::jar`), made as they're
+    /// first named.
+    jars: Mutex<HashMap<String, Arc<Jar>>>,
+    /// Each jar's `changes` when the checkpoint last saved it, by name
+    /// ("" for the crawl's own).
+    /// And when it last saved them.
+    jars_saved: Mutex<(HashMap<String, u64>, Option<Instant>)>,
+}
+
+impl Shared {
+    /// The jar `name`d, made if it's new; the crawl's own for None or "".
+    fn jar(&self, name: Option<&str>) -> Arc<Jar> {
+        match name.filter(|n| !n.is_empty()) {
+            None => self.fetcher.jar().clone(),
+            Some(name) => self
+                .jars
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(name.to_string())
+                .or_default()
+                .clone(),
+        }
+    }
+
+    /// Hands the checkpoint every jar that changed since it last did: at
+    /// most every `JAR_SAVES` while the crawl runs, as a busy crawl's jar
+    /// changes with nearly every response, and always with `now`.
+    fn save_jars(&self, now: bool) {
+        let Some(cp) = &self.checkpoint else {
+            return;
+        };
+        let mut guard = self.jars_saved.lock().unwrap_or_else(|e| e.into_inner());
+        let (saved, at) = &mut *guard;
+        if !now && at.is_some_and(|t| t.elapsed() < JAR_SAVES) {
+            return;
+        }
+        *at = Some(Instant::now());
+        let mut all = vec![(String::new(), self.fetcher.jar().clone())];
+        all.extend(
+            self.jars
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        for (name, jar) in all {
+            let changes = jar.changes();
+            if saved.get(&name) != Some(&changes) {
+                cp.jar(name.clone(), jar.snapshot());
+                saved.insert(name, changes);
+            }
+        }
+    }
+
+    /// The fetcher `request` goes out with, from its route's `session`:
+    /// with its named jar, or with a jar of its own cookies alone when it
+    /// leaves the jar out. Its own cookies go into that jar first.
+    fn with_request_jar(&self, session: Fetcher, request: &CrawlRequest) -> Fetcher {
+        let cookies = &request.cookies;
+        let session = if cookies.dont_merge {
+            session.with_jar(Arc::new(Jar::new()))
+        } else {
+            match cookies.named() {
+                Some(name) => session.with_jar(self.jar(Some(name))),
+                None => session,
+            }
+        };
+        add_request_cookies(session.jar(), request);
+        session
+    }
+}
+
+/// Puts `request`'s own cookies in `jar`, as if its URL had set them.
+fn add_request_cookies(jar: &Jar, request: &CrawlRequest) {
+    if request.cookies.add.is_empty() {
+        return;
+    }
+    let Ok(url) = Url::parse(&request.url) else {
+        return;
+    };
+    for c in &request.cookies.add {
+        let _ = jar.add(c, Some(&url));
+    }
 }
 
 #[derive(Default)]
@@ -980,8 +1131,27 @@ impl Crawler {
             }
             None => (None, None),
         };
+        // The jars the checkpoint kept: the crawl's own ("") and named ones.
+        let fetcher = Fetcher::new(fetch.clone())?;
+        let mut jars: HashMap<String, Arc<Jar>> = HashMap::new();
+        let mut jars_saved = HashMap::new();
+        if let Some(saved) = &saved {
+            for (name, snapshot) in &saved.jars {
+                let jar = match name.as_str() {
+                    "" => fetcher.jar().clone(),
+                    _ => jars.entry(name.clone()).or_default().clone(),
+                };
+                // A jar that won't read starts empty: the crawl goes on, as
+                // a new visitor.
+                if jar.restore(snapshot).is_ok() {
+                    jars_saved.insert(name.clone(), jar.changes());
+                }
+            }
+        }
         let shared = Arc::new(Shared {
-            fetcher: Fetcher::new(fetch.clone())?,
+            fetcher,
+            jars: Mutex::new(jars),
+            jars_saved: Mutex::new((jars_saved, None)),
             checkpoint,
             queue,
             cache,
@@ -1090,6 +1260,7 @@ impl Crawler {
     /// Records items as delivered and saves the caller's counters (JSON)
     /// in one commit.
     pub fn settle(&self, items: Vec<String>, counters: String) {
+        self.shared.save_jars(false);
         if let Some(cp) = &self.shared.checkpoint {
             cp.settle(items, counters);
         }
@@ -1133,6 +1304,7 @@ impl Crawler {
 
     /// Saves the caller's counters (JSON) alongside the crawl.
     pub fn save_counters(&self, json: String) {
+        self.shared.save_jars(false);
         if let Some(cp) = &self.shared.checkpoint {
             cp.counters(json);
         }
@@ -1171,6 +1343,7 @@ impl Crawler {
     /// and HAR files, for when the crawl is over. Checkpoint writes after
     /// this are dropped.
     pub fn close(&self) -> Result<(), String> {
+        self.shared.save_jars(true);
         if let Some(link) = &self.shared.queue {
             // What's queued for Redis goes first, then what's still held
             // goes back for the other processes. Not waited for past a
@@ -1194,6 +1367,13 @@ impl Crawler {
             delta.close();
         }
         flushed
+    }
+
+    /// The jar `name`d (made if it's new), or with None the crawl's own:
+    /// the one requests use until a block gives a host a session of its
+    /// own.
+    pub fn jar(&self, name: Option<&str>) -> Arc<Jar> {
+        self.shared.jar(name)
     }
 
     /// The Chrome the crawl is using, if it has started one.
@@ -2430,6 +2610,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let outgoing = with_crawl_login(&shared.settings, &q.request.outgoing);
     let result = match session {
         Ok(session) => {
+            let session = shared.with_request_jar(session, &q.request);
             guarded(
                 async move { session.hop_as(&url, &outgoing, &headers, hops).await },
                 |why| {
@@ -2709,7 +2890,9 @@ async fn serve(shared: Arc<Shared>, q: Queued) {
             // cookies into the jar its host's requests use, and where each
             // led marked seen.
             for r in &redirects {
-                session_for(&shared, &state, &r.url).add_set_cookies(&r.url, &r.cookies);
+                if let Some(keeper) = cookie_keeper(&shared, &state, &q.request, &r.url) {
+                    keeper.add_set_cookies(&r.url, &q.request.outgoing, &r.cookies);
+                }
                 if let Some(fp) = r.seen {
                     state.seen.insert(fp);
                     if let Some(cp) = &shared.checkpoint {
@@ -2723,7 +2906,9 @@ async fn serve(shared: Arc<Shared>, q: Queued) {
                 .filter(|(k, _)| k == "set-cookie")
                 .map(|(_, v)| v.clone())
                 .collect();
-            session_for(&shared, &state, &response.url).add_set_cookies(&response.url, &cookies);
+            if let Some(keeper) = cookie_keeper(&shared, &state, &q.request, &response.url) {
+                keeper.add_set_cookies(&response.url, &q.request.outgoing, &cookies);
+            }
             // Kept under a key that ignores fragments and tracking
             // parameters, so without a redirect the URL is the one asked for,
             // written as a fetch would write it.
@@ -2760,6 +2945,24 @@ fn session_for(shared: &Shared, state: &State, url: &str) -> Fetcher {
         .ok()
         .and_then(|u| state.hosts.get(u.host_str()?)?.session.clone())
         .unwrap_or_else(|| shared.fetcher.clone())
+}
+
+/// What keeps the cookies a response to `request` at `url` sets: its
+/// named jar, or its host's session; nothing when it leaves the jar out.
+fn cookie_keeper(
+    shared: &Shared,
+    state: &State,
+    request: &CrawlRequest,
+    url: &str,
+) -> Option<Fetcher> {
+    if request.cookies.dont_merge {
+        return None;
+    }
+    let session = session_for(shared, state, url);
+    Some(match request.cookies.named() {
+        Some(name) => session.with_jar(shared.jar(Some(name))),
+        None => session,
+    })
 }
 
 /// Tells the caller the cache failed, once per crawl: a disk that's full
@@ -2804,6 +3007,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
         shared.clone(),
         q.request.url.clone(),
         q.blocked.is_some(),
+        browser_cookies(&shared, &q.request),
         permit,
         refused.clone(),
         doing.clone(),
@@ -2920,6 +3124,16 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
             }
             if q.blocked.is_some() && matches!(outcome, Some(Outcome::Ok)) {
                 state.stats.browser_unblocked += 1;
+                // A named jar's cookies (a login, say) go back to that jar
+                // when the page closes, never to the host's session, which
+                // is another visitor; nor do those of a request that leaves
+                // the jar out.
+                let own = &q.request.cookies;
+                let cookies = if own.dont_merge || own.named().is_some() {
+                    Vec::new()
+                } else {
+                    cookies
+                };
                 if let Some(message) = hand_back(&shared, &mut state, &q.host, &cookies, &version) {
                     shared.push_event(&mut state, Event::Warning { message });
                 }
@@ -2991,6 +3205,7 @@ async fn render(
     shared: Arc<Shared>,
     url: String,
     cookies: bool,
+    (seed, jar): (Vec<Cookie>, Option<Arc<Jar>>),
     permit: OwnedSemaphorePermit,
     refused: Refusal,
     doing: Doing,
@@ -3064,12 +3279,20 @@ async fn render(
             return Err(browser_error(e));
         }
     }
+    // The page starts with the cookies of the request's jar, or its own.
+    if !seed.is_empty()
+        && let Err(e) = page.set_cookies(&seed).await
+    {
+        let _ = page.close().await;
+        return Err(browser_error(e));
+    }
     let live = LivePage {
         inner: Arc::new(Live {
             page: page.clone(),
             permit: Mutex::new(Some(permit)),
             runtime: shared.runtime.clone(),
             shared: Arc::downgrade(&shared),
+            jar,
         }),
     };
     let timeout = shared.options.timeout;
@@ -4001,6 +4224,7 @@ mod tests {
             retry_post: false,
             proxy: None,
             delta_key: Default::default(),
+            cookies: Default::default(),
         }
     }
 
@@ -4219,6 +4443,7 @@ mod tests {
                 retry_post: false,
                 proxy: None,
                 delta_key: DeltaKey::Fingerprint,
+                cookies: Default::default(),
             },
             host: String::new(),
             origin: String::new(),

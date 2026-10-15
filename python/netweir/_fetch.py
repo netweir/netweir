@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 from netweir import _jmespath, _track
+from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
 from netweir._helpers import Article
@@ -422,6 +423,9 @@ class Client:
     certificates to trust in place of the bundled ones. ``max_redirects``
     is how many redirects a request follows before it fails, and ``auth``
     a (user, password) login every call sends unless it has its own.
+    ``storage_state`` starts the client with the cookies of a storage state:
+    a path to a file ``storage_state()`` (here or in a browser context) or
+    Playwright saved, or its dict. ``cookies`` is the jar.
     """
 
     def __init__(
@@ -434,6 +438,7 @@ class Client:
         verify: Verify = True,
         max_redirects: int = 20,
         auth: Auth = None,
+        storage_state: str | os.PathLike[str] | dict[str, Any] | None = None,
     ):
         check, cas = certificates(verify)
         self._fetcher = Fetcher(
@@ -446,6 +451,15 @@ class Client:
             max_redirects=redirect_limit(max_redirects),
         )
         self._auth = checked_auth(auth)
+        self.cookies = Cookies(self._fetcher)
+        if storage_state is not None:
+            self._fetcher.load_storage_state(storage_state)
+
+    def storage_state(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+        """The client's cookies as a storage state dict, in Playwright's
+        form (``origins`` is empty: there's no localStorage over HTTP).
+        With ``path``, also written there, readable by its owner alone."""
+        return self._fetcher.storage_state(path)
 
     async def get(
         self,

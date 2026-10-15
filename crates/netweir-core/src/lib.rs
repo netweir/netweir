@@ -9,6 +9,7 @@ mod cache;
 pub mod canonical;
 pub mod checkpoint;
 pub mod classify;
+pub mod cookies;
 mod crawl;
 mod decode;
 pub mod deltafetch;
@@ -25,7 +26,8 @@ pub mod traps;
 pub use archive::Archive;
 pub use crawl::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler, Downloaded, DropReason, Event, LivePage,
-    ProxyRotation, ProxyStats, RETRY_STATUSES, Stats, Submitted, allowed_domains, offsite,
+    ProxyRotation, ProxyStats, RETRY_STATUSES, RequestCookies, Stats, Submitted, allowed_domains,
+    offsite,
 };
 pub use decode::{decode, meta_content};
 pub use deltafetch::DeltaKey;

@@ -31,6 +31,7 @@ wreq = { version = "0.16.1", default-features = false, features = ["chromium-roo
 zstd = "0.14"
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 psl = "2.1"
+cookie = "0.18"
 http-body-util = "0.1"
 quick-xml = "0.42"
 # The shared queue.

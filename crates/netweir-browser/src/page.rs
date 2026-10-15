@@ -1,6 +1,6 @@
 //! A page: one target, one session, its navigation state and its actions.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -89,6 +89,9 @@ pub struct Cookie {
     pub secure: bool,
     /// "Strict", "Lax" or "None", when set.
     pub same_site: Option<String>,
+    /// For a partitioned cookie (CHIPS), the top-level site it's kept
+    /// under, such as "https://shop.example".
+    pub partition_key: Option<String>,
 }
 
 pub(crate) fn cookies_from(list: &Value) -> Vec<Cookie> {
@@ -104,6 +107,11 @@ pub(crate) fn cookies_from(list: &Value) -> Vec<Cookie> {
             http_only: c["httpOnly"].as_bool().unwrap_or(false),
             secure: c["secure"].as_bool().unwrap_or(false),
             same_site: c["sameSite"].as_str().map(str::to_string),
+            // An object in today's Chrome; a plain site in older ones.
+            partition_key: c["partitionKey"]["topLevelSite"]
+                .as_str()
+                .or(c["partitionKey"].as_str())
+                .map(str::to_string),
         })
         .collect()
 }
@@ -112,14 +120,26 @@ pub(crate) fn cookies_to(cookies: &[Cookie]) -> Value {
     cookies
         .iter()
         .map(|c| {
+            let path = if c.path.is_empty() { "/" } else { &c.path };
             let mut v = json!({
                 "name": c.name,
                 "value": c.value,
-                "domain": c.domain,
-                "path": if c.path.is_empty() { "/" } else { &c.path },
+                "path": path,
                 "httpOnly": c.http_only,
                 "secure": c.secure,
             });
+            // Given a domain, Chrome makes a cookie for the domain and its
+            // subdomains, dot or no dot; a host's own cookie is given by
+            // its URL instead, so it stays the host's alone.
+            if c.domain.starts_with('.') {
+                v["domain"] = Value::from(c.domain.as_str());
+            } else {
+                let scheme = if c.secure { "https" } else { "http" };
+                v["url"] = Value::from(format!("{scheme}://{}{path}", c.domain));
+            }
+            if let Some(site) = &c.partition_key {
+                v["partitionKey"] = json!({"topLevelSite": site, "hasCrossSiteAncestor": false});
+            }
             if c.expires >= 0.0 {
                 v["expires"] = Value::from(c.expires);
             }
@@ -178,12 +198,41 @@ struct Opening {
     opener: Option<Page>,
 }
 
+/// Origins (`https://shop.example`) documents came from.
+pub(crate) type Origins = Arc<Mutex<BTreeSet<String>>>;
+
+/// Adds `url`'s origin to `origins`, if it's http or https.
+fn note_origin(origins: &Origins, url: &str) {
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .map(|r| ("https", r))
+        .or_else(|| url.strip_prefix("http://").map(|r| ("http", r)))
+    {
+        let (scheme, rest) = rest;
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        // A login in the URL isn't part of its origin.
+        let host = host
+            .rsplit('@')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !host.is_empty() {
+            origins
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(format!("{scheme}://{host}"));
+        }
+    }
+}
+
 /// The rules of a shared context, and its pages, to tell when they
 /// change.
 #[derive(Default)]
 pub(crate) struct ContextRules {
     pub rules: SharedRules,
     pages: Mutex<Vec<Weak<PageInner>>>,
+    /// The origins its pages loaded documents from.
+    pub origins: Origins,
 }
 
 impl ContextRules {
@@ -231,6 +280,10 @@ pub(crate) struct State {
     /// `children`, a frame stays here until its session detaches.
     sessions: Vec<String>,
     gone: bool,
+    /// The http(s) origins documents were loaded from, in any frame:
+    /// those whose localStorage a storage state reads. Shared by a
+    /// context's pages.
+    pub(crate) origins: Origins,
 }
 
 /// How far one notch of a mouse wheel scrolls, in pixels: 100 on Windows
@@ -259,6 +312,10 @@ impl State {
                     .push(str_of(p, "name"));
             }
             "Page.frameNavigated" if p["frame"].get("parentId").is_none() => {
+                note_origin(
+                    &self.origins,
+                    p["frame"]["url"].as_str().unwrap_or_default(),
+                );
                 let frame = &p["frame"];
                 self.frame = str_of(frame, "id");
                 self.url = str_of(frame, "url");
@@ -274,6 +331,10 @@ impl State {
             // session it had in a process of its own is on its way out,
             // and may never answer again.
             "Page.frameNavigated" => {
+                note_origin(
+                    &self.origins,
+                    p["frame"]["url"].as_str().unwrap_or_default(),
+                );
                 let id = p["frame"]["id"].as_str().unwrap_or_default();
                 self.children.retain(|(_, frame)| frame != id);
             }
@@ -311,6 +372,9 @@ impl State {
                     session: session.to_string(),
                     resource_type: p["type"].as_str().unwrap_or("Other").to_ascii_lowercase(),
                 };
+                if p["type"] == "Document" {
+                    note_origin(&self.origins, &response.url);
+                }
                 if p["type"] == "Document" && p["frameId"] == self.frame.as_str() {
                     // Navigations that never commit (a 204, a download)
                     // leave responses behind; only committed ones are kept.
@@ -461,6 +525,10 @@ impl Page {
             // frame tree does, is its document's.
             state: Mutex::new(State {
                 frame: target.clone(),
+                origins: shared_context
+                    .as_ref()
+                    .map(|c| c.origins.clone())
+                    .unwrap_or_default(),
                 ..State::default()
             }),
             changed: Notify::new(),
@@ -1333,6 +1401,20 @@ impl Page {
 
     pub async fn set_cookies(&self, cookies: &[Cookie]) -> Result<()> {
         set_context_cookies(&self.inner.browser, self.inner.context.as_deref(), cookies).await
+    }
+
+    /// The page's context's cookies, and the localStorage of every origin
+    /// its documents came from (see `Context::storage_state`).
+    pub async fn storage_state(&self) -> Result<crate::StorageState> {
+        let origins: Vec<String> = self
+            .state()
+            .origins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        crate::storage::state_of(&self.inner.browser, self.inner.context.as_deref(), &origins).await
     }
 
     pub fn is_closed(&self) -> bool {

@@ -1211,6 +1211,7 @@ dependencies = [
  "btls",
  "bytes",
  "chardetng",
+ "cookie",
  "data-encoding",
  "encoding_rs",
  "flate2",
