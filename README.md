@@ -129,7 +129,9 @@ Working today:
   upload files and reach into iframes like Playwright, then read the page
   with Netweir's selectors, or read the JSON its own requests got back. A
   profile can be kept between runs. Requests can be blocked, changed or
-  answered before they leave Chrome. In a
+  answered before they leave Chrome. An `alert()` never stalls a page,
+  popups and new tabs come back as pages you can read, and downloads
+  land in a folder you can save from. In a
   crawl, it can take over a request a site keeps blocking, and hand the
   cookies it earns back to the fast HTTP client. `netweir install chrome`
   fetches the Chrome it's tuned for.
