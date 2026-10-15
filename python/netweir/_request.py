@@ -80,11 +80,11 @@ class Request:
     auth: tuple[str, str] | None = dataclasses.field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        from netweir._fetch import checked_auth, login_of, redirect_limit
+        from netweir._fetch import checked_auth, login_of, redirect_limit, seconds
 
         self.url, self.auth = login_of(self.url, checked_auth(self.auth))
-        if self.timeout is not None and not self.timeout > 0:
-            raise ValueError("timeout must be a positive number of seconds")
+        if self.timeout is not None:
+            self.timeout = seconds(self.timeout)
         redirect_limit(self.max_redirects)
         has_body = self.form is not None or self.json is not None or self.body is not None
         self.method = (self.method or ("POST" if has_body else "GET")).upper()

@@ -288,3 +288,29 @@ fn a_bad_ca_file_is_an_error_not_an_empty_trust_store() {
     let err = Fetcher::new(bad).err().unwrap();
     assert_eq!(err.kind, FetchErrorKind::Invalid, "{err}");
 }
+
+#[test]
+fn a_logins_domain_is_a_bare_host_and_never_a_public_suffix() {
+    use netweir_core::auth_domain;
+    assert_eq!(
+        auth_domain(".Intranet.Example.com.").unwrap(),
+        "intranet.example.com"
+    );
+    assert_eq!(auth_domain("127.0.0.1").unwrap(), "127.0.0.1");
+    assert_eq!(auth_domain("[::1]").unwrap(), "::1");
+    assert_eq!(auth_domain("localhost").unwrap(), "localhost");
+    for bad in [
+        "127.0.0.1:8080",
+        "example.com:443",
+        "http://example.com",
+        "example.com/path",
+        "ada@example.com",
+        "",
+        ".",
+        "com",
+        "co.uk",
+        "github.io",
+    ] {
+        assert!(auth_domain(bad).is_err(), "{bad:?}");
+    }
+}

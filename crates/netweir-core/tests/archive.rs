@@ -843,3 +843,43 @@ async fn archiving_changes_nothing_sent_and_records_exactly_what_was() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A login is the crawl's own, like a proxy's: the site gets it, the
+/// archive, which gets shared, doesn't.
+#[tokio::test]
+async fn a_login_is_sent_but_left_out_of_the_archive() {
+    let dir = temp_dir("login");
+    let mut server = netweir_fingerprint::Server::start().await.unwrap();
+    let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+    options.verify_certificates = false;
+    let (warc, har_path) = (dir.join("login.warc"), dir.join("login.har"));
+    let archive = netweir_core::Archive::new(Some(&warc), Some(&har_path), false).unwrap();
+    archive.start().unwrap();
+    options.archive = Some(archive.clone());
+    let fetcher = netweir_core::Fetcher::new(options).unwrap();
+    let mut outgoing = netweir_core::Outgoing::navigate();
+    let password = format!("pw-{}", std::process::id());
+    outgoing.policy.auth = Some(netweir_core::Auth::new("ada", password, None));
+    let url = format!("https://localhost:{}/", server.port);
+    fetcher.send(&url, &outgoing, &[]).await.unwrap();
+    let sent = server.next().await.unwrap();
+    assert!(sent.headers.iter().any(|(k, _)| k == "authorization"));
+    archive.close().unwrap();
+    let records = records(&std::fs::read(&warc).unwrap());
+    let request = records.iter().find(|r| r.kind() == "request").unwrap();
+    let head = String::from_utf8_lossy(request.http().0).to_ascii_lowercase();
+    assert!(head.contains("user-agent:"), "{head}");
+    assert!(!head.contains("authorization"), "{head}");
+    // The server echoes the request as its answer, so only the request's
+    // own headers are looked at.
+    let har = har(&har_path);
+    let names: Vec<String> = har["log"]["entries"][0]["request"]["headers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap().to_ascii_lowercase())
+        .collect();
+    assert!(names.contains(&"user-agent".to_string()), "{names:?}");
+    assert!(!names.contains(&"authorization".to_string()), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

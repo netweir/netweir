@@ -31,7 +31,7 @@ pub use decode::{decode, meta_content};
 pub use deltafetch::DeltaKey;
 pub use fetch::{
     Auth, FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, MAX_REDIRECTS, Outgoing,
-    Policy, Response, check_proxy, masked,
+    Policy, Response, auth_domain, check_proxy, masked,
 };
 pub use profile::{
     DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, built_in as built_in_profiles,
