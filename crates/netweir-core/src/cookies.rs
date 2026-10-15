@@ -1006,5 +1006,12 @@ mod tests {
         set(&copy, "https://e.com/", "c=3");
         assert_eq!(sent(&copy, "https://e.com/"), ["a=1", "b=2", "c=3"]);
         assert!(copy.restore("not json").is_err());
+        // Expiry times come back to the last bit (one a CI run caught
+        // coming back an ulp off).
+        let t = 1792057149.6901367_f64;
+        assert_eq!(
+            serde_json::from_str::<f64>(&serde_json::to_string(&t).unwrap()).unwrap(),
+            t
+        );
     }
 }
