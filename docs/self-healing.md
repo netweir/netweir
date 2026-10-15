@@ -26,8 +26,9 @@ In a crawl, a request that fails climbs a ladder:
    retried after a random wait that grows each time (`backoff_base`,
    `backoff_max`), up to `retries` times. Other 4xx and 402 aren't retried.
 2. A block replaces the site's session: an empty cookie jar, and the next of
-   `proxies` if you gave any. [Proxies](#proxies) has the other ways to
-   use them.
+   `proxies` if you gave any. A jar you named with `meta["cookiejar"]` is
+   kept (see [Sessions and cookies](sessions.md)). [Proxies](#proxies)
+   has the other ways to use them.
 3. Blocks and 429s slow the site down; Retry-After is honoured.
 4. A site that blocked more than `breaker_ratio` of its last
    `breaker_window` responses is paused for `breaker_pause` seconds, with
