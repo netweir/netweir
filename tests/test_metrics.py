@@ -366,7 +366,9 @@ def test_the_stats_file_is_rewritten_while_the_crawl_runs(base, tmp_path, monkey
         done.set()
         watcher.join()
     live = [s for s in snapshots if s["finish_reason"] is None]
-    assert live and 0 < live[-1]["fetched"] < 10
+    # Some rewrite caught the crawl part way. The last one before the end
+    # may already count all ten: the fetching is over before the crawl is.
+    assert any(0 < s["fetched"] < 10 for s in live), live
     final = json.loads(path.read_text(encoding="utf-8"))
     assert final["finish_reason"] == "finished" and final["fetched"] == 10
     assert not list(tmp_path.glob("*.tmp"))
