@@ -56,7 +56,12 @@ class Handler(BaseHTTPRequestHandler):
             who = self.headers.get("Authorization") or "nobody"
             self.send(200, f"<h1>{who}</h1>".encode(), [("Content-Type", "text/html")])
         elif path == "/redirect":
-            self.send(302, b"moved", [("Location", args["to"]), ("Set-Cookie", "r=1; Path=/")])
+            # A line break would end the header: only a plain URL.
+            to = args["to"]
+            if any(c in to for c in "\r\n"):
+                self.send(400, b"bad to")
+                return
+            self.send(302, b"moved", [("Location", to), ("Set-Cookie", "r=1; Path=/")])
         elif path == "/loop":
             self.send(302, b"", [("Location", "/loop")])
         elif path == "/slow":
@@ -75,6 +80,7 @@ def start(tls=False):
     servers = serve(Handler)
     if tls:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(TLS / "server.pem", TLS / "server.key")
         for s in servers:
             s.socket = context.wrap_socket(s.socket, server_side=True)

@@ -26,9 +26,21 @@ fn with(policy: Policy) -> Outgoing {
     outgoing
 }
 
+/// A password made as the test runs: none sits in the source.
+fn password() -> String {
+    format!("pw-{}", std::process::id())
+}
+
+/// The Authorization a login of ada's with `password()` makes, worked
+/// out here rather than by netweir.
+fn basic() -> String {
+    let pair = format!("ada:{}", password());
+    format!("Basic {}", data_encoding::BASE64.encode(pair.as_bytes()))
+}
+
 fn login(domain: Option<&str>) -> Policy {
     Policy {
-        auth: Some(Auth::new("ada", "secret", domain.map(str::to_string))),
+        auth: Some(Auth::new("ada", password(), domain.map(str::to_string))),
         ..Default::default()
     }
 }
@@ -179,18 +191,13 @@ async fn a_login_is_sent_as_basic_to_the_requests_own_origin() {
     let url = format!("https://localhost:{port}/redirect?to=/after");
     fetcher().send(&url, &with(login(None)), &[]).await.unwrap();
     for c in captures(&mut server, 2).await {
-        assert_eq!(
-            authorization(&c),
-            Some("Basic YWRhOnNlY3JldA=="),
-            "{}",
-            c.path
-        );
+        assert_eq!(authorization(&c), Some(basic().as_str()), "{}", c.path);
     }
     // Another origin after the redirect: it stays behind.
     let url = format!("https://localhost:{port}/redirect?to=https://127.0.0.1:{port}/after");
     fetcher().send(&url, &with(login(None)), &[]).await.unwrap();
     let seen = captures(&mut server, 2).await;
-    assert_eq!(authorization(&seen[0]), Some("Basic YWRhOnNlY3JldA=="));
+    assert_eq!(authorization(&seen[0]), Some(basic().as_str()));
     assert_eq!(authorization(&seen[1]), None, "leaked to another origin");
 }
 
@@ -206,20 +213,20 @@ async fn a_login_for_a_domain_goes_to_that_domain_alone() {
         .unwrap();
     let seen = captures(&mut server, 2).await;
     assert_eq!(authorization(&seen[0]), None, "sent to localhost");
-    assert_eq!(authorization(&seen[1]), Some("Basic YWRhOnNlY3JldA=="));
+    assert_eq!(authorization(&seen[1]), Some(basic().as_str()));
     // For localhost: there, and not on to 127.0.0.1.
     fetcher()
         .send(&away, &with(login(Some("LOCALHOST"))), &[])
         .await
         .unwrap();
     let seen = captures(&mut server, 2).await;
-    assert_eq!(authorization(&seen[0]), Some("Basic YWRhOnNlY3JldA=="));
+    assert_eq!(authorization(&seen[0]), Some(basic().as_str()));
     assert_eq!(authorization(&seen[1]), None, "leaked to 127.0.0.1");
 }
 
 #[test]
 fn a_domain_covers_its_subdomains_and_nothing_that_merely_ends_like_it() {
-    let auth = Auth::new("ada", "secret", Some("example.com".into()));
+    let auth = Auth::new("ada", password(), Some("example.com".into()));
     let applies = |url: &str| auth.applies(&url::Url::parse(url).unwrap(), None);
     assert!(applies("https://example.com/"));
     assert!(applies("https://intranet.Example.com./a"));
@@ -269,7 +276,7 @@ async fn the_callers_own_authorization_wins_over_a_login() {
 #[test]
 fn a_login_never_shows_its_password_in_debug_output() {
     let shown = format!("{:?}", with(login(Some("example.com"))));
-    assert!(!shown.contains("secret"), "{shown}");
+    assert!(!shown.contains(&password()), "{shown}");
     assert!(shown.contains("ada"), "{shown}");
 }
 

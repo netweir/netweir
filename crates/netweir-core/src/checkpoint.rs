@@ -603,7 +603,11 @@ mod tests {
                 timeout: Some(Duration::from_millis(2500)),
                 max_redirects: Some(4),
                 dont_redirect: true,
-                auth: Some(crate::Auth::new("ada", "s3cret", Some("e.com".into()))),
+                auth: Some(crate::Auth::new(
+                    "ada",
+                    format!("pw-{}", std::process::id()),
+                    Some("e.com".into()),
+                )),
             },
         }
     }

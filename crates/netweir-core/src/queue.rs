@@ -1250,7 +1250,11 @@ pub(crate) mod tests {
                 timeout: Some(Duration::from_secs(5)),
                 max_redirects: Some(0),
                 dont_redirect: false,
-                auth: Some(crate::Auth::new("ada", "secret", None)),
+                auth: Some(crate::Auth::new(
+                    "ada",
+                    format!("pw-{}", std::process::id()),
+                    None,
+                )),
             },
         }
     }
