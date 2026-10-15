@@ -747,6 +747,11 @@ const FOREGROUND: &[&str] = &[
     "--disable-background-timer-throttling",
 ];
 
+/// The switches each probe was started with, for the tests that count
+/// them.
+#[cfg(test)]
+static PROBED: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+
 /// What a headless Chrome at `executable` says it is: its user agent and
 /// its client hints, which only asking it tells exactly, and only before
 /// a --user-agent flag empties the hints. The first time, it's started once
@@ -755,7 +760,14 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
     // By the file as it is now, so a Chrome updated in place is asked
     // again, and by the switches it's started with.
     type Key = (PathBuf, Option<std::time::SystemTime>, u64, Vec<String>);
-    static KNOWN: Mutex<Option<HashMap<Key, (String, Value)>>> = Mutex::new(None);
+    type Answer = Arc<tokio::sync::OnceCell<Result<(String, Value)>>>;
+    // One probe for each key at a time, whose outcome every launch waiting
+    // on it takes: each asking on its own started a Chrome apiece at the
+    // moment a fresh machine is slowest to start one, and two at once on
+    // a new Windows runner both sat over 30 seconds on their first
+    // Target.createTarget. An answer is kept; a failure goes to those
+    // already waiting and no further, so the next launch asks again.
+    static KNOWN: Mutex<Option<HashMap<Key, Answer>>> = Mutex::new(None);
     let meta = std::fs::metadata(executable).ok();
     let key: Key = (
         executable.to_path_buf(),
@@ -764,14 +776,34 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
         // Switches can change what Chrome says it is.
         extra.to_vec(),
     );
-    if let Some(known) = KNOWN
+    let answer = KNOWN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(HashMap::new)
-        .get(&key)
-    {
-        return Ok(known.clone());
+        .entry(key.clone())
+        .or_default()
+        .clone();
+    let outcome = answer
+        .get_or_init(|| ask_identity(executable, extra))
+        .await
+        .clone();
+    if outcome.is_err() {
+        let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+        let map = known.get_or_insert_with(HashMap::new);
+        if map.get(&key).is_some_and(|a| Arc::ptr_eq(a, &answer)) {
+            map.remove(&key);
+        }
     }
+    outcome
+}
+
+/// Starts a headless Chrome at `executable` to ask what it is.
+async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Value)> {
+    #[cfg(test)]
+    PROBED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(extra.to_vec());
     let temp = launch::TempProfile::make()
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
     let profile = temp.dir().to_path_buf();
@@ -818,16 +850,10 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
     .await;
     // What it said counts even if it then wouldn't close cleanly.
     let _ = probe.close().await;
-    let known = asked.map_err(|e| match e {
+    asked.map_err(|e| match e {
         Error::Launch(message) => Error::Launch(said.explain(message)),
         other => other,
-    })?;
-    KNOWN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(key, known.clone());
-    Ok(known)
+    })
 }
 
 /// `host:port`, `host`, `[::1]:port` or `[::1]`, with 443 by default.
@@ -1197,5 +1223,66 @@ mod tests {
     #[test]
     fn brands_that_dont_parse_leave_chromes_own() {
         assert!(parse_brands("nonsense").is_empty());
+    }
+
+    /// A switch Chrome ignores, new each time, so nothing is known yet
+    /// for it and no other test's probe has it.
+    fn fresh_switch() -> Vec<String> {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![format!("--netweir-test-probe={}-{n}", std::process::id())]
+    }
+
+    /// How many probes have been started with these switches.
+    fn probes(extra: &[String]) -> usize {
+        let probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+        probed.iter().filter(|p| p.as_slice() == extra).count()
+    }
+
+    #[tokio::test]
+    async fn launches_at_once_ask_chrome_what_it_is_once() {
+        let executable = match launch::find_chrome() {
+            Ok(path) => path,
+            Err(e) if std::env::var_os("NETWEIR_REQUIRE_CHROME").is_some() => panic!("{e}"),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let extra = fresh_switch();
+        let (a, b) = tokio::join!(
+            headless_identity(&executable, &extra),
+            headless_identity(&executable, &extra)
+        );
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(probes(&extra), 1);
+        // And the answer is kept.
+        headless_identity(&executable, &extra).await.unwrap();
+        assert_eq!(probes(&extra), 1);
+    }
+
+    /// A probe that fails fails every launch waiting on it at once, and
+    /// the next launch asks again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_probe_fails_those_waiting_and_no_more() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("netweir-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A "Chrome" that says nothing for a second, then exits.
+        let fake = dir.join("chrome");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 1\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let extra = fresh_switch();
+        let started = std::time::Instant::now();
+        let (a, b, c) = tokio::join!(
+            headless_identity(&fake, &extra),
+            headless_identity(&fake, &extra),
+            headless_identity(&fake, &extra)
+        );
+        assert!(a.is_err() && b.is_err() && c.is_err());
+        assert_eq!(probes(&extra), 1, "each waiting launch started its own");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(headless_identity(&fake, &extra).await.is_err());
+        assert_eq!(probes(&extra), 2, "the failure was kept for later launches");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
