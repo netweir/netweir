@@ -1,4 +1,5 @@
-"""What a page fetches, from Python: listeners, waiters and routes.
+"""What a page fetches, from Python: listeners, waiters and routes; and
+the popups, downloads and dialogs it starts.
 
 Each page (and each shared context) keeps one ``Network``. Chrome's events
 reach it only while something listens or waits, and nothing is kept for
@@ -15,13 +16,13 @@ import re
 from typing import Any
 
 from netweir._errors import BrowserError, BrowserTimeout
-from netweir._native import BrowserResponse, _glob_match
+from netweir._native import BrowserDownload, BrowserPage, BrowserResponse, _glob_match
 
 log = logging.getLogger("netweir")
 
 
 def _check(pattern: Any) -> None:
-    if not (isinstance(pattern, (str, re.Pattern)) or callable(pattern)):
+    if not (pattern is None or isinstance(pattern, (str, re.Pattern)) or callable(pattern)):
         raise TypeError(
             "a pattern is a glob string, a compiled regex or a callable, not "
             f"{type(pattern).__name__}"
@@ -49,10 +50,7 @@ class Network:
     def __init__(self, parent: Network | None):
         # A page in a shared context falls back on the context's routes.
         self._parent = parent
-        self._listeners: dict[str, list[tuple[Any, asyncio.AbstractEventLoop]]] = {
-            "request": [],
-            "response": [],
-        }
+        self._listeners: dict[str, list[tuple[Any, asyncio.AbstractEventLoop]]] = _no_listeners()
         self._waiters: list[tuple[str, Any, asyncio.Future]] = []
         self._pump: asyncio.Task | None = None
         self._events: Any = None
@@ -62,6 +60,9 @@ class Network:
         self._route_lock: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
         # Callbacks and handlers running, so they aren't collected midway.
         self._tasks: set[asyncio.Task] = set()
+        self._dialog_listeners: list[Any] = []
+        self._dialog_pump: asyncio.Task | None = None
+        self._dialogs: Any = None
 
     # Listening and waiting.
 
@@ -98,7 +99,7 @@ class Network:
         try:
             return await asyncio.wait_for(future, timeout)
         except asyncio.TimeoutError:
-            raise BrowserTimeout(f"timed out: waiting for a {kind} matching {pattern!r}") from None
+            raise BrowserTimeout(f"timed out: waiting for a {_what(kind, pattern)}") from None
         finally:
             self._waiters = [w for w in self._waiters if w[2] is not future]
             self._idle()
@@ -120,7 +121,7 @@ class Network:
             self._events = None
 
     def _wanted(self) -> bool:
-        return bool(self._waiters or self._listeners["request"] or self._listeners["response"])
+        return bool(self._waiters or any(self._listeners.values()))
 
     def _idle(self) -> None:
         """Stops listening once nothing listens or waits: Chrome's events
@@ -138,7 +139,7 @@ class Network:
                 # listeners and waits go with it, as they'd never run again.
                 # Known limit: so do any another loop added meanwhile; a
                 # page's listeners are meant for one loop at a time.
-                self._listeners = {"request": [], "response": []}
+                self._listeners = _no_listeners()
                 self._waiters = []
                 self._pump = None
                 if self._events is events:
@@ -150,13 +151,13 @@ class Network:
             self._pump = None
             self._events = None
         for kind, pattern, future in self._waiters:
-            error = BrowserError(f"the page closed before a {kind} matching {pattern!r}")
+            error = BrowserError(f"the page closed before a {_what(kind, pattern)}")
             _soon(future.get_loop(), _fail, future, error)
 
     async def _dispatch(self, event: Any) -> None:
         # Each wait and listener is run on the event loop that added it,
         # which needn't be this one (another thread's, say).
-        kind = "response" if isinstance(event, BrowserResponse) else "request"
+        kind = _kind(event)
         for waiter_kind, pattern, future in list(self._waiters):
             if waiter_kind == kind and not future.done():
                 _soon(future.get_loop(), self._judge, pattern, event, future)
@@ -168,7 +169,9 @@ class Network:
         if future.done():
             return
         try:
-            if isinstance(pattern, str):
+            if pattern is None:
+                matched = True
+            elif isinstance(pattern, str):
                 matched = _glob_match(pattern, event.url)
             elif isinstance(pattern, re.Pattern):
                 matched = pattern.search(event.url) is not None
@@ -206,6 +209,51 @@ class Network:
                 log.error("%s raised", what, exc_info=task.exception())
 
         task.add_done_callback(done)
+
+    # Dialogs. They come through a stream of their own, taken only while
+    # a dialog listener is added: one the listeners don't answer is
+    # answered the default way when they return, and with no listeners
+    # Chrome's side answers every one at once.
+
+    def on_dialog(self, owner: Any, callback: Any) -> None:
+        if not callable(callback):
+            raise TypeError("the listener must be callable")
+        self._dialog_listeners.append(callback)
+        # A pump that's done went with the event loop it ran on.
+        if self._dialog_pump is None or self._dialog_pump.done():
+            self._stop_dialogs()
+            self._dialogs = owner._dialogs()
+            self._dialog_pump = asyncio.ensure_future(self._take_dialogs(self._dialogs))
+
+    def off_dialog(self, callback: Any) -> None:
+        self._dialog_listeners = [c for c in self._dialog_listeners if c != callback]
+        if not self._dialog_listeners:
+            self._stop_dialogs()
+
+    def _stop_dialogs(self) -> None:
+        if self._dialog_pump is not None:
+            self._dialog_pump.cancel()
+            self._dialog_pump = None
+        if self._dialogs is not None:
+            # Dialogs not yet taken, and those to come, get the default.
+            self._dialogs.close()
+            self._dialogs = None
+
+    async def _take_dialogs(self, dialogs: Any) -> None:
+        try:
+            while (dialog := await dialogs.next()) is not None:
+                listeners = list(self._dialog_listeners)
+                self._track(asyncio.ensure_future(_answer(dialog, listeners)), "a dialog listener")
+        except asyncio.CancelledError:
+            if self._dialog_pump is asyncio.current_task():
+                # The event loop is ending: its listeners can't run any
+                # more, and dialogs get the default rather than wait.
+                self._dialog_listeners = []
+                self._dialog_pump = None
+                if self._dialogs is dialogs:
+                    self._dialogs = None
+                dialogs.close()
+            raise
 
     # Routing.
 
@@ -274,6 +322,37 @@ class Network:
                 self._routes = []
                 drop()
             raise
+
+
+def _no_listeners() -> dict[str, list[tuple[Any, asyncio.AbstractEventLoop]]]:
+    return {"request": [], "response": [], "popup": [], "download": []}
+
+
+def _kind(event: Any) -> str:
+    if isinstance(event, BrowserResponse):
+        return "response"
+    if isinstance(event, BrowserPage):
+        return "popup"
+    if isinstance(event, BrowserDownload):
+        return "download"
+    return "request"
+
+
+def _what(kind: str, pattern: Any) -> str:
+    return kind if pattern is None else f"{kind} matching {pattern!r}"
+
+
+async def _answer(dialog: Any, listeners: list[Any]) -> None:
+    """Runs each dialog listener in turn; a dialog they leave unanswered,
+    or raise over, is answered the default way."""
+    try:
+        for callback in listeners:
+            try:
+                await _call(callback, dialog)
+            except Exception:
+                log.exception("a dialog listener raised for %r", dialog)
+    finally:
+        dialog._release()
 
 
 def _soon(loop: asyncio.AbstractEventLoop, call: Any, *args: Any) -> None:

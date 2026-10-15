@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Reply, browser, html, serve};
-use netweir_browser::{Continue, Error, NetworkEvent, Response, WaitUntil};
+use netweir_browser::{Continue, Error, PageEvent, Response, WaitUntil};
 use serde_json::json;
 
 const SHOP: &str = r#"<!DOCTYPE html><img src="/cat.png">
@@ -44,13 +44,13 @@ fn shop() -> common::Server {
 
 /// The next response whose URL ends with `tail`.
 async fn response_to(
-    events: &mut tokio::sync::mpsc::UnboundedReceiver<NetworkEvent>,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<PageEvent>,
     tail: &str,
 ) -> Response {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match events.recv().await {
-                Some(NetworkEvent::Response(r)) if r.url.ends_with(tail) => return r,
+                Some(PageEvent::Response(r)) if r.url.ends_with(tail) => return r,
                 Some(_) => {}
                 None => panic!("the page stopped telling before {tail}"),
             }
@@ -717,8 +717,8 @@ async fn a_frame_from_another_site_is_routed_and_heard() {
     let api = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match events.recv().await {
-                Some(NetworkEvent::Request(r)) if r.url.ends_with("/api") => asked = true,
-                Some(NetworkEvent::Response(r)) if r.url.ends_with("/api") => return r,
+                Some(PageEvent::Request(r)) if r.url.ends_with("/api") => asked = true,
+                Some(PageEvent::Response(r)) if r.url.ends_with("/api") => return r,
                 Some(_) => {}
                 None => panic!("the page stopped telling before /api"),
             }
@@ -863,8 +863,8 @@ async fn a_workers_requests_are_routed_and_heard() {
         let mut heard = 0;
         while let Some(event) = events.recv().await {
             match event {
-                NetworkEvent::Request(r) if r.url.ends_with("/secret-api") => heard += 1,
-                NetworkEvent::Request(r) if r.url.ends_with("/api") => return heard,
+                PageEvent::Request(r) if r.url.ends_with("/secret-api") => heard += 1,
+                PageEvent::Request(r) if r.url.ends_with("/api") => return heard,
                 _ => {}
             }
         }

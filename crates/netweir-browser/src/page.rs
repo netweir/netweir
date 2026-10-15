@@ -13,9 +13,10 @@ use tokio::time::Instant;
 
 use crate::browser::{Inner, context_cookies, set_context_cookies, str_of};
 use crate::conn::{Connection, GONE, Handler};
+use crate::events::{Dialog, Downloads, PageEvent};
 use crate::frame::Frame;
 use crate::network::{
-    Decider, NetworkEvent, Request, Route, SharedRules, chrome_type, headers_of, lock, went_away,
+    Decider, Request, Route, SharedRules, chrome_type, headers_of, lock, went_away,
 };
 use crate::{Error, Result};
 
@@ -156,6 +157,25 @@ pub(crate) struct PageInner {
     decider: Arc<Decider>,
     /// What the last scroll to the bottom did, turn by turn.
     pub(crate) scroll_trace: Mutex<Vec<String>>,
+    /// The shared context it's in, whose routes it has.
+    shared_context: Option<Arc<ContextRules>>,
+    /// The pages it opened, which have its rules too.
+    popups: Mutex<Vec<Weak<PageInner>>>,
+    /// The target of the tab in front, of those in its window: a popup
+    /// opens as a tab in front of its opener, which Chrome then counts
+    /// as hidden, and shares this with it.
+    front: Arc<Mutex<String>>,
+}
+
+/// How a page comes to be: in which context, guarded by what, and opened
+/// by which page, if it's a popup.
+struct Opening {
+    context: Option<String>,
+    /// Whether closing the page disposes of its context.
+    owns_context: bool,
+    guard: Option<crate::browser::Guard>,
+    shared_context: Option<Arc<ContextRules>>,
+    opener: Option<Page>,
 }
 
 /// The rules of a shared context, and its pages, to tell when they
@@ -200,7 +220,9 @@ pub(crate) struct State {
     /// id: each session numbers its requests its own way.
     loading: HashMap<(String, String), String>,
     /// Where requests and responses go, while anyone listens.
-    listeners: Vec<tokio::sync::mpsc::UnboundedSender<NetworkEvent>>,
+    listeners: Vec<tokio::sync::mpsc::UnboundedSender<PageEvent>>,
+    /// Where dialogs go, while anyone answers them.
+    dialogs: Option<tokio::sync::mpsc::UnboundedSender<Dialog>>,
     /// Frames Chrome runs in processes of their own (from other sites),
     /// each with a session: (session, frame id), in the order they came.
     pub(crate) children: Vec<(String, String)>,
@@ -266,7 +288,7 @@ impl State {
                 }
                 self.loading
                     .insert((session.to_string(), id), request.method.clone());
-                self.tell(NetworkEvent::Request(request));
+                self.tell(PageEvent::Request(request));
             }
             "Network.loadingFinished" | "Network.loadingFailed" => {
                 self.loading
@@ -297,19 +319,20 @@ impl State {
                     self.responses
                         .insert(response.loader.clone(), response.clone());
                 }
-                self.tell(NetworkEvent::Response(response));
+                self.tell(PageEvent::Response(response));
             }
             "Inspector.targetCrashed" | GONE => {
                 self.gone = true;
                 // Listeners hear there's nothing more: their receivers end.
                 self.listeners.clear();
+                self.dialogs = None;
             }
             _ => {}
         }
     }
 
     /// Passes `event` to whoever is listening; nothing is kept for later.
-    fn tell(&mut self, event: NetworkEvent) {
+    fn tell(&mut self, event: PageEvent) {
         if !self.listeners.is_empty() {
             self.listeners.retain(|l| l.send(event.clone()).is_ok());
         }
@@ -348,7 +371,6 @@ impl Page {
         guard: Option<crate::browser::Guard>,
         shared_context: Option<Arc<ContextRules>>,
     ) -> Result<Page> {
-        let conn = &browser.conn;
         let mut params = json!({"url": "about:blank"});
         if let Some(id) = &context {
             params["browserContextId"] = Value::from(id.as_str());
@@ -367,13 +389,78 @@ impl Page {
                 .await?,
             "sessionId",
         );
+        let opening = Opening {
+            context,
+            owns_context,
+            guard,
+            shared_context,
+            opener: None,
+        };
+        Page::start(browser, target, session, opening).await
+    }
+
+    /// Takes on a popup `opener` opened, which Chrome holds on `session`
+    /// until it's set up as any page is, then lets it run and tells the
+    /// opener's listeners. One whose setup fails is closed, with a
+    /// warning, rather than left to fetch without its rules.
+    pub(crate) async fn adopt(opener: Page, target: String, session: String) {
+        let o = &opener.inner;
+        let opening = Opening {
+            context: o.context.clone(),
+            owns_context: false,
+            guard: o.decider.guard.clone(),
+            shared_context: o.shared_context.clone(),
+            opener: Some(opener.clone()),
+        };
+        match Page::start(o.browser.clone(), target, session.clone(), opening).await {
+            Ok(popup) => {
+                o.popups
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Arc::downgrade(&popup.inner));
+                opener.state().tell(PageEvent::Popup(popup));
+            }
+            Err(e) if went_away(&e) => {}
+            Err(e) => crate::warn(&format!(
+                "a popup of the page at {} was closed: it couldn't be set up to fetch as its \
+                 opener does: {e}",
+                opener.url()
+            )),
+        }
+    }
+
+    async fn start(
+        browser: Arc<Inner>,
+        target: String,
+        session: String,
+        opening: Opening,
+    ) -> Result<Page> {
+        let Opening {
+            context,
+            owns_context,
+            guard,
+            shared_context,
+            opener,
+        } = opening;
+        let conn = &browser.conn;
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::default()),
+            // A page's main frame has its target's id; known from the
+            // start, a popup's first response, which can come before the
+            // frame tree does, is its document's.
+            state: Mutex::new(State {
+                frame: target.clone(),
+                ..State::default()
+            }),
             changed: Notify::new(),
         });
         let rules = SharedRules::default();
         let mut all_rules = vec![rules.clone()];
-        all_rules.extend(shared_context.as_ref().map(|c| c.rules.clone()));
+        // A popup has its own rules, then its opener's (the context's
+        // among them).
+        match &opener {
+            Some(opener) => all_rules.extend(opener.inner.decider.rules.iter().cloned()),
+            None => all_rules.extend(shared_context.as_ref().map(|c| c.rules.clone())),
+        }
         // Holds the connection, not the browser: the connection holds the
         // handler that holds this, and the browser would never be let go.
         let decider = Arc::new(Decider {
@@ -416,6 +503,9 @@ impl Page {
         let watch = Arc::new(Watch {
             conn: conn.clone(),
             shared: shared.clone(),
+            downloads: browser.downloads.clone(),
+            context: context.clone(),
+            opener: opener.as_ref().map(|o| o.inner.shared.clone()),
             intercept: Intercept {
                 conn: conn.clone(),
                 session: session.clone(),
@@ -429,6 +519,14 @@ impl Page {
         let own = session.clone();
         let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
         conn.on(&session, handler);
+        let front = match &opener {
+            Some(opener) => {
+                let front = opener.inner.front.clone();
+                *front.lock().unwrap_or_else(|e| e.into_inner()) = target.clone();
+                front
+            }
+            None => Arc::new(Mutex::new(target.clone())),
+        };
         let page = Page {
             inner: Arc::new(PageInner {
                 browser: browser.clone(),
@@ -442,44 +540,104 @@ impl Page {
                 rules,
                 decider,
                 scroll_trace: Mutex::default(),
+                shared_context: shared_context.clone(),
+                popups: Mutex::default(),
+                front,
             }),
         };
+        {
+            let mut pages = browser.pages.lock().unwrap_or_else(|e| e.into_inner());
+            pages.retain(|p| p.strong_count() > 0);
+            pages.push(Arc::downgrade(&page.inner));
+        }
         if let Some(c) = &shared_context {
             c.pages
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(Arc::downgrade(&page.inner));
         }
-        let setup = async {
-            page.call("Page.enable", json!({})).await?;
-            page.call("Page.setLifecycleEventsEnabled", json!({"enabled": true}))
-                .await?;
-            page.call("Network.enable", json!({})).await?;
-            page.refresh_fetch().await?;
-            // Frames from other sites run in processes of their own, and
-            // are reached through sessions of their own.
-            page.call("Target.setAutoAttach", auto_attach()).await?;
+        type Step<'a> =
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
+        let setup = {
+            let me = &page;
+            let call = |method: &'static str, params: Value| -> Step<'_> {
+                Box::pin(async move { me.call(method, params).await.map(drop) })
+            };
+            let mut steps = vec![
+                call("Page.enable", json!({})),
+                call("Page.setLifecycleEventsEnabled", json!({"enabled": true})),
+                call("Network.enable", json!({})),
+                Box::pin(page.refresh_fetch()),
+                // Frames from other sites run in processes of their own, and
+                // are reached through sessions of their own.
+                call("Target.setAutoAttach", auto_attach()),
+            ];
             if let Some(identity) = identity {
-                page.call("Network.setUserAgentOverride", identity).await?;
+                steps.push(call("Network.setUserAgentOverride", identity));
             }
-            let tree = page.call("Page.getFrameTree", json!({})).await?;
-            let frame = &tree["frameTree"]["frame"];
-            let mut state = page.state();
-            if state.frame.is_empty() {
-                state.frame = str_of(frame, "id");
-                state.url = str_of(frame, "url");
-                state.loader = str_of(frame, "loaderId");
-                let loader = state.loader.clone();
-                state.committed.push(loader);
+            steps.push(Box::pin(async {
+                let tree = page.call("Page.getFrameTree", json!({})).await?;
+                let frame = &tree["frameTree"]["frame"];
+                let mut state = page.state();
+                // Unless a document has committed meanwhile.
+                if state.loader.is_empty() {
+                    state.frame = str_of(frame, "id");
+                    state.url = str_of(frame, "url");
+                    state.loader = str_of(frame, "loaderId");
+                    let loader = state.loader.clone();
+                    state.committed.push(loader);
+                }
+                Ok(())
+            }));
+            // Each step sends its command the first time it's polled, in
+            // order, so all of them have gone out after one poll. A popup,
+            // which Chrome holds, is let go after them: Chrome takes a
+            // session's commands in the order they come, so it runs set up,
+            // and some answers (Page.enable's) only come once it runs.
+            let mut setup = Box::pin(futures_util::future::try_join_all(steps));
+            let first = futures_util::future::poll_immediate(&mut setup).await;
+            if opener.is_some() {
+                conn.send(
+                    &page.inner.session,
+                    "Runtime.runIfWaitingForDebugger",
+                    json!({}),
+                );
             }
-            Ok(())
-        }
-        .await;
+            match first {
+                Some(done) => done,
+                None => setup.await,
+            }
+        };
         if let Err(e) = setup {
             let _ = page.close().await;
             return Err(e);
         }
         Ok(page)
+    }
+
+    /// Whether the target `id` is this page, or one of its frames from
+    /// other sites: what a popup's opener can be.
+    pub(crate) fn opened(&self, id: &str) -> bool {
+        self.inner.target == id || self.state().children.iter().any(|(_, frame)| frame == id)
+    }
+
+    /// Brings the page's tab in front of a popup it opened (or of its
+    /// opener, for a popup), as a person switches to the tab they're
+    /// about to use: in a tab behind, Chrome runs no animation frames and
+    /// routes the mouse elsewhere. Nothing is sent for a page in front.
+    pub(crate) async fn to_front(&self) -> Result<()> {
+        let target = &self.inner.target;
+        if *self.inner.front.lock().unwrap_or_else(|e| e.into_inner()) == *target {
+            return Ok(());
+        }
+        self.call("Page.bringToFront", json!({})).await?;
+        *self.inner.front.lock().unwrap_or_else(|e| e.into_inner()) = target.clone();
+        Ok(())
+    }
+
+    /// The runtime the page's own tasks run on.
+    pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
+        self.inner.decider.runtime.clone()
     }
 
     pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -646,6 +804,29 @@ impl Page {
         Ok(self.response_for(None))
     }
 
+    /// Waits until the document showing now, or one that replaced it,
+    /// reaches `wait`, and returns the response of the document showing
+    /// then. For a popup just opened, that's the document it was opened
+    /// for: the empty one Chrome shows first never loads.
+    pub async fn wait_for_load(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Response> {
+        let event = wait.event();
+        let (loader, url) = {
+            let state = self.state();
+            (state.loader.clone(), state.url.clone())
+        };
+        self.until(
+            || format!("{event} of the page at {url}"),
+            self.timeout(timeout),
+            |s| s.reached(&loader, event),
+        )
+        .await?;
+        Ok(self.response_for(None))
+    }
+
     fn response_for(&self, loader: Option<&str>) -> Response {
         let state = self.state();
         let loader = loader.unwrap_or(&state.loader);
@@ -668,12 +849,27 @@ impl Page {
     /// Hears about every request the page makes and every response it
     /// gets, from now until the receiver is dropped or the page closes.
     /// Nothing is kept for a page nobody listens to.
-    pub fn listen(&self) -> tokio::sync::mpsc::UnboundedReceiver<NetworkEvent> {
+    pub fn listen(&self) -> tokio::sync::mpsc::UnboundedReceiver<PageEvent> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = self.state();
         // A page that's gone has nothing more to say: the receiver ends.
         if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
             state.listeners.push(tx);
+        }
+        rx
+    }
+
+    /// Hands every dialog the page opens to the receiver, from now until
+    /// it's dropped, the page closes, or this is called again (which
+    /// ends the last receiver). A dialog the receiver's holder doesn't
+    /// answer is answered the default way once dropped, or after the
+    /// browser's timeout; with no receiver, at once. Answers wait until
+    /// a person could have given them.
+    pub fn dialogs(&self) -> tokio::sync::mpsc::UnboundedReceiver<Dialog> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = self.state();
+        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
+            state.dialogs = Some(tx);
         }
         rx
     }
@@ -766,8 +962,29 @@ impl Page {
     /// Has the Fetch domain pause what the page's rules, its context's,
     /// its guard and its proxy's login need, and nothing else, in every
     /// session the page has; or turns it off when nothing does. Page
-    /// script can't see the Fetch domain.
+    /// script can't see the Fetch domain. Its popups, which have its
+    /// rules too, are brought up to date after it.
     pub(crate) async fn refresh_fetch(&self) -> Result<()> {
+        self.refresh_own_fetch().await?;
+        let popups: Vec<Page> = {
+            let mut popups = self.inner.popups.lock().unwrap_or_else(|e| e.into_inner());
+            popups.retain(|p| p.strong_count() > 0);
+            popups
+                .iter()
+                .filter_map(Weak::upgrade)
+                .map(|inner| Page { inner })
+                .collect()
+        };
+        for popup in popups {
+            match Box::pin(popup.refresh_fetch()).await {
+                Err(e) if !went_away(&e) => return Err(e),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_own_fetch(&self) -> Result<()> {
         let decider = &self.inner.decider;
         let mut on = decider.fetching.lock().await;
         let patterns = decider.patterns();
@@ -937,6 +1154,7 @@ impl Page {
     /// a name such as "Enter", "Tab", "Escape", "Backspace" or "ArrowDown".
     pub async fn press(&self, key: &str) -> Result<()> {
         let k = Key::of(key)?;
+        self.to_front().await?;
         let mut down = json!({
             "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
             "key": k.key,
@@ -1104,6 +1322,7 @@ impl Page {
                     json!({"browserContextId": id}),
                 )
                 .await;
+            self.inner.browser.downloads.remove(Some(id));
         }
         match closed {
             Ok(_) | Err(Error::Closed) | Err(Error::Protocol { .. }) => Ok(()),
@@ -1219,6 +1438,12 @@ struct Watch {
     /// The user agent override the page's own session has, for the
     /// others too.
     identity: Option<Value>,
+    /// Downloads under way, and their folders.
+    downloads: Arc<Downloads>,
+    /// The page's context; None for the default one.
+    context: Option<String>,
+    /// For a popup, its opener's.
+    opener: Option<Arc<Shared>>,
 }
 
 impl Watch {
@@ -1229,6 +1454,27 @@ impl Watch {
             "Target.attachedToTarget" | "Target.detachedFromTarget" => {
                 return self.adopt(session, method, params);
             }
+            // Chrome tells the page's own session of a frame's dialog
+            // too, and only that session has the Page domain.
+            "Page.javascriptDialogOpening" => {
+                let decider = &self.intercept.decider;
+                let dialog = Dialog::opened(
+                    &self.conn,
+                    session,
+                    params,
+                    decider.timeout,
+                    &decider.runtime,
+                );
+                // Nobody listening drops it, which answers it.
+                let mut state = lock_state(&self.shared);
+                if let Some(to) = &state.dialogs
+                    && to.send(dialog).is_err()
+                {
+                    state.dialogs = None;
+                }
+                return;
+            }
+            "Page.downloadWillBegin" => return self.download(params),
             _ => {}
         }
         // From another session, only what it fetches is the page's
@@ -1238,6 +1484,27 @@ impl Watch {
         }
         lock_state(&self.shared).on(session, method, params);
         self.shared.changed.notify_waiters();
+    }
+
+    /// Tells the page's listeners of a download it started; a popup that
+    /// never showed a document (a link to a file with a target opens one,
+    /// which Chrome closes again) tells its opener's too.
+    fn download(&self, params: &Value) {
+        let decider = &self.intercept.decider;
+        let Some(download) =
+            self.downloads
+                .begin(&self.conn, decider.timeout, self.context.as_deref(), params)
+        else {
+            return;
+        };
+        let blank = {
+            let mut state = lock_state(&self.shared);
+            state.tell(PageEvent::Download(download.clone()));
+            state.url.is_empty() || state.url == "about:blank"
+        };
+        if blank && let Some(opener) = &self.opener {
+            lock_state(opener).tell(PageEvent::Download(download));
+        }
     }
 
     /// Keeps track of the sessions of frames from other sites and of

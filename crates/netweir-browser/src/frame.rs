@@ -501,6 +501,7 @@ impl Frame {
         // the frame last drew: a click there could land on that page
         // instead, return, and do nothing.
         let deadline = Instant::now() + self.page.timeout(timeout);
+        self.page.to_front().await?;
         let (x, y) = self.over(action, selector, &checks, deadline).await?;
         self.page.mouse_press(x, y).await
     }
@@ -510,6 +511,7 @@ impl Frame {
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
         let checks = ["attached", "visible", "stable", "receives events"];
         let deadline = Instant::now() + self.page.timeout(timeout);
+        self.page.to_front().await?;
         self.over("hover", selector, &checks, deadline).await?;
         Ok(())
     }
@@ -583,6 +585,7 @@ impl Frame {
 
     /// Replaces the element's contents with `text`, as typing would.
     pub async fn fill(&self, selector: &str, text: &str, timeout: Option<Duration>) -> Result<()> {
+        self.page.to_front().await?;
         let checks = ["attached", "visible", "enabled", "editable"];
         let call = format!(
             "__netweir.check({}, {}, true)",
@@ -802,6 +805,7 @@ impl Frame {
         timeout: Option<Duration>,
     ) -> Result<u32> {
         let deadline = Instant::now() + self.page.timeout(timeout);
+        self.page.to_front().await?;
         let (dx, dy) = (x, y.unwrap_or(0.0));
         match selector {
             None if y.is_none() && x == 0.0 => {

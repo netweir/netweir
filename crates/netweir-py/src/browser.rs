@@ -6,12 +6,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use netweir_browser::{
-    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Error, Frame as CoreFrame,
-    LaunchOptions, NetFailure, NetworkEvent, Page as CorePage, Pick, Request as CoreRequest,
-    Response as CoreResponse, Route as CoreRoute, WaitUntil,
+    Browser as CoreBrowser, Context as CoreContext, Continue, Cookie, Dialog as CoreDialog,
+    Download as CoreDownload, Error, Frame as CoreFrame, LaunchOptions, NetFailure,
+    Page as CorePage, PageEvent, Pick, Request as CoreRequest, Response as CoreResponse,
+    Route as CoreRoute, WaitUntil,
 };
 use netweir_dom::Document;
-use pyo3::exceptions::{PyFileNotFoundError, PyIsADirectoryError, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyFileNotFoundError, PyIsADirectoryError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
@@ -309,6 +312,9 @@ pub struct BrowserPage {
     /// The shared context the page was opened in, whose routes it falls
     /// back on.
     context: Option<Py<BrowserContext>>,
+    /// For a popup, the page that opened it, whose routes it falls back
+    /// on (and, through it, its context's).
+    opener: Option<Py<BrowserPage>>,
     /// The page's listeners, waiters and routes, kept in Python
     /// (netweir._network).
     network: OnceLock<Py<PyAny>>,
@@ -320,6 +326,7 @@ impl BrowserPage {
             inner,
             live: None,
             context,
+            opener: None,
             network: OnceLock::new(),
         }
     }
@@ -329,14 +336,16 @@ impl BrowserPage {
             inner: live.page().clone(),
             live: Some(live),
             context: None,
+            opener: None,
             network: OnceLock::new(),
         }
     }
 
     fn network<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let parent = match &self.context {
-            Some(c) => Some(network(py, &c.get().network, None)?),
-            None => None,
+        let parent = match (&self.opener, &self.context) {
+            (Some(opener), _) => Some(opener.get().network(py)?),
+            (None, Some(c)) => Some(network(py, &c.get().network, None)?),
+            (None, None) => None,
         };
         network(py, &self.network, parent)
     }
@@ -444,6 +453,25 @@ impl BrowserPage {
                 .wait_for_navigation(&after, wait, timeout)
                 .await
                 .map_err(raise)?;
+            Ok(BrowserResponse::new(inner, &page))
+        })
+    }
+
+    /// Waits for the document showing now, or one that replaced it, to
+    /// reach `wait`: for a popup just opened, the one it was opened for.
+    /// Resolves to the BrowserResponse of the document showing then.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn wait_for_load<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wait: WaitUntil = wait.parse().map_err(raise)?;
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let inner = page.wait_for_load(wait, timeout).await.map_err(raise)?;
             Ok(BrowserResponse::new(inner, &page))
         })
     }
@@ -817,11 +845,113 @@ impl BrowserPage {
         })
     }
 
-    /// Hears every request and response from now on.
-    fn _listen(&self) -> NetworkEvents {
+    /// Calls `callback` (a function or a coroutine function) with each
+    /// dialog the page opens, a BrowserDialog. One the listeners leave
+    /// unanswered is dismissed once they return (`beforeunload` is
+    /// accepted); without listeners, every dialog is.
+    fn on_dialog<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "on_dialog", (slf, callback))
+    }
+
+    fn remove_dialog_listener<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "off_dialog", (callback,))
+    }
+
+    /// Calls `callback` with each page this one opens (a popup or a new
+    /// tab), a BrowserPage, once it's running with this page's routes.
+    fn on_popup<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "on", (slf, "popup", callback))
+    }
+
+    fn remove_popup_listener<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "off", ("popup", callback))
+    }
+
+    /// Waits for the next page this one opens.
+    #[pyo3(signature = (timeout=None))]
+    fn wait_for_popup<'py>(
+        slf: &Bound<'py, Self>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "wait", (slf, "popup", slf.py().None(), timeout))
+    }
+
+    /// `wait_for_popup` as an async context manager: `async with
+    /// page.expect_popup() as info:`, then `await info.value`.
+    #[pyo3(signature = (timeout=None))]
+    fn expect_popup<'py>(
+        slf: &Bound<'py, Self>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "expect", (slf, "popup", slf.py().None(), timeout))
+    }
+
+    /// Calls `callback` with each download the page starts, a
+    /// BrowserDownload.
+    fn on_download<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "on", (slf, "download", callback))
+    }
+
+    fn remove_download_listener<'py>(
+        slf: &Bound<'py, Self>,
+        callback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        delegate(slf, "off", ("download", callback))
+    }
+
+    /// Waits for a download whose URL matches `pattern` (a glob, a
+    /// compiled regex, or a callable taking the download); any download
+    /// without one.
+    #[pyo3(signature = (pattern=None, timeout=None))]
+    fn wait_for_download<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "wait", (slf, "download", pattern, timeout))
+    }
+
+    #[pyo3(signature = (pattern=None, timeout=None))]
+    fn expect_download<'py>(
+        slf: &Bound<'py, Self>,
+        pattern: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        seconds("timeout", timeout)?;
+        delegate(slf, "expect", (slf, "download", pattern, timeout))
+    }
+
+    /// Hears every request, response, popup and download from now on.
+    fn _listen(slf: &Bound<'_, Self>) -> NetworkEvents {
         NetworkEvents {
-            rx: Arc::new(tokio::sync::Mutex::new(self.inner.listen())),
-            page: self.inner.clone(),
+            rx: Arc::new(tokio::sync::Mutex::new(slf.get().inner.listen())),
+            page: slf.get().inner.clone(),
+            owner: slf.clone().unbind(),
+        }
+    }
+
+    /// Takes every dialog from now on, until closed or asked again.
+    fn _dialogs(&self) -> Dialogs {
+        Dialogs {
+            rx: Arc::new(tokio::sync::Mutex::new(self.inner.dialogs())),
         }
     }
 
@@ -1348,8 +1478,10 @@ impl BrowserRequest {
 /// A page's requests and responses, as they happen, for netweir._network.
 #[pyclass(frozen, module = "netweir._native")]
 pub struct NetworkEvents {
-    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<NetworkEvent>>>,
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<PageEvent>>>,
     page: CorePage,
+    /// The page's own Python object, a popup's opener.
+    owner: Py<BrowserPage>,
 }
 
 #[pymethods]
@@ -1361,24 +1493,209 @@ impl NetworkEvents {
         pyo3_async_runtimes::tokio::get_runtime().spawn(async move { rx.lock().await.close() });
     }
 
-    /// Resolves to the next BrowserRequest or BrowserResponse, or None
-    /// once the page has closed.
+    /// Resolves to the next BrowserRequest, BrowserResponse, BrowserPage
+    /// (a popup) or BrowserDownload, or None once the page has closed.
     fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let (rx, page) = (self.rx.clone(), self.page.clone());
+        let (rx, page, owner) = (self.rx.clone(), self.page.clone(), self.owner.clone_ref(py));
         crate::aio::future_into_py(py, async move {
             let event = rx.lock().await.recv().await;
-            crate::aio::attach(|py| -> PyResult<Py<PyAny>> {
+            crate::aio::attach(move |py| -> PyResult<Py<PyAny>> {
                 Ok(match event {
                     None => py.None(),
-                    Some(NetworkEvent::Request(inner)) => {
+                    Some(PageEvent::Request(inner)) => {
                         Py::new(py, BrowserRequest { inner })?.into_any()
                     }
-                    Some(NetworkEvent::Response(inner)) => {
+                    Some(PageEvent::Response(inner)) => {
                         Py::new(py, BrowserResponse::new(inner, &page))?.into_any()
+                    }
+                    Some(PageEvent::Popup(inner)) => {
+                        let mut popup = BrowserPage::new(inner, None);
+                        popup.opener = Some(owner);
+                        Py::new(py, popup)?.into_any()
+                    }
+                    Some(PageEvent::Download(inner)) => {
+                        Py::new(py, BrowserDownload { inner })?.into_any()
                     }
                 })
             })
         })
+    }
+}
+
+/// The dialogs a page opens, for netweir._network.
+#[pyclass(frozen, module = "netweir._native")]
+pub struct Dialogs {
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<CoreDialog>>>,
+}
+
+#[pymethods]
+impl Dialogs {
+    /// Stops taking dialogs: those not yet taken, and those to come, are
+    /// answered the default way.
+    fn close(&self) {
+        let rx = self.rx.clone();
+        pyo3_async_runtimes::tokio::get_runtime().spawn(async move {
+            let mut rx = rx.lock().await;
+            rx.close();
+            while rx.try_recv().is_ok() {}
+        });
+    }
+
+    /// Resolves to the next BrowserDialog, or None once the page has
+    /// closed or another took over.
+    fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.rx.clone();
+        crate::aio::future_into_py(py, async move {
+            let dialog = rx.lock().await.recv().await;
+            crate::aio::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(match dialog {
+                    None => py.None(),
+                    Some(inner) => Py::new(py, BrowserDialog { inner })?.into_any(),
+                })
+            })
+        })
+    }
+}
+
+/// A dialog the page is waiting on: an alert, a confirm, a prompt or a
+/// beforeunload. Answer it once, with `accept()` or `dismiss()`; the
+/// answer reaches the page once a person could have given it.
+#[pyclass(frozen, module = "netweir")]
+pub struct BrowserDialog {
+    inner: CoreDialog,
+}
+
+#[pymethods]
+impl BrowserDialog {
+    /// "alert", "confirm", "prompt" or "beforeunload".
+    #[getter(r#type)]
+    fn kind(&self) -> &str {
+        self.inner.kind()
+    }
+
+    #[getter]
+    fn message(&self) -> &str {
+        self.inner.message()
+    }
+
+    /// The text a prompt offers; empty for the others.
+    #[getter]
+    fn default_value(&self) -> &str {
+        self.inner.default_value()
+    }
+
+    /// The URL of the frame that opened it.
+    #[getter]
+    fn url(&self) -> &str {
+        self.inner.url()
+    }
+
+    /// Whether it's been answered.
+    #[getter]
+    fn handled(&self) -> bool {
+        self.inner.is_answered()
+    }
+
+    /// Presses OK, with `prompt_text` in a prompt's box (its default if
+    /// None); for beforeunload, leaves the page. It counts as answered
+    /// at once, so a plain listener can call it without awaiting.
+    #[pyo3(signature = (prompt_text=None))]
+    fn accept<'py>(
+        &self,
+        py: Python<'py>,
+        prompt_text: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let answer = self.inner.accept(prompt_text.as_deref());
+        crate::aio::future_into_py(py, async move { answer.await.map_err(raise) })
+    }
+
+    /// Presses Cancel; for beforeunload, stays on the page.
+    fn dismiss<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let answer = self.inner.dismiss();
+        crate::aio::future_into_py(py, async move { answer.await.map_err(raise) })
+    }
+
+    /// Answers it the default way, unless it's been answered.
+    fn _release(&self) {
+        self.inner.release();
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<BrowserDialog {} {:?}>",
+            self.inner.kind(),
+            self.inner.message()
+        )
+    }
+}
+
+/// A file the page downloads, into a folder of its context's own that
+/// goes when the context closes.
+#[pyclass(frozen, module = "netweir")]
+pub struct BrowserDownload {
+    inner: CoreDownload,
+}
+
+#[pymethods]
+impl BrowserDownload {
+    #[getter]
+    fn url(&self) -> &str {
+        self.inner.url()
+    }
+
+    /// The name the server or the page gave the file.
+    #[getter]
+    fn suggested_filename(&self) -> &str {
+        self.inner.suggested_filename()
+    }
+
+    /// Waits for it to finish, and resolves to the path of the file.
+    /// Raises BrowserError if it didn't finish.
+    fn path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let download = self.inner.clone();
+        crate::aio::future_into_py(py, async move { download.path().await.map_err(raise) })
+    }
+
+    /// Waits for it to finish, and copies the file to `path`.
+    fn save_as<'py>(&self, py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
+        let download = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let from = download.path().await.map_err(raise)?;
+            tokio::task::spawn_blocking(move || std::fs::copy(from, path))
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))??;
+            Ok(())
+        })
+    }
+
+    /// Waits for it to finish, and resolves to the file's bytes.
+    fn body<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let download = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let from = download.path().await.map_err(raise)?;
+            let body = tokio::task::spawn_blocking(move || std::fs::read(from))
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))??;
+            crate::aio::attach(|py| Ok(PyBytes::new(py, &body).unbind()))
+        })
+    }
+
+    /// Waits for it to end, and resolves to None if it finished, or why
+    /// it didn't ("canceled", for one cancelled or whose connection
+    /// broke).
+    fn failure<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let download = self.inner.clone();
+        crate::aio::future_into_py(py, async move { Ok(download.failure().await) })
+    }
+
+    /// Stops it, if it hasn't finished.
+    fn cancel<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let download = self.inner.clone();
+        crate::aio::future_into_py(py, async move { download.cancel().await.map_err(raise) })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<BrowserDownload {}>", self.inner.url())
     }
 }
 
@@ -1678,6 +1995,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BrowserRequest>()?;
     m.add_class::<Route>()?;
     m.add_class::<NetworkEvents>()?;
+    m.add_class::<Dialogs>()?;
+    m.add_class::<BrowserDialog>()?;
+    m.add_class::<BrowserDownload>()?;
     m.add_class::<Routes>()?;
     m.add_function(wrap_pyfunction!(_glob_match, m)?)?;
     m.add(
