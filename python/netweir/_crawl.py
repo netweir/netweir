@@ -20,6 +20,8 @@ import logging
 import math
 import os
 import re
+import signal
+import threading
 import time
 import weakref
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
@@ -548,7 +550,7 @@ class Spider:
         """Crawls to the end and returns the stats. ``output`` writes every
         item to a .jsonl, .json, .xml, .csv or .parquet file, local or a
         cloud URL (or is an exporter)."""
-        return asyncio.run(self.crawl(output))
+        return _run(self.crawl(output))
 
     async def crawl(self, output: Any = None) -> dict[str, int]:
         from netweir import export
@@ -672,6 +674,65 @@ class Spider:
             run.finish(closed=failure is None)
             if failure is not None and not raising:
                 raise failure
+
+
+#: While crawls run on the main thread, innermost last: each stops its
+#: crawl as Ctrl-C does. For a SIGTERM that comes while SIGINT is ignored
+#: (a job started with `&`).
+_interrupts: list[Callable[[], None]] = []
+
+
+def _run(main: Any) -> Any:
+    """asyncio.run(main), where Ctrl-C cancels ``main`` and then raises
+    KeyboardInterrupt once it has wound up; a second Ctrl-C raises it at
+    once. Python 3.11's asyncio.run does that, 3.10's doesn't: it raised
+    KeyboardInterrupt wherever the loop happened to be. Raised as a done
+    future was scheduling its task's wakeup, it left that task asleep for
+    good, and asyncio.run waited on it for ever: the crawl hung, its
+    output never closed."""
+    state = {"interrupted": False}
+    try:
+        return asyncio.run(_interruptible(main, state))
+    except asyncio.CancelledError:
+        # Out here, as 3.11 does: raised in the main task, it would end the
+        # loop before the other tasks had wound up.
+        if state["interrupted"]:
+            raise KeyboardInterrupt from None
+        raise
+
+
+async def _interruptible(main: Any, state: dict[str, bool]) -> Any:
+    if threading.current_thread() is not threading.main_thread():
+        return await main
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+
+    def interrupt(signum: int | None = None, frame: Any = None) -> None:
+        if state["interrupted"]:
+            raise KeyboardInterrupt
+        state["interrupted"] = True
+        # As a callback of its own: this runs between any two bytecodes of
+        # the loop's, task.cancel() included.
+        loop.call_soon_threadsafe(task.cancel)
+
+    previous = signal.getsignal(signal.SIGINT)
+    # Only where 3.11's would: not over a handler of the program's own, or
+    # when SIGINT is ignored. On 3.11 and later, asyncio's is there already.
+    catching = previous is signal.default_int_handler
+    if catching:
+        try:
+            signal.signal(signal.SIGINT, interrupt)
+        except ValueError:
+            # Not the main interpreter (gh-91880): run as before.
+            catching = False
+    _interrupts.append(interrupt)
+    try:
+        return await main
+    finally:
+        _interrupts.remove(interrupt)
+        # Unless something else has taken SIGINT since.
+        if catching and signal.getsignal(signal.SIGINT) is interrupt:
+            signal.signal(signal.SIGINT, previous)
 
 
 def _check_outputs(settings: Settings, pipelines: list[Any]) -> None:
