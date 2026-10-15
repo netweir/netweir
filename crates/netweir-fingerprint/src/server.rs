@@ -9,6 +9,10 @@
 //! form, POST to `/submitted`; `/fetch` serves one whose script POSTs JSON
 //! to `/api` with `fetch()`. `/form-redirect` is a form that POSTs to a 302
 //! (as a login does), and `/link` a page with a link to `/linked`.
+//! `/auth` asks for a login (401, Basic) until a request carries
+//! Authorization, then serves a page that loads an image, POSTs JSON with
+//! `fetch()` and submits a form, so each kind of request a browser sends
+//! with the login it holds is captured.
 
 use std::io;
 use std::path::Path;
@@ -218,8 +222,26 @@ const IMAGE_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>image</t
 /// capture as JSON.
 type Answer = (u16, Vec<(&'static str, String)>, Option<Vec<u8>>);
 
-/// What to answer a request with, from its path and query.
-fn route(path: &str) -> Answer {
+/// The page `/auth` serves once logged in: an image, a script's POST, then
+/// a form the script submits, answered with a redirect, so each kind of
+/// request goes out with the login the browser now holds. The URLs are
+/// made from `location.origin`: relative ones would keep a login written
+/// into the page's URL (`https://user:pass@host/auth`), and browsers
+/// refuse a script's request to such a URL.
+const AUTH_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>auth</title>
+<form id="f" method="post"><input name="q" value="rust"></form>
+<script>
+const o = location.origin, f = document.getElementById("f");
+f.action = o + "/redirect?to=/after-auth";
+const img = document.createElement("img");
+img.src = o + "/picture.png";
+document.body.append(img);
+fetch(o + "/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({q: "rust"})}).then(() => setTimeout(() => f.submit(), 500));
+</script>"#;
+
+/// What to answer a request with, from its path and query, and whether it
+/// carried Authorization.
+fn route(path: &str, authorized: bool) -> Answer {
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     let param = |name: &str| {
         query
@@ -257,6 +279,14 @@ fn route(path: &str) -> Answer {
         }
         ("/form-redirect", _) => {
             let page = html(&mut headers, FORM_REDIRECT_PAGE);
+            (200, headers, page)
+        }
+        ("/auth", _) if !authorized => {
+            headers.push(("www-authenticate", "Basic realm=\"netweir\"".to_string()));
+            (401, headers, Some(b"log in".to_vec()))
+        }
+        ("/auth", _) => {
+            let page = html(&mut headers, AUTH_PAGE);
             (200, headers, page)
         }
         ("/link", _) => {
@@ -342,8 +372,9 @@ async fn handle(
                     .unwrap_or_default()
             };
             let (method, path) = (pseudo(":method"), pseudo(":path"));
+            let authorized = req.headers.iter().any(|(k, _)| k == "authorization");
             let capture = capture_of(Some(req.http2), method, path.clone(), req.headers, req.body);
-            let (status, headers, page) = route(&path);
+            let (status, headers, page) = route(&path, authorized);
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
@@ -365,8 +396,11 @@ async fn handle(
             }
             let mut request_body = vec![0u8; length];
             tls.read_exact(&mut request_body).await?;
+            let authorized = headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
             let capture = capture_of(None, method, path.clone(), headers, request_body);
-            let (status, mut reply_headers, page) = route(&path);
+            let (status, mut reply_headers, page) = route(&path, authorized);
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
@@ -377,7 +411,11 @@ async fn handle(
                 reply_headers.push(("connection", "close".to_string()));
             }
             reply_headers.push(("content-length", body.len().to_string()));
-            let reason = if status == 302 { "Found" } else { "OK" };
+            let reason = match status {
+                302 => "Found",
+                401 => "Unauthorized",
+                _ => "OK",
+            };
             let mut head = format!("HTTP/1.1 {status} {reason}\r\n");
             for (k, v) in &reply_headers {
                 head.push_str(&format!("{k}: {v}\r\n"));
@@ -483,6 +521,20 @@ mod lasting {
             "kept, not made again"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn auth_asks_for_a_login_until_a_request_carries_one() {
+        let (status, headers, _) = route("/auth", false);
+        assert_eq!(status, 401);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| *k == "www-authenticate" && v.starts_with("Basic"))
+        );
+        let (status, _, page) = route("/auth?again", true);
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(page.unwrap()).unwrap().contains("fetch("));
     }
 
     #[test]
