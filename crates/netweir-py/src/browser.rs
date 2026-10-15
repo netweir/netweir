@@ -67,7 +67,7 @@ fn seconds(name: &str, value: Option<f64>) -> PyResult<Option<Duration>> {
 
 /// Starts Chrome. Resolves to a Browser.
 #[pyfunction]
-#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None))]
+#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None, dialog_pause=(0.5, 1.5)))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn launch(
     py: Python<'_>,
@@ -78,7 +78,21 @@ pub(crate) fn launch(
     proxy: Option<String>,
     connect: Option<String>,
     user_data_dir: Option<PathBuf>,
+    dialog_pause: (f64, f64),
 ) -> PyResult<Bound<'_, PyAny>> {
+    let (least, most) = dialog_pause;
+    let dialog_pause = match (
+        Duration::try_from_secs_f64(least),
+        Duration::try_from_secs_f64(most),
+    ) {
+        (Ok(least), Ok(most)) if least <= most => (least, most),
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "dialog_pause must be (least, most) seconds, 0 or more, least first, not \
+                 {dialog_pause:?}"
+            )));
+        }
+    };
     if connect.is_some()
         && (executable.is_some()
             || proxy.is_some()
@@ -106,6 +120,7 @@ pub(crate) fn launch(
         // Chrome for Testing presents itself as Google Chrome would.
         brands: Some(Arc::new(netweir_core::Profile::chrome_brands)),
         user_data_dir,
+        dialog_pause,
     };
     crate::aio::future_into_py(py, async move {
         let inner = match connect {

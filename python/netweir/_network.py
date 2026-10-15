@@ -21,8 +21,11 @@ from netweir._native import BrowserDownload, BrowserPage, BrowserResponse, _glob
 log = logging.getLogger("netweir")
 
 
-def _check(pattern: Any) -> None:
-    if not (pattern is None or isinstance(pattern, (str, re.Pattern)) or callable(pattern)):
+def _check(pattern: Any, kind: str = "") -> None:
+    # Only a popup or a download can be waited for without a pattern.
+    if pattern is None and kind in ("popup", "download"):
+        return
+    if not (isinstance(pattern, (str, re.Pattern)) or callable(pattern)):
         raise TypeError(
             "a pattern is a glob string, a compiled regex or a callable, not "
             f"{type(pattern).__name__}"
@@ -83,13 +86,13 @@ class Network:
         )
 
     def expect(self, owner: Any, kind: str, pattern: Any, timeout: float | None) -> Expectation:
-        _check(pattern)
+        _check(pattern, kind)
         return Expectation(self, owner, kind, pattern, timeout)
 
     def _register(self, owner: Any, kind: str, pattern: Any) -> asyncio.Future:
         """Starts waiting now, before anything is awaited, so a response
         that comes while the caller does something else still counts."""
-        _check(pattern)
+        _check(pattern, kind)
         future = asyncio.get_running_loop().create_future()
         self._waiters.append((kind, pattern, future))
         self._listen(owner)

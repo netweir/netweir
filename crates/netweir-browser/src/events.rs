@@ -30,6 +30,17 @@ pub enum PageEvent {
     Download(Download),
 }
 
+impl std::fmt::Debug for PageEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PageEvent::Request(r) => f.debug_tuple("Request").field(r).finish(),
+            PageEvent::Response(r) => f.debug_tuple("Response").field(r).finish(),
+            PageEvent::Popup(p) => f.debug_tuple("Popup").field(&p.url()).finish(),
+            PageEvent::Download(d) => f.debug_tuple("Download").field(&d.url()).finish(),
+        }
+    }
+}
+
 /// An `alert()`, `confirm()`, `prompt()` or `beforeunload` the page is
 /// waiting on, from [`Page::dialogs`]. Answered once; one nobody answers,
 /// dropped or held past the browser's timeout, is dismissed
@@ -54,13 +65,15 @@ struct DialogInner {
     runtime: tokio::runtime::Handle,
 }
 
-/// How long a person takes, at least, to read a dialog and answer it:
-/// half a second, and up to a second more, at random.
-fn pause() -> Duration {
+/// How long a person takes to react: to read a dialog and answer it, or
+/// to switch to a tab before using it. A time picked at random between
+/// the two, for each.
+pub(crate) fn pause((least, most): (Duration, Duration)) -> Duration {
     let random = std::collections::hash_map::RandomState::new()
         .build_hasher()
         .finish();
-    Duration::from_millis(500 + random % 1000)
+    let spread = most.saturating_sub(least).as_micros() as u64;
+    least + Duration::from_micros(random.checked_rem(spread).unwrap_or(0))
 }
 
 impl Dialog {
@@ -70,6 +83,7 @@ impl Dialog {
         session: &str,
         params: &Value,
         timeout: Duration,
+        pause_range: (Duration, Duration),
         runtime: &tokio::runtime::Handle,
     ) -> Dialog {
         let dialog = Dialog {
@@ -81,7 +95,7 @@ impl Dialog {
                 conn: conn.clone(),
                 session: session.to_string(),
                 timeout,
-                not_before: Instant::now() + pause(),
+                not_before: Instant::now() + pause(pause_range),
                 answered: AtomicBool::new(false),
                 runtime: runtime.clone(),
             }),
@@ -149,37 +163,46 @@ impl Dialog {
         if let Some(text) = text {
             params["promptText"] = Value::from(text);
         }
+        let already = format!(
+            "the {} \"{}\" was already answered, or answered the default way when nobody had \
+             in time",
+            inner.kind, inner.message
+        );
+        // The answer goes from a task of its own, so a caller that drops
+        // the future (or times it out) still has it reach the page: the
+        // dialog counts as answered, and nothing else would answer it.
+        let sending = (!answered).then(|| {
+            let runtime = inner.runtime.clone();
+            runtime.spawn(async move { inner.send(params).await })
+        });
         async move {
-            if answered {
-                return Err(Error::Gone(format!(
-                    "the {} \"{}\" was already answered, or answered the default way when \
-                     nobody had in time",
-                    inner.kind, inner.message
-                )));
-            }
-            tokio::time::sleep_until(inner.not_before).await;
-            match inner
-                .conn
-                .call_within(
-                    inner.timeout,
-                    &inner.session,
-                    "Page.handleJavaScriptDialog",
-                    params,
-                )
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(e) if went_away(&e) => Ok(()),
-                // Answered in Chrome's window, or the page moved on:
-                // nothing waits for it any more.
-                Err(Error::Protocol { .. }) => Ok(()),
-                Err(e) => Err(e),
+            match sending {
+                Some(sending) => sending.await.unwrap_or(Err(Error::Closed)),
+                None => Err(Error::Gone(already)),
             }
         }
     }
 }
 
 impl DialogInner {
+    async fn send(&self, params: Value) -> Result<()> {
+        tokio::time::sleep_until(self.not_before).await;
+        let answer = self.conn.call_within(
+            self.timeout,
+            &self.session,
+            "Page.handleJavaScriptDialog",
+            params,
+        );
+        match answer.await {
+            Ok(_) => Ok(()),
+            Err(e) if went_away(&e) => Ok(()),
+            // Answered in Chrome's window, or the page moved on: nothing
+            // waits for it any more.
+            Err(Error::Protocol { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     fn release(&self) {
         if self.answered.swap(true, Ordering::Relaxed) {
             return;
@@ -402,12 +425,15 @@ mod tests {
 
     #[test]
     fn a_pause_is_as_long_as_a_person_takes() {
+        let range = (Duration::from_millis(500), Duration::from_millis(1500));
         for _ in 0..100 {
-            let p = pause();
-            assert!(p >= Duration::from_millis(500) && p < Duration::from_millis(1500));
+            let p = pause(range);
+            assert!(p >= range.0 && p < range.1);
         }
-        let all: std::collections::HashSet<_> = (0..100).map(|_| pause()).collect();
+        let all: std::collections::HashSet<_> = (0..100).map(|_| pause(range)).collect();
         assert!(all.len() > 10, "picked at random");
+        let none = (Duration::ZERO, Duration::ZERO);
+        assert_eq!(pause(none), Duration::ZERO, "no pause at all");
     }
 
     #[test]

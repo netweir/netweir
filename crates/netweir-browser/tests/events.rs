@@ -115,6 +115,49 @@ async fn a_listener_answers_a_dialog_and_reads_what_it_says() {
     assert_eq!((d.kind(), d.message()), ("confirm", "sure?"));
     d.accept(None).await.unwrap();
     assert_eq!(asking.await.unwrap().unwrap(), json!(true));
+
+    // An answer whose future is dropped unpolled still reaches the page:
+    // the dialog counts as answered, and nothing else would answer it.
+    let asking = tokio::spawn({
+        let page = page.clone();
+        async move { page.evaluate("prompt('again?')").await }
+    });
+    let d = dialog(&mut events).await;
+    drop(d.accept(Some("dropped")));
+    drop(d);
+    let answer = tokio::time::timeout(Duration::from_secs(10), asking)
+        .await
+        .expect("the page was left waiting")
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer, json!("dropped"));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_pause_before_an_answer_is_the_browsers_to_set() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        dialog_pause: (Duration::from_millis(50), Duration::from_millis(60)),
+        ..Default::default()
+    })
+    .await;
+    let server = serve(vec![("/", html(ASKS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let started = Instant::now();
+    assert_eq!(
+        page.evaluate("confirm('quick?')").await.unwrap(),
+        json!(false)
+    );
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(50) && took < Duration::from_millis(450),
+        "answered in {took:?}"
+    );
     browser.close().await.unwrap();
 }
 
@@ -302,6 +345,67 @@ impl Until for Page {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+}
+
+/// How long the opener's timers stopped while a same-site popup it
+/// opened was set up: the longest gap between ticks of a 5 ms interval
+/// from just before the click until the popup has loaded.
+async fn longest_stall(rules: bool) -> Duration {
+    let browser = browser().await.expect("Chrome");
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<button id=b onclick="window.open('/popped')">open</button>
+<script>
+  window.gaps = [];
+  let last = performance.now();
+  setInterval(() => { const now = performance.now(); gaps.push(now - last); last = now; }, 5);
+</script>"#,
+            ),
+        ),
+        ("/popped", html("<p>popped up</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    if rules {
+        page.block(&["font"], &[]).await.unwrap();
+    }
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    page.evaluate("gaps.length = 0").await.unwrap();
+    page.click("#b", None).await.unwrap();
+    let popped = popup(&mut events).await;
+    popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    let longest = page
+        .evaluate("Math.max(...gaps)")
+        .await
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    browser.close().await.unwrap();
+    Duration::from_secs_f64(longest / 1000.0)
+}
+
+#[tokio::test]
+async fn opening_a_popup_barely_stops_the_openers_timers() {
+    if common::chrome().is_none() {
+        return;
+    }
+    for rules in [false, true] {
+        let mut stalls: Vec<Duration> = Vec::new();
+        for _ in 0..3 {
+            stalls.push(longest_stall(rules).await);
+        }
+        stalls.sort();
+        eprintln!("rules {rules}: longest gaps {stalls:?}");
+        // A tab opening in front, as a person's does, already costs the
+        // opener a frame or so; holding the popup mustn't add much.
+        assert!(
+            stalls[1] < Duration::from_millis(250),
+            "rules {rules}: {stalls:?}"
+        );
     }
 }
 

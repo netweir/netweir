@@ -379,6 +379,12 @@ impl Page {
             &browser.call("", "Target.createTarget", params).await?,
             "targetId",
         );
+        // Kept attached when the browser's session hears it.
+        browser
+            .attaching
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target.clone());
         let session = str_of(
             &browser
                 .call(
@@ -506,6 +512,7 @@ impl Page {
             downloads: browser.downloads.clone(),
             context: context.clone(),
             opener: opener.as_ref().map(|o| o.inner.shared.clone()),
+            pause: browser.pause,
             intercept: Intercept {
                 conn: conn.clone(),
                 session: session.clone(),
@@ -632,6 +639,8 @@ impl Page {
         }
         self.call("Page.bringToFront", json!({})).await?;
         *self.inner.front.lock().unwrap_or_else(|e| e.into_inner()) = target.clone();
+        // A person looks at the tab before using it.
+        tokio::time::sleep(crate::events::pause(self.inner.browser.pause)).await;
         Ok(())
     }
 
@@ -821,7 +830,15 @@ impl Page {
         self.until(
             || format!("{event} of the page at {url}"),
             self.timeout(timeout),
-            |s| s.reached(&loader, event),
+            // A page whose first document hasn't committed yet has no
+            // loader to wait past: any document's will do.
+            |s| {
+                if loader.is_empty() {
+                    s.committed.first().is_some_and(|l| s.reached(l, event))
+                } else {
+                    s.reached(&loader, event)
+                }
+            },
         )
         .await?;
         Ok(self.response_for(None))
@@ -1444,6 +1461,8 @@ struct Watch {
     context: Option<String>,
     /// For a popup, its opener's.
     opener: Option<Arc<Shared>>,
+    /// See [`crate::LaunchOptions::dialog_pause`].
+    pause: (Duration, Duration),
 }
 
 impl Watch {
@@ -1463,6 +1482,7 @@ impl Watch {
                     session,
                     params,
                     decider.timeout,
+                    self.pause,
                     &decider.runtime,
                 );
                 // Nobody listening drops it, which answers it.
