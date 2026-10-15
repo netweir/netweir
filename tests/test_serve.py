@@ -427,6 +427,33 @@ def test_an_open_bind_without_auth_is_refused(tmp_path, project):
     assert not (tmp_path / "serve" / "jobs.db").exists()
 
 
+def test_listening_looks_up_no_names():
+    # http.server looks up a name for the address it binds. On a Mac whose
+    # resolver doesn't answer for the machine's own name, that alone took
+    # 35 s for 0.0.0.0, and as long for 127.0.0.1 now and then. In a fresh
+    # interpreter: the tests' own servers skip the lookup (conftest.py).
+    code = (
+        "import socket\n"
+        "from netweir import _serve\n"
+        "def asked(*a):\n"
+        "    raise AssertionError(f'looked up {a}')\n"
+        "socket.getfqdn = socket.gethostbyaddr = asked\n"
+        "hosts = ['127.0.0.1', '0.0.0.0']\n"
+        "try:\n"
+        "    socket.socket(socket.AF_INET6).bind(('::1', 0))\n"
+        "    hosts.append('::1')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "for host in hosts:\n"
+        "    server = _serve.server(None, host, 0)\n"
+        "    assert server.server_port == server.server_address[1] > 0\n"
+        "    server.server_close()\n"
+        "print(hosts)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+
+
 def test_insecure_no_auth_starts_with_a_warning(tmp_path, project):
     proc = subprocess.Popen(
         [sys.executable, "-m", "netweir", "serve", "--bind", "0.0.0.0", "--port", "0",

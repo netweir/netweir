@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import socket
+import socketserver
 import sqlite3
 import subprocess
 import sys
@@ -1154,6 +1155,13 @@ class _Limited:
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     service: Service
+
+    def server_bind(self) -> None:
+        # http.server's own looks up a name for the address, which nothing
+        # reads. Where the resolver doesn't answer for the machine's name
+        # (a Mac's .local one), that held up listening on 0.0.0.0 for 35 s.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def server_activate(self) -> None:
         super().server_activate()
