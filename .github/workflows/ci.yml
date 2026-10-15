@@ -52,7 +52,18 @@ jobs:
       # The macOS runners are virtual machines whose GPU now and then hangs
       # on Chrome's work, until the kernel stops taking any from it and
       # Chrome waits for good. Software rendering never touches it.
-      NETWEIR_CHROME_ARGS: ${{ matrix.os == 'macos-latest' && '--disable-gpu' || '' }}
+      #
+      # On Windows 11 22H2 and later, Chrome picks each connection's local
+      # port at random, and one still in TIME_WAIT fails it with
+      # ERR_NO_BUFFER_SPACE; after the many short connections of cargo
+      # test, a page's own requests to the test servers now and then
+      # failed so. Netweir retries a navigation that fails that way, but
+      # not a page's own requests, which Chrome makes; on users' machines
+      # Chrome keeps its default, as the browser it passes for does.
+      NETWEIR_CHROME_ARGS: >-
+        ${{ matrix.os == 'macos-latest' && '--disable-gpu'
+        || matrix.os == 'windows-latest' && '--disable-features=TcpPortRandomizationWin'
+        || '' }}
       # .cargo/config.toml's flags less the leak: a Python object dropped
       # off Python's threads aborts the tests instead of leaking quietly.
       RUSTFLAGS: --cfg pyo3_disable_reference_pool
