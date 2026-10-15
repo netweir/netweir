@@ -95,8 +95,18 @@ Settings(
   to another host a redirect leads to, and not over plain HTTP once a
   request has started on HTTPS. Scrapy's `HTTPAUTH_DOMAIN=None` (send
   everywhere) has no equivalent: `http_auth` without a domain is a
-  `ValueError`. robots.txt and tdmrep.json are fetched with it, as
-  Scrapy's robots requests go through its auth middleware.
+  `ValueError`, and so is a domain that isn't a bare host (a port, a
+  scheme or a path would never match, and the login would silently go
+  nowhere) or that is a public suffix (`com`, `co.uk`, which would send
+  it to every site under it); a leading dot is dropped. robots.txt and
+  tdmrep.json are fetched with it, as Scrapy's robots requests go
+  through its auth middleware.
+- The HTTPS rule is about redirects: a new request to `http://` on the
+  domain gets the login, as Scrapy's middleware sends it. Keep the
+  crawl's requests on HTTPS, or the login crosses the network in clear.
+- A request with `auth=` and Scrapy's `http_user` in its meta sends its
+  own `auth`, to its own origin; the crawl logs that once, since the
+  meta's `http_auth_domain` is then ignored.
 
 ## On the wire
 
@@ -117,8 +127,9 @@ Settings(
     form, script, image, and after a redirect. (That is where Chromium's
     `HttpNetworkTransaction::BuildRequestHeaders` adds the auth
     controller's header, before the request's own headers.) Over HTTP/2
-    that makes it the first header after the pseudo-headers, unless a body
-    or Cache-Control comes first.
+    that makes it the first header after the pseudo-headers on a GET;
+    after content-length on a POST, and after cache-control on a form
+    and the GET its redirect leads to.
   - Firefox sends it straight before Connection when it holds the login
     already. Its retry of the request a 401 answered has it last instead,
     appended to headers already built; Netweir always sends the login
@@ -128,6 +139,9 @@ Settings(
   like `Cookie`'s, which only holds the place. A caller's own
   `Authorization` header (a bearer token) goes there too. The tests replay
   the recorded requests with a login and compare every header, in order.
+  Chrome 154 and Firefox 156 weren't recorded with a login: their slots
+  are the newer versions' by assumption, since their header order is
+  otherwise the same as 155's and 158's.
 
 ## Interactions
 
@@ -137,21 +151,26 @@ Settings(
   carries the policy, counts toward its limit, and gets the login only
   where the rules above allow it.
 - **The cache** keeps and serves responses by request fingerprint, which
-  ignores policy. A request that doesn't follow redirects, or has a lower
-  limit than the crawl's, bypasses the cache, since a kept answer may have
-  followed redirects it wouldn't. Pages fetched with a login are kept like
+  ignores policy. A request that doesn't follow redirects, or has a
+  redirect limit of its own (`max_redirects`, or Scrapy's `redirect_ttl`),
+  bypasses the cache, since a kept answer may have followed redirects it
+  wouldn't. Pages fetched with a login are kept like
   any other; the cache is a development tool on your own disk.
 - **Deltafetch and the duplicate filter** use the fingerprint as before: a
   timeout or a login doesn't make a request different.
-- **Proxies**: the login goes to the site, inside the tunnel; a proxy's
-  own login stays in the proxy URL.
+- **Proxies**: to an `https://` site the login goes inside the tunnel,
+  where the proxy can't read it. To a plain `http://` site an HTTP proxy
+  forwards the request itself, and sees the login like everything else
+  in it. A proxy's own login stays in the proxy URL.
 - **Robots and TDMRep** files are fetched with the crawl's `http_auth`
   where its domain matches, and the crawl's redirect limit and timeout.
 - **Chrome**: a request fetched in Chrome (`browser=True`, or after a
-  block) uses the crawl's timeout and Chrome's own redirects; its `auth`,
-  `timeout` and redirect settings don't apply there. Known limit.
-- **The archive** (WARC, HAR) records Authorization as it was sent, as it
-  records cookies.
+  block) uses the crawl's timeout, Chrome's own redirects and Chrome's own
+  certificate checks; its `auth`, `timeout` and redirect settings, and the
+  crawl's `verify` and `http_auth`, don't apply there. Known limit.
+- **The archive** (WARC, HAR) leaves Authorization out, as it already left
+  out Proxy-Authorization: archives get shared, and a login is the
+  crawl's own. Cookies are kept, as before.
 
 ## Saved state
 
@@ -164,8 +183,23 @@ queue member written before has no `policy` and reads as empty. Worker
 processes hand Requests back pickled, fields and all.
 
 Logins are therefore on disk in a checkpoint and in Redis in a queue, as
-they are in Scrapy's JOBDIR. The crawl-wide `http_auth` isn't: it's
-applied when a request is sent.
+they are in Scrapy's JOBDIR. On Linux and macOS the checkpoint file and
+its WAL and shared-memory files are made readable by their owner alone,
+and an older checkpoint is closed off the same way when it's opened. A
+saved policy that can't be read stops the resume, naming the request,
+rather than sending it without its login. The crawl-wide `http_auth`
+isn't saved: it's applied when a request is sent.
+
+A shared queue is read by every process of the crawl, and a 0.3.1
+process ignores a member's policy: it would send the request without its
+login, timeout or redirect limit. Members carry no format number an old
+process would check, so this can't be made to fail loudly from the new
+side: every process of a crawl must run this version before its requests
+use these options.
+
+`netweir crawl` reads the crawl's login from `$NETWEIR_HTTP_AUTH`
+(`user:password`) when `-s http_auth=` isn't given, since a password on
+the command line shows in the process list and the shell's history.
 
 ## Known limits
 

@@ -13,6 +13,11 @@ commas between the proxies of `-s proxies=...` and the statuses of
 `-s retry_http_codes=...`, and `-s http_auth=user:password`). A misspelt
 name is an error, not ignored. Times are in seconds.
 
+A password on the command line can be read by anyone on the machine in
+the process list, and stays in your shell's history. Put the login in
+`NETWEIR_HTTP_AUTH` (`user:password`) instead: `netweir crawl` reads it
+there when `-s http_auth` isn't given.
+
 ## Fetching
 
 | Setting | Default | Does |
@@ -27,7 +32,7 @@ name is an error, not ignored. Times are in seconds.
 | `max_redirects` | `20` | redirects a request follows before it fails with `FetchError(kind="too_many_redirects")`, as Scrapy's `REDIRECT_MAX_TIMES`; Chrome's limit is 20 too |
 | `verify` | `True` | check each site's certificate. `False` skips the check; the path of a PEM file of CA certificates trusts those in place of the bundled ones, for hosts your own CA vouches for. Neither changes anything a site can see |
 | `http_auth` | `None` | a `(user, password)` login sent as HTTP Basic, up front, to `http_auth_domain` and nowhere else, as Scrapy's `HTTPAUTH_USER` and `HTTPAUTH_PASS`. robots.txt is fetched with it too |
-| `http_auth_domain` | `None` | the domain `http_auth` goes to, with its subdomains: every request and redirect there gets it, a request anywhere else doesn't, and nor does plain HTTP after HTTPS. Required with `http_auth`; there's no "send it everywhere" |
+| `http_auth_domain` | `None` | the domain `http_auth` goes to, with its subdomains: every request and redirect there gets it, a request anywhere else doesn't, and nor does a redirect from HTTPS to plain HTTP. A new `http://` request there does get it, as in Scrapy, so keep those on HTTPS. A bare host name or IP address, with no scheme, port or path, and not a public suffix such as `com`. Required with `http_auth`; there's no "send it everywhere" |
 | `max_response_size` | `67108864` | the most bytes of a response body (64 MiB), counted after decompression, so a small compressed answer that unpacks to gigabytes is stopped too; a larger one fails with `FetchError(kind="too_large")`, and `None` reads any size |
 
 ## Pace and politeness
@@ -82,7 +87,7 @@ name is an error, not ignored. Times are in seconds.
 
 | Setting | Default | Does |
 |---|---|---|
-| `checkpoint` | `None` | a directory to keep the crawl's state in, so it resumes after a crash |
+| `checkpoint` | `None` | a directory to keep the crawl's state in, so it resumes after a crash. It holds the logins requests were given; on Linux and macOS its files are readable by their owner alone |
 | `cache` | `None` | a directory to keep responses in, so a rerun gets its pages from there rather than the site; see [Crawling](crawling.md#caching-while-you-develop) |
 | `cache_expiry` | `None` | seconds after which a cached response is fetched again; `None` keeps it for good |
 | `deltafetch` | `None` | a directory to remember, across runs, which requests' pages gave items, so later runs skip them; output files are added to, run after run. See [Crawling](crawling.md#skipping-what-you-already-have) |
