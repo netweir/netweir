@@ -738,6 +738,104 @@ def test_sigterm_stops_a_crawl_as_ctrl_c_does(base, tmp_path):
     assert saved["items"] == len(rows)
 
 
+# Stops the crawl at the third page, just after the future a task waits on
+# is done and before the task is told: a KeyboardInterrupt raised there
+# leaves the task waiting for good.
+INTERRUPTED_AS_A_TASK_WAKES = """
+import asyncio, signal, sys
+from netweir import _cli
+
+call_soon = asyncio.BaseEventLoop.call_soon
+armed = False
+
+def interrupting(loop, callback, *args, **kwargs):
+    global armed
+    if armed and isinstance(getattr(callback, "__self__", None), asyncio.Task):
+        armed = False
+        signal.raise_signal(SIGNAL)
+    return call_soon(loop, callback, *args, **kwargs)
+
+asyncio.BaseEventLoop.call_soon = interrupting
+if IGNORE_SIGINT:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+sys.exit(_cli.main(sys.argv[1:]))
+"""
+
+
+@pytest.mark.parametrize(
+    "stop, ignore_sigint",
+    [("SIGINT", False), ("SIGTERM", False), ("SIGTERM", True)],
+    ids=["ctrl-c", "sigterm", "sigterm-with-sigint-ignored"],
+)
+def test_an_interrupt_as_a_task_wakes_still_ends_the_crawl(base, tmp_path, stop, ignore_sigint):
+    script = tmp_path / "slow.py"
+    script.write_text(
+        "import netweir\n"
+        "class Slow(netweir.Spider):\n"
+        f"    start_urls = ['{base}/slow/1']\n"
+        "    def parse(self, page):\n"
+        "        import __main__\n"
+        "        __main__.armed = page.url.endswith('/3')\n"
+        "        yield {'n': page.css('h1::text').get()}\n"
+        "        yield page.follow(page.css('a::attr(href)').get())\n"
+    )
+    out, stats = tmp_path / "out.jsonl", tmp_path / "stats.json"
+    runner = INTERRUPTED_AS_A_TASK_WAKES.replace("SIGNAL", f"signal.{stop}").replace(
+        "IGNORE_SIGINT", str(ignore_sigint)
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", runner, "crawl", str(script), "-o", str(out),
+         "--stats", str(stats), "-s", "throttle=false", "-s", "start_delay=0"],
+        capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    assert done.returncode == 130, done.stderr
+    assert "netweir: interrupted" in done.stderr and "Traceback" not in done.stderr
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) >= 3
+    assert json.loads(stats.read_text(encoding="utf-8"))["finish_reason"] == "interrupted"
+
+
+CTRL_C_WITH_ANOTHER_TASK = """
+import asyncio, signal
+from netweir._crawl import _run
+
+async def side():
+    try:
+        await asyncio.sleep(60)
+    finally:
+        await asyncio.sleep(0.1)
+        print("side wound up", flush=True)
+
+async def main():
+    side_task = asyncio.ensure_future(side())
+    await asyncio.sleep(0.1)
+    signal.raise_signal(signal.SIGINT)
+    try:
+        await asyncio.sleep(60)
+    finally:
+        side_task.cancel()
+        await asyncio.sleep(0.1)
+        print("main wound up", flush=True)
+
+try:
+    _run(main())
+except KeyboardInterrupt:
+    print("interrupted", flush=True)
+"""
+
+
+def test_ctrl_c_lets_every_task_wind_up_before_it_is_raised():
+    """As Python 3.11's asyncio.run does: KeyboardInterrupt raised inside
+    the main task would end the loop with the other tasks' cleanup not
+    run, and asyncio complaining of a pending task destroyed."""
+    done = subprocess.run(
+        [sys.executable, "-c", CTRL_C_WITH_ANOTHER_TASK], capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split("\n") == ["main wound up", "side wound up", "interrupted", ""]
+    assert "never retrieved" not in done.stderr and "destroyed" not in done.stderr
+
+
 def test_stats_are_kept_when_a_crawl_raises(base):
     class Raises(netweir.Spider):
         settings = netweir.Settings(throttle=False, start_delay=0, fail_fast=True)

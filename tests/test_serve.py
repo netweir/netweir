@@ -91,6 +91,21 @@ class Slow(netweir.Spider):
 """
 
 
+@pytest.fixture(autouse=True)
+def _jobs_shown_on_failure(request, tmp_path):
+    """A failed test prints each job's log and stats file, so a failure
+    seen once in CI shows how far the job got."""
+    failed = request.session.testsfailed
+    yield
+    if request.session.testsfailed == failed:
+        return
+    for kind in ("logs", "stats"):
+        for path in sorted((tmp_path / "serve" / kind).rglob("*")):
+            if path.is_file():
+                print(f"--- {path.relative_to(tmp_path)}")
+                print(path.read_text(encoding="utf-8", errors="replace"))
+
+
 @pytest.fixture
 def project(tmp_path):
     folder = tmp_path / "shop"
