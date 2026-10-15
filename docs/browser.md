@@ -393,10 +393,17 @@ twice raises `netweir.BrowserError`. Dialogs opened by frames, other
 sites' included, come to the page's listeners.
 `page.remove_dialog_listener(answer)` goes back to the defaults.
 
+A dialog's listeners run one at a time on the event loop that added the
+first of them, and a page's dialogs are meant for one loop at a time, as
+its other listeners are.
+
 Whoever answers, the answer reaches the page between half a second and
 a second and a half after the dialog opened, picked at random each time.
 A page can time how long `confirm()` kept it waiting, and nobody answers
-in a millisecond. So each dialog costs you about a second.
+in a millisecond. So each dialog costs you about a second. To change
+that, launch with `netweir.browser(dialog_pause=(least, most))` in
+seconds; the same pause comes before using a tab brought back to the
+front (see below). Shorter is faster, and easier for a page to spot.
 
 `close()` never waits on a page's question about leaving: it closes the
 page without asking.
@@ -432,7 +439,7 @@ Listeners don't carry over: add them to the popup. Closing a page from
 A new tab opens in front, and Chrome counts the tab it was opened from
 as hidden, as in a window you're looking at. When you act on the opener
 again (`click`, `fill`, `press`, `hover`, `scroll`), Netweir brings its
-tab back to the front first, as you would.
+tab back to the front first, and pauses a moment, as you would.
 
 Chrome blocks a popup that isn't opened from a click, for Netweir as for
 anyone, so `page.evaluate("window.open('/x')")` opens nothing. Click
@@ -465,7 +472,10 @@ whose connection broke. `await download.cancel()` stops one.
 Each context saves its downloads in a temporary folder of its own,
 removed when the context closes. A page from `browser.new_page()` has a
 context of its own, so its downloads go when the page closes: save what
-you want to keep. Nothing lands in your Downloads folder.
+you want to keep. Nothing lands in your Downloads folder. On Windows, a
+download still under way when its context closes can keep its folder
+there until the browser closes, since Windows won't delete a file Chrome
+has open.
 
 `goto()` to a file raises `netweir.FetchError` with `net::ERR_ABORTED`,
 since no page came back. The download happens all the same, and
