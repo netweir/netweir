@@ -737,3 +737,8 @@ out-of-process), and `user_data_dir`.
 **M34, frames' and workers' requests.** Requests from frames from other
 sites and from dedicated workers are heard, blocked and routed like the
 page's own; see the network design note.
+
+**M46, dialogs, popups and downloads.** Dialogs are answered, by a
+listener or by default, never sooner than a person could; popups become
+pages with their opener's rules; downloads land in a folder per context.
+See [dialogs.md](dialogs.md).
