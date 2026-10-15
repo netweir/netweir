@@ -305,9 +305,11 @@ def main(argv: list[str] | None = None) -> int:
     from netweir import QueueError
 
     # A service manager's stop, or `kill`, ends the crawl as Ctrl-C does,
-    # with the output files closed and the checkpoint saved.
+    # with the output files closed and the checkpoint saved. So does
+    # Ctrl-Break on Windows, which is how `netweir serve` cancels a job
+    # there: Windows has no SIGTERM to send.
     main_thread = threading.current_thread() is threading.main_thread()
-    previous = signal.signal(signal.SIGTERM, _interrupt) if main_thread else None
+    previous = {stop: signal.signal(stop, _interrupt) for stop in STOPS} if main_thread else {}
     reason = "error"
     from netweir._stats import PortTaken
 
@@ -334,9 +336,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"netweir: {e}", file=sys.stderr)
         return 1
     finally:
-        # None for a handler that wasn't set from Python, which can't be put back.
-        if main_thread and previous is not None:
-            signal.signal(signal.SIGTERM, previous)
+        for stop, handler in previous.items():
+            # None for a handler that wasn't set from Python, which can't be put back.
+            if handler is not None:
+                signal.signal(stop, handler)
         if writer is not None:
             stop_writing.set()
             writer.join()
@@ -471,8 +474,12 @@ def _chunks(items, size: int):
         yield chunk
 
 
+#: What asks a process to stop as Ctrl-C would.
+STOPS = (signal.SIGTERM, signal.SIGBREAK) if sys.platform == "win32" else (signal.SIGTERM,)
+
+
 def _interrupt(signum, frame) -> None:
-    """Handles SIGTERM as whatever handles SIGINT now would: asyncio's
+    """Handles SIGTERM (and SIGBREAK) as whatever handles SIGINT now would: asyncio's
     handler, while a crawl runs, which cancels it cleanly."""
     handler = signal.getsignal(signal.SIGINT)
     if not callable(handler):

@@ -113,8 +113,13 @@ def main(args) -> int:
         log.warning("no --project given: there are no spiders to run")
     service.start()
     log.info("serving on http://%s:%d", f"[{host}]" if ":" in host else host, port)
-    # A service manager's stop ends the service as Ctrl-C does.
-    signal.signal(signal.SIGTERM, _interrupt)
+    from netweir._cli import STOPS
+
+    # A service manager's stop, or Ctrl-Break on Windows, ends the
+    # service as Ctrl-C does. Jobs have consoles of their own, so a
+    # Ctrl-Break typed here reaches only the service.
+    for stop in STOPS:
+        signal.signal(stop, _interrupt)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -162,16 +167,168 @@ def _ip(host: str) -> bool:
     return True
 
 
-def _kill(process: subprocess.Popen) -> None:
-    """Kills a job and whatever it started: its worker processes, say,
-    which share its session."""
-    if process.poll() is not None:
-        return
-    if sys.platform == "win32":
-        process.kill()
-        return
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
+def _python() -> tuple[str, dict[str, str]]:
+    """The Python to run a job with, and what its environment needs.
+    In a venv on Windows, sys.executable is a launcher that starts the
+    real interpreter as its child, outside any job object the launcher
+    is put in; as multiprocessing does (bpo-35797), the interpreter is
+    started directly and told which venv it's in."""
+    base = getattr(sys, "_base_executable", sys.executable)
+    if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
+        return base, {"__PYVENV_LAUNCHER__": sys.executable}
+    return sys.executable, {}
+
+
+def _end(process: subprocess.Popen, tree: Any) -> bool:
+    """Kills a job and whatever it started, at once: its process group,
+    which its worker processes share, or on Windows its job object
+    `tree`, and any job nested in that (Chrome's, say). False when that
+    couldn't be done, for _taskkill to try."""
+    if sys.platform != "win32":
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        return True
+    if tree is not None and _kernel32.TerminateJobObject(tree, 1):
+        return True
+    if tree is not None:
+        log.warning(
+            "couldn't end the job object of pid %d: %s",
+            process.pid,
+            ctypes.WinError(ctypes.get_last_error()),
+        )
+    return False
+
+
+def _taskkill(process: subprocess.Popen) -> None:
+    """On Windows, without a job object: kills the process tree, going by
+    parent, so a grandchild whose parent already ended is missed. Slow:
+    never with the service's lock held."""
+    try:
+        done = subprocess.run(
+            [str(Path(_system_directory(), "taskkill.exe")), "/F", "/T", "/PID", str(process.pid)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if done.returncode:
+            log.warning(
+                "taskkill of pid %d: %s", process.pid, done.stderr.decode(errors="replace").strip()
+            )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("taskkill of pid %d: %s", process.pid, e)
+    # Whatever taskkill couldn't do, the job itself still goes.
+    process.kill()
+
+
+#: Run in a process of its own, with a job's pid: sends Ctrl-Break to
+#: every process on that job's console, and to nothing else. Exits with
+#: what went wrong, if anything: AttachConsole fails once the job is gone.
+#: Started with no console, so it can attach to the job's.
+_BREAK = """
+import ctypes, signal, sys
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+if not kernel32.AttachConsole(int(sys.argv[1])):
+    sys.exit(f"AttachConsole: {ctypes.WinError(ctypes.get_last_error())}")
+if not kernel32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, 0):
+    sys.exit(f"GenerateConsoleCtrlEvent: {ctypes.WinError(ctypes.get_last_error())}")
+"""
+
+
+def _break(processes: list[subprocess.Popen]) -> list[str | None]:
+    """Asks jobs on Windows to stop as Ctrl-C would, by sending Ctrl-Break
+    to each one's console, all at once: for each, None once sent, or why
+    it wasn't. Slow: never with the service's lock held. The Popen
+    objects hold the jobs' handles, so no pid has been reused."""
+    python, extra = _python()
+    helpers: list[subprocess.Popen | str] = []
+    for process in processes:
+        try:
+            helpers.append(
+                subprocess.Popen(
+                    [python, "-I", "-S", "-c", _BREAK, str(process.pid)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    env={**os.environ, **extra},
+                    creationflags=subprocess.DETACHED_PROCESS,
+                )
+            )
+        except OSError as e:
+            helpers.append(str(e))
+    whys: list[str | None] = []
+    for helper in helpers:
+        if isinstance(helper, str):
+            whys.append(helper)
+            continue
+        try:
+            _, err = helper.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            helper.kill()
+            helper.communicate()
+            whys.append("the helper timed out")
+            continue
+        # Ended by the Ctrl-Break it sent (it can arrive as the helper
+        # exits, past ignoring it): sent, then, since it's on no other
+        # console.
+        if helper.returncode in (0, STATUS_CONTROL_C_EXIT):
+            whys.append(None)
+        else:
+            whys.append(err.decode(errors="replace").strip() or f"exit status {helper.returncode}")
+    return whys
+
+
+STATUS_CONTROL_C_EXIT = 0xC000013A
+
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.GetSystemDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
+    _kernel32.GetSystemDirectoryW.restype = wintypes.UINT
+
+
+def _tree(process: subprocess.Popen) -> Any:
+    """A job object holding the process and whatever it starts, or None
+    when there isn't one: on Windows only, and if it could be made.
+    Without KILL_ON_JOB_CLOSE: a job outlives the service."""
+    if sys.platform != "win32":
+        return None
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        log.warning("couldn't make a job object: %s", ctypes.WinError(ctypes.get_last_error()))
+        return None
+    # Known limit: assigned just after the start, so a process the job
+    # started in that instant would escape. The job is the interpreter
+    # itself (see _python), whose start-up takes far longer than that.
+    if not _kernel32.AssignProcessToJobObject(job, int(process._handle)):  # type: ignore[attr-defined]
+        log.warning(
+            "couldn't put pid %d in a job object: %s",
+            process.pid,
+            ctypes.WinError(ctypes.get_last_error()),
+        )
+        _kernel32.CloseHandle(job)
+        return None
+    return job
+
+
+def _system_directory() -> str:
+    buffer = ctypes.create_unicode_buffer(260)
+    size = _kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < size < len(buffer):
+        raise OSError("GetSystemDirectoryW failed")
+    return buffer.value
 
 
 def _lock(path: Path) -> Any:
@@ -266,6 +423,10 @@ class Service:
         self.running: dict[str, tuple[subprocess.Popen, Any]] = {}
         #: Jobs told to stop, and when they're killed if they haven't.
         self.cancelling: dict[str, float] = {}
+        #: On Windows, running jobs' job objects, by job id.
+        self.trees: dict[str, Any] = {}
+        #: On Windows, jobs to kill by taskkill, once the lock is let go.
+        self.unkilled: list[subprocess.Popen] = []
         self.stopping = False
         self.thread = threading.Thread(target=self._loop, name="netweir-serve", daemon=True)
         # Their process was the last service's child, and nobody is
@@ -287,8 +448,8 @@ class Service:
         pending, for the next service."""
         with self.lock:
             self.stopping = True
-            for jobid in list(self.running):
-                self._signal(jobid)
+            asking = {jobid: self._signal(jobid) for jobid in list(self.running)}
+        self._ask(asking)
         self.wake.set()
         if self.thread.is_alive():
             self.thread.join()
@@ -362,6 +523,7 @@ class Service:
     def cancel(self, project: str, jobid: str) -> str | None:
         """The job's state before: "pending", "running", or None when
         there was nothing to cancel."""
+        asking: dict[str, Any] = {}
         with self.lock:
             row = self.db.execute(
                 "SELECT id, state FROM jobs WHERE id = ? AND project = ?", (jobid, project)
@@ -381,10 +543,11 @@ class Service:
                 self._forget_old()
             elif jobid in self.cancelling:
                 # Cancelled again: no more waiting.
-                _kill(self.running[jobid][0])
+                self._kill(jobid)
             else:
-                self._signal(jobid)
-            return state
+                asking[jobid] = self._signal(jobid)
+        self._ask(asking)
+        return state
 
     def spiders(self, project: str) -> dict[str, list[str]]:
         """{spider name: [files defining it]}."""
@@ -524,6 +687,7 @@ class Service:
                     # A full disk, say: the service carries on, and tries
                     # again next time round.
                     log.exception("the scheduler failed")
+            self._taskkills()
 
     def _step(self) -> bool:
         """Reaps the jobs that ended and starts those there's room for;
@@ -549,8 +713,9 @@ class Service:
         paths = {
             kind: self.file(kind, project, spider, jobid) for kind in ("logs", "items", "stats")
         }
+        python, extra = _python()
         command = [
-            sys.executable, "-m", "netweir", "crawl", row["file"], "--spider", spider,
+            python, "-m", "netweir", "crawl", row["file"], "--spider", spider,
             "-o", str(paths["items"]), "--stats", str(paths["stats"]),
         ]  # fmt: skip
         output = None
@@ -576,10 +741,13 @@ class Service:
                 stdin=subprocess.DEVNULL,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, **extra, "PYTHONUNBUFFERED": "1"},
                 # So a Ctrl-C at the service's terminal reaches only the
-                # service, which cancels each job once.
+                # service, which cancels each job once. On Windows, the
+                # same by a console of its own, hidden, which a cancel
+                # sends Ctrl-Break to.
                 start_new_session=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, ValueError) as e:
             log.error("job %s: couldn't start: %s", jobid, e)
@@ -598,22 +766,59 @@ class Service:
         # the service then dies, the next one finds it pending and runs it
         # again.
         self.running[jobid] = (process, output)
+        if (tree := _tree(process)) is not None:
+            self.trees[jobid] = tree
         log.info("job %s: %s %s started, pid %d", jobid, project, spider, process.pid)
         self.db.execute(
             "UPDATE jobs SET state = 'running', pid = ?, start_time = ? WHERE id = ?",
             (process.pid, _now(), jobid),
         )
 
-    def _signal(self, jobid: str) -> None:
+    def _signal(self, jobid: str) -> Any:
         """Asks a running job to stop as Ctrl-C would, and gives it GRACE
-        seconds."""
+        seconds. On Windows that takes a helper process, too slow to start
+        with the lock held: the job's process, for _ask, then."""
         process = self.running[jobid][0]
         if process.poll() is not None:
             # It ended on its own; the reaper records how.
-            return
-        # Known limit: on Windows this ends the process at once.
-        process.terminate()
+            return None
         self.cancelling[jobid] = time.monotonic() + GRACE
+        if sys.platform != "win32":
+            process.terminate()
+            return None
+        return process
+
+    def _ask(self, asking: dict[str, Any]) -> None:
+        """Without the lock: sends the jobs _signal left on Windows their
+        Ctrl-Break, and kills those it couldn't be sent to."""
+        asking = {jobid: process for jobid, process in asking.items() if process is not None}
+        if asking:
+            for (jobid, process), why in zip(
+                asking.items(), _break(list(asking.values())), strict=True
+            ):
+                if why is None:
+                    continue
+                with self.lock:
+                    # Windows has no SIGTERM (terminate() ends a process at
+                    # once): without the Ctrl-Break, there's no asking.
+                    if jobid in self.running and process.poll() is None:
+                        log.warning("job %s: couldn't be asked to stop (%s); killed", jobid, why)
+                        self._kill(jobid)
+        self._taskkills()
+
+    def _kill(self, jobid: str) -> None:
+        """With the lock held: kills a running job and whatever it started,
+        or leaves it to _taskkills."""
+        process = self.running[jobid][0]
+        if process.poll() is None and not _end(process, self.trees.get(jobid)):
+            self.unkilled.append(process)
+
+    def _taskkills(self) -> None:
+        """Without the lock: kills the jobs _kill couldn't."""
+        with self.lock:
+            unkilled, self.unkilled = self.unkilled, []
+        for process in unkilled:
+            _taskkill(process)
 
     def _reap(self) -> None:
         for jobid, (process, output) in list(self.running.items()):
@@ -623,7 +828,7 @@ class Service:
                     log.warning(
                         "job %s: still running %.0f s after cancelling; killed", jobid, GRACE
                     )
-                    _kill(process)
+                    self._kill(jobid)
                 continue
             if jobid in self.cancelling:
                 outcome = "cancelled"
@@ -648,6 +853,13 @@ class Service:
             # Only once the table says so: if writing it failed, the job
             # is still here to be reaped next time round.
             output.close()
+            if (tree := self.trees.pop(jobid, None)) is not None:
+                if outcome == "cancelled":
+                    # What it started and left behind, ignoring the
+                    # Ctrl-Break, goes with it. Known limit: on POSIX, a
+                    # process group outlives its reaped leader unswept.
+                    _end(process, tree)
+                _kernel32.CloseHandle(tree)
             del self.running[jobid]
             self.cancelling.pop(jobid, None)
             log.info("job %s: %s, exit status %d", jobid, outcome, code)

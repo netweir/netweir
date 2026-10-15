@@ -298,10 +298,12 @@ def test_a_higher_priority_goes_first(tmp_path, project, site):
         assert job(base, low)[0] == "pending"
 
 
-@posix
-def test_a_cancelled_job_keeps_its_items(tmp_path, project, site):
+# With workers too: on Windows the Ctrl-Break that cancels a job reaches
+# them as well, and mustn't end them before the job winds up.
+@pytest.mark.parametrize("setting", [[], ["workers=2"]], ids=["alone", "workers"])
+def test_a_cancelled_job_keeps_its_items(tmp_path, project, site, setting):
     with serving(tmp_path, project) as base:
-        jobid = schedule(base, "slow", site)
+        jobid = schedule(base, "slow", site, setting=setting)
         wait(lambda: job(base, jobid)[0] == "running")
         time.sleep(2)  # pages come every 0.2 s
         status, answer = call(f"{base}/cancel.json", {"project": "shop", "job": jobid})
@@ -336,10 +338,7 @@ def test_a_running_job_s_stats_are_served_as_it_goes(tmp_path, project, site):
         finished(base, jobid)
         _, answer = call(f"{base}/jobstats.json?job={jobid}")
         assert answer["stats"]["fetched"] >= stats["fetched"]
-        # Windows ends a cancelled job at once, before it writes its last
-        # stats.
-        if sys.platform != "win32":
-            assert answer["stats"]["finish_reason"] == "interrupted"
+        assert answer["stats"]["finish_reason"] == "interrupted"
 
 
 def test_a_pending_job_can_be_cancelled(tmp_path, project, site):
@@ -753,38 +752,216 @@ def test_names_differing_only_in_case_are_one_name(tmp_path, project, site):
         call(f"{base}/cancel.json", {"project": "shop", "job": blocker})
 
 
-@posix
-def test_killing_a_job_kills_what_it_started(tmp_path, project, site):
+# The process a stubborn job starts: it ignores what a cancel sends
+# (SIGTERM, or on Windows Ctrl-Break, which reaches it too), and with
+# depth 2 starts another like it and exits, leaving a grandchild whose
+# parent is gone. The last writes its pid once it ignores the cancel.
+HOLD = """
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGBREAK if sys.platform == "win32" else signal.SIGTERM, signal.SIG_IGN)
+pidfile, depth = sys.argv[1], int(sys.argv[2])
+if depth > 1:
+    subprocess.Popen([sys.executable, __file__, pidfile, str(depth - 1)])
+    sys.exit()
+with open(pidfile + ".new", "w") as f:
+    f.write(str(os.getpid()))
+os.replace(pidfile + ".new", pidfile)
+time.sleep(300)
+"""
+
+
+@pytest.mark.parametrize("depth", [1, 2], ids=["child", "orphaned-grandchild"])
+def test_killing_a_job_kills_what_it_started(tmp_path, project, site, depth):
+    # Outside the project: every file in it is loaded as spiders.
+    hold = tmp_path / "hold.py"
+    hold.write_text(HOLD, encoding="utf-8")
     (project / "stubborn.py").write_text(
         "import signal, subprocess, sys\n"
         "from spiders import Slow\n"
         "class Stubborn(Slow):\n"
         "    name = 'stubborn'\n"
         "    def opened(self):\n"
-        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
-        "        open(self.pidfile, 'w').write(str(child.pid))\n",
+        "        stop = signal.SIGBREAK if sys.platform == 'win32' else signal.SIGTERM\n"
+        "        signal.signal(stop, signal.SIG_IGN)\n"
+        "        subprocess.Popen([sys.executable, self.hold, self.pidfile, self.depth])\n",
         encoding="utf-8",
     )
-    pidfile = tmp_path / "child.pid"
+    pidfile = tmp_path / "held.pid"
     with serving(tmp_path, project) as base:
-        jobid = schedule(base, "stubborn", site, pidfile=str(pidfile))
-        wait(lambda: pidfile.exists() and pidfile.read_text())
-        child = int(pidfile.read_text())
+        jobid = schedule(
+            base, "stubborn", site, hold=str(hold), pidfile=str(pidfile), depth=str(depth)
+        )
+        held = int(wait(lambda: pidfile.exists() and pidfile.read_text()))
         assert call(f"{base}/cancel.json", {"project": "shop", "job": jobid})[1]["prevstate"]
         time.sleep(0.5)
-        assert job(base, jobid)[0] == "running", "SIGTERM is ignored"
+        assert job(base, jobid)[0] == "running", "the cancel is ignored"
+        assert alive(held)
+        call(f"{base}/cancel.json", {"project": "shop", "job": jobid})  # again: killed
+        assert finished(base, jobid)["outcome"] == "cancelled"
+        wait(lambda: not alive(held), timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' console events")
+def test_a_cancel_reaches_its_job_s_console_and_nothing_else(tmp_path, project, site):
+    with serving(tmp_path, project) as base:
+        other = schedule(base, "slow", site)
+        wait(lambda: job(base, other)[0] == "running")
+        # A job that has just ended: nothing to send the event to, and
+        # nothing else (this process, the service, the other job) gets it.
+        gone = subprocess.Popen(
+            [sys.executable, "-c", "pass"], creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        gone.wait()
+        # A live one: only it stops.
+        alone = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        time.sleep(1)  # past its start-up
+        why_gone, why_alone = _serve._break([gone, alone])
+        assert why_gone and "AttachConsole" in why_gone
+        assert why_alone is None
+        assert alone.wait(timeout=10) != 0
+        time.sleep(1)
+        assert job(base, other)[0] == "running"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX leaves a reaped job's group be")
+def test_a_cancelled_job_takes_what_it_left_running_with_it(tmp_path, project, site):
+    # Outside the project: every file in it is loaded as spiders.
+    hold = tmp_path / "hold.py"
+    hold.write_text(HOLD, encoding="utf-8")
+    (project / "leaver.py").write_text(
+        "import subprocess, sys\n"
+        "from spiders import Slow\n"
+        "class Leaver(Slow):\n"
+        "    name = 'leaver'\n"
+        "    def opened(self):\n"
+        "        subprocess.Popen([sys.executable, self.hold, self.pidfile, '1'])\n",
+        encoding="utf-8",
+    )
+    pidfile = tmp_path / "held.pid"
+    with serving(tmp_path, project) as base:
+        jobid = schedule(base, "leaver", site, hold=str(hold), pidfile=str(pidfile))
+        held = int(wait(lambda: pidfile.exists() and pidfile.read_text()))
+        call(f"{base}/cancel.json", {"project": "shop", "job": jobid})
+        assert finished(base, jobid)["outcome"] == "cancelled"
+        # The job itself stopped as asked; what it started, which ignored
+        # that, didn't, and went with it.
+        _, stats = call(f"{base}/jobstats.json?job={jobid}")
+        assert stats["stats"]["finish_reason"] == "interrupted"
+        wait(lambda: not alive(held), timeout=10)
+
+
+@pytest.fixture(params=["chrome", "chrome-headless-shell"])
+def chrome(request, monkeypatch):
+    if request.param == "chrome-headless-shell":
+        # Put in place by CI on Windows, where it's a console program
+        # sharing the job's console, unlike Chrome.
+        shell = os.environ.get("NETWEIR_TEST_HEADLESS_SHELL")
+        if not shell:
+            pytest.skip("no chrome-headless-shell")
+        # Jobs take the service's environment.
+        monkeypatch.setenv("NETWEIR_CHROME", shell)
+        return
+    if not os.environ.get("NETWEIR_REQUIRE_CHROME"):
+        import asyncio
+
+        import netweir
+
+        async def probe():
+            async with netweir.browser():
+                pass
+
+        try:
+            asyncio.run(probe())
+        except netweir.BrowserError as e:
+            pytest.skip(str(e))
+
+
+def test_a_job_using_chrome_can_be_cancelled(tmp_path, project, site, chrome):
+    # On Windows, Chrome runs in a job object of its own, nested in the
+    # job's: the cancel still stops the crawl cleanly.
+    (project / "rendered.py").write_text(
+        "import netweir\n"
+        "from spiders import Slow\n"
+        "class Rendered(Slow):\n"
+        "    name = 'rendered'\n"
+        "    async def start(self):\n"
+        "        yield netweir.Request(self.site + '/slow/1', browser=True)\n"
+        "    def parse(self, page):\n"
+        "        yield {'n': page.css('h1::text').get()}\n"
+        "        if page.url.endswith('/2'):\n"
+        "            open(self.mark, 'w').close()\n"
+        "        yield page.follow(page.css('a::attr(href)').get(), browser=True)\n",
+        encoding="utf-8",
+    )
+    with serving(tmp_path, project) as base:
+        mark = tmp_path / "two-pages"
+        jobid = schedule(base, "rendered", site, mark=str(mark))
+        # Chrome can take its time starting.
+        wait(mark.exists, timeout=120)
+        call(f"{base}/cancel.json", {"project": "shop", "job": jobid})
+        entry = finished(base, jobid)
+        assert entry["outcome"] == "cancelled"
+        _, stats = call(f"{base}/jobstats.json?job={jobid}")
+        assert stats["stats"]["finish_reason"] == "interrupted"
+        assert stats["stats"]["browser_fetches"] >= 2
+        assert stats["stats"]["items"] >= 1
+
+
+def test_a_cancel_is_for_the_crawl_not_its_chrome(tmp_path, project, site, chrome):
+    # The crawl closes its Chrome itself. One that ignores the cancel
+    # carries on with the same Chrome, which the cancel mustn't have
+    # reached (on Windows, chrome-headless-shell is a console program).
+    (project / "rendered.py").write_text(
+        "import netweir, signal, sys\n"
+        "from spiders import Slow\n"
+        "class Rendered(Slow):\n"
+        "    name = 'rendered'\n"
+        "    def opened(self):\n"
+        "        stop = signal.SIGBREAK if sys.platform == 'win32' else signal.SIGTERM\n"
+        "        signal.signal(stop, signal.SIG_IGN)\n"
+        "    async def start(self):\n"
+        "        yield netweir.Request(self.site + '/slow/1', browser=True)\n"
+        "    def parse(self, page):\n"
+        "        with open(self.mark, 'w') as f:\n"
+        "            f.write(page.url.rsplit('/', 1)[1])\n"
+        "        yield page.follow(page.css('a::attr(href)').get(), browser=True)\n",
+        encoding="utf-8",
+    )
+    mark = tmp_path / "page"
+
+    def page():
+        try:
+            return int(mark.read_text() or 0)
+        except (OSError, ValueError):
+            return 0
+
+    with serving(tmp_path, project) as base:
+        jobid = schedule(base, "rendered", site, mark=str(mark))
+        # Chrome can take its time starting.
+        wait(lambda: page() >= 2, timeout=120)
+        call(f"{base}/cancel.json", {"project": "shop", "job": jobid})
+        then = page()
+        wait(lambda: page() >= then + 3, timeout=60)
         call(f"{base}/cancel.json", {"project": "shop", "job": jobid})  # again: killed
         assert finished(base, jobid)["outcome"] == "cancelled"
 
-        def gone():
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                return True
-            return False
 
-        wait(gone, timeout=10)
+def alive(pid):
+    if sys.platform == "win32":
+        # os.kill(pid, 0) would end it there.
+        found = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True,
+        ).stdout  # fmt: skip
+        return f'"{pid}"' in found
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def test_a_job_that_ended_isn_t_recorded_as_cancelled(tmp_path, project):

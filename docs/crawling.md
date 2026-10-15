@@ -172,8 +172,9 @@ crawl's stats to a file when it ends, however it ends, with
 Ctrl-C stops a crawl cleanly: the items so far are closed off in the
 output file, a checkpoint records where it got to, and the command exits
 with status 130. SIGTERM, which `kill` and service managers send, does the
-same. After a run in Python, `spider.stats` holds the stats too, including
-those of a run that was interrupted or raised.
+same, and so does Ctrl-Break on Windows. After a run in Python,
+`spider.stats` holds the stats too, including those of a run that was
+interrupted or raised.
 
 To run spiders as jobs that you schedule, watch and cancel over HTTP, as
 scrapyd does for Scrapy, see [Running spiders as a service](serve.md).
@@ -921,7 +922,8 @@ are complete, every `close_spider`, then `spider_closed`, then
 `closed(reason)`, called after `spider_opened` and `spider_closed`.
 `reason` is `spider.finish_reason` (`"finished"`, or the limit that
 stopped the crawl), `"error"` when an exception ended it, or
-`"interrupted"` after Ctrl-C (or SIGTERM, under `netweir crawl`).
+`"interrupted"` after Ctrl-C (or SIGTERM or Ctrl-Break, under `netweir
+crawl`).
 
 ```python
 class Counter:

@@ -17,6 +17,7 @@ import multiprocessing
 import multiprocessing.connection
 import os
 import pickle
+import signal
 import sys
 import threading
 import traceback
@@ -98,6 +99,12 @@ def _start(
     parent = multiprocessing.parent_process()
     if parent is not None:
         threading.Thread(target=_outlive_not, args=(parent.sentinel,), daemon=True).start()
+    if sys.platform == "win32":
+        # The Ctrl-Break that cancels a `netweir serve` job reaches every
+        # process on the job's console. Left to it, a worker would exit at
+        # once and fail the page it had; the job stops its workers itself.
+        # Known limit: one still starting up hasn't got this far.
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
     root = logging.getLogger()
     root.handlers[:] = [logging.handlers.QueueHandler(logs)]
     root.setLevel(level)

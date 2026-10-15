@@ -169,8 +169,64 @@ running one is sent SIGTERM; if it's still running 30 seconds later, it
 gets SIGKILL, sent to its whole process group, which its worker
 processes share. Cancelling a job that's already being cancelled sends
 SIGKILL at once. A job that has already exited but isn't reaped yet isn't
-marked cancelled: the reaper records how it really ended. Either way its outcome is `cancelled`, and its items file
-keeps what it wrote.
+marked cancelled: the reaper records how it really ended. Either way its
+outcome is `cancelled`, and its items file keeps what it wrote.
+
+### On Windows
+
+Windows has no SIGTERM: `terminate()` there is TerminateProcess, which
+would end the job before it closed its items file or wrote its stats.
+The nearest thing is a console's Ctrl-Break, which `netweir crawl` takes
+as it takes Ctrl-C and SIGTERM. But a console event goes to every
+process on a console, and `GenerateConsoleCtrlEvent` given a process
+group that's no longer there signals them all, so the job mustn't share
+one with the service or with other jobs. So:
+
+- Each job starts with `CREATE_NO_WINDOW`: a console of its own, hidden.
+  A Ctrl-C or Ctrl-Break typed at the service's console reaches only the
+  service, and a service with no console (run by a service host) can
+  still cancel.
+- In a venv, `sys.executable` is a launcher that starts the real
+  interpreter as its child. A job is started as multiprocessing starts
+  a worker (bpo-35797): the base interpreter itself, with
+  `__PYVENV_LAUNCHER__` naming the venv's. So the job's pid is the
+  crawl's, and nothing runs before it's in its job object.
+- A cancel runs a short helper (`python -I -S -c ...`) started with
+  `DETACHED_PROCESS`, so it has no console and no conhost is made for
+  it. The helper:
+  - ignores Ctrl-Break itself with `signal(SIGBREAK, SIG_IGN)`.
+    `SetConsoleCtrlHandler(NULL, TRUE)` would only cover Ctrl-C;
+  - attaches to the job's console with `AttachConsole(pid)`. That fails
+    once the job has ended, and then nothing is sent. The service holds
+    the job's process handle, so its pid can't have been reused;
+  - sends Ctrl-Break to everything on that console: the job and the
+    processes it started.
+- The Ctrl-Break can still end the helper as it exits. Its exit status
+  is then `STATUS_CONTROL_C_EXIT`, which means the event was sent, since
+  the helper is on no other console.
+- Helpers are started after the service's lock is let go; stopping the
+  service starts one per job before waiting on any. If one couldn't send
+  the event, the service takes the lock again, logs a warning, and kills
+  the job.
+- Workers ignore Ctrl-Break, and the job stops them as after Ctrl-C.
+- Chrome is a GUI program and has no console. chrome-headless-shell is
+  a console program (its PE header's subsystem is 3, console), so it
+  shares the job's console and gets the Ctrl-Break too. It carries on
+  regardless, and the crawl closes it as usual: a test has a crawl
+  ignore the cancel and go on fetching through the same headless shell
+  (CI installs it on Windows for that).
+- Each job is put in a job object (`AssignProcessToJobObject`, just
+  after it starts), without `KILL_ON_JOB_CLOSE`, since a job outlives
+  the service. The kill is `TerminateJobObject`, which ends everything
+  the job started, including grandchildren whose parent has gone and
+  any job nested in it, such as Chrome's.
+- When a cancelled job ends, its job object is ended too before its
+  handle is closed, so whatever it started that ignored the Ctrl-Break
+  goes with it. On POSIX a cancelled job's process group isn't swept
+  once its leader is reaped: the group's id could by then be another's.
+- Only where the job object couldn't be made does the kill fall back on
+  `taskkill /F /T`, from `GetSystemDirectoryW`'s folder, run without the
+  lock held.
 
 Stopping the service (Ctrl-C or SIGTERM) cancels the jobs it's running the
 same way and waits for them, so it can take up to the grace period to
@@ -235,9 +291,18 @@ nobody is watching it now.
 - A job is marked running in memory before the table says so. If that
   write fails and the service then dies before the job ends, the table
   still has it pending, and the next service runs it again.
-- On Windows there's no SIGTERM: a cancelled job is stopped at once, and
-  its items file has what it had flushed, which is every batch before the
-  last.
+- On Windows, a worker still starting when a cancel arrives can be
+  ended by the Ctrl-Break before it gets to ignore it. The job then
+  ends with a worker that died rather than `interrupted`, though what it
+  had written is kept. Workers start as the crawl needs them, so the
+  window can open at any time, but it lasts only an interpreter's
+  start-up.
+- On Windows, a process the job started in the instant before it
+  joined its job object would escape it. The job is the interpreter
+  itself, whose start-up takes far longer than that instant.
+- On Windows, if the job object couldn't be made, the kill goes by
+  process tree, and a grandchild whose parent had already ended is
+  missed.
 - No `addversion.json`, `delversion.json` or eggs.
 
 ## Testing

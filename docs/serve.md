@@ -236,6 +236,7 @@ private.
 - If the service is killed outright, with `kill -9` say, its running jobs
   aren't told. They carry on to their end unwatched, and are marked `lost`
   at the next start even if they finish.
-- On Windows a cancelled job is stopped at once rather than asked to
-  stop, so its items file has what had been written to disk by then.
+- On Windows, a job cancelled just as one of its workers is starting can
+  end with that worker dead rather than as `interrupted`. What it had
+  written is kept either way.
 - No `addversion.json` or `delversion.json`.
