@@ -33,6 +33,16 @@ class Request:
     When ``proxy`` isn't set, ``meta["proxy"]`` does the same, as in
     Scrapy, None or ``""`` there meaning no proxy. Chrome has one proxy for all its pages, so it
     doesn't apply to a request fetched there.
+
+    ``timeout`` and ``max_redirects`` replace the crawl's for this request;
+    ``allow_redirects=False`` hands the callback a redirect itself. ``auth``
+    is a (user, password) login sent as HTTP Basic to the request's own
+    origin, and dropped by a redirect that leaves it; a login written into
+    the URL becomes ``auth``. Scrapy's meta keys do the same when these
+    aren't set: ``download_timeout``, ``dont_redirect``, ``redirect_ttl``
+    (never above the crawl's limit), and ``http_user``, ``http_pass`` and
+    ``http_auth_domain`` (a login for that domain and its subdomains, the
+    request's own host by default). None of them applies in Chrome.
     """
 
     url: str
@@ -59,8 +69,23 @@ class Request:
     #: body's Content-Type.
     kind: str | None = None
     content_type: str | None = None
+    #: Seconds for each request, in place of the crawl's timeout.
+    timeout: float | None = None
+    #: Redirects to follow before failing, in place of the crawl's limit.
+    max_redirects: int | None = None
+    #: False hands the callback a redirect itself, Location and all.
+    allow_redirects: bool = True
+    #: A (user, password) login, sent as HTTP Basic to the request's own
+    #: origin. Left out of repr(), like proxy.
+    auth: tuple[str, str] | None = dataclasses.field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        from netweir._fetch import checked_auth, login_of, redirect_limit
+
+        self.url, self.auth = login_of(self.url, checked_auth(self.auth))
+        if self.timeout is not None and not self.timeout > 0:
+            raise ValueError("timeout must be a positive number of seconds")
+        redirect_limit(self.max_redirects)
         has_body = self.form is not None or self.json is not None or self.body is not None
         self.method = (self.method or ("POST" if has_body else "GET")).upper()
         if self.form is not None or self.json is not None or self.kind is None:

@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 from netweir import _files, _hooks, _memory, _monitor, _stats, _track
 from netweir._errors import QueueError
-from netweir._fetch import Page, _pairs
+from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_limit
 from netweir._native import (
     _RESOURCE_TYPES,
     Crawler,
@@ -95,6 +95,22 @@ class Settings:
     retries: int = 3
     backoff_base: float = 1.0
     backoff_max: float = 60.0
+    #: The statuses retried, as Scrapy's RETRY_HTTP_CODES. A 429 left out
+    #: still slows its host down, but goes to the callback. A block is
+    #: retried whatever its status.
+    retry_http_codes: tuple[int, ...] = (408, 429, 500, 502, 503, 504, 522, 524)
+    #: Redirects a request follows before it fails (Scrapy's
+    #: REDIRECT_MAX_TIMES); Chrome follows 20.
+    max_redirects: int = 20
+    #: True, False (no certificate check), or the path of a PEM file of CA
+    #: certificates to trust in place of the bundled ones, for hosts an
+    #: internal CA vouches for. Nothing on the wire changes.
+    verify: bool | str | os.PathLike = True
+    #: A (user, password) login sent as HTTP Basic to http_auth_domain and
+    #: its subdomains, and nowhere else (Scrapy's HTTPAUTH_USER,
+    #: HTTPAUTH_PASS and HTTPAUTH_DOMAIN). Each needs the other.
+    http_auth: tuple[str, str] | None = dataclasses.field(default=None, repr=False)
+    http_auth_domain: str | None = None
     #: Proxies to send requests through, as proxy_rotation says:
     #: "on_block" (a site moves to the next each time it blocks a session,
     #: which also starts with an empty cookie jar), "per_request" (every
@@ -240,6 +256,27 @@ class Settings:
             raise ValueError(f"warc must be a file ending in .warc.gz or .warc, not {self.warc!r}")
         if self.retries < 0 or self.breaker_window < 0:
             raise ValueError("retries and breaker_window must be 0 or more")
+        if isinstance(self.retry_http_codes, int):
+            raise ValueError(
+                f"retry_http_codes is a tuple of statuses, such as ({self.retry_http_codes},)"
+            )
+        object.__setattr__(self, "retry_http_codes", tuple(self.retry_http_codes))
+        for code in self.retry_http_codes:
+            if isinstance(code, bool) or not isinstance(code, int) or not 100 <= code <= 599:
+                raise ValueError(f"retry_http_codes: {code!r} isn't an HTTP status")
+        redirect_limit(self.max_redirects)
+        if not isinstance(self.verify, (bool, str, os.PathLike)):
+            raise ValueError(f"verify is True, False or a CA file's path, not {self.verify!r}")
+        if isinstance(self.verify, os.PathLike):
+            object.__setattr__(self, "verify", os.fspath(self.verify))
+        object.__setattr__(self, "http_auth", checked_auth(self.http_auth))
+        if (self.http_auth is None) != (self.http_auth_domain is None):
+            raise ValueError(
+                "http_auth and http_auth_domain go together: the login is sent only to that"
+                " domain and its subdomains, so a link or redirect elsewhere never gets it"
+            )
+        if self.http_auth_domain is not None and not self.http_auth_domain.strip("."):
+            raise ValueError("http_auth_domain can't be empty")
         if not 0 < self.backoff_base <= self.backoff_max or self.breaker_pause < 0:
             raise ValueError("backoffs must be positive, with backoff_base <= backoff_max")
         if not 0 <= self.breaker_ratio <= 1:
@@ -335,11 +372,17 @@ class Settings:
             raise ValueError("queue_idle must be positive, or None to wait for more for good")
 
     def _engine(self, allowed_domains: Iterable[str] = (), queue_key: str = "") -> Crawler:
+        verify, cas = certificates(self.verify)
         return Crawler(
             allowed_domains=list(allowed_domains),
             profile=self.profile,
             proxy=self.proxy,
             timeout=self.timeout,
+            verify=verify,
+            ca_certificates=cas,
+            max_redirects=self.max_redirects,
+            retry_http_codes=list(self.retry_http_codes),
+            http_auth=None if self.http_auth is None else (*self.http_auth, self.http_auth_domain),
             max_response_size=self.max_response_size,
             concurrency=self.concurrency,
             per_domain=self.per_domain,
@@ -1108,8 +1151,8 @@ class _Run:
             # No checkpoint, or one this crawl has just created.
             return None
         self.delivered = set(saved["items"])
-        for head, sent in saved["pending"]:
-            self.submit(_restored(head, sent)[0], row=head[0])
+        for head, sent, policy in saved["pending"]:
+            self.submit(_restored(head, sent, policy)[0], row=head[0])
         if saved["pending"] or self.delivered:
             log.info(
                 "resuming: %d requests left, %d items already written",
@@ -1171,13 +1214,19 @@ class _Run:
         if proxy is None and "proxy" in meta:
             proxy = meta["proxy"] or ""
         delta = _delta_meta(meta) if self.delta else (True, None)
+        message = None
         if delta is None:
-            # As a callback's error would be, from a callback or start().
-            self.counts["callback_errors"] += 1
             message = (
                 f'{request.url}: meta["deltafetch_key"] must be a str or bytes, not'
                 f" {type(meta['deltafetch_key']).__name__}; skipped"
             )
+        try:
+            policy = _policy(request, meta, self.settings.max_redirects)
+        except (TypeError, ValueError) as e:
+            message = f"{request.url}: {e}; skipped"
+        if message is not None:
+            # As a callback's error would be, from a callback or start().
+            self.counts["callback_errors"] += 1
             if self.settings.fail_fast:
                 raise TypeError(message)
             log.error("%s", message)
@@ -1204,6 +1253,7 @@ class _Run:
             delta=delta[0],
             delta_key=delta[1],
             answered=answered,
+            **policy,
         )
         if outcome in ("queued", "pushed", "answered"):
             self.accepted += 1
@@ -1888,9 +1938,9 @@ class _Run:
         elif kind == "warning":
             log.warning("%s", event[1])
         elif kind == "leased":
-            _, head, sent = event
+            _, head, sent, policy = event
             try:
-                request, data = _restored(head, sent)
+                request, data = _restored(head, sent, policy)
                 if data.get("pushed"):
                     # Pushed from outside: a start request, which the
                     # middlewares haven't seen yet.
@@ -2615,11 +2665,40 @@ _RESCHEDULES = 100
 _IDLE_WAIT = 5.0
 
 
-def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
+def _policy(request: Request, meta: Mapping[str, Any], max_redirects: int) -> dict[str, Any]:
+    """The engine's arguments for how ``request`` is handled: its own
+    timeout, redirect limit and login, or else the Scrapy meta keys that
+    say the same. ``max_redirects`` is the crawl's limit, which
+    ``redirect_ttl`` can lower but not raise, as in Scrapy."""
+    timeout = request.timeout
+    if timeout is None and meta.get("download_timeout") is not None:
+        timeout = float(meta["download_timeout"])
+    limit = request.max_redirects
+    if limit is None and meta.get("redirect_ttl") is not None:
+        limit = min(redirect_limit(meta["redirect_ttl"], "redirect_ttl"), max_redirects)
+    auth = None
+    if request.auth is not None:
+        auth = (*request.auth, None)
+    elif meta.get("http_user") is not None or meta.get("http_pass") is not None:
+        domain = meta.get("http_auth_domain") or urlsplit(request.url).hostname
+        auth = (str(meta.get("http_user") or ""), str(meta.get("http_pass") or ""), domain)
+    return {
+        "timeout": timeout,
+        "max_redirects": limit,
+        "dont_redirect": not request.allow_redirects or bool(meta.get("dont_redirect")),
+        "auth": auth,
+    }
+
+
+def _restored(
+    head: tuple, sent: tuple, policy: tuple = (None, None, False, None)
+) -> tuple[Request, dict[str, Any]]:
     """A Request again from what the checkpoint or the shared queue kept of
-    it, with its payload."""
+    it, with its payload. A login kept for a domain came from Scrapy's meta
+    keys, which come back with the meta and give it again."""
     _row, url, priority, headers, dont_filter, depth, payload = head
     method, kind, body, content_type, referer, retry_post, proxy = sent
+    timeout, max_redirects, dont_redirect, auth = policy
     if kind not in ("navigate", "form", "fetch", "image"):
         raise ValueError(f"unknown kind of request {kind!r}")
     data = json.loads(payload)
@@ -2642,6 +2721,10 @@ def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
         proxy=proxy,
         kind=kind,
         content_type=content_type,
+        timeout=timeout,
+        max_redirects=max_redirects,
+        allow_redirects=not dont_redirect,
+        auth=auth[:2] if auth is not None and auth[2] is None else None,
     )
     return request, data
 

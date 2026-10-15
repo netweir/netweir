@@ -543,6 +543,56 @@ mod tests {
         }
     }
 
+    /// Where each browser puts Authorization, as recorded from Chrome 155
+    /// and Firefox 158 (profiles/*.auth*.capture.json): Chrome straight
+    /// after Host, Connection, Content-Length and Cache-Control, Firefox
+    /// straight before Connection, in every kind of request. Earlier
+    /// versions order their headers the same way.
+    #[test]
+    fn authorization_holds_the_place_its_browser_gives_it() {
+        for (name, _) in BUILT_IN {
+            let p = Profile::named(name).unwrap();
+            let family = if name.starts_with("chrome") {
+                "chrome"
+            } else if name.starts_with("firefox") {
+                "firefox"
+            } else {
+                continue;
+            };
+            let mut lists: Vec<(&str, Vec<String>)> = vec![
+                ("headers", p.header_order(false)),
+                ("redirect_header_order", p.header_order(true)),
+            ];
+            for (kind, shape) in [
+                ("link", &p.link),
+                ("form", &p.form),
+                ("fetch", &p.fetch),
+                ("image", &p.image),
+                ("after_form_redirect", &p.after_form_redirect),
+            ] {
+                let shape = shape.as_ref().unwrap();
+                lists.push((kind, shape.headers.iter().map(|(k, _)| k.clone()).collect()));
+            }
+            for (kind, names) in lists {
+                let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+                let at = lower
+                    .iter()
+                    .position(|n| n == "authorization")
+                    .unwrap_or_else(|| panic!("{name} [{kind}] has no Authorization"));
+                if family == "chrome" {
+                    let before = ["host", "connection", "content-length", "cache-control"];
+                    assert!(
+                        lower[..at].iter().all(|n| before.contains(&n.as_str()))
+                            && !before.contains(&lower[at + 1].as_str()),
+                        "{name} [{kind}]: {names:?}"
+                    );
+                } else {
+                    assert_eq!(lower[at + 1], "connection", "{name} [{kind}]: {names:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_built_in_profile_loads_and_builds() {
         for (name, _) in BUILT_IN {

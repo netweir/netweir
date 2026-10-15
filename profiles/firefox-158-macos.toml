@@ -12,13 +12,17 @@ name = "firefox-158-macos"
 
 # Sent on every request, in this order and with this capitalisation, unless
 # the caller overrides one. Firefox sends Priority over HTTP/1.1 as well as
-# HTTP/2, and orders headers the same way after a redirect.
+# HTTP/2, and orders headers the same way after a redirect. Authorization,
+# from a login, sits where firefox-158-macos.auth*.capture.json recorded
+# Firefox putting it once it holds the login: straight before Connection,
+# in every kind of request below.
 headers = [
     ["Host", ""],
     ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0"],
     ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
     ["Accept-Language", "en-US,en;q=0.9"],
     ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Cookie", ""],
     ["Upgrade-Insecure-Requests", "1"],
@@ -120,6 +124,7 @@ headers = [
     ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
     ["Accept-Language", "en-US,en;q=0.9"],
     ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Referer", ""],
     ["Cookie", ""],
@@ -144,6 +149,7 @@ headers = [
     ["Content-Type", ""],
     ["Content-Length", ""],
     ["Origin", ""],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Referer", ""],
     ["Cookie", ""],
@@ -169,6 +175,7 @@ headers = [
     ["Content-Type", ""],
     ["Content-Length", ""],
     ["Origin", ""],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Cookie", ""],
     ["Sec-Fetch-Dest", "empty"],
@@ -192,6 +199,7 @@ headers = [
     ["Accept", "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"],
     ["Accept-Language", "en-US,en;q=0.9"],
     ["Accept-Encoding", "gzip, deflate, br, zstd"],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Referer", ""],
     ["Cookie", ""],
@@ -214,6 +222,7 @@ headers = [
     ["Accept-Language", "en-US,en;q=0.9"],
     ["Accept-Encoding", "gzip, deflate, br, zstd"],
     ["Referer", ""],
+    ["Authorization", ""],
     ["Connection", "keep-alive"],
     ["Cookie", ""],
     ["Upgrade-Insecure-Requests", "1"],

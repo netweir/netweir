@@ -146,6 +146,17 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
         if raw.lower() == "none":
             return key, None
         kind = kind.removesuffix(" | None")
+    if key == "http_auth":
+        # As curl's -u: a password may hold commas and colons.
+        user, sep, password = raw.partition(":")
+        if not sep:
+            raise ValueError("http_auth takes user:password")
+        return key, (user, password)
+    if kind.startswith("bool |"):
+        # verify: true or false, or a CA file's path.
+        if raw.lower() in ("true", "false"):
+            return key, raw.lower() == "true"
+        return key, raw
     if kind == "bool":
         if raw.lower() not in ("true", "false", "1", "0", "yes", "no"):
             raise ValueError(f"{key} takes true or false, not {raw!r}")
@@ -161,7 +172,15 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
         except ValueError:
             raise ValueError(f"{key} takes a number, not {raw!r}") from None
     if kind.startswith("tuple"):
-        return key, tuple(part.strip() for part in raw.split(",") if part.strip())
+        parts = tuple(part.strip() for part in raw.split(",") if part.strip())
+        if kind.startswith("tuple[int"):
+            try:
+                return key, tuple(int(p) for p in parts)
+            except ValueError:
+                raise ValueError(
+                    f"{key} takes whole numbers, such as 500,503, not {raw!r}"
+                ) from None
+        return key, parts
     return key, raw
 
 

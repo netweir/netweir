@@ -23,7 +23,7 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use url::Url;
 
 use crate::browser::BrowserPage;
-use crate::fetch::{Response, fetch_error_value, fetch_options};
+use crate::fetch::{AuthPy, Response, fetch_error_value, fetch_options, policy, policy_py};
 use crate::node::Node;
 use crate::rules::{ItemSpec, Notes, Rule, StoreRef, TrackStore, selector};
 
@@ -214,8 +214,9 @@ fn rule_of(rules: &[Arc<Rule>], p: &Pending) -> Option<usize> {
 }
 
 /// A request of Python's as `resume()` and the "leased" event give it:
-/// (row, url, priority, headers, dont_filter, depth, payload) and
-/// (method, kind, body, content_type, referer, retry_post, proxy).
+/// (row, url, priority, headers, dont_filter, depth, payload),
+/// (method, kind, body, content_type, referer, retry_post, proxy) and its
+/// policy, (timeout, max_redirects, dont_redirect, auth).
 type PendingPy = (
     (i64, String, i32, Vec<(String, String)>, bool, u32, String),
     (
@@ -227,6 +228,7 @@ type PendingPy = (
         bool,
         Option<String>,
     ),
+    (Option<f64>, Option<u32>, bool, Option<AuthPy>),
 );
 
 fn pending_py(py: Python<'_>, p: Pending) -> PendingPy {
@@ -250,6 +252,7 @@ fn pending_py(py: Python<'_>, p: Pending) -> PendingPy {
             p.retry_post,
             p.proxy,
         ),
+        policy_py(p.policy),
     )
 }
 
@@ -792,13 +795,14 @@ fn out_py<'py>(py: Python<'py>, engine: &Engine, event: Out) -> PyResult<Bound<'
             tuple(py, vec![s("page_error")?, s(&url)?, s(&message)?])
         }
         Out::Leased { request } => {
-            let (head, sent) = pending_py(py, *request);
+            let (head, sent, policy) = pending_py(py, *request);
             tuple(
                 py,
                 vec![
                     s("leased")?,
                     head.into_pyobject(py)?.into_any(),
                     sent.into_pyobject(py)?.into_any(),
+                    policy.into_pyobject(py)?.into_any(),
                 ],
             )
         }
@@ -820,6 +824,8 @@ impl Crawler {
         browser="off", browser_pages=4, browser_block=Vec::new(), max_response_size=None, allowed_domains=None,
         cache=None, cache_expiry=None, deltafetch=None, deltafetch_reset=false,
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
+        ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
+        http_auth=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -866,8 +872,18 @@ impl Crawler {
         queue_key: Option<String>,
         queue_lease: f64,
         queue_idle: Option<f64>,
+        ca_certificates: Option<Vec<u8>>,
+        max_redirects: u32,
+        retry_http_codes: Option<Vec<u16>>,
+        http_auth: Option<AuthPy>,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
+        if http_auth.as_ref().is_some_and(|(_, _, d)| d.is_none()) {
+            return Err(PyValueError::new_err(
+                "http_auth needs a domain to send it to: a login sent everywhere could \
+                 reach any site a link or redirect leads to",
+            ));
+        }
         let allowed_domains = netweir_core::allowed_domains(&allowed_domains.unwrap_or_default())
             .map_err(PyValueError::new_err)?;
         let browser = match browser {
@@ -938,6 +954,9 @@ impl Crawler {
             max_pages_per_domain,
             max_pages,
             retries,
+            retry_statuses: retry_http_codes
+                .unwrap_or_else(|| netweir_core::RETRY_STATUSES.to_vec()),
+            http_auth: http_auth.map(|(u, p, d)| netweir_core::Auth::new(u, p, d)),
             backoff_base: seconds("backoff_base", backoff_base)?,
             backoff_max: seconds("backoff_max", backoff_max)?,
             proxies: proxies.unwrap_or_default(),
@@ -960,7 +979,14 @@ impl Crawler {
             warc,
             har,
         };
-        let mut options = fetch_options(profile, proxy, timeout, verify)?;
+        let mut options = fetch_options(
+            profile,
+            proxy,
+            timeout,
+            verify,
+            ca_certificates,
+            max_redirects,
+        )?;
         options.max_body = max_response_size;
         // The scheduler runs on the shared runtime.
         let core = match queue {
@@ -1057,8 +1083,10 @@ impl Crawler {
     /// takes them. `proxy` sends it through that proxy, whatever the
     /// rotation. With `answered`, the request is checked and seen but
     /// not queued, as the caller has its response: "answered" if it
-    /// passed.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false))]
+    /// passed. `timeout`, `max_redirects`, `dont_redirect` and `auth`
+    /// ((user, password, domain or None)) are its policy, as
+    /// Fetcher.send takes them.
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -1083,11 +1111,16 @@ impl Crawler {
         delta_key: Option<Vec<u8>>,
         delta: bool,
         answered: bool,
+        timeout: Option<f64>,
+        max_redirects: Option<u32>,
+        dont_redirect: bool,
+        auth: Option<AuthPy>,
     ) -> PyResult<&'static str> {
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
-        let outgoing =
+        let mut outgoing =
             netweir_core::Outgoing::from_parts(method, kind, body, content_type, referer);
+        outgoing.policy = policy(timeout, max_redirects, dont_redirect, auth)?;
         if id >= RULE_IDS {
             return Err(PyValueError::new_err("request ids must be below 2**62"));
         }
@@ -1587,6 +1620,7 @@ impl QueueHandle {
                     referer: None,
                     retry_post: false,
                     proxy: None,
+                    policy: Default::default(),
                 },
             ));
         }

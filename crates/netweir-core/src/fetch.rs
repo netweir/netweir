@@ -22,8 +22,17 @@ pub struct FetchOptions {
     pub proxy: Option<String>,
     /// Whole-request limit, connect to last body byte.
     pub timeout: Duration,
-    /// Only for talking to local test servers with self-signed certificates.
+    /// Check the server's certificate. Off only for a host whose
+    /// certificate nothing vouches for (a test server, an appliance).
+    /// Checking happens on the client: nothing on the wire changes.
     pub verify_certificates: bool,
+    /// PEM certificates of the CAs to trust in place of the bundled roots,
+    /// for hosts an internal CA vouches for. None trusts the bundled roots
+    /// (Chrome's).
+    pub ca_certificates: Option<Vec<u8>>,
+    /// Redirects followed before a request fails with `TooManyRedirects`;
+    /// a request's own `Policy::max_redirects` replaces it. Chrome's is 20.
+    pub max_redirects: u32,
     /// The most bytes of a response body to read, after decompression; a
     /// larger one fails with `TooLarge`. None reads any size.
     pub max_body: Option<u64>,
@@ -47,6 +56,8 @@ impl FetchOptions {
             proxy: None,
             timeout: Duration::from_secs(30),
             verify_certificates: true,
+            ca_certificates: None,
+            max_redirects: MAX_REDIRECTS,
             max_body: None,
             cookies: true,
             system_proxy: true,
@@ -128,6 +139,8 @@ pub struct Fetcher {
     client: wreq::Client,
     /// The most bytes of a body to read.
     max_body: Option<u64>,
+    /// Redirects a request may follow, unless its policy says otherwise.
+    max_redirects: u32,
     /// For a script's requests, where they have a priority of their own.
     script_client: Option<wreq::Client>,
     /// For images, likewise.
@@ -540,8 +553,113 @@ fn site(url: &Url) -> String {
     psl::domain_str(&host).map_or_else(|| host.clone(), str::to_string)
 }
 
-/// A request beyond typing an address: its method, body and kind, and the
-/// page it comes from.
+/// How a request is handled beyond what goes on the wire: decided on the
+/// client, or a header where the browser puts it. The default is the
+/// fetcher's own: its timeout and redirect limit, and no login.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Policy {
+    /// The limit for each request, from connecting to the last byte, in
+    /// place of the fetcher's, longer or shorter. Each redirect is a
+    /// request of its own.
+    #[serde(with = "seconds")]
+    pub timeout: Option<Duration>,
+    /// Redirects to follow before failing with `TooManyRedirects`, in
+    /// place of the fetcher's.
+    pub max_redirects: Option<u32>,
+    /// Answer with a redirect itself rather than follow it.
+    pub dont_redirect: bool,
+    pub auth: Option<Auth>,
+}
+
+/// A timeout as seconds in JSON, which a person reading a checkpoint or a
+/// queue can make sense of.
+mod seconds {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(t: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match t {
+            Some(t) => s.serialize_f64(t.as_secs_f64()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        Option::<f64>::deserialize(d)?
+            .map(|s| Duration::try_from_secs_f64(s).map_err(D::Error::custom))
+            .transpose()
+    }
+}
+
+/// A login sent as HTTP Basic (RFC 7617), up front.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Auth {
+    pub user: String,
+    pub password: String,
+    /// The domain it goes to, with its subdomains, as Scrapy's
+    /// `http_auth_domain` names one: on every redirect hop there, and
+    /// nowhere else. None sends it to the request's first origin only, as
+    /// a browser drops a page's Authorization when a redirect leaves it.
+    pub domain: Option<String>,
+}
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Auth")
+            .field("user", &self.user)
+            .field("password", &"***")
+            .field("domain", &self.domain)
+            .finish()
+    }
+}
+
+impl Auth {
+    pub fn new(
+        user: impl Into<String>,
+        password: impl Into<String>,
+        domain: Option<String>,
+    ) -> Auth {
+        Auth {
+            user: user.into(),
+            password: password.into(),
+            domain,
+        }
+    }
+
+    /// The Authorization header's value: the pair as UTF-8, in base64.
+    pub fn header(&self) -> String {
+        let pair = format!("{}:{}", self.user, self.password);
+        format!("Basic {}", data_encoding::BASE64.encode(pair.as_bytes()))
+    }
+
+    /// Whether the login goes with a request to `url`, when the request
+    /// started at the origin `started` (None for its first hop). One for
+    /// a domain goes to it and its subdomains, but not over plain HTTP
+    /// once the request started over HTTPS; one without, only to the
+    /// origin the request started at.
+    pub fn applies(&self, url: &Url, started: Option<&str>) -> bool {
+        let Some(domain) = &self.domain else {
+            return started.is_none_or(|s| s == url.origin().ascii_serialization());
+        };
+        let bare = |h: &str| {
+            h.trim_end_matches('.')
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_ascii_lowercase()
+        };
+        let domain = url::Host::parse(domain.trim_end_matches('.'))
+            .map_or_else(|_| bare(domain), |h| bare(&h.to_string()));
+        let host = bare(url.host_str().unwrap_or_default());
+        let downgrade =
+            url.scheme() == "http" && started.is_some_and(|s| s.starts_with("https://"));
+        (host == domain || host.ends_with(&format!(".{domain}"))) && !downgrade
+    }
+}
+
+/// A request beyond typing an address: its method, body and kind, the
+/// page it comes from, and how it's handled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
     pub method: String,
@@ -561,6 +679,8 @@ pub struct Outgoing {
     tainted: bool,
     /// The origin of the first URL, once a redirect has moved on from it.
     started: Option<String>,
+    /// Its timeout, redirect limit and login, kept across redirects.
+    pub policy: Policy,
 }
 
 impl Default for Outgoing {
@@ -582,6 +702,7 @@ impl Outgoing {
             furthest: Relation::SameOrigin,
             tainted: false,
             started: None,
+            policy: Policy::default(),
         }
     }
 
@@ -823,6 +944,19 @@ pub fn check_proxy(proxy: &str) -> Result<Proxy, FetchError> {
     Proxy::all(proxy).map_err(|e| FetchError::invalid(format!("{}: {e}", masked(proxy))))
 }
 
+/// The CAs in a PEM file, as a trust store, or why they can't be one. A
+/// file without a certificate in it is an error: an empty store would
+/// refuse every site, and say only that each certificate is untrusted.
+fn ca_store(pem: &[u8]) -> Result<wreq::tls::trust::CertStore, FetchError> {
+    let bad = |why: String| FetchError::invalid(format!("the CA certificates: {why}"));
+    match btls::x509::X509::stack_from_pem(pem) {
+        Ok(certs) if !certs.is_empty() => {}
+        Ok(_) => return Err(bad("no PEM certificate in them".into())),
+        Err(e) => return Err(bad(e.to_string())),
+    }
+    wreq::tls::trust::CertStore::from_pem_stack(pem).map_err(|e| bad(e.to_string()))
+}
+
 /// `proxy` with any login in it hidden, for logs: `http://***@host:port`.
 /// Everything up to the last `@` goes, so a password with an unencoded
 /// `/`, `?`, `#` or `@` in it is hidden whole.
@@ -836,7 +970,7 @@ pub fn masked(proxy: &str) -> String {
 }
 
 /// Chrome follows at most 20 redirects.
-const MAX_REDIRECTS: usize = 20;
+pub const MAX_REDIRECTS: u32 = 20;
 
 impl Fetcher {
     pub fn new(options: FetchOptions) -> Result<Fetcher, FetchError> {
@@ -854,6 +988,11 @@ impl Fetcher {
         let emulation = profile
             .emulation()
             .map_err(|e| FetchError::invalid(e.to_string()))?;
+        let cas = options
+            .ca_certificates
+            .as_deref()
+            .map(ca_store)
+            .transpose()?;
         let build = |emulation| -> Result<wreq::Client, FetchError> {
             let mut builder = wreq::Client::builder()
                 .emulation(emulation)
@@ -867,6 +1006,9 @@ impl Fetcher {
                 // headers.
                 .redirect(redirect::Policy::none())
                 .tls_cert_verification(options.verify_certificates);
+            if let Some(cas) = &cas {
+                builder = builder.tls_cert_store(cas.clone());
+            }
             if options.cookies {
                 builder = builder.cookie_provider(Arc::new(OrderedJar {
                     jar: jar.clone(),
@@ -913,6 +1055,7 @@ impl Fetcher {
         Ok(Fetcher {
             client,
             max_body: options.max_body,
+            max_redirects: options.max_redirects,
             script_client,
             image_client,
             http2_headers: Arc::new(http2_headers),
@@ -1039,7 +1182,7 @@ impl Fetcher {
         headers: &[(String, String)],
     ) -> Result<Response, FetchError> {
         let (mut current, mut outgoing) = (url.to_string(), outgoing.clone());
-        for hop in 0..=MAX_REDIRECTS {
+        for hop in 0..=self.redirect_limit(&outgoing) {
             match self.hop_as(&current, &outgoing, headers, hop).await? {
                 Hop::Done(response) => return Ok(response),
                 Hop::Redirect(next, then, _) => (current, outgoing) = (next, then),
@@ -1048,9 +1191,15 @@ impl Fetcher {
         unreachable!("the last hop returns a response or an error")
     }
 
+    /// Redirects `outgoing` may follow: its own limit, or the fetcher's.
+    fn redirect_limit(&self, outgoing: &Outgoing) -> usize {
+        outgoing.policy.max_redirects.unwrap_or(self.max_redirects) as usize
+    }
+
     /// One request of a navigation: the response, or where it redirects.
     /// `hop` counts the redirects already followed, which sets the header
-    /// order Chrome uses after one and, at 20, makes another an error. A
+    /// order Chrome uses after one and, at the limit, makes another an
+    /// error. A
     /// crawler that follows redirects itself, so each hop goes through its
     /// own checks, calls this instead of `get`.
     pub async fn hop(
@@ -1105,10 +1254,21 @@ impl Fetcher {
         headers: &[(String, String)],
         hop: usize,
     ) -> Result<(Url, wreq::Response, Option<Record>), FetchError> {
-        let headers = match Url::parse(url) {
-            Ok(u) => outgoing.callers_headers(headers, &u),
-            Err(_) => headers.to_vec(),
+        let parsed = Url::parse(url).ok();
+        let mut headers = match &parsed {
+            Some(u) => outgoing.callers_headers(headers, u),
+            None => headers.to_vec(),
         };
+        // The login, where it may go and the caller sent none of its own;
+        // the profile lists Authorization where its browser sends it.
+        if let (Some(auth), Some(u)) = (&outgoing.policy.auth, &parsed)
+            && auth.applies(u, outgoing.started.as_deref())
+            && !headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        {
+            headers.push(("Authorization".into(), auth.header()));
+        }
         let headers = headers.as_slice();
         let mut caller = Vec::with_capacity(headers.len());
         for (k, v) in headers {
@@ -1126,8 +1286,14 @@ impl Fetcher {
         let sent: Option<Sent> = self.archive.as_ref().map(|_| Sent::default());
         let (started, clock) = (SystemTime::now(), Instant::now());
         let response = if outgoing.typed() {
-            self.send_typed(&uri, &caller, hop > 0, sent.as_ref())
-                .await?
+            self.send_typed(
+                &uri,
+                &caller,
+                hop > 0,
+                sent.as_ref(),
+                outgoing.policy.timeout,
+            )
+            .await?
         } else {
             self.send_shaped(&uri, &current, outgoing, &caller, hop > 0, sent.as_ref())
                 .await?
@@ -1167,9 +1333,7 @@ impl Fetcher {
     ) -> Result<Hop, FetchError> {
         let (current, response, record) = self.request(url, outgoing, headers, hop).await?;
         let status = response.status().as_u16();
-        let location = response
-            .status()
-            .is_redirection()
+        let location = (response.status().is_redirection() && !outgoing.policy.dont_redirect)
             .then(|| response.headers().get(LOCATION))
             .flatten()
             .and_then(|l| l.to_str().ok())
@@ -1195,10 +1359,11 @@ impl Fetcher {
         let (hop_response, truncated) = drain(current.to_string(), response).await;
         self.keep(record, &current, outgoing, &hop_response, truncated)
             .await;
-        if hop >= MAX_REDIRECTS {
+        let limit = self.redirect_limit(outgoing);
+        if hop >= limit {
             return Err(FetchError {
                 kind: FetchErrorKind::TooManyRedirects,
-                message: format!("more than {MAX_REDIRECTS} redirects, the last to {url}"),
+                message: format!("more than {limit} redirects, the last to {url}"),
             });
         }
         let next = current
@@ -1219,6 +1384,7 @@ impl Fetcher {
         caller: &[(&str, HeaderName, HeaderValue)],
         redirected: bool,
         sent: Option<&Sent>,
+        timeout: Option<Duration>,
     ) -> Result<wreq::Response, FetchError> {
         let base = if redirected {
             &self.redirect_order
@@ -1235,6 +1401,9 @@ impl Fetcher {
             }
         }
         let mut request = self.client.get(uri.clone());
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         if self.remembers_http1 && uri.scheme_str() == Some("https") && !self.expects_http2(uri) {
             // As Safari does: an origin that answered over HTTP/1.1 is only
             // offered http/1.1 from then on.
@@ -1303,6 +1472,9 @@ impl Fetcher {
             _ => &self.client,
         };
         let mut request = client.request(method, uri.clone()).default_headers(false);
+        if let Some(timeout) = outgoing.policy.timeout {
+            request = request.timeout(timeout);
+        }
         let overridden = |name: &str| caller.iter().any(|(_, n, _)| n.as_str() == name);
         for (raw, value) in &shape.headers {
             let name = raw.to_ascii_lowercase();

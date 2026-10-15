@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use netweir_core::classify::{Outcome, classify};
 use netweir_core::{
-    FetchError as CoreError, FetchErrorKind, FetchOptions, Fetcher as CoreFetcher, Profile,
+    Auth, FetchError as CoreError, FetchErrorKind, FetchOptions, Fetcher as CoreFetcher, Policy,
+    Profile,
 };
 use netweir_dom::Document;
 use pyo3::exceptions::PyValueError;
@@ -43,22 +44,61 @@ fn fetch_error(e: CoreError) -> PyErr {
 }
 
 /// Fetch options from the arguments Fetcher and Crawler share.
+/// `ca_certificates` is PEM, trusted in place of the bundled roots.
 pub(crate) fn fetch_options(
     profile: &str,
     proxy: Option<String>,
     timeout: f64,
     verify: bool,
+    ca_certificates: Option<Vec<u8>>,
+    max_redirects: u32,
 ) -> PyResult<FetchOptions> {
     let profile = Profile::named(profile).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let timeout = Duration::try_from_secs_f64(timeout)
-        .ok()
-        .filter(|t| !t.is_zero())
-        .ok_or_else(|| PyValueError::new_err("timeout must be a positive number of seconds"))?;
     let mut options = FetchOptions::new(profile);
     options.proxy = proxy;
-    options.timeout = timeout;
+    options.timeout = seconds(timeout)?;
     options.verify_certificates = verify;
+    options.ca_certificates = ca_certificates;
+    options.max_redirects = max_redirects;
     Ok(options)
+}
+
+/// A timeout from Python's seconds.
+fn seconds(timeout: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(timeout)
+        .ok()
+        .filter(|t| !t.is_zero())
+        .ok_or_else(|| PyValueError::new_err("timeout must be a positive number of seconds"))
+}
+
+/// A login from Python: (user, password), or (user, password, domain).
+pub(crate) type AuthPy = (String, String, Option<String>);
+
+/// A request's policy from the arguments `send` and the crawl's `submit`
+/// share.
+pub(crate) fn policy(
+    timeout: Option<f64>,
+    max_redirects: Option<u32>,
+    dont_redirect: bool,
+    auth: Option<AuthPy>,
+) -> PyResult<Policy> {
+    Ok(Policy {
+        timeout: timeout.map(seconds).transpose()?,
+        max_redirects,
+        dont_redirect,
+        auth: auth.map(|(user, password, domain)| Auth::new(user, password, domain)),
+    })
+}
+
+/// A policy as Python gets it back: (timeout, max_redirects,
+/// dont_redirect, (user, password, domain) or None).
+pub(crate) fn policy_py(p: Policy) -> (Option<f64>, Option<u32>, bool, Option<AuthPy>) {
+    (
+        p.timeout.map(|t| t.as_secs_f64()),
+        p.max_redirects,
+        p.dont_redirect,
+        p.auth.map(|a| (a.user, a.password, a.domain)),
+    )
 }
 
 /// A connection pool and cookie jar that sends every request as one
@@ -70,8 +110,11 @@ pub struct Fetcher {
 
 #[pymethods]
 impl Fetcher {
+    /// `ca_certificates` (PEM) are trusted in place of the bundled roots;
+    /// `max_redirects` is how many redirects a request follows before it
+    /// fails.
     #[new]
-    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None, cookies=true, system_proxy=true))]
+    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None, cookies=true, system_proxy=true, ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         profile: &str,
@@ -81,8 +124,17 @@ impl Fetcher {
         max_size: Option<u64>,
         cookies: bool,
         system_proxy: bool,
+        ca_certificates: Option<Vec<u8>>,
+        max_redirects: u32,
     ) -> PyResult<Fetcher> {
-        let mut options = fetch_options(profile, proxy, timeout, verify)?;
+        let mut options = fetch_options(
+            profile,
+            proxy,
+            timeout,
+            verify,
+            ca_certificates,
+            max_redirects,
+        )?;
         options.max_body = max_size;
         options.cookies = cookies;
         options.system_proxy = system_proxy;
@@ -112,8 +164,11 @@ impl Fetcher {
     /// `chain` is then the redirects that led here, each (status, the URL
     /// it came from), and the request is sent as the browser would send it
     /// at the end of them: the method, the page it comes from and the
-    /// header order as the redirects left them.
-    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None, follow=true, chain=None))]
+    /// header order as the redirects left them. `timeout` (seconds) and
+    /// `max_redirects` replace the fetcher's for this request; `auth` is
+    /// (user, password) or (user, password, domain), sent as HTTP Basic
+    /// (see netweir_core's `Auth`).
+    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None, follow=true, chain=None, timeout=None, max_redirects=None, auth=None))]
     #[allow(clippy::too_many_arguments)]
     fn send<'py>(
         &self,
@@ -127,9 +182,13 @@ impl Fetcher {
         headers: Option<Vec<(String, String)>>,
         follow: bool,
         chain: Option<Vec<(u16, String)>>,
+        timeout: Option<f64>,
+        max_redirects: Option<u32>,
+        auth: Option<AuthPy>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let fetcher = self.inner.clone();
         let mut outgoing = outgoing(method, kind, body, content_type, referer)?;
+        outgoing.policy = policy(timeout, max_redirects, false, auth)?;
         let headers = headers.unwrap_or_default();
         let chain = chain.unwrap_or_default();
         if !chain.is_empty() {
@@ -148,7 +207,8 @@ impl Fetcher {
     }
 
     /// `send` that blocks the calling thread (with the GIL released).
-    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None))]
+    /// With `follow=False` a redirect is the response.
+    #[pyo3(signature = (url, method="GET", kind="navigate", body=None, content_type=None, referer=None, headers=None, follow=true, timeout=None, max_redirects=None, auth=None))]
     #[allow(clippy::too_many_arguments)]
     fn send_blocking(
         &self,
@@ -160,8 +220,13 @@ impl Fetcher {
         content_type: Option<String>,
         referer: Option<String>,
         headers: Option<Vec<(String, String)>>,
+        follow: bool,
+        timeout: Option<f64>,
+        max_redirects: Option<u32>,
+        auth: Option<AuthPy>,
     ) -> PyResult<Response> {
-        let outgoing = outgoing(method, kind, body, content_type, referer)?;
+        let mut outgoing = outgoing(method, kind, body, content_type, referer)?;
+        outgoing.policy = policy(timeout, max_redirects, !follow, auth)?;
         let headers = headers.unwrap_or_default();
         wait(py, self.inner.send(&url, &outgoing, &headers))?
             .map(Response::from)
