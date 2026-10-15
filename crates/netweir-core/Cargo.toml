@@ -20,7 +20,7 @@ flate2 = "1"
 http = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 sha1 = "0.11"
 sha2 = "0.11"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
@@ -31,6 +31,7 @@ wreq = { version = "0.16.1", default-features = false, features = ["chromium-roo
 zstd = "0.14"
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 psl = "2.1"
+cookie = "0.18"
 http-body-util = "0.1"
 quick-xml = "0.42"
 # The shared queue.

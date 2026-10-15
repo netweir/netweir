@@ -64,6 +64,7 @@ netweir.Request(
     method="GET",               # or POST, PUT...; with one of form=, json=, body=
     referer="https://example.com/",  # the page it comes from; page.follow sets it
     proxy="http://10.0.0.9:8080",    # this one request goes through this proxy
+    cookies={"currency": "EUR"},     # into its jar, and sent; meta["cookiejar"] names the jar
 )
 ```
 
@@ -75,7 +76,8 @@ tie and go in the order they were submitted.
 here. A request the same as one already seen (same method, URL and body,
 ignoring fragments, query order and tracking parameters such as `utm_*`) is
 dropped unless `dont_filter=True`. Forms, JSON and other bodies are in
-[Forms, logins and APIs](forms.md).
+[Forms, logins and APIs](forms.md); cookies, several logged-in users in one
+crawl and starting a crawl logged in are in [Sessions and cookies](sessions.md).
 
 A request with `browser=True` is loaded in Chrome, so the callback sees the
 page after its JavaScript ran, and `page.browser` is the live page for

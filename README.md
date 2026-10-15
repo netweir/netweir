@@ -31,6 +31,11 @@ Working today:
   Chrome, Firefox or Safari sends a form or a page's own script, and forms read off
   a page the way a browser submits them. See
   [docs/forms.md](docs/forms.md).
+- Sessions you control: a client's cookies to read, set and save to a
+  storage state file Playwright reads too; a login done in Chrome carried
+  on over HTTP, or the reverse; and several logged-in users in one crawl
+  with Scrapy's `cookies=` and `meta["cookiejar"]`, kept in the
+  checkpoint. See [docs/sessions.md](docs/sessions.md).
 - A parser that keeps pace with selectolax, the one to beat in Python, and
   pulls data out of the page faster.
 - CSS queries with Scrapy's `::text` and `::attr()`, all of XPath 1.0, and

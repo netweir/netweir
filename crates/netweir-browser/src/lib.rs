@@ -11,6 +11,7 @@ mod frame;
 mod launch;
 mod network;
 mod page;
+mod storage;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};
 pub use frame::{Frame, Pick};
@@ -20,6 +21,7 @@ pub use launch::{
 };
 pub use network::{Continue, NetworkEvent, Request, Route, glob_match, resource_types};
 pub use page::{Cookie, Page, Response, WaitUntil};
+pub use storage::{OriginStorage, StorageState, cookie_of, write_private};
 
 use std::fmt;
 use std::sync::OnceLock;

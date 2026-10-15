@@ -59,8 +59,30 @@ class Request:
     #: body's Content-Type.
     kind: str | None = None
     content_type: str | None = None
+    #: Cookies for its jar, as Scrapy's ``Request.cookies``: a dict of name
+    #: to value, or a list of cookie dicts (name, value, and optionally
+    #: domain, path, expires, secure, http_only, same_site). Each goes into
+    #: the request's jar just before it's sent, as if its URL had set it,
+    #: and so with every later request the jar matches. Without a domain,
+    #: a cookie is the URL's host's alone (``".shop.example"`` covers the
+    #: subdomains too); without a path, the URL's directory is its path.
+    #: Kept as a list of dicts, and left out of repr(): values are secrets.
+    #:
+    #: ``meta["cookiejar"]`` names the jar (any JSON value; requests naming
+    #: the same share cookies, and no others do); without it, the crawl's
+    #: own. ``meta["dont_merge_cookies"] = True`` leaves the jar out: only
+    #: these cookies are sent, and nothing the response sets is kept.
+    cookies: Any = dataclasses.field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.cookies, dict):
+            self.cookies = [{"name": str(k), "value": str(v)} for k, v in self.cookies.items()]
+        elif self.cookies is not None:
+            if isinstance(self.cookies, (str, bytes)) or not all(
+                isinstance(c, dict) for c in self.cookies
+            ):
+                raise TypeError("cookies must be a dict of name to value, or a list of dicts")
+            self.cookies = [dict(c) for c in self.cookies]
         has_body = self.form is not None or self.json is not None or self.body is not None
         self.method = (self.method or ("POST" if has_body else "GET")).upper()
         if self.form is not None or self.json is not None or self.kind is None:
