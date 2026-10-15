@@ -64,8 +64,22 @@ netweir.Request(
     method="GET",               # or POST, PUT...; with one of form=, json=, body=
     referer="https://example.com/",  # the page it comes from; page.follow sets it
     proxy="http://10.0.0.9:8080",    # this one request goes through this proxy
+    timeout=10,                 # seconds, in place of the crawl's timeout
+    max_redirects=3,            # in place of the crawl's max_redirects
+    allow_redirects=False,      # the callback gets the redirect itself
+    auth=("ada", "secret"),     # HTTP Basic, to this request's own site
 )
 ```
+
+With `allow_redirects=False` the callback gets the 3xx as its page:
+`page.status` is 301 or 302, and `page.headers["location"]` says where it
+pointed. `auth` goes to the request's own origin (scheme, host and port)
+and is dropped if a redirect leaves it, as a browser drops it; for a login
+to a whole domain, use the `http_auth` [setting](settings.md#fetching).
+A login written into the URL (`https://ada:secret@intranet/`) becomes
+`auth`. Scrapy's meta keys work too, when the field isn't set:
+`download_timeout`, `dont_redirect`, `redirect_ttl` and `http_user`,
+`http_pass` and `http_auth_domain`.
 
 The highest priority a page gets is one below the largest 32-bit
 integer, which is kept for file downloads, so priorities from there up
@@ -1068,6 +1082,17 @@ for Scrapy carry over: `process_item`, `open_spider`, `close_spider`,
   [checkpoint](self-healing.md#checkpoints), then run the same command
   to carry on. To try selectors on a page, use
   [`netweir shell`](shell.md).
+
+Most of the downloader settings have a [setting](settings.md) of the
+same meaning: `DOWNLOAD_TIMEOUT` is `timeout`, `REDIRECT_MAX_TIMES` is
+`max_redirects`, `RETRY_TIMES` is `retries`, `RETRY_HTTP_CODES` is
+`retry_http_codes`, and `HTTPAUTH_USER`, `HTTPAUTH_PASS` and
+`HTTPAUTH_DOMAIN` are `http_auth=(user, password)` and
+`http_auth_domain`. The request meta keys `download_timeout`,
+`dont_redirect`, `redirect_ttl`, `http_user`, `http_pass`,
+`http_auth_domain` and `proxy` do what they do in Scrapy. One difference:
+`HTTPAUTH_DOMAIN=None`, which sends the login to every site, has no
+equivalent, and `http_auth` without a domain is an error.
 
 Item loaders carry over with a change of import, to
 [`netweir.loader`](loaders.md): `ItemLoader`, `MapCompose`, `TakeFirst`

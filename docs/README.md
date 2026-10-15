@@ -1,6 +1,7 @@
 # Netweir documentation
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
+- [Fetching pages](fetching.md): query strings, logins, redirects, timeouts and certificates.
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles and Markdown, prices, dates and the data in scripts.
 - [Item loaders](loaders.md): filling items as Scrapy's loaders do, with input and output processors.
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
@@ -21,6 +22,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/network.md](design/network.md): reading what a Chrome page fetches, and blocking or changing its requests.
 - [design/dialogs.md](design/dialogs.md): a Chrome page's dialogs, popups and downloads.
 - [design/requests.md](design/requests.md): requests other than GETs.
+- [design/fetch-policy.md](design/fetch-policy.md): timeouts, redirects, logins and certificates, per request and per crawl.
 - [design/workers.md](design/workers.md): callbacks in worker processes.
 - [design/cache.md](design/cache.md): the development cache.
 - [design/shell.md](design/shell.md): the fetch, view and shell commands.
