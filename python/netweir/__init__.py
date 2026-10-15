@@ -24,6 +24,8 @@ from netweir._monitor import Checks, validate
 from netweir._native import (
     Browser,
     BrowserContext,
+    BrowserDialog,
+    BrowserDownload,
     BrowserFrame,
     BrowserPage,
     BrowserRequest,
@@ -48,6 +50,8 @@ __all__ = [
     "Blocked",
     "Browser",
     "BrowserContext",
+    "BrowserDialog",
+    "BrowserDownload",
     "BrowserError",
     "BrowserFrame",
     "BrowserPage",

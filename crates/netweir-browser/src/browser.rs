@@ -1,16 +1,17 @@
 //! A running Chrome and its browser contexts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::conn::Connection;
+use crate::conn::{Connection, GONE, Handler};
+use crate::events::Downloads;
 use crate::network::Route;
-use crate::page::{ContextRules, Cookie, Page, WaitUntil, cookies_from, cookies_to};
+use crate::page::{ContextRules, Cookie, Page, PageInner, WaitUntil, cookies_from, cookies_to};
 use crate::{Error, Result, launch};
 
 /// Decides whether a page may fetch a document, given its URL.
@@ -46,6 +47,12 @@ pub struct LaunchOptions {
     /// Pages from [`Browser::new_page`] then share it. Chrome's "Preload
     /// pages" setting is turned off in it, and stays off.
     pub user_data_dir: Option<PathBuf>,
+    /// How long a person takes to react, least and most: no dialog is
+    /// answered sooner after it opened, and a tab brought to the front
+    /// waits as long before it's used, a time picked at random between
+    /// the two each time. Shorter is faster, and a page timing how long
+    /// `confirm()` kept it waiting can tell.
+    pub dialog_pause: (Duration, Duration),
 }
 
 impl std::fmt::Debug for LaunchOptions {
@@ -58,6 +65,7 @@ impl std::fmt::Debug for LaunchOptions {
             .field("proxy", &self.proxy.as_ref().map(|_| "…"))
             .field("brands", &self.brands.as_ref().map(|_| "…"))
             .field("user_data_dir", &self.user_data_dir)
+            .field("dialog_pause", &self.dialog_pause)
             .finish()
     }
 }
@@ -72,6 +80,7 @@ impl Default for LaunchOptions {
             proxy: None,
             brands: None,
             user_data_dir: None,
+            dialog_pause: (Duration::from_millis(500), Duration::from_millis(1500)),
         }
     }
 }
@@ -115,6 +124,15 @@ pub(crate) struct Inner {
     pub proxy_login: Option<(String, String)>,
     /// What the launched Chrome has lately written to stderr.
     pub said: Option<launch::Said>,
+    /// See [`LaunchOptions::dialog_pause`].
+    pub pause: (Duration, Duration),
+    /// Every page netweir has, for finding the opener of a popup.
+    pub pages: Arc<Mutex<Vec<Weak<PageInner>>>>,
+    /// Pages netweir made and is attaching to itself, whose attaching
+    /// the browser's session hears too.
+    pub attaching: Arc<Mutex<HashSet<String>>>,
+    /// Downloads under way, and each context's folder for them.
+    pub downloads: Arc<Downloads>,
 }
 
 impl Browser {
@@ -225,8 +243,12 @@ impl Browser {
             version: String::new(),
             identity: None,
             timeout: options.timeout,
+            pause: options.dialog_pause,
             proxy_login,
             said: Some(said.clone()),
+            pages: Arc::default(),
+            attaching: Arc::default(),
+            downloads: Arc::default(),
         };
         Browser::finish(inner, &options, &executable.display().to_string(), hints)
             .await
@@ -276,8 +298,12 @@ impl Browser {
             version: String::new(),
             identity: None,
             timeout: options.timeout,
+            pause: options.dialog_pause,
             proxy_login: None,
             said: None,
+            pages: Arc::default(),
+            attaching: Arc::default(),
+            downloads: Arc::default(),
         };
         Browser::finish(inner, &options, &ws, None).await
     }
@@ -374,7 +400,43 @@ impl Browser {
                 .expect("the browser isn't shared before launch returns")
                 .identity = Some(identity);
         }
+        browser.watch().await?;
         Ok(browser)
+    }
+
+    /// Has Chrome hold each new page until the browser's session has
+    /// looked at it: a popup of one of netweir's pages is set up as its
+    /// opener is before it runs anything, and anything else is let go at
+    /// once. Download progress comes here too.
+    async fn watch(&self) -> Result<()> {
+        let conn = self.inner.conn.clone();
+        let (pages, downloads) = (self.inner.pages.clone(), self.inner.downloads.clone());
+        let attaching = self.inner.attaching.clone();
+        let handler: Handler = Arc::new(move |method, params| match method {
+            "Target.attachedToTarget" => popped(&conn, &pages, &attaching, params),
+            "Browser.downloadProgress" => downloads.progress(params),
+            GONE => downloads.gone(),
+            _ => {}
+        });
+        self.inner.conn.on("", handler);
+        let attach = json!({
+            "autoAttach": true,
+            "waitForDebuggerOnStart": true,
+            "flatten": true,
+            "filter": [{"type": "page"}],
+        });
+        match self.inner.call("", "Target.setAutoAttach", attach).await {
+            Ok(_) => Ok(()),
+            // Something that speaks CDP but not all of it: pages work,
+            // popups aren't taken on.
+            Err(Error::Protocol { message, .. }) => {
+                crate::warn(&format!(
+                    "the browser won't hold new pages ({message}), so popups can't be read"
+                ));
+                Ok(())
+            }
+            Err(e) => Err(Error::Launch(format!("the browser didn't answer: {e}"))),
+        }
     }
 
     /// The client hints Chrome reports for itself, read where no override
@@ -468,6 +530,7 @@ impl Browser {
     /// context instead, so what it keeps is saved there.
     pub async fn new_page(&self) -> Result<Page> {
         if self.inner.keep_profile {
+            self.inner.allow_downloads(None).await?;
             return Page::open(self.inner.clone(), None, false, None, None).await;
         }
         let context = self.create_context().await?;
@@ -508,6 +571,7 @@ impl Browser {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(id.clone());
+        self.inner.allow_downloads(Some(&id)).await?;
         Ok(id)
     }
 
@@ -556,7 +620,80 @@ impl Browser {
     }
 }
 
+/// For `Target.attachedToTarget` on the browser's session. A new page
+/// Chrome holds: one opened by a page of netweir's, or by a frame from
+/// another site in one, is a popup, taken on by its opener; anything else
+/// (a page netweir made, which it attaches to itself, or someone else's
+/// tab) is let go and left. A page that was there already, which Chrome
+/// attaches without holding (a tab of a browser netweir connected to,
+/// say), is left too. Netweir attaching to a page it made is heard here
+/// as well, and kept.
+fn popped(
+    conn: &Connection,
+    pages: &Mutex<Vec<Weak<PageInner>>>,
+    attaching: &Mutex<HashSet<String>>,
+    params: &Value,
+) {
+    let info = &params["targetInfo"];
+    let session = str_of(params, "sessionId");
+    if params["waitingForDebugger"] != true {
+        let ours = attaching
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&str_of(info, "targetId"));
+        if !ours {
+            conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
+        }
+        return;
+    }
+    let opener = info["openerId"].as_str().and_then(|id| {
+        let pages = pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|inner| Page { inner })
+            .find(|page| page.opened(id))
+    });
+    match opener {
+        Some(opener) => {
+            let runtime = opener.runtime();
+            runtime.spawn(Page::adopt(opener, str_of(info, "targetId"), session));
+        }
+        None => {
+            conn.send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
+            conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
+        }
+    }
+}
+
 impl Inner {
+    /// Gives `context` (None for the default one) a folder of its own for
+    /// downloads, and has Chrome save them there.
+    pub(crate) async fn allow_downloads(&self, context: Option<&str>) -> Result<()> {
+        let folder = self
+            .downloads
+            .folder(context)
+            .map_err(|e| Error::Launch(format!("can't make a folder for downloads: {e}")))?;
+        let mut params = json!({
+            "behavior": "allowAndName",
+            "downloadPath": folder.display().to_string(),
+            "eventsEnabled": true,
+        });
+        if let Some(id) = context {
+            params["browserContextId"] = Value::from(id);
+        }
+        match self.call("", "Browser.setDownloadBehavior", params).await {
+            Ok(_) => Ok(()),
+            Err(Error::Protocol { message, .. }) => {
+                crate::warn(&format!(
+                    "the browser won't save downloads where netweir reads them: {message}"
+                ));
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sends `method` and waits for the answer, for no longer than the
     /// timeout, with what Chrome has lately said in the error if it
     /// doesn't come.
@@ -606,6 +743,7 @@ impl Inner {
         if let Some(lifeline) = lifeline {
             lifeline.chrome_gone();
         }
+        self.downloads.remove_all();
         let removed = match &self.profile {
             Some(profile) if !self.keep_profile => remove_profile(profile),
             _ => Ok(()),
@@ -831,8 +969,12 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             version: String::new(),
             identity: None,
             timeout: Duration::from_secs(30),
+            pause: LaunchOptions::default().dialog_pause,
             proxy_login: None,
             said: Some(said.clone()),
+            pages: Arc::default(),
+            attaching: Arc::default(),
+            downloads: Arc::default(),
         }),
     };
     let what = executable.display().to_string();
@@ -1146,6 +1288,7 @@ impl Context {
             Err(Error::Protocol { .. }) => Ok(()),
             Err(e) => Err(e),
         }
+        .inspect(|()| self.browser.downloads.remove(Some(&self.id)))
     }
 }
 

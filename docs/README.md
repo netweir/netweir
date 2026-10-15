@@ -19,6 +19,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/v0.1.md](design/v0.1.md): the engine, the parser and the first release.
 - [design/browser.md](design/browser.md): the Chrome driver.
 - [design/network.md](design/network.md): reading what a Chrome page fetches, and blocking or changing its requests.
+- [design/dialogs.md](design/dialogs.md): a Chrome page's dialogs, popups and downloads.
 - [design/requests.md](design/requests.md): requests other than GETs.
 - [design/workers.md](design/workers.md): callbacks in worker processes.
 - [design/cache.md](design/cache.md): the development cache.

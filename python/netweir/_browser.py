@@ -38,6 +38,12 @@ class browser:
     survive to the next launch with the same directory, and it's never
     deleted. A leading ``~`` is your home directory. Pages from ``new_page()`` then share that profile.
     Chrome's "Preload pages" setting is turned off in it, and stays off.
+
+    ``dialog_pause`` is how long, in seconds, a person takes to react:
+    no dialog is answered sooner after it opened, and a tab brought back
+    to the front waits as long before it's used, a time picked between
+    the two each time. Shorter is faster, and a page that times how long
+    ``confirm()`` kept it waiting can tell.
     """
 
     def __init__(
@@ -50,6 +56,7 @@ class browser:
         proxy: str | None = None,
         connect: str | None = None,
         user_data_dir: str | os.PathLike[str] | None = None,
+        dialog_pause: tuple[float, float] = (0.5, 1.5),
     ):
         self._options: dict[str, Any] = {
             "executable": None if executable is None else os.fspath(executable),
@@ -61,6 +68,7 @@ class browser:
             "user_data_dir": (
                 None if user_data_dir is None else os.path.expanduser(os.fspath(user_data_dir))
             ),
+            "dialog_pause": tuple(dialog_pause),
         }
         self._browser: Browser | None = None
 
