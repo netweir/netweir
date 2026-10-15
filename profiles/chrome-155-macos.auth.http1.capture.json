@@ -1,0 +1,1394 @@
+[
+  {
+    "connection": 1,
+    "request": 0,
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        43690,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        2570,
+        16,
+        0,
+        51764,
+        35,
+        65281,
+        17613,
+        27,
+        45,
+        18,
+        65037,
+        10,
+        51,
+        11,
+        5,
+        13,
+        43,
+        23,
+        56026
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        60138,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/auth",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "Upgrade-Insecure-Requests",
+        "1"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "none"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "navigate"
+      ],
+      [
+        "Sec-Fetch-User",
+        "?1"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "document"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 1,
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        43690,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        2570,
+        16,
+        0,
+        51764,
+        35,
+        65281,
+        17613,
+        27,
+        45,
+        18,
+        65037,
+        10,
+        51,
+        11,
+        5,
+        13,
+        43,
+        23,
+        56026
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        60138,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/auth",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "Upgrade-Insecure-Requests",
+        "1"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "none"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "navigate"
+      ],
+      [
+        "Sec-Fetch-User",
+        "?1"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "document"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 2,
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        43690,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        2570,
+        16,
+        0,
+        51764,
+        35,
+        65281,
+        17613,
+        27,
+        45,
+        18,
+        65037,
+        10,
+        51,
+        11,
+        5,
+        13,
+        43,
+        23,
+        56026
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        60138,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/api",
+    "method": "POST",
+    "body": "{\"q\":\"rust\"}",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Content-Length",
+        "12"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "Content-Type",
+        "application/json"
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "*/*"
+      ],
+      [
+        "Origin",
+        "https://localhost:8463"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "empty"
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 2,
+    "request": 0,
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        27242,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        60138,
+        13,
+        51764,
+        5,
+        17613,
+        27,
+        35,
+        45,
+        10,
+        43,
+        51,
+        0,
+        65037,
+        23,
+        11,
+        65281,
+        18,
+        16,
+        19018
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        10794,
+        772,
+        771
+      ],
+      "supported_groups": [
+        27242,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        27242,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        47802,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "no-cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "image"
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 3,
+    "request": 0,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        43690,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        56026,
+        16,
+        65281,
+        23,
+        17613,
+        5,
+        27,
+        45,
+        18,
+        51,
+        0,
+        35,
+        43,
+        10,
+        13,
+        51764,
+        65037,
+        11,
+        31354,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        60138,
+        772,
+        771
+      ],
+      "supported_groups": [
+        10794,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        10794,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        19018,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "no-cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "image"
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 0,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        64250,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        39578,
+        13,
+        65281,
+        45,
+        16,
+        35,
+        23,
+        17613,
+        18,
+        11,
+        0,
+        65037,
+        43,
+        51,
+        51764,
+        27,
+        10,
+        5,
+        56026,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        43690,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        43690,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        19018,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/redirect?to=/after-auth",
+    "method": "POST",
+    "body": "q=rust",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Content-Length",
+        "6"
+      ],
+      [
+        "Cache-Control",
+        "max-age=0"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "Upgrade-Insecure-Requests",
+        "1"
+      ],
+      [
+        "Content-Type",
+        "application/x-www-form-urlencoded"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "Origin",
+        "https://localhost:8463"
+      ],
+      [
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "navigate"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "document"
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 1,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        64250,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        39578,
+        13,
+        65281,
+        45,
+        16,
+        35,
+        23,
+        17613,
+        18,
+        11,
+        0,
+        65037,
+        43,
+        51,
+        51764,
+        27,
+        10,
+        5,
+        56026,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        43690,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        43690,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        19018,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/after-auth",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Cache-Control",
+        "max-age=0"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "Upgrade-Insecure-Requests",
+        "1"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "navigate"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "document"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 2,
+    "ja4": "t13d1518h2_8daaf6152771_e2d80978ab2e",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        64250,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "extensions": [
+        39578,
+        13,
+        65281,
+        45,
+        16,
+        35,
+        23,
+        17613,
+        18,
+        11,
+        0,
+        65037,
+        43,
+        51,
+        51764,
+        27,
+        10,
+        5,
+        56026,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        56026,
+        772,
+        771
+      ],
+      "supported_groups": [
+        43690,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        43690,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        19018,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h2"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "http/1.1",
+    "http2": null,
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        "Host",
+        "localhost:8463"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Authorization",
+        "Basic YWRhOnNlY3JldA=="
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "no-cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "image"
+      ],
+      [
+        "Referer",
+        "https://localhost:8463/after-auth"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "en-US,en;q=0.9"
+      ]
+    ]
+  }
+]
