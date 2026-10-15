@@ -265,6 +265,7 @@ class Selection:
     def __getitem__(self, index: slice) -> Selection: ...
     def __iter__(self) -> Iterator[Node | str]: ...
 
+def _auth_domain(domain: str) -> str: ...
 def _response(
     url: str, status: int, version: str, headers: list[tuple[str, str]], body: bytes
 ) -> Response: ...
@@ -302,6 +303,8 @@ class Fetcher:
         max_size: int | None = None,
         cookies: bool = True,
         system_proxy: bool = True,
+        ca_certificates: bytes | None = None,
+        max_redirects: int = 20,
     ) -> None: ...
     async def get(self, url: str, headers: list[tuple[str, str]] | None = None) -> Response: ...
     def get_blocking(self, url: str, headers: list[tuple[str, str]] | None = None) -> Response: ...
@@ -316,6 +319,9 @@ class Fetcher:
         headers: list[tuple[str, str]] | None = None,
         follow: bool = True,
         chain: list[tuple[int, str]] | None = None,
+        timeout: float | None = None,
+        max_redirects: int | None = None,
+        auth: tuple[str, str, str | None] | None = None,
     ) -> Response: ...
     def send_blocking(
         self,
@@ -326,6 +332,10 @@ class Fetcher:
         content_type: str | None = None,
         referer: str | None = None,
         headers: list[tuple[str, str]] | None = None,
+        follow: bool = True,
+        timeout: float | None = None,
+        max_redirects: int | None = None,
+        auth: tuple[str, str, str | None] | None = None,
     ) -> Response: ...
 
 class Crawler:
@@ -374,6 +384,10 @@ class Crawler:
         queue_key: str | None = None,
         queue_lease: float = 60.0,
         queue_idle: float | None = 30.0,
+        ca_certificates: bytes | None = None,
+        max_redirects: int = 20,
+        retry_http_codes: list[int] | None = None,
+        http_auth: tuple[str, str, str] | None = None,
     ) -> None: ...
     def add_rule(
         self,
@@ -411,6 +425,10 @@ class Crawler:
         delta_key: bytes | None = None,
         delta: bool = True,
         answered: bool = False,
+        timeout: float | None = None,
+        max_redirects: int | None = None,
+        dont_redirect: bool = False,
+        auth: tuple[str, str, str | None] | None = None,
     ) -> Literal[
         "queued",
         "duplicate",

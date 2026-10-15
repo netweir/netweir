@@ -26,7 +26,9 @@ print(page.css("h1::text").get())        # All products
 
 `netweir.get` sends the request the way Chrome would and waits for the
 answer. The page it returns holds the response (`status`, `url`,
-`headers`) and the parsed document.
+`headers`) and the parsed document. It takes requests' options too:
+`params=`, `auth=`, `allow_redirects=`, `timeout=` and `verify=`; see
+[Fetching pages](fetching.md).
 
 ## Pull data out of it
 

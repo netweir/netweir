@@ -31,6 +31,14 @@ Working today:
   Chrome, Firefox or Safari sends a form or a page's own script, and forms read off
   a page the way a browser submits them. See
   [docs/forms.md](docs/forms.md).
+- The options requests and httpx users reach for, under the same names:
+  `params=`, `auth=` (HTTP Basic, kept to the site you gave it to),
+  `allow_redirects=False` to read a redirect, `max_redirects`, a timeout
+  per call, and `verify=False` or a CA file for hosts with certificates of
+  their own. In a crawl, a request takes them too, Scrapy's meta keys
+  (`download_timeout`, `dont_redirect`, `http_user`...) work, and
+  `retry_http_codes`, `max_redirects` and `http_auth` are settings. See
+  [docs/fetching.md](docs/fetching.md).
 - A parser that keeps pace with selectolax, the one to beat in Python, and
   pulls data out of the page faster.
 - CSS queries with Scrapy's `::text` and `::attr()`, all of XPath 1.0, and
@@ -106,7 +114,7 @@ Working today:
   new. The output keeps every run's items, a crash included. See [docs/crawling.md](docs/crawling.md#skipping-what-you-already-have).
 - WARC and HAR files of everything a crawl fetched: the requests as they
   went out, header for header, and the responses, redirect hops and
-  robots.txt included. Read them back with warcio, or open them in a
+  robots.txt included; logins are left out. Read them back with warcio, or open them in a
   browser's network panel. See
   [docs/crawling.md](docs/crawling.md#keeping-what-you-fetched).
 - Declarative spiders, where you describe the item and the links and
@@ -379,6 +387,15 @@ the page asks for them, not as a page, and the same test holds Chrome's
 and Firefox's to recordings of each loading an image. Safari's are
 written from what Safari is known to send, and not yet checked against a
 recording.
+
+A login goes where the browser puts it. Chrome 155 and Firefox 158 were
+recorded holding an HTTP login and sending it with a navigation, a form, a
+script's request and an image; Netweir's `Authorization` header lands in
+the same place in each, and the same test checks it. Safari's place isn't
+recorded yet, so with `profile="safari"` it goes after Safari's own
+headers. And `verify=False` or a CA file of your own only changes what
+Netweir accepts from the server, never what it sends: a test holds both
+handshakes to the browser's recording.
 
 For many pages at once, use a client. It keeps connections and cookies
 between requests, and the requests run concurrently in Rust:

@@ -12,10 +12,14 @@ name = "chrome-154-macos"
 # the caller overrides one. HTTP/2 lowercases the names and drops Host and
 # Connection; this list is what Chrome sends over HTTP/1.1. An empty value
 # only holds a position: Cookie comes from the cookie jar, and over HTTP/2
-# each cookie goes out as its own field there.
+# each cookie goes out as its own field there. Authorization, from a login,
+# sits where Chrome 155 was recorded putting it (chrome-155-macos.auth*):
+# after Host, Connection, Content-Length and Cache-Control, before the rest,
+# in every kind of request below; 154 orders its headers as 155 does.
 headers = [
     ["Host", ""],
     ["Connection", "keep-alive"],
+    ["Authorization", ""],
     ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
     ["sec-ch-ua-mobile", "?0"],
     ["sec-ch-ua-platform", "\"macOS\""],
@@ -36,6 +40,7 @@ headers = [
 redirect_header_order = [
     "Host",
     "Connection",
+    "Authorization",
     "Upgrade-Insecure-Requests",
     "User-Agent",
     "Accept",
@@ -123,6 +128,7 @@ headers = [
     ["Connection", "keep-alive"],
     ["Content-Length", ""],
     ["Cache-Control", "max-age=0"],
+    ["Authorization", ""],
     ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
     ["sec-ch-ua-mobile", "?0"],
     ["sec-ch-ua-platform", "\"macOS\""],
@@ -152,6 +158,7 @@ headers = [
     ["Host", ""],
     ["Connection", "keep-alive"],
     ["Content-Length", ""],
+    ["Authorization", ""],
     ["sec-ch-ua-platform", "\"macOS\""],
     ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"],
     ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
@@ -184,6 +191,7 @@ headers_priority = { exclusive = true, depends_on = 0, weight = 219 }
 headers = [
     ["Host", ""],
     ["Connection", "keep-alive"],
+    ["Authorization", ""],
     ["sec-ch-ua-platform", "\"macOS\""],
     ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"],
     ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
@@ -211,6 +219,7 @@ headers_priority = { exclusive = true, depends_on = 0, weight = 182 }
 headers = [
     ["Host", ""],
     ["Connection", "keep-alive"],
+    ["Authorization", ""],
     ["sec-ch-ua", "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""],
     ["sec-ch-ua-mobile", "?0"],
     ["sec-ch-ua-platform", "\"macOS\""],
@@ -238,6 +247,7 @@ headers = [
     ["Host", ""],
     ["Connection", "keep-alive"],
     ["Cache-Control", "max-age=0"],
+    ["Authorization", ""],
     ["Upgrade-Insecure-Requests", "1"],
     ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"],
     ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"],

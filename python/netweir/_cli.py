@@ -147,6 +147,17 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
         if raw.lower() == "none":
             return key, None
         kind = kind.removesuffix(" | None")
+    if key == "http_auth":
+        # As curl's -u: a password may hold commas and colons.
+        user, sep, password = raw.partition(":")
+        if not sep:
+            raise ValueError("http_auth takes user:password")
+        return key, (user, password)
+    if kind.startswith("bool |"):
+        # verify: true or false, or a CA file's path.
+        if raw.lower() in ("true", "false"):
+            return key, raw.lower() == "true"
+        return key, raw
     if kind == "bool":
         if raw.lower() not in ("true", "false", "1", "0", "yes", "no"):
             raise ValueError(f"{key} takes true or false, not {raw!r}")
@@ -162,8 +173,25 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
         except ValueError:
             raise ValueError(f"{key} takes a number, not {raw!r}") from None
     if kind.startswith("tuple"):
-        return key, tuple(part.strip() for part in raw.split(",") if part.strip())
+        parts = tuple(part.strip() for part in raw.split(",") if part.strip())
+        if kind.startswith("tuple[int"):
+            try:
+                return key, tuple(int(p) for p in parts)
+            except ValueError:
+                raise ValueError(
+                    f"{key} takes whole numbers, such as 500,503, not {raw!r}"
+                ) from None
+        return key, parts
     return key, raw
+
+
+def _login_from_environment(overrides: dict, fields: dict) -> None:
+    """``http_auth`` from $NETWEIR_HTTP_AUTH (user:password), unless ``-s``
+    gave one: a password on the command line is there for anyone to read
+    in the process list and the shell's history."""
+    login = os.environ.get("NETWEIR_HTTP_AUTH")
+    if login and "http_auth" not in overrides:
+        overrides["http_auth"] = _parse_setting(f"http_auth={login}", fields)[1]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -519,6 +547,7 @@ def _prepare(args):
         spider_cls = _project.by_name(args.file)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
+    _login_from_environment(overrides, fields)
     if args.queue is not None:
         overrides["queue"] = args.queue
     if args.queue_key is not None:
