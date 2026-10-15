@@ -22,7 +22,7 @@ use crate::canonical::Fingerprint;
 
 /// The layout this build writes. Older files are upgraded on open; newer
 /// ones are refused.
-pub const FORMAT: i64 = 3;
+pub const FORMAT: i64 = 4;
 
 /// A request that was saved and not finished. A shared queue keeps the
 /// same fields, as JSON, without the row.
@@ -89,6 +89,9 @@ pub struct Saved {
     pub items: HashSet<String>,
     /// The caller's counters, as it last saved them (JSON).
     pub counters: Option<String>,
+    /// Each cookie jar the crawl kept, by name ("" for its own), as
+    /// `Jar::snapshot` wrote it.
+    pub jars: Vec<(String, String)>,
     /// The next free row number.
     pub next_row: i64,
 }
@@ -103,6 +106,8 @@ enum Op {
     Counters(String),
     /// Items and counters that must land in the same commit.
     Settle(Vec<String>, String),
+    /// A cookie jar's snapshot, by name.
+    Jar(String, String),
     /// Commit what's queued and reply.
     Flush(Sender<Result<(), String>>),
 }
@@ -156,6 +161,7 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS pending ON requests (row) WHERE done = 0;
     CREATE TABLE IF NOT EXISTS seen (fingerprint BLOB PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS jars (name TEXT PRIMARY KEY, cookies TEXT NOT NULL) WITHOUT ROWID;
 ";
 
 impl Checkpoint {
@@ -192,7 +198,7 @@ impl Checkpoint {
                      ALTER TABLE requests ADD COLUMN referer TEXT;
                      ALTER TABLE requests ADD COLUMN retry_post INTEGER NOT NULL DEFAULT 0;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
-                     UPDATE meta SET value = '3' WHERE key = 'format';
+                     UPDATE meta SET value = '4' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -201,10 +207,16 @@ impl Checkpoint {
                 conn.execute_batch(
                     "BEGIN;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
-                     UPDATE meta SET value = '3' WHERE key = 'format';
+                     UPDATE meta SET value = '4' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
+            }
+            Some(Ok(3)) => {
+                // Format 3 kept no cookies: its `jars` table, made with the
+                // others, is empty, so a resume starts as a new visitor.
+                conn.execute("UPDATE meta SET value = '4' WHERE key = 'format'", [])
+                    .map_err(sql)?;
             }
             Some(Ok(v)) if v <= FORMAT => {}
             Some(Ok(v)) => {
@@ -275,6 +287,11 @@ impl Checkpoint {
     /// a crash, either both are saved or neither is.
     pub fn settle(&self, items: Vec<String>, counters: String) {
         self.send(Op::Settle(items, counters));
+    }
+
+    /// Saves a cookie jar's snapshot under `name`, replacing the last.
+    pub fn jar(&self, name: String, snapshot: String) {
+        self.send(Op::Jar(name, snapshot));
     }
 
     /// Commits what's queued and closes the file. Writes after this are
@@ -361,8 +378,29 @@ pub(crate) fn retrying<T>(mut open: impl FnMut() -> rusqlite::Result<T>) -> rusq
     }
 }
 
+/// Makes `path` readable by its owner alone, creating it empty if it
+/// isn't there: a checkpoint holds the crawl's cookies.
+/// SQLite gives its -wal and -shm files the same permissions.
+/// Known limit: on Windows the file keeps the folder's permissions.
+fn private(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path);
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Opens the file in WAL mode, with the tables in place.
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
+    private(path);
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     // WAL with NORMAL is crash-safe for the process dying; a power cut may
@@ -410,6 +448,10 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
     let mut stmt = conn.prepare("SELECT id FROM items")?;
     for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
         saved.items.insert(id?);
+    }
+    let mut stmt = conn.prepare("SELECT name, cookies FROM jars")?;
+    for jar in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        saved.jars.push(jar?);
     }
     saved.counters = conn
         .query_row("SELECT value FROM meta WHERE key = 'counters'", [], |r| {
@@ -481,6 +523,10 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
         let mut seen = tx.prepare_cached("INSERT OR IGNORE INTO seen (fingerprint) VALUES (?1)")?;
         let mut done = tx.prepare_cached("UPDATE requests SET done = 1 WHERE row = ?1")?;
         let mut item = tx.prepare_cached("INSERT OR IGNORE INTO items (id) VALUES (?1)")?;
+        let mut jar = tx.prepare_cached(
+            "INSERT INTO jars (name, cookies) VALUES (?1, ?2)
+             ON CONFLICT (name) DO UPDATE SET cookies = excluded.cookies",
+        )?;
         let mut counters = tx.prepare_cached(
             "INSERT INTO meta (key, value) VALUES ('counters', ?1)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -524,6 +570,9 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
                         item.execute(params![id])?;
                     }
                     counters.execute(params![json])?;
+                }
+                Op::Jar(name, snapshot) => {
+                    jar.execute(params![name, snapshot])?;
                 }
                 Op::Flush(_) => {}
             }
@@ -574,6 +623,54 @@ mod tests {
             retry_post: false,
             proxy: Some("http://ann:secret@10.0.0.1:8080".into()),
         }
+    }
+
+    #[test]
+    fn a_checkpoint_from_before_cookie_jars_is_upgraded_and_keeps_them_after() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-v3-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The third format, as 0.3.1 wrote it: no jars table.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('format', '3');
+                 CREATE TABLE requests (row INTEGER PRIMARY KEY, url TEXT NOT NULL,
+                     priority INTEGER NOT NULL, headers TEXT NOT NULL,
+                     dont_filter INTEGER NOT NULL, depth INTEGER NOT NULL,
+                     payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+                     method TEXT NOT NULL DEFAULT 'GET',
+                     kind TEXT NOT NULL DEFAULT 'navigate', body BLOB,
+                     content_type TEXT, referer TEXT,
+                     retry_post INTEGER NOT NULL DEFAULT 0, proxy TEXT);",
+            )
+            .unwrap();
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        assert!(saved.jars.is_empty());
+        cp.jar("".into(), "first".into());
+        cp.jar("\"ada\"".into(), "ada's".into());
+        cp.jar("".into(), "second".into());
+        drop(cp);
+        let (_cp, mut saved) = Checkpoint::open(&path).unwrap();
+        saved.jars.sort();
+        assert_eq!(
+            saved.jars,
+            [
+                ("".to_string(), "second".to_string()),
+                ("\"ada\"".to_string(), "ada's".to_string())
+            ]
+        );
+        drop(_cp);
+        let format: String = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key = 'format'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(format, FORMAT.to_string());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

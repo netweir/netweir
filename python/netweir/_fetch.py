@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import os
 from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urlencode, urljoin
 
 from netweir import _jmespath, _track
+from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
 from netweir._helpers import Article
@@ -287,6 +289,9 @@ class Client:
 
     ``profile`` names the browser to look like (``"chrome"`` is the newest
     Chrome). ``timeout`` covers a whole request, in seconds.
+    ``storage_state`` starts the client with the cookies of a storage state:
+    a path to a file ``storage_state()`` (here or in a browser context) or
+    Playwright saved, or its dict. ``cookies`` is the jar.
     """
 
     def __init__(
@@ -295,8 +300,18 @@ class Client:
         proxy: str | None = None,
         timeout: float = 30.0,
         max_size: int | None = None,
+        storage_state: str | os.PathLike[str] | dict[str, Any] | None = None,
     ):
         self._fetcher = Fetcher(profile, proxy, timeout, max_size=max_size)
+        self.cookies = Cookies(self._fetcher)
+        if storage_state is not None:
+            self._fetcher.load_storage_state(storage_state)
+
+    def storage_state(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+        """The client's cookies as a storage state dict, in Playwright's
+        form (``origins`` is empty: there's no localStorage over HTTP).
+        With ``path``, also written there, readable by its owner alone."""
+        return self._fetcher.storage_state(path)
 
     async def get(
         self,

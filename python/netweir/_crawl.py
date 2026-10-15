@@ -1071,9 +1071,11 @@ class _Run:
         callback = json.dumps(self.method_name(request.callback))
         errback = json.dumps(self.method_name(request.errback))
         browser = json.dumps(request.browser)
+        # A request still waiting when the crawl stops keeps its cookies.
+        cookies = f', "cookies": {json.dumps(request.cookies)}' if request.cookies else ""
         return (
             f'{{"callback": {callback}, "errback": {errback}, "meta": {meta}, '
-            f'"browser": {browser}}}'
+            f'"browser": {browser}{cookies}}}'
         )
 
     def method_name(self, fn: Callable[..., Any] | str | None) -> str | None:
@@ -1143,6 +1145,9 @@ class _Run:
             delta=delta[0],
             delta_key=delta[1],
             answered=answered,
+            jar=_jar_name(meta),
+            cookies=request.cookies,
+            dont_merge_cookies=bool(meta.get("dont_merge_cookies")),
         )
         if outcome in ("queued", "pushed", "answered"):
             self.accepted += 1
@@ -2554,6 +2559,20 @@ _RESCHEDULES = 100
 _IDLE_WAIT = 5.0
 
 
+def _jar_name(meta: dict[str, Any]) -> str | None:
+    """The jar ``meta["cookiejar"]`` names, as the engine keys it: its JSON,
+    so 1 and "1" are two jars as in Scrapy. None for the crawl's own."""
+    key = meta.get("cookiejar")
+    if key is None:
+        return None
+    try:
+        return json.dumps(key, sort_keys=True)
+    except TypeError:
+        raise TypeError(
+            f'meta["cookiejar"] must be a JSON value (a str, a number...), not {type(key).__name__}'
+        ) from None
+
+
 def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
     """A Request again from what the checkpoint or the shared queue kept of
     it, with its payload."""
@@ -2581,6 +2600,7 @@ def _restored(head: tuple, sent: tuple) -> tuple[Request, dict[str, Any]]:
         proxy=proxy,
         kind=kind,
         content_type=content_type,
+        cookies=data.get("cookies"),
     )
     return request, data
 

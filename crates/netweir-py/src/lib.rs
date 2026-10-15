@@ -3,6 +3,7 @@
 
 mod aio;
 mod browser;
+mod cookies;
 mod crawl;
 mod export;
 mod fetch;

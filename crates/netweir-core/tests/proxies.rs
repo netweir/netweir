@@ -67,6 +67,7 @@ fn request(id: u64, url: &str) -> CrawlRequest {
         retry_post: false,
         proxy: None,
         delta_key: Default::default(),
+        cookies: Default::default(),
     }
 }
 
