@@ -573,10 +573,6 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // On Windows, Chrome's ends are inheritable from hand_over until they're
-    // dropped, and any child started meanwhile would get them too; then a
-    // browser's reader would never see its Chrome exit. Launches here take
-    // turns through that window.
     // In a group of its own, which its helpers join: what the watcher
     // ends (see tie).
     #[cfg(unix)]
@@ -587,15 +583,21 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
         &mut command,
         windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
     );
-    let mut child = {
+    // On Windows, Chrome's ends are inheritable from hand_over until they're
+    // dropped, and any child started meanwhile would get them too; then a
+    // browser's reader would never see its Chrome exit. Launches here take
+    // turns through that window, and each starts its watcher in its own
+    // turn: a watcher started during another launch's window took that
+    // Chrome's ends and kept them for as long as it ran.
+    let (mut child, lifeline) = {
         let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
         hand_over(&mut command, &chrome_reads, &chrome_writes).map_err(failed)?;
         let child = command.spawn().map_err(failed)?;
         // Our copies of Chrome's ends must close, or we'd never see it exit.
         drop((chrome_reads, chrome_writes));
-        child
+        let lifeline = tie(&child);
+        (child, lifeline)
     };
-    let lifeline = tie(&child);
     #[cfg(windows)]
     if let Err(e) = resume(&child) {
         let _ = child.kill();

@@ -56,6 +56,55 @@ async fn a_browser_that_dies_reads_as_closed() {
     assert!(!browser.profile_dir().unwrap().exists());
 }
 
+/// Ends a process outright.
+fn kill(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output()
+        .unwrap();
+}
+
+/// Each of several Chromes launched at once is seen to die when it does,
+/// while the others still run: no process one launch starts may come by
+/// the end of the pipe another's Chrome writes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn chromes_launched_at_once_are_each_seen_to_die() {
+    let Some(executable) = chrome() else { return };
+    // Every turn there is: these Chromes are this test's alone.
+    let _turns = (common::turn(), common::turn());
+    for _round in 0..3 {
+        let launches: Vec<_> = (0..4)
+            .map(|_| {
+                let executable = executable.clone();
+                tokio::spawn(Browser::launch(LaunchOptions {
+                    executable: Some(executable),
+                    ..LaunchOptions::default()
+                }))
+            })
+            .collect();
+        let mut browsers = Vec::new();
+        for launch in launches {
+            browsers.push(launch.await.unwrap().unwrap());
+        }
+        for (n, browser) in browsers.iter().enumerate() {
+            kill(browser.pid().unwrap());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !browser.is_closed() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(browser.is_closed(), "browser {n}'s Chrome died unseen");
+        }
+        for browser in browsers {
+            browser.close().await.unwrap();
+        }
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_chrome_that_wont_start_says_why() {
