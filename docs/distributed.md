@@ -228,6 +228,11 @@ or give the crawl a new `queue_key`.
   network, or reach it through a TLS tunnel.
 - Redis Cluster and Sentinel: one server, or a proxy in front of one.
 - Unix sockets on Windows: use `redis://host:port` there.
+- Processes on different versions. A request's timeout, redirect limit
+  and login (`timeout=`, `allow_redirects=`, `auth=` and Scrapy's meta
+  keys for them) travel with it in the queue, and a process from 0.3.1 or
+  earlier ignores them: it would send the request without its login.
+  Upgrade every process before your requests use them.
 
 One thing no setting fixes: a callback that hangs for ever (waiting on
 something that never answers, say). Its process is alive, so it keeps
@@ -250,6 +255,10 @@ service, for one). It also says which proxy to use, which headers and
 body to send, and which spider method to call with the page. And the
 traffic between Netweir and Redis is plain TCP, readable by anyone on
 the path, password included.
+
+Requests given a login (`auth=`, or `http_user` in meta) carry it in the
+queue, readable by anyone who can read Redis. The crawl's own
+`http_auth` setting never goes there.
 
 So give Redis a password (`requirepass`, and `redis://:password@host`
 here), keep it on a network only your crawlers can reach, and don't

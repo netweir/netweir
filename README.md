@@ -114,7 +114,7 @@ Working today:
   new. The output keeps every run's items, a crash included. See [docs/crawling.md](docs/crawling.md#skipping-what-you-already-have).
 - WARC and HAR files of everything a crawl fetched: the requests as they
   went out, header for header, and the responses, redirect hops and
-  robots.txt included. Read them back with warcio, or open them in a
+  robots.txt included; logins are left out. Read them back with warcio, or open them in a
   browser's network panel. See
   [docs/crawling.md](docs/crawling.md#keeping-what-you-fetched).
 - Declarative spiders, where you describe the item and the links and

@@ -20,7 +20,8 @@ page = netweir.get("https://wiki.corp/", verify="/etc/ssl/corp-ca.pem")
 
 `params` is a dict or a list of pairs. They go after the URL's own query,
 URL-encoded as a form encodes them (a space becomes `+`); a list value
-repeats its key, and a `None` value is left out:
+repeats its key, and a `None` value is left out, in a list too. A string
+or bytes is taken as a query already encoded, and added as it is:
 
 ```python
 netweir.get("https://example.com/list?sort=new", params={"tag": ["a", "b"], "page": None})
@@ -35,10 +36,16 @@ another site, or another port, leaves it behind. A login written into
 the URL (`https://ada:secret@intranet.example/`) does the same; `auth`
 wins if you give both.
 
-The `Authorization` header goes where the browser sends it: Chrome puts it
-straight after `Connection`, Firefox straight before. A bearer token of
-your own (`headers={"Authorization": "Bearer ..."}`) goes in the same
-place, and wins over `auth`.
+The `Authorization` header goes where the browser sends it. Chrome puts it
+after `Host` and `Connection` and, when the request has them, after
+`Content-Length` (a POST) and `Cache-Control` (a form, and the page a form
+redirects to), before everything else; over HTTP/2, which has neither
+`Host` nor `Connection`, that makes it the first header after the
+pseudo-headers on a GET. Firefox puts it straight before `Connection`. A
+bearer token of your own (`headers={"Authorization": "Bearer ..."}`) goes
+in the same place, and wins over `auth`. Neither goes into a
+[WARC or HAR file](crawling.md#keeping-what-you-fetched): an archive gets
+shared, and a login is yours.
 
 Only Basic is sent. A site that asks for Digest answers with a 401, which
 you get as the page.
@@ -73,7 +80,8 @@ a self-signed certificate, `verify=False` skips the check; for hosts your
 own CA vouches for, `verify="/path/to/ca.pem"` trusts the certificates in
 that PEM file instead of the bundled roots, as requests does with a path.
 Put the public roots in the file too if the same client also fetches
-public sites.
+public sites. Pages fetched in Chrome (`browser=True`) use Chrome's own
+certificate checks, not `verify`.
 
 Checking happens on your side, after the server has read the handshake,
 so neither changes what a site sees: Netweir's tests hold both handshakes

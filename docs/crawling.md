@@ -81,6 +81,11 @@ A login written into the URL (`https://ada:secret@intranet/`) becomes
 `download_timeout`, `dont_redirect`, `redirect_ttl` and `http_user`,
 `http_pass` and `http_auth_domain`.
 
+A request's login is saved with it in a [checkpoint](self-healing.md#checkpoints)
+and in a [shared queue](distributed.md). On Linux and macOS the
+checkpoint's files are readable by you alone; Redis is as safe as you
+keep it.
+
 The highest priority a page gets is one below the largest 32-bit
 integer, which is kept for file downloads, so priorities from there up
 tie and go in the order they were submitted.
@@ -435,7 +440,8 @@ every response the crawl got is in it with the request that asked for it:
 each hop of a redirect, every retry and block page, robots.txt and the
 sitemaps, and the pages declarative rules followed in Rust. The request is
 what Netweir sent, header for header in the order they went out, cookies
-included. Read it back with [warcio](https://github.com/webrecorder/warcio):
+included, except logins: `Authorization` and `Proxy-Authorization` are
+left out, since archives get shared. Read it back with [warcio](https://github.com/webrecorder/warcio):
 
 ```python
 from warcio.archiveiterator import ArchiveIterator
