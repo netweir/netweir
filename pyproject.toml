@@ -70,6 +70,9 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# A test still running after five minutes prints every thread's stack and
+# carries on, so a hang says where it is long before CI's limit ends it.
+faulthandler_timeout = 300
 
 [tool.ruff]
 line-length = 100
