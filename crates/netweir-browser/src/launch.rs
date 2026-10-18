@@ -873,9 +873,10 @@ fn hand_over(
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
 
-    // Known limit: start() keeps netweir's own launches apart, but a process
-    // started elsewhere in the program during the launch would still
-    // inherit these. PROC_THREAD_ATTRIBUTE_HANDLE_LIST would make it exact.
+    // start() keeps netweir's own launches apart, but a process started
+    // elsewhere in the program during the launch still inherits these. It
+    // holds them, unused, until it ends; the browser reads Chrome's exit
+    // from the process instead (see conn::closes_with).
     for handle in [reads.as_raw_handle(), writes.as_raw_handle()] {
         if unsafe { SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) }
             == 0

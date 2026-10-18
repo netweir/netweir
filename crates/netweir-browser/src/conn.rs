@@ -54,9 +54,11 @@ struct State {
 }
 
 impl Connection {
+    /// Over a pipe, to a launched `chrome`, if given: see [`closes_with`].
     pub(crate) fn new(
         input: impl Read + Send + 'static,
         output: impl Write + Send + 'static,
+        chrome: Option<&std::process::Child>,
     ) -> Connection {
         let (shared, mut rx) = Shared::new();
         std::thread::Builder::new()
@@ -71,10 +73,13 @@ impl Connection {
             })
             .expect("can't start the CDP writer thread");
         let reader = shared.clone();
-        std::thread::Builder::new()
+        let reader = std::thread::Builder::new()
             .name("netweir-cdp-read".into())
             .spawn(move || read_loop(BufReader::new(input), &reader))
             .expect("can't start the CDP reader thread");
+        if let Some(chrome) = chrome {
+            closes_with(chrome, &reader, &shared);
+        }
         Connection { shared }
     }
 
@@ -318,6 +323,47 @@ impl Shared {
     }
 }
 
+/// On Windows, any process the program starts while a Chrome launches
+/// inherits Chrome's end of the pipe (see launch::start), and while one
+/// holds it the reader never reads Chrome's exit. So once Chrome's process
+/// has ended, the reader's blocked read is cancelled, which ends it as the
+/// pipe's end would. A read only blocks once the pipe is empty, and a dead
+/// Chrome writes nothing more, so nothing Chrome sent is lost. Elsewhere
+/// Chrome's end is never inherited, and the pipe's end is enough.
+#[cfg(windows)]
+fn closes_with(
+    chrome: &std::process::Child,
+    reader: &std::thread::JoinHandle<()>,
+    shared: &Arc<Shared>,
+) {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+
+    let (Ok(chrome), Ok(reader)) = (
+        chrome.as_handle().try_clone_to_owned(),
+        reader.as_handle().try_clone_to_owned(),
+    ) else {
+        return;
+    };
+    let shared = shared.clone();
+    let _ = std::thread::Builder::new()
+        .name("netweir-chrome-exit".into())
+        .spawn(move || {
+            // SAFETY: both handles are open, owned by this thread.
+            unsafe { WaitForSingleObject(chrome.as_raw_handle() as _, INFINITE) };
+            // Between reads the cancel misses, so it's tried until the
+            // reader has ended.
+            while !shared.lock().closed {
+                unsafe { CancelSynchronousIo(reader.as_raw_handle() as _) };
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+}
+
+#[cfg(not(windows))]
+fn closes_with(_: &std::process::Child, _: &std::thread::JoinHandle<()>, _: &Arc<Shared>) {}
+
 fn read_loop(mut input: impl BufRead, shared: &Shared) {
     let mut message = Vec::new();
     loop {
@@ -345,7 +391,7 @@ mod tests {
     #[tokio::test]
     async fn forbidden_methods_are_refused_without_being_sent() {
         let (input, _keep) = std::io::pipe().unwrap();
-        let conn = Connection::new(input, std::io::sink());
+        let conn = Connection::new(input, std::io::sink(), None);
         let err = conn
             .call("", "Runtime.enable", json!({}))
             .await
@@ -357,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn a_session_that_detaches_fails_what_was_waiting_on_it() {
         let (input, mut writer) = std::io::pipe().unwrap();
-        let conn = Connection::new(input, std::io::sink());
+        let conn = Connection::new(input, std::io::sink(), None);
         let waiting = tokio::spawn({
             let conn = conn.clone();
             async move { conn.call("gone", "Page.getFrameTree", json!({})).await }
@@ -384,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn a_closed_pipe_fails_what_was_waiting() {
         let (input, writer) = std::io::pipe().unwrap();
-        let conn = Connection::new(input, std::io::sink());
+        let conn = Connection::new(input, std::io::sink(), None);
         let waiting = tokio::spawn({
             let conn = conn.clone();
             async move { conn.call("", "Browser.getVersion", json!({})).await }
@@ -397,5 +443,36 @@ mod tests {
             conn.call("", "Browser.getVersion", json!({})).await,
             Err(Error::Closed)
         );
+    }
+
+    /// A Chrome that exits is read as gone though another process still
+    /// holds its end of the pipe, and what it sent before is still read.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_chrome_that_exits_closes_the_pipe_someone_else_holds() {
+        let (input, mut held) = std::io::pipe().unwrap();
+        let mut chrome = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let conn = Connection::new(input, std::io::sink(), Some(&chrome));
+        let answered = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("", "Browser.getVersion", json!({})).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        held.write_all(b"{\"id\":1,\"result\":{}}\0").unwrap();
+        assert_eq!(answered.await.unwrap(), Ok(json!({})));
+        let waiting = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("", "Browser.getVersion", json!({})).await }
+        });
+        chrome.wait().unwrap();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+            .await
+            .expect("Chrome's exit went unread");
+        assert_eq!(r.unwrap(), Err(Error::Closed));
+        assert!(conn.is_closed());
+        drop(held);
     }
 }

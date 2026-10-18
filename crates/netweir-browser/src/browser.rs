@@ -213,7 +213,7 @@ impl Browser {
         args.push("about:blank".into());
         let started = launch::start(&executable, &args)?;
         let said = started.said.clone();
-        let conn = Connection::new(started.replies, started.commands);
+        let conn = Connection::new(started.replies, started.commands, Some(&started.child));
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
@@ -821,7 +821,7 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
     let said = started.said.clone();
     let probe = Browser {
         inner: Arc::new(Inner {
-            conn: Connection::new(started.replies, started.commands),
+            conn: Connection::new(started.replies, started.commands, Some(&started.child)),
             child: Mutex::new(Some(started.child)),
             lifeline: Mutex::new(Some(started.lifeline)),
             profile: Some(profile),
