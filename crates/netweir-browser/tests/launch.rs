@@ -105,6 +105,70 @@ async fn chromes_launched_at_once_are_each_seen_to_die() {
     }
 }
 
+/// A Chrome is seen to die even when the program started other processes
+/// of its own, outside netweir, while Chrome was launching: on Windows any
+/// of them could inherit Chrome's end of its pipe and hold it open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chrome_is_seen_to_die_while_other_processes_hold_its_pipe() {
+    let Some(executable) = chrome() else { return };
+    let _turns = (common::turn(), common::turn());
+    // A process lasting well past the five seconds below, started over and
+    // over by another thread while each Chrome launches.
+    fn lasting() -> std::process::Command {
+        let mut command = if cfg!(windows) {
+            let mut c = std::process::Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command
+    }
+    for _round in 0..3 {
+        let launching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let starter = std::thread::spawn({
+            let launching = launching.clone();
+            move || {
+                let mut started = Vec::new();
+                while launching.load(std::sync::atomic::Ordering::Relaxed) && started.len() < 300 {
+                    started.push(lasting().spawn().unwrap());
+                }
+                started
+            }
+        });
+        let browser = Browser::launch(LaunchOptions {
+            executable: Some(executable.clone()),
+            ..LaunchOptions::default()
+        })
+        .await;
+        launching.store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut started = starter.join().unwrap();
+        let browser = browser.unwrap();
+        kill(browser.pid().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !browser.is_closed() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let seen = browser.is_closed();
+        for child in &mut started {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            seen,
+            "Chrome died unseen ({} other processes)",
+            started.len()
+        );
+        browser.close().await.unwrap();
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_chrome_that_wont_start_says_why() {
