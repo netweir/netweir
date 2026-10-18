@@ -61,7 +61,9 @@ and what Chrome does where the draft leaves room:
   `Secure` cookie only from https (or localhost and loopback addresses,
   which Chrome counts as secure), and an http response can't replace
   one. `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no Domain and
-  Path=/. `SameSite=None` needs `Secure`.
+  Path=/. `SameSite=None` needs `Secure`. A Set-Cookie without a name
+  (`token`, or `=token`) is a cookie with an empty name, as in Chrome,
+  sent as its value alone, unless the value starts like a prefixed name.
 - **Limits.** Chrome's: a site (a registrable domain, subdomains and
   all) keeps 180 cookies, and one more drops it to 150, insecure cookies
   first and each kind least recently sent or set first. Past 3300 in
@@ -73,16 +75,15 @@ and what Chrome does where the draft leaves room:
   waiting at most 9 ms, against 4.4 s when it was written under the
   lock.
 - **Sending.** Domain, path, `Secure` (https, localhost and loopback
-  only) and expiry, ordered as
-  each browser orders them: longest path first, then oldest first
-  (Chrome, Firefox) or newest first (Safari), as the profiles already
-  say. SameSite as Chrome applies it: a cross-site request carries no
-  `Strict` cookie; `Lax` ones (and those that set no SameSite, which
-  Chrome treats as Lax) only on a top-level GET navigation; a cookie with
-  no SameSite under two minutes old also on a top-level POST navigation,
-  Chrome's "Lax allowing unsafe". A cross-site subresource response can't
-  set a Lax or Strict cookie. Typed addresses (no referer) are never
-  cross-site.
+  only) and expiry, ordered as each browser orders them: longest path
+  first, then oldest first (Chrome, Firefox) or newest first (Safari),
+  as the profiles already say. SameSite as Chrome applies it: a
+  cross-site request carries no `Strict` cookie; `Lax` ones (and those
+  that set no SameSite, which Chrome treats as Lax) only on a top-level
+  GET navigation; a cookie with no SameSite under two minutes old also
+  on a top-level POST navigation, Chrome's "Lax allowing unsafe". A
+  cross-site subresource response can't set a Lax or Strict cookie.
+  Typed addresses (no referer) are never cross-site.
 - **Partitioned cookies (CHIPS).** Kept under the site the request's top
   level is on: the target's for a navigation, the referer's for a
   script's request or an image. Sent only under the same top-level site.

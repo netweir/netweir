@@ -401,7 +401,20 @@ impl Jar {
     /// Stores what a Set-Cookie value from `url` sets, if the rules let
     /// it; whether they did.
     pub fn set_cookie(&self, header: &str, url: &Url, context: &Context) -> bool {
-        let Ok(parsed) = cookie::Cookie::parse(header) else {
+        // A pair without a name ("token", or "=token") is a cookie with
+        // none (RFC 6265bis 5.6), which the cookie crate won't parse: it
+        // reads the attributes after a stand-in name.
+        let (pair, attributes) = header.split_once(';').unwrap_or((header, ""));
+        let nameless = match pair.split_once('=') {
+            None => Some(pair.trim()),
+            Some((name, value)) if name.trim().is_empty() => Some(value.trim()),
+            Some(_) => None,
+        };
+        let parsed = match nameless {
+            None => cookie::Cookie::parse(header).map(cookie::Cookie::into_owned),
+            Some(value) => cookie::Cookie::parse(format!("n={value};{attributes}")),
+        };
+        let Ok(parsed) = parsed else {
             return false;
         };
         let Some(host) = url.host_str().and_then(canonical) else {
@@ -409,8 +422,16 @@ impl Jar {
         };
         let now = now();
         let trusted = trustworthy(url);
-        let (name, value) = (parsed.name().to_string(), parsed.value().to_string());
+        let (name, value) = match nameless {
+            Some(value) => (String::new(), value.to_string()),
+            None => (parsed.name().to_string(), parsed.value().to_string()),
+        };
         if name.len() + value.len() > MAX_SIZE || (name.is_empty() && value.is_empty()) {
+            return false;
+        }
+        // Nor may a cookie without a name pass for a prefixed one.
+        let lower = value.to_ascii_lowercase();
+        if name.is_empty() && (lower.starts_with("__secure-") || lower.starts_with("__host-")) {
             return false;
         }
         let secure = parsed.secure().unwrap_or(false);
@@ -1286,5 +1307,23 @@ mod tests {
         }
         assert!(!set(&jar, "http://localhost.example/", "s=1; Secure"));
         assert!(!set(&jar, "http://10.0.0.1/", "s=1; Secure"));
+    }
+
+    #[test]
+    fn a_set_cookie_without_a_name_is_a_cookie_with_none_as_in_chrome() {
+        let jar = Jar::new();
+        assert!(set(&jar, "https://e.com/", "nameless; Path=/"));
+        assert!(set(&jar, "https://e.com/", "=val2; Path=/b"));
+        assert_eq!(sent(&jar, "https://e.com/b"), ["val2", "nameless"]);
+        let c = &jar.all()[0];
+        assert_eq!((c.name.as_str(), c.value.as_str()), ("", "nameless"));
+        // One replaces the other, as one cookie with no name.
+        assert!(set(&jar, "https://e.com/", "other; Path=/"));
+        assert_eq!(sent(&jar, "https://e.com/"), ["other"]);
+        // A value that looks like a prefixed name is refused.
+        assert!(!set(&jar, "https://e.com/", "__Secure-x; Secure"));
+        assert!(!set(&jar, "https://e.com/", "=__Host-x; Secure; Path=/"));
+        assert!(!set(&jar, "https://e.com/", ""));
+        assert!(!set(&jar, "https://e.com/", "; Path=/"));
     }
 }
