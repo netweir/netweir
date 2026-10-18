@@ -370,6 +370,21 @@ pub fn scope(cookie: &mut Cookie, url: &Url) {
     }
 }
 
+/// Whether `url` may set and be sent `Secure` cookies: https, or, as
+/// Chrome counts it secure, localhost and loopback addresses.
+fn trustworthy(url: &Url) -> bool {
+    url.scheme() == "https"
+        || match url.host() {
+            Some(url::Host::Domain(d)) => {
+                let d = d.trim_end_matches('.').to_ascii_lowercase();
+                d == "localhost" || d.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        }
+}
+
 fn is_public_suffix(domain: &str) -> bool {
     !is_ip(domain) && psl::suffix_str(domain) == Some(domain)
 }
@@ -393,13 +408,13 @@ impl Jar {
             return false;
         };
         let now = now();
-        let https = url.scheme() == "https";
+        let trusted = trustworthy(url);
         let (name, value) = (parsed.name().to_string(), parsed.value().to_string());
         if name.len() + value.len() > MAX_SIZE || (name.is_empty() && value.is_empty()) {
             return false;
         }
         let secure = parsed.secure().unwrap_or(false);
-        if secure && !https {
+        if secure && !trusted {
             return false;
         }
         // The Domain attribute; an empty one is no attribute at all.
@@ -483,7 +498,7 @@ impl Jar {
             seq: 0,
         };
         let mut store = self.lock();
-        if !https && store.overlays_secure(&cookie.name, &cookie.domain, &cookie.path, now) {
+        if !trusted && store.overlays_secure(&cookie.name, &cookie.domain, &cookie.path, now) {
             return false;
         }
         if cookie.expired(now) {
@@ -642,7 +657,7 @@ impl Jar {
             return Vec::new();
         };
         let now = now();
-        let https = url.scheme() == "https";
+        let trusted = trustworthy(url);
         let path = url.path();
         let mut store = self.lock();
         let Some(list) = store.by_key.get_mut(key_of(&host)) else {
@@ -657,7 +672,7 @@ impl Jar {
                     domain_match(&host, &c.domain)
                 }) && !c.expired(now)
                     && path_match(path, &c.path)
-                    && (!c.secure || https)
+                    && (!c.secure || trusted)
                     && c.partition
                         .as_ref()
                         .is_none_or(|p| context.top_level_site.as_ref() == Some(p))
@@ -1255,5 +1270,21 @@ mod tests {
         jar.add(&wide("github.io"), None).unwrap();
         jar.add(&wide(".me.github.io"), None).unwrap();
         assert_eq!(jar.len(), 2);
+    }
+
+    #[test]
+    fn localhost_is_secure_as_chrome_has_it() {
+        let jar = Jar::new();
+        for at in [
+            "http://localhost:8080/",
+            "http://127.0.0.1/",
+            "http://[::1]/",
+            "http://shop.localhost/",
+        ] {
+            assert!(set(&jar, at, "s=1; Secure"), "{at}");
+            assert_eq!(sent(&jar, at), ["s=1"], "{at}");
+        }
+        assert!(!set(&jar, "http://localhost.example/", "s=1; Secure"));
+        assert!(!set(&jar, "http://10.0.0.1/", "s=1; Secure"));
     }
 }

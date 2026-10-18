@@ -58,7 +58,8 @@ and what Chrome does where the draft leaves room:
   to every site under it. Host-only and domain cookies of one name are
   two cookies. Max-Age wins over Expires and is stored as a deadline; a
   past one deletes. The default path is the request's directory. A
-  `Secure` cookie only from https, and an http response can't replace
+  `Secure` cookie only from https (or localhost and loopback addresses,
+  which Chrome counts as secure), and an http response can't replace
   one. `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no Domain and
   Path=/. `SameSite=None` needs `Secure`.
 - **Limits.** Chrome's: a site (a registrable domain, subdomains and
@@ -71,7 +72,8 @@ and what Chrome does where the draft leaves room:
   lock is let go: a 50,000-cookie jar saved over and over kept a request
   waiting at most 9 ms, against 4.4 s when it was written under the
   lock.
-- **Sending.** Domain, path, `Secure` (https only) and expiry, ordered as
+- **Sending.** Domain, path, `Secure` (https, localhost and loopback
+  only) and expiry, ordered as
   each browser orders them: longest path first, then oldest first
   (Chrome, Firefox) or newest first (Safari), as the profiles already
   say. SameSite as Chrome applies it: a cross-site request carries no
