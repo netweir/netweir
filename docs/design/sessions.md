@@ -117,7 +117,9 @@ Request(url, meta={"dont_merge_cookies": True})
   the jar matches (Scrapy). A dict of name to value, or a list of the
   dicts above. Without a domain, a cookie is the URL's host's alone;
   without a path, its path is the URL's directory, as Scrapy has it.
-  Scrapy's dicts give `domain` without a dot and mean the domain and its
+  The URL is the one submitted, bound when the request is queued: a
+  redirect to another host never carries them there, nor puts them in
+  the jar for it (Scrapy's GHSA-mfjm-vh54-3f96). Scrapy's dicts give `domain` without a dot and mean the domain and its
   subdomains; in Netweir that's `".shop.example"`, the browsers' way.
 - `meta["cookiejar"]` names a jar: every request naming it shares its
   cookies, and no others do. Any JSON value names one (`1` and `"1"` are

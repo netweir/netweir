@@ -276,3 +276,46 @@ async fn on_the_wire_samesite_holds_and_one_client_sends_for_any_jar() {
         ["strict=1; lax=1", "lax=1", "", "strict=1; lax=1"]
     );
 }
+
+#[tokio::test]
+async fn a_requests_own_cookies_stay_with_its_host_through_a_redirect() {
+    let other = Site::start(vec![("/land", Page::html("landed"))]).await;
+    let away = format!("http://localhost:{}/land", other.port);
+    let site = Site::start(vec![
+        (
+            "/away",
+            Page::status(302, "").with_header("location", &away),
+        ),
+        (
+            "/home",
+            Page::status(302, "").with_header("location", "/me"),
+        ),
+        ("/me", Page::html("me")),
+    ])
+    .await;
+    let c = crawler(settings());
+    let mut merged = request(1, site.url("/away"));
+    merged.cookies.add = vec![cookie("sid", "secret")];
+    let mut alone = request(2, site.url("/away"));
+    alone.cookies.dont_merge = true;
+    alone.cookies.add = vec![cookie("only", "1")];
+    let mut home = request(3, site.url("/home"));
+    home.cookies.add = vec![cookie("more", "2")];
+    let mut home_alone = request(4, site.url("/home"));
+    home_alone.cookies.dont_merge = true;
+    home_alone.cookies.add = vec![cookie("solo", "3")];
+    one_by_one(&c, vec![merged, alone, home, home_alone]).await;
+    assert_eq!(carried(&site, "/away"), ["sid=secret", "only=1"]);
+    // Another host never sees them, and the jar keeps them for theirs.
+    assert_eq!(carried(&other, "/land"), ["", ""]);
+    let kept: Vec<(String, String)> = c
+        .jar(None)
+        .all()
+        .into_iter()
+        .map(|c| (c.name, c.domain))
+        .collect();
+    let ours = |name: &str| (name.to_string(), "127.0.0.1".to_string());
+    assert_eq!(kept, [ours("sid"), ours("more")]);
+    // A redirect on the same host still carries them.
+    assert_eq!(carried(&site, "/me"), ["sid=secret; more=2", "solo=3"]);
+}

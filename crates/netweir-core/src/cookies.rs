@@ -276,6 +276,20 @@ fn default_path(url: &Url) -> String {
     }
 }
 
+/// Gives `cookie` `url`'s host as its own when it has no domain, and
+/// `url`'s directory when it has no path: a request's own cookies, tied
+/// once to the URL asked for, never to where a redirect leads.
+pub fn scope(cookie: &mut Cookie, url: &Url) {
+    if cookie.domain.is_empty()
+        && let Some(host) = url.host_str().and_then(canonical)
+    {
+        cookie.domain = host;
+    }
+    if !cookie.path.starts_with('/') {
+        cookie.path = default_path(url);
+    }
+}
+
 fn is_public_suffix(domain: &str) -> bool {
     !is_ip(domain) && psl::suffix_str(domain) == Some(domain)
 }

@@ -310,9 +310,10 @@ pub struct RequestCookies {
     /// The jar it shares with every request naming the same; None (or
     /// empty) for the crawl's own.
     pub jar: Option<String>,
-    /// Put in its jar each time it's sent, as if its URL had set them. An
-    /// empty domain is the URL's host's own, an empty path the URL's
-    /// directory.
+    /// Put in its jar each time it's sent, as if the URL it was submitted
+    /// with had set them, so a redirect to another host never carries
+    /// them there. An empty domain is that URL's host's own, an empty
+    /// path its directory.
     pub add: Vec<Cookie>,
     /// Leave the jar out: send `add` alone, and keep nothing the response
     /// sets.
@@ -668,8 +669,11 @@ impl Shared {
 
     /// The fetcher `request` goes out with, from its route's `session`:
     /// with its named jar, or with a jar of its own cookies alone when it
-    /// leaves the jar out. Its own cookies go into that jar first.
-    fn with_request_jar(&self, session: Fetcher, request: &CrawlRequest) -> Fetcher {
+    /// leaves the jar out. Its own cookies go into that jar first: on its
+    /// first hop, or on every hop for a jar of its own, which keeps
+    /// nothing between them. A later hop's jar has them from the first,
+    /// and whatever the site set since.
+    fn with_request_jar(&self, session: Fetcher, request: &CrawlRequest, hops: usize) -> Fetcher {
         let cookies = &request.cookies;
         let session = if cookies.dont_merge {
             session.with_jar(Arc::new(Jar::new()))
@@ -679,21 +683,18 @@ impl Shared {
                 None => session,
             }
         };
-        add_request_cookies(session.jar(), request);
+        if hops == 0 || cookies.dont_merge {
+            add_request_cookies(session.jar(), request);
+        }
         session
     }
 }
 
-/// Puts `request`'s own cookies in `jar`, as if its URL had set them.
+/// Puts `request`'s own cookies in `jar`, as if the URL it was submitted
+/// with had set them (`enqueue` gave them its host and directory).
 fn add_request_cookies(jar: &Jar, request: &CrawlRequest) {
-    if request.cookies.add.is_empty() {
-        return;
-    }
-    let Ok(url) = Url::parse(&request.url) else {
-        return;
-    };
     for c in &request.cookies.add {
-        let _ = jar.add(c, Some(&url));
+        let _ = jar.add(c, None);
     }
 }
 
@@ -2293,6 +2294,11 @@ fn enqueue(
         Some(q) => format!("{}?{q}", parsed.path()),
         None => parsed.path().to_string(),
     };
+    if hops == 0 {
+        for c in &mut request.cookies.add {
+            crate::cookies::scope(c, &parsed);
+        }
+    }
     request.url = url.to_string();
     state.seq += 1;
     let in_browser =
@@ -2610,7 +2616,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let outgoing = with_crawl_login(&shared.settings, &q.request.outgoing);
     let result = match session {
         Ok(session) => {
-            let session = shared.with_request_jar(session, &q.request);
+            let session = shared.with_request_jar(session, &q.request, hops);
             guarded(
                 async move { session.hop_as(&url, &outgoing, &headers, hops).await },
                 |why| {

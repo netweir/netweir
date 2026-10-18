@@ -113,7 +113,8 @@ yield netweir.Request(url, cookies=[{"name": "sid", "value": sid, "domain": ".sh
 They go into the crawl's jar just before the request is sent, as if the
 page had set them, so later requests to the site carry them too. A cookie
 without a domain is the URL's host's alone; without a path, its path is
-the URL's directory.
+the URL's directory. That's the URL you asked for: a redirect to another
+host doesn't take them along.
 
 One difference from Scrapy: Scrapy reads `"domain": "shop.example"` as
 the domain and its subdomains. Netweir follows the browsers, so write
