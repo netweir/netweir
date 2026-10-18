@@ -210,8 +210,7 @@ class Settings:
     def __post_init__(self):
         if self.concurrency < 1 or self.per_domain < 1:
             raise ValueError("concurrency and per_domain must be at least 1")
-        if self.timeout <= 0:
-            raise ValueError("timeout must be positive")
+        seconds(self.timeout)
         if not 0 <= self.min_delay <= self.max_delay or self.start_delay < 0:
             raise ValueError("delays must be non-negative, with min_delay <= max_delay")
         if self.target_concurrency <= 0:
@@ -2686,15 +2685,19 @@ def _policy(request: Request, meta: Mapping[str, Any], max_redirects: int) -> di
     say the same. ``max_redirects`` is the crawl's limit, which
     ``redirect_ttl`` can lower but not raise, as in Scrapy. A meta value
     that can't work is a ValueError."""
+    # The fields again, as a middleware or callback may have changed them
+    # since the request was made.
     timeout = request.timeout
-    if timeout is None and meta.get("download_timeout") is not None:
+    if timeout is not None:
+        timeout = seconds(timeout)
+    elif meta.get("download_timeout") is not None:
         timeout = seconds(meta["download_timeout"], 'meta["download_timeout"]')
-    limit = request.max_redirects
+    limit = redirect_limit(request.max_redirects)
     if limit is None and meta.get("redirect_ttl") is not None:
         limit = min(redirect_limit(meta["redirect_ttl"], "redirect_ttl"), max_redirects)
     auth = None
     if request.auth is not None:
-        auth = (*request.auth, None)
+        auth = (*checked_auth(request.auth), None)
     elif _meta_login(meta):
         domain = meta.get("http_auth_domain") or urlsplit(request.url).hostname or ""
         auth = (

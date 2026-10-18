@@ -408,7 +408,8 @@ def test_a_logins_domain_must_be_a_bare_host_that_isnt_a_public_suffix(base):
 
 
 def test_a_meta_timeout_that_cant_work_skips_its_request_not_the_crawl(base):
-    bad = [0, -1, float("inf"), float("nan"), "soon"]
+    # 1e20 seconds is past what a timer can hold.
+    bad = [0, -1, float("inf"), float("nan"), "soon", 1e20]
     pages, _ = crawl(
         [
             netweir.Request(f"{base}/echo?{n}", meta={"download_timeout": t})
@@ -418,6 +419,33 @@ def test_a_meta_timeout_that_cant_work_skips_its_request_not_the_crawl(base):
     )
     assert [p[1] for p in pages] == [f"{base}/echo?fine"]
     assert crawl.stats["callback_errors"] == len(bad)
+
+
+def test_a_policy_changed_after_its_request_was_made_skips_it_not_the_crawl(base):
+    changes = [
+        ("timeout", 1e20),
+        ("timeout", 0),
+        ("max_redirects", 2**32),
+        ("max_redirects", -1),
+        ("auth", "ada:secret"),
+    ]
+    requests = []
+    for n, (name, value) in enumerate(changes):
+        request = netweir.Request(f"{base}/echo?{n}")
+        setattr(request, name, value)
+        requests.append(request)
+    pages, _ = crawl([*requests, netweir.Request(f"{base}/echo?fine")])
+    assert [p[1] for p in pages] == [f"{base}/echo?fine"]
+    assert crawl.stats["callback_errors"] == len(changes)
+
+
+def test_the_longest_timeout_and_redirect_limit_work(base):
+    pages, errors = crawl(
+        [netweir.Request(f"{base}/echo", timeout=1.8e19, max_redirects=2**32 - 1)]
+    )
+    assert [p[0] for p in pages] == [200] and errors == []
+    page = netweir.get(f"{base}/echo", timeout=1.8e19, max_redirects=2**32 - 1)
+    assert page.status == 200
 
 
 def test_auth_over_a_meta_login_is_said_once(base, caplog):
@@ -600,10 +628,17 @@ def test_policy_values_that_cannot_work_are_refused():
         {"timeout": float("inf")},
         {"timeout": "soon"},
         {"max_redirects": -1},
+        # Past what a timer and a redirect count can hold.
+        {"timeout": 1e20},
+        {"max_redirects": 2**32},
     ):
         with pytest.raises(ValueError):
             netweir.Request("https://e.com/", **bad)
-    with pytest.raises(ValueError):
-        netweir.Settings(max_redirects=-1)
+        with pytest.raises(ValueError):
+            netweir.get("http://127.0.0.1:1/", **bad)
+        with pytest.raises(ValueError):
+            netweir.Client(**bad)
+        with pytest.raises(ValueError):
+            netweir.Settings(**bad)
     with pytest.raises(ValueError):
         netweir.Settings(retry_http_codes=(99,))

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-import math
 import os
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -69,14 +68,22 @@ def login_of(url: str, auth: Auth) -> tuple[str, Auth]:
     return url, auth
 
 
+#: The longest timeout, in seconds, and redirect limit the engine can hold:
+#: a Duration's whole seconds are a u64, and a redirect count a u32.
+_MOST_SECONDS = 2.0**64
+_MOST_REDIRECTS = 2**32 - 1
+
+
 def seconds(value: Any, name: str = "timeout") -> float:
     """``value`` as a timeout in seconds, or why it can't be one."""
     try:
         value = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"{name} must be a number of seconds, not {value!r}") from None
-    if not (value > 0 and math.isfinite(value)):
-        raise ValueError(f"{name} must be a positive, finite number of seconds, not {value!r}")
+    if not 0 < value < _MOST_SECONDS:
+        raise ValueError(
+            f"{name} must be a positive number of seconds below {_MOST_SECONDS:.3g}, not {value!r}"
+        )
     return value
 
 
@@ -117,8 +124,10 @@ def certificates(verify: Verify) -> tuple[bool, bytes | None]:
 
 
 def redirect_limit(n: int | None, name: str = "max_redirects") -> int | None:
-    if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < 0):
-        raise ValueError(f"{name} must be a whole number, 0 or more")
+    if n is not None and (
+        isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= _MOST_REDIRECTS
+    ):
+        raise ValueError(f"{name} must be a whole number from 0 to {_MOST_REDIRECTS}")
     return n
 
 
@@ -399,7 +408,7 @@ def _policy(
     return url, {
         "follow": _follows(allow_redirects, follow_redirects),
         "max_redirects": redirect_limit(max_redirects),
-        "timeout": timeout,
+        "timeout": None if timeout is None else seconds(timeout),
         "auth": None if auth is None else (auth[0], auth[1], None),
     }
 
@@ -430,7 +439,7 @@ class Client:
         self._fetcher = Fetcher(
             profile,
             proxy,
-            timeout,
+            seconds(timeout),
             verify=check,
             max_size=max_size,
             ca_certificates=cas,
@@ -606,7 +615,9 @@ def request(
     how = payload(method, form, json, body)
     url, policy = _policy(url, params, auth, allow_redirects, follow_redirects, max_redirects, None)
     check, cas = certificates(verify)
-    fetcher = Fetcher(profile, proxy, timeout, verify=check, max_size=max_size, ca_certificates=cas)
+    fetcher = Fetcher(
+        profile, proxy, seconds(timeout), verify=check, max_size=max_size, ca_certificates=cas
+    )
     response = fetcher.send_blocking(url, headers=_pairs(headers), referer=referer, **how, **policy)
     return _checked(Page(response), raise_on_block)
 
