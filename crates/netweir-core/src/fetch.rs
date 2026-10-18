@@ -1412,12 +1412,33 @@ impl Fetcher {
                 message: format!("more than {limit} redirects, the last to {url}"),
             });
         }
-        let next = current
+        let mut next = current
             .join(&location)
-            .map_err(|_| FetchError::invalid(format!("redirect to a bad URL {location:?}")))?;
+            .map_err(|_| FetchError::invalid("redirect to a bad URL".to_string()))?;
+        // A login in the URL is never sent: a browser uses one only to
+        // answer a 401's challenge, which Netweir doesn't, and the client
+        // would send it up front. Nor kept, as the archive, the page's URL
+        // and errors would then show it.
+        let login = !next.username().is_empty() || next.password().is_some();
+        let _ = next.set_username("");
+        let _ = next.set_password(None);
         if !matches!(next.scheme(), "http" | "https") {
             return Err(FetchError::invalid(format!(
                 "redirect to an unsupported URL {next}"
+            )));
+        }
+        // The Fetch standard fails a script's redirect to a URL with a
+        // login once the request has gone beyond the page's origin.
+        if login
+            && outgoing.kind == Kind::Fetch
+            && let Some(page) = outgoing.referer_url(&current)
+            && (outgoing.furthest != Relation::SameOrigin
+                || page.origin() != current.origin()
+                || page.origin() != next.origin())
+        {
+            return Err(FetchError::invalid(format!(
+                "a script's request was redirected to {next} with a login in the URL, \
+                 on another origin than its page's"
             )));
         }
         let then = outgoing.redirected(status, &current, &next);

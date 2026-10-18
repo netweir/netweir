@@ -38,6 +38,12 @@ Your own `Authorization` header goes the same way. A login written into
 the URL (`https://ada:secret@intranet.example/`) does the same; `auth`
 wins if you give both.
 
+A login a site writes into a redirect's `Location` isn't sent, and is
+taken out of the URL the request goes on to, so neither the page's URL
+nor an archive shows it. A browser uses one only to answer a 401 asking
+for it, which Netweir doesn't do. A script's request redirected to such
+a URL on another origin than its page's fails, as `fetch()` does.
+
 The `Authorization` header goes where the browser sends it. Chrome puts it
 after `Host` and `Connection` and, when the request has them, after
 `Content-Length` (a POST) and `Cache-Control` (a form, and the page a form

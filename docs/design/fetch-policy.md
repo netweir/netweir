@@ -72,6 +72,16 @@ the first step to another origin, so an A to B to A chain sends it to
 the first A only. Netweir honoured Scrapy's `proxy` and `deltafetch_*`
 meta keys already; these join them.
 
+A login in a redirect's `Location` is stripped from the next URL. The
+Fetch standard turns a URL's login into Authorization only on an
+authentication fetch, the retry after a 401's challenge; Netweir answers
+no challenges, and its client would send the login up front, so it's
+dropped rather than sent. Kept in the URL it would reach the WARC's
+`WARC-Target-URI`, the HAR's `url`, the page's `url` and error messages.
+For a script's request (kind `fetch`) the standard fails the redirect
+when the URL has a login and the request has gone beyond its page's
+origin (CORS mode, or a response tainted by CORS); Netweir does too.
+
 ### Settings
 
 ```python

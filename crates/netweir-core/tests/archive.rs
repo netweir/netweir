@@ -883,3 +883,47 @@ async fn a_login_is_sent_but_left_out_of_the_archive() {
     assert!(!names.contains(&"authorization".to_string()), "{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A login written into a redirect's Location goes neither to the site
+/// nor into the archive, the URL it records included.
+#[tokio::test]
+async fn a_login_in_a_redirects_location_stays_out_of_the_archive() {
+    let dir = temp_dir("location-login");
+    let mut server = netweir_fingerprint::Server::start().await.unwrap();
+    let port = server.port;
+    let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+    options.verify_certificates = false;
+    let (warc, har_path) = (dir.join("login.warc"), dir.join("login.har"));
+    let archive = netweir_core::Archive::new(Some(&warc), Some(&har_path), false).unwrap();
+    archive.start().unwrap();
+    options.archive = Some(archive.clone());
+    let fetcher = netweir_core::Fetcher::new(options).unwrap();
+    let password = format!("pw-{}", std::process::id());
+    let url = format!(
+        "https://localhost:{port}/redirect?to=https://bob:{password}@localhost:{port}/after"
+    );
+    let page = fetcher
+        .send(&url, &netweir_core::Outgoing::navigate(), &[])
+        .await
+        .unwrap();
+    assert!(!page.url.contains(&password), "{}", page.url);
+    for _ in 0..2 {
+        let sent = server.next().await.unwrap();
+        assert!(!sent.headers.iter().any(|(k, _)| k == "authorization"));
+    }
+    archive.close().unwrap();
+    let records = records(&std::fs::read(&warc).unwrap());
+    // Only the hop after the redirect: the first URL holds the login in
+    // its query, as the test wrote it.
+    let after = format!("https://localhost:{port}/after");
+    let targets: Vec<_> = records
+        .iter()
+        .filter(|r| r.kind() == "request")
+        .map(|r| r.uri().to_string())
+        .collect();
+    assert_eq!(targets.len(), 2, "{targets:?}");
+    assert_eq!(targets[1], after);
+    let entries = &har(&har_path)["log"]["entries"];
+    assert_eq!(entries[1]["request"]["url"].as_str(), Some(after.as_str()));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -228,6 +228,37 @@ async fn a_login_left_behind_by_a_redirect_stays_behind_when_it_comes_back() {
     assert_eq!(authorization(&seen[2]), None, "came back with it");
 }
 
+/// A login written into a redirect's Location: a browser uses one only to
+/// answer a 401's challenge, which Netweir doesn't, so it isn't sent, and
+/// it's taken out of the URL the request goes on to.
+#[tokio::test]
+async fn a_login_in_a_redirects_location_is_neither_sent_nor_kept() {
+    let mut server = Server::start().await.unwrap();
+    let port = server.port;
+    let secret = password();
+    let url =
+        format!("https://localhost:{port}/redirect?to=https://bob:{secret}@localhost:{port}/after");
+    let page = fetcher()
+        .send(&url, &Outgoing::navigate(), &[])
+        .await
+        .unwrap();
+    assert_eq!(page.url, format!("https://localhost:{port}/after"));
+    let seen = captures(&mut server, 2).await;
+    assert_eq!(authorization(&seen[1]), None, "sent the Location's login");
+    // A script's fetch() fails on one that leads to another origin.
+    let away =
+        format!("https://localhost:{port}/redirect?to=https://bob:{secret}@127.0.0.1:{port}/after");
+    let script = Outgoing::fetch(
+        "GET",
+        None,
+        None,
+        Some(format!("https://localhost:{port}/")),
+    );
+    let err = fetcher().send(&away, &script, &[]).await.unwrap_err();
+    assert_eq!(err.kind, FetchErrorKind::Invalid, "{err}");
+    assert!(!err.message.contains(&secret), "{err}");
+}
+
 #[tokio::test]
 async fn a_login_for_a_domain_goes_to_that_domain_alone() {
     let mut server = Server::start().await.unwrap();
