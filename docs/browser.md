@@ -438,8 +438,9 @@ Listeners don't carry over: add them to the popup. Closing a page from
 
 A new tab opens in front, and Chrome counts the tab it was opened from
 as hidden, as in a window you're looking at. When you act on the opener
-again (`click`, `fill`, `press`, `hover`, `scroll`), Netweir brings its
-tab back to the front first, and pauses a moment, as you would.
+again (`click`, `fill`, `press`, `hover`, `scroll`, `check`,
+`select_option`, `set_input_files`), Netweir brings its tab back to the
+front first, and pauses a moment, as you would.
 
 Chrome blocks a popup that isn't opened from a click, for Netweir as for
 anyone, so `page.evaluate("window.open('/x')")` opens nothing. Click

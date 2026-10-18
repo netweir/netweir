@@ -648,3 +648,48 @@ async fn a_cancelled_or_broken_download_says_it_didnt_finish() {
     done.store(true, std::sync::atomic::Ordering::SeqCst);
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn choosing_on_an_opener_behind_its_popup_brings_it_back_first() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<a id=a target=_blank href=/popped>open</a>
+<select id=s><option>tea<option>coffee</select>
+<input id=f type=file>
+<script>
+  window.seen = [];
+  for (const id of ['s', 'f']) {
+    document.getElementById(id).addEventListener('change', () => seen.push(id + ' ' + document.visibilityState));
+  }
+</script>"#,
+            ),
+        ),
+        ("/popped", html(POPPED)),
+    ]);
+    let file = std::env::temp_dir().join(format!("netweir-chosen-{}.txt", std::process::id()));
+    std::fs::write(&file, "chosen").unwrap();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#a", None).await.unwrap();
+    popup(&mut events).await;
+    let coffee = netweir_browser::Pick::Labels(vec!["coffee".into()]);
+    page.select_option("#s", &coffee, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    popup(&mut events).await;
+    page.set_input_files("#f", std::slice::from_ref(&file), None)
+        .await
+        .unwrap();
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(
+        page.evaluate("seen").await.unwrap(),
+        json!(["s visible", "f visible"]),
+        "a person switches back to the tab before choosing"
+    );
+    browser.close().await.unwrap();
+}

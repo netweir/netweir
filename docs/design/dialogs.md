@@ -192,8 +192,8 @@ tab in front. A click on the opener then took five seconds, its checks
 waiting on frames that never came. A person switches back to a tab
 before using it, so Netweir does too: the pages of one opener and its
 popups share which of them is in front, and an action that sends input
-(`click`, `fill`, `press`, `hover`, `scroll`, and `check` through
-`click`) on one that isn't sends `Page.bringToFront` first, then waits a
+(`click`, `fill`, `press`, `hover`, `scroll`, `select_option`,
+`set_input_files`, and `check` through `click`) on one that isn't sends `Page.bringToFront` first, then waits a
 moment as a person looks at the tab (the same pause as a dialog's). The
 page sees `visibilitychange` to `visible`, as it would. Nothing is sent
 for a page already in front, so pages without popups see no change.
@@ -330,7 +330,9 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   request; a context's route reaches it too. A click in a frame from
   another site opens one as well, and so does a blank `window.open('')`
   a script writes into. The second click on an opener whose popup is in
-  front brings it back first (`visibilitychange` says so).
+  front brings it back first (`visibilitychange` says so), and so do
+  `select_option` and `set_input_files`, whose `change` sees the tab
+  visible.
 - A download is heard with its name and URL, saved and read; its file is
   in its context's folder, which no other context sees and which goes
   when the context closes. One cancelled, and one whose server hangs

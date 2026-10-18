@@ -667,6 +667,7 @@ impl Frame {
             Pick::Labels(v) => ("label", json!(v)),
             Pick::Indexes(v) => ("index", json!(v)),
         };
+        self.page.to_front().await?;
         let call = format!(
             "__netweir.select({}, {}, {wanted})",
             Value::from(selector),
@@ -751,6 +752,7 @@ impl Frame {
             }
             paths.push(path_text(&path));
         }
+        self.page.to_front().await?;
         let call = format!(
             "__netweir.fileInput({}, {})",
             Value::from(selector),
