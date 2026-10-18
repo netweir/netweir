@@ -810,9 +810,13 @@ impl Page {
         timeout: Option<Duration>,
     ) -> Result<Response> {
         let event = wait.event();
+        let deadline = Instant::now() + self.timeout(timeout);
+        // A page's script that navigates may wait on a frame, or check
+        // that it's seen, first.
+        self.to_front().await?;
         self.until(
             || format!("{event} of a navigation away from {}", after.url),
-            self.timeout(timeout),
+            deadline.saturating_duration_since(Instant::now()),
             |s| s.reached_after(&after.loader, event),
         )
         .await?;
@@ -829,13 +833,16 @@ impl Page {
         timeout: Option<Duration>,
     ) -> Result<Response> {
         let event = wait.event();
+        let deadline = Instant::now() + self.timeout(timeout);
         let (loader, url) = {
             let state = self.state();
             (state.loader.clone(), state.url.clone())
         };
+        // As wait_for_navigation.
+        self.to_front().await?;
         self.until(
             || format!("{event} of the page at {url}"),
-            self.timeout(timeout),
+            deadline.saturating_duration_since(Instant::now()),
             // A page whose first document hasn't committed yet has no
             // loader to wait past: any document's will do.
             |s| {

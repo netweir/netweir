@@ -629,6 +629,9 @@ impl Frame {
             )));
         }
         let deadline = Instant::now() + self.page.timeout(timeout);
+        // Whatever draws it may wait on the page's next frame, which a
+        // tab behind never gets.
+        self.page.to_front().await?;
         let call = format!("__netweir.state({})", Value::from(selector));
         let mut pause = Duration::from_millis(20);
         loop {

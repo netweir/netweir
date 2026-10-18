@@ -439,8 +439,16 @@ Listeners don't carry over: add them to the popup. Closing a page from
 A new tab opens in front, and Chrome counts the tab it was opened from
 as hidden, as in a window you're looking at. When you act on the opener
 again (`click`, `fill`, `press`, `hover`, `scroll`, `check`,
-`select_option`, `set_input_files`), Netweir brings its tab back to the
-front first, and pauses a moment, as you would.
+`select_option`, `set_input_files`), or wait on it (`wait_for`,
+`wait_for_navigation`, `wait_for_load`), Netweir brings its tab back to
+the front first, and pauses a moment, as you would.
+
+Reading it doesn't: `evaluate`, `content`, `parse`, `title` and
+`screenshot` work on a tab behind and leave it there, so reading a
+popup and its opener in turn doesn't flip between them. A tab behind
+gets no animation frames and slow timers, though, so a script you
+`evaluate` there that waits on the page's next frame
+(`requestAnimationFrame`) won't finish until the tab is in front again.
 
 Chrome blocks a popup that isn't opened from a click, for Netweir as for
 anyone, so `page.evaluate("window.open('/x')")` opens nothing. Click

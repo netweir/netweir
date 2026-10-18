@@ -198,6 +198,30 @@ moment as a person looks at the tab (the same pause as a dialog's). The
 page sees `visibilitychange` to `visible`, as it would. Nothing is sent
 for a page already in front, so pages without popups see no change.
 
+A wait on the page itself does the same: `wait_for`,
+`wait_for_navigation` and `wait_for_load`. What they wait for is
+usually the page's own script at work, drawing what a selector finds
+or moving on to the next page, and in a tab behind that script gets no
+animation frames, timers at most once a second, and a `visibilityState`
+of `hidden`, which some challenge pages check before they let a
+visitor on. A person waiting on a page is looking at it. A test has the
+opener, behind its popup, draw an element in its next frame, and
+navigate in its next frame: before, `wait_for` and
+`wait_for_navigation` ran out of time on both.
+
+Reading doesn't: `evaluate`, `content`, `title`, `frames` and
+`screenshot` leave the tab where it is. They run as well behind as in
+front (`Runtime.evaluate` needs no frame, and a screenshot of a tab
+behind came back in 25 ms in a probe), and a program reading a popup
+and its opener in turn would otherwise flip the tabs back and forth,
+paying the pause and sending a `visibilitychange` each time, which is
+both slow and nothing a person reading does. So a script `evaluate`
+runs on a tab behind that awaits `requestAnimationFrame` waits until
+the tab comes to the front, and the user docs say so. The waits on
+what the page fetches (`wait_for_response`, `wait_for_popup`,
+`wait_for_download` and the rest) don't bring it forward either:
+Chrome fetches the same for a tab behind.
+
 **Reading it.** The popup comes to its listeners once it's running, on
 whatever document Chrome shows first. `wait_for_load()` waits until the
 document showing when it was called, or one that replaced it, reaches
@@ -361,7 +385,9 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   a script writes into. The second click on an opener whose popup is in
   front brings it back first (`visibilitychange` says so), and so do
   `select_option` and `set_input_files`, whose `change` sees the tab
-  visible.
+  visible. `wait_for` an element the opener draws in its next frame,
+  and `wait_for_navigation` to a page it moves to in its next frame,
+  bring it back too; an `evaluate` leaves it behind.
 - A download is heard with its name and URL, saved and read; its file is
   in its context's folder, which no other context sees and which goes
   when the context closes. One cancelled, and one whose server hangs

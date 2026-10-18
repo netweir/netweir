@@ -939,3 +939,47 @@ async fn a_download_nobody_holds_is_cancelled() {
     server.done.store(true, std::sync::atomic::Ordering::SeqCst);
     browser.close().await.unwrap();
 }
+
+const DRAWS: &str = r#"<a id=a target=_blank href=/popped>open</a>
+<script>
+  // What a page does in its next frame: draw, or go on to the next page.
+  window.draw = () => requestAnimationFrame(() => document.body.insertAdjacentHTML('beforeend', '<p id=drawn>drawn</p>'));
+  window.leave = () => requestAnimationFrame(() => location.href = '/next');
+</script>"#;
+
+#[tokio::test]
+async fn waiting_on_an_opener_behind_its_popup_brings_it_back_first() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        ("/", html(DRAWS)),
+        ("/popped", html(POPPED)),
+        ("/next", html("<p>next</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    let five = Some(Duration::from_secs(5));
+
+    page.click("#a", None).await.unwrap();
+    popup(&mut events).await;
+    // Read, it stays behind: reading needs no frames.
+    assert_eq!(
+        page.evaluate("document.visibilityState").await.unwrap(),
+        json!("hidden")
+    );
+    page.evaluate("draw()").await.unwrap();
+    page.wait_for("#drawn", "attached", five).await.unwrap();
+
+    page.click("#a", None).await.unwrap();
+    popup(&mut events).await;
+    let before = page.response();
+    page.evaluate("leave()").await.unwrap();
+    let r = page
+        .wait_for_navigation(&before, WaitUntil::Load, five)
+        .await
+        .unwrap();
+    assert!(r.url.ends_with("/next"), "{}", r.url);
+    browser.close().await.unwrap();
+}
