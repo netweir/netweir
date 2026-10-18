@@ -1428,4 +1428,56 @@ mod tests {
         assert_eq!(probes(&extra), 2, "the failure was kept for later launches");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn a_page_that_couldnt_be_attached_to_isnt_waited_for() {
+        use std::io::{BufRead, Write};
+        let (replies, mut chrome) = std::io::pipe().unwrap();
+        let (heard, commands) = std::io::pipe().unwrap();
+        let inner = Arc::new(Inner {
+            conn: Connection::new(replies, commands, None),
+            child: Mutex::new(None),
+            lifeline: Mutex::new(None),
+            profile: None,
+            keep_profile: false,
+            temp_profile: Mutex::new(None),
+            contexts: Mutex::default(),
+            version: String::new(),
+            identity: None,
+            timeout: Duration::from_secs(5),
+            pause: LaunchOptions::default().dialog_pause,
+            proxy_login: None,
+            said: None,
+            pages: Arc::default(),
+            attaching: Arc::default(),
+            downloads: Arc::default(),
+        });
+        // A target that closes between being made and being attached to.
+        std::thread::spawn(move || {
+            let mut heard = std::io::BufReader::new(heard);
+            let mut message = Vec::new();
+            while heard.read_until(0, &mut message).unwrap_or(0) > 0 {
+                message.pop();
+                let command: Value = serde_json::from_slice(&message).unwrap();
+                message.clear();
+                let reply = match command["method"].as_str() {
+                    Some("Target.createTarget") => {
+                        json!({"id": command["id"], "result": {"targetId": "T"}})
+                    }
+                    _ => {
+                        json!({"id": command["id"], "error": {"code": -32000, "message": "No target with given id found"}})
+                    }
+                };
+                let mut reply = serde_json::to_vec(&reply).unwrap();
+                reply.push(0);
+                chrome.write_all(&reply).unwrap();
+            }
+        });
+        assert!(
+            Page::open(inner.clone(), None, false, None, None)
+                .await
+                .is_err()
+        );
+        assert!(inner.attaching.lock().unwrap().is_empty());
+    }
 }

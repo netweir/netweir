@@ -385,16 +385,22 @@ impl Page {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(target.clone());
-        let session = str_of(
-            &browser
-                .call(
-                    "",
-                    "Target.attachToTarget",
-                    json!({"targetId": target, "flatten": true}),
-                )
-                .await?,
-            "sessionId",
-        );
+        let attached = browser
+            .call(
+                "",
+                "Target.attachToTarget",
+                json!({"targetId": target, "flatten": true}),
+            )
+            .await;
+        if attached.is_err() {
+            // No attaching for the browser's session to hear.
+            browser
+                .attaching
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&target);
+        }
+        let session = str_of(&attached?, "sessionId");
         let opening = Opening {
             context,
             owns_context,
