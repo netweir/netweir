@@ -15,8 +15,11 @@ name is an error, not ignored. Times are in seconds.
 
 A password on the command line can be read by anyone on the machine in
 the process list, and stays in your shell's history. Put the login in
-`NETWEIR_HTTP_AUTH` (`user:password`) instead: `netweir crawl` reads it
-there when `-s http_auth` isn't given.
+`NETWEIR_HTTP_AUTH` (`user:password`) instead, and give the crawl its
+domain with `-s http_auth_domain=example.com`. `netweir crawl` reads the
+variable only for a crawl that has a domain and no login of its own, so
+one you export for one project doesn't break, or log in, the others, and
+a spider's own `http_auth` always wins.
 
 ## Fetching
 

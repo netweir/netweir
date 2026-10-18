@@ -184,12 +184,15 @@ def _parse_setting(text: str, fields: dict) -> tuple[str, object]:
     return key, raw
 
 
-def _login_from_environment(overrides: dict, fields: dict) -> None:
-    """``http_auth`` from $NETWEIR_HTTP_AUTH (user:password), unless ``-s``
-    gave one: a password on the command line is there for anyone to read
-    in the process list and the shell's history."""
+def _login_from_environment(base, overrides: dict, fields: dict) -> None:
+    """``http_auth`` from $NETWEIR_HTTP_AUTH (user:password), for a crawl
+    with an ``http_auth_domain`` and no login of its own: a password on the
+    command line is there for anyone to read in the process list and the
+    shell's history. A variable exported for one project's crawls is left
+    alone by the others, and never replaces a spider's login."""
     login = os.environ.get("NETWEIR_HTTP_AUTH")
-    if login and "http_auth" not in overrides:
+    domain = overrides.get("http_auth_domain", base.http_auth_domain)
+    if login and domain and "http_auth" not in overrides and base.http_auth is None:
         overrides["http_auth"] = _parse_setting(f"http_auth={login}", fields)[1]
 
 
@@ -554,7 +557,7 @@ def _prepare(args):
         spider_cls = _project.by_name(args.file)
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
-    _login_from_environment(overrides, fields)
+    _login_from_environment(spider_cls.settings, overrides, fields)
     if args.queue is not None:
         overrides["queue"] = args.queue
     if args.queue_key is not None:

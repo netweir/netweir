@@ -103,7 +103,7 @@ def _quiet_settings(base: Any, overrides: list[str]) -> Any:
 
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     changes = dict(_parse_setting(text, fields) for text in overrides)
-    _login_from_environment(changes, fields)
+    _login_from_environment(base, changes, fields)
     return dataclasses.replace(
         base,
         **{

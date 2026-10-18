@@ -198,8 +198,14 @@ side: every process of a crawl must run this version before its requests
 use these options.
 
 `netweir crawl` reads the crawl's login from `$NETWEIR_HTTP_AUTH`
-(`user:password`) when `-s http_auth=` isn't given, since a password on
-the command line shows in the process list and the shell's history.
+(`user:password`), since a password on the command line shows in the
+process list and the shell's history. It does so only when the settings,
+the spider's with `-s` over them, have an `http_auth_domain` and no
+`http_auth`. A variable exported in a shell is seen by every crawl run
+from it: applied to one with no domain it would stop it at the check
+that a login has one, and applied over a spider's login it would replace
+it. Neither is said: a crawl that doesn't want the variable has no use
+for a line about it.
 
 ## Known limits
 

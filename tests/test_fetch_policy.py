@@ -434,7 +434,8 @@ def test_auth_over_a_meta_login_is_said_once(base, caplog):
     assert len(said) == 1
 
 
-def test_the_command_reads_the_login_from_the_environment(base, tmp_path, monkeypatch):
+def crawl_from_the_command(base, tmp_path, spider_settings="", sets=()):
+    """Who the server saw, crawling /whoami with ``netweir crawl``."""
     from netweir import _cli
 
     port = base.rsplit(":", 1)[1]
@@ -442,18 +443,35 @@ def test_the_command_reads_the_login_from_the_environment(base, tmp_path, monkey
     spider.write_text(
         "import netweir\n"
         "class Who(netweir.Spider):\n"
+        f"    settings = netweir.Settings({spider_settings})\n"
         f"    start_urls = ['http://localhost:{port}/whoami']\n"
         "    def parse(self, page):\n"
         "        yield {'who': page.css('h1::text').get()}\n"
     )
     out = tmp_path / "who.jsonl"
-    monkeypatch.setenv("NETWEIR_HTTP_AUTH", "ada:secret")
     settings = ["obey_robots=false", "obey_tdmrep=false", "throttle=false", "start_delay=0"]
-    args = ["crawl", str(spider), "-o", str(out), "-s", "http_auth_domain=localhost"]
-    for s in settings:
+    args = ["crawl", str(spider), "-o", str(out)]
+    for s in [*settings, *sets]:
         args += ["-s", s]
     assert _cli.main(args) == 0
-    assert json.loads(out.read_text())["who"] == ADA
+    return json.loads(out.read_text())["who"]
+
+
+def test_the_command_reads_the_login_from_the_environment(base, tmp_path, monkeypatch):
+    monkeypatch.setenv("NETWEIR_HTTP_AUTH", "ada:secret")
+    assert crawl_from_the_command(base, tmp_path, sets=["http_auth_domain=localhost"]) == ADA
+
+
+def test_a_login_in_the_environment_is_left_for_crawls_that_want_one(base, tmp_path, monkeypatch):
+    monkeypatch.setenv("NETWEIR_HTTP_AUTH", "ada:secret")
+    # Exported for another project's crawl: this one has no domain for it.
+    assert crawl_from_the_command(base, tmp_path) == "nobody"
+    # The spider's own login stays its own.
+    bob = "http_auth=('bob', 'pw'), http_auth_domain='localhost'"
+    who = "Basic " + base64.b64encode(b"bob:pw").decode()
+    assert crawl_from_the_command(base, tmp_path, bob) == who
+    sets = ["http_auth=bob:pw", "http_auth_domain=localhost"]
+    assert crawl_from_the_command(base, tmp_path, sets=sets) == who
 
 
 def test_a_crawls_login_needs_a_domain():
