@@ -650,6 +650,22 @@ impl Page {
         Ok(())
     }
 
+    /// Tells the page's listeners of a download one of its frames
+    /// started that only the browser's session heard of.
+    pub(crate) fn download_began(&self, params: &Value) {
+        let inner = &self.inner;
+        let browser = &inner.browser;
+        let begun = browser.downloads.begin(
+            &browser.conn,
+            inner.decider.timeout,
+            inner.context.as_deref(),
+            params,
+        );
+        if let Some(download) = begun {
+            self.state().tell(PageEvent::Download(download));
+        }
+    }
+
     /// The runtime the page's own tasks run on.
     pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
         self.inner.decider.runtime.clone()

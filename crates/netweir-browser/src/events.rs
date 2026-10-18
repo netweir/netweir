@@ -348,7 +348,19 @@ impl Drop for DownloadInner {
 #[derive(Default)]
 pub(crate) struct Downloads {
     root: Mutex<Option<crate::launch::TempProfile>>,
-    under_way: Mutex<HashMap<String, Weak<DownloadInner>>>,
+    under_way: Mutex<UnderWay>,
+}
+
+type End = std::result::Result<(), String>;
+
+/// Kept until Chrome says each has ended, a dropped one's too, so that
+/// a download is only ever made once.
+#[derive(Default)]
+struct UnderWay {
+    downloads: HashMap<String, Weak<DownloadInner>>,
+    /// Those whose page is being looked for, and how each ended, if it
+    /// has meanwhile.
+    looking: HashMap<String, Option<End>>,
 }
 
 impl Downloads {
@@ -398,10 +410,12 @@ impl Downloads {
     ) -> Option<Download> {
         let guid = str_of(params, "guid");
         let mut under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
-        under_way.retain(|_, d| d.strong_count() > 0);
-        if under_way.contains_key(&guid) {
+        if under_way.downloads.contains_key(&guid) {
             return None;
         }
+        // Taken in the same lock that progress() ends it in, so an end
+        // that came while its page was looked for isn't missed.
+        let ended = under_way.looking.remove(&guid).flatten();
         let download = Download {
             inner: Arc::new(DownloadInner {
                 file: self.folder_of(context).map(|f| f.join(&guid)),
@@ -411,11 +425,35 @@ impl Downloads {
                 context: context.map(str::to_string),
                 conn: conn.clone(),
                 timeout,
-                done: tokio::sync::watch::Sender::new(None),
+                done: tokio::sync::watch::Sender::new(ended.clone()),
             }),
         };
-        under_way.insert(guid, Arc::downgrade(&download.inner));
+        if ended.is_none() {
+            under_way
+                .downloads
+                .insert(guid, Arc::downgrade(&download.inner));
+        }
         Some(download)
+    }
+
+    /// Whether the download `guid` has been made, or its page is being
+    /// looked for.
+    pub(crate) fn knows(&self, guid: &str) -> bool {
+        let under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
+        under_way.downloads.contains_key(guid) || under_way.looking.contains_key(guid)
+    }
+
+    /// Notes that `guid`'s page is being looked for, until begin() or
+    /// forget().
+    pub(crate) fn look_for(&self, guid: &str) {
+        let mut under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
+        under_way.looking.insert(guid.to_string(), None);
+    }
+
+    /// `guid` is no page's of netweir's.
+    pub(crate) fn forget(&self, guid: &str) {
+        let mut under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
+        under_way.looking.remove(guid);
     }
 
     /// For `Browser.downloadProgress`.
@@ -426,12 +464,14 @@ impl Downloads {
             _ => return,
         };
         let guid = str_of(params, "guid");
-        let download = self
-            .under_way
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&guid)
-            .and_then(|d| d.upgrade());
+        let download = {
+            let mut under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(looking) = under_way.looking.get_mut(&guid) {
+                *looking = Some(end);
+                return;
+            }
+            under_way.downloads.remove(&guid).and_then(|d| d.upgrade())
+        };
         if let Some(download) = download {
             download.done.send_replace(Some(end));
         }
@@ -441,7 +481,11 @@ impl Downloads {
     pub(crate) fn gone(&self) {
         let under_way =
             std::mem::take(&mut *self.under_way.lock().unwrap_or_else(|e| e.into_inner()));
-        for download in under_way.into_values().filter_map(|d| d.upgrade()) {
+        for download in under_way
+            .downloads
+            .into_values()
+            .filter_map(|d| d.upgrade())
+        {
             download
                 .done
                 .send_replace(Some(Err("the browser closed".into())));

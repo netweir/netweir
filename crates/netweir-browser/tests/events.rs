@@ -585,7 +585,8 @@ struct Stalling {
 
 /// Serves `/slow` as a download that sends ten bytes of a million and
 /// then waits, `/broken` as one that sends ten and hangs up, and
-/// `/whole` as ten bytes that are all of it.
+/// `/whole` as ten bytes that are all of it: from `/`, or from a frame
+/// on another site in `/framed`, or from a frame inside that.
 fn stalling_server() -> Stalling {
     use std::io::Read;
     use std::sync::Arc;
@@ -614,9 +615,16 @@ fn stalling_server() -> Stalling {
                 }
                 let length = if path == "/whole" { 10 } else { 1_000_000 };
                 let reply = match path.as_str() {
-                    "/" => {
-                        let body = "<a id=slow href=/slow>slow</a><a id=broken href=/broken>broken</a>\
-                                    <a id=whole href=/whole>whole</a>";
+                    "/" | "/inner" | "/framed" => {
+                        let links = "<a id=slow href=/slow>slow</a><a id=broken href=/broken>broken</a>\
+                                     <a id=whole href=/whole>whole</a>";
+                        let body = match path.as_str() {
+                            // A frame from another site, with one of its
+                            // own site inside it.
+                            "/framed" => "<script>document.write(`<iframe src=\"http://localhost:${location.port}/inner\"></iframe>`)</script>".to_string(),
+                            "/inner" => format!("{links}<iframe src=/></iframe>"),
+                            _ => links.to_string(),
+                        };
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
@@ -981,5 +989,125 @@ async fn waiting_on_an_opener_behind_its_popup_brings_it_back_first() {
         .await
         .unwrap();
     assert!(r.url.ends_with("/next"), "{}", r.url);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_download_from_a_frame_on_another_site_is_its_pages() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = stalling_server();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/framed", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let frames = page.frames().await.unwrap();
+    let on_localhost = |path: &str| {
+        frames
+            .iter()
+            .find(|f| f.url().starts_with("http://localhost:") && f.url().ends_with(path))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no frame at {path}: {:?}",
+                    frames.iter().map(|f| f.url()).collect::<Vec<_>>()
+                )
+            })
+            .clone()
+    };
+    // The frame from another site, and the one of its own site inside it.
+    let (frame, inside) = (on_localhost("/inner"), on_localhost("/"));
+    let mut events = page.listen();
+    for f in [&frame, &inside] {
+        f.click("#whole", None).await.unwrap();
+        let d = download(&mut events).await;
+        assert!(d.url().starts_with("http://localhost:"), "{}", d.url());
+        let path = d.path(None).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"0123456789");
+    }
+    drop(events);
+    for (n, f) in [&frame, &inside].into_iter().enumerate() {
+        f.click("#slow", None).await.unwrap();
+        assert!(
+            hung_up_on(&server, n + 1).await,
+            "a download from a frame, nobody listening, went on"
+        );
+    }
+    server.done.store(true, std::sync::atomic::Ordering::SeqCst);
+    browser.close().await.unwrap();
+}
+
+/// A service worker that answers `/sw-file` with an attachment, and
+/// `/sw-slow` with one that sends ten bytes and never ends, telling the
+/// server `/sw-cancelled` if Chrome gives up on it.
+const WORKER: &str = r#"
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(clients.claim()));
+const attachment = {'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename=sw.bin'};
+self.addEventListener('fetch', e => {
+  if (e.request.url.endsWith('/sw-file')) {
+    e.respondWith(new Response('from the worker', {headers: attachment}));
+  } else if (e.request.url.endsWith('/sw-slow')) {
+    const body = new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode('0123456789')); },
+      cancel() { return fetch('/sw-cancelled'); },
+    });
+    e.respondWith(new Response(body, {headers: attachment}));
+  }
+});"#;
+
+#[tokio::test]
+async fn a_download_a_service_worker_answers_is_its_pages() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<a id=file href=/sw-file>file</a><a id=slow href=/sw-slow>slow</a>
+<script>navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => window.ready = true)</script>"#,
+            ),
+        ),
+        (
+            "/sw.js",
+            Reply {
+                status: 200,
+                headers: vec![("Content-Type", "application/javascript".into())],
+                body: WORKER.into(),
+            },
+        ),
+        ("/sw-cancelled", html("")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    assert_eq!(
+        page.wait_for_function_value("window.ready || null").await,
+        json!(true)
+    );
+    // Loaded again, the worker answers what the page fetches.
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#file", None).await.unwrap();
+    let d = download(&mut events).await;
+    let path = d.path(None).await.unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), b"from the worker");
+    drop(events);
+
+    page.click("#slow", None).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(p, _)| p == "/sw-cancelled")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "a download the worker answered, nobody listening, went on"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     browser.close().await.unwrap();
 }

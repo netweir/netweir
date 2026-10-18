@@ -266,6 +266,48 @@ outlive. A download started in a popup that never showed a document (a
 `target=_blank` link to a file opens one and Chrome closes it again) is
 told to the opener too, where whoever clicked is listening.
 
+**Downloads only the browser's session hears of.** A frame from another
+site, and a frame of its site inside it, run in a process whose session
+doesn't have the Page domain, so `Page.downloadWillBegin` goes nowhere
+Netweir listens; such a download was saved, unheard and never
+cancelled. Chrome also sends `Browser.downloadWillBegin` to the
+browser's session, with the same GUID and the id of the frame that
+started it, for every download, and sends it straight after the page's
+own event when there is one: Chromium's DevTools instrumentation tells
+the frame's page handlers first, then the browser handlers, on one
+connection, and the probes for this milestone saw that order in Chrome
+for Testing 154 and Chrome 155. So by the time the browser's event is
+read, any page's event for the same GUID has been, and a download made
+from it is known; the browser's event then does nothing. One that isn't
+known is matched to the page whose target, or whose frame from another
+site, has that frame id, at once; failing that, each page's frame tree
+is asked for it (a frame inside one from another site is known only to
+its process). Either way the download is made then, told to that page's
+listeners, and cancelled if nobody holds it, as any other.
+
+Asking the frame trees takes round trips, while Chrome goes on with the
+download, and a small file can finish meanwhile. So the GUID is noted
+as being looked for before the asking starts, an end Chrome reports for
+it meanwhile is kept with the note, and the download is made in the
+same lock that `Browser.downloadProgress` takes, already ended if it
+has. Nothing is missed in between. A frame no page of Netweir's has (a
+tab of a browser Netweir connected to) is left alone, the user's
+downloads included.
+
+Downloads are kept in the list of those under way until Chrome says
+each has ended, a dropped one's too, so the browser's event can't make
+a second `Download` for one a listener took and let go.
+
+As Chromium's DevTools code reads, both events are sent from the frame
+that started a download, so one no frame started would come with
+neither. Nothing over the protocol would name it, so nothing could
+cancel it; it would land in its context's
+folder, which goes with the context. None of the ways a page starts a
+download that the tests try is one: a link, a link with a target, a
+frame from another site, a frame inside one, and a service worker's
+answer to a navigation (`Page.downloadWillBegin` comes for that, on the
+page's session) all have their frame.
+
 `path()` waits for the download to finish and returns the file Chrome
 wrote, or raises if it was cancelled or failed. `save_as` copies it,
 `body` reads it, and `failure()` waits and returns `None` or
@@ -342,10 +384,11 @@ Known limit: a listener added to a popup hears from the moment it's
 added; the popup's first requests may already have gone. Routes and
 blocks reach them, since they're the opener's or the context's.
 
-Known limit: which page a download belongs to comes from
+Known limit: which page a download belongs to comes first from
 `Page.downloadWillBegin`, which the protocol marks deprecated in favour
-of the browser's event, whose frame id alone can't name the page. Chrome
-155 still sends it.
+of the browser's event. Chrome 155 still sends it. Were it to stop, the
+browser's event alone would still name the page, a round trip later for
+a frame in the page's own process.
 
 Known limit: for a browser Netweir connected to, each context's download
 folder is a path on this machine. A Chrome running elsewhere (in Docker,
@@ -397,7 +440,10 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   started with nobody listening, or with only a request listener in
   Python, is cancelled at once (its server sees Chrome hang up, and
   its file goes); one held goes on until it's let go or cancelled, and
-  one finished stays.
+  one finished stays. A download from a frame from another site, and
+  from a frame inside that one, is heard by the page's listeners, and
+  cancelled with nobody listening; one a service worker answers is heard
+  too.
 - A browser connected to with a tab already open leaves that tab with
   nobody attached.
 - The opener's timers across a same-site popup, as under Stealth.

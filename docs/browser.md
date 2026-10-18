@@ -482,7 +482,8 @@ raises `netweir.BrowserTimeout` and leaves the download going, so cancel
 it if you've given up on it.
 `wait_for_download` and `expect_download` take a pattern as
 `wait_for_response` does, or none for the next download, and
-`on_download(callback)` hears each one.
+`on_download(callback)` hears each one, frames' downloads included,
+other sites' too.
 
 Each context saves its downloads in a temporary folder of its own,
 removed when the context closes. A page from `browser.new_page()` has a

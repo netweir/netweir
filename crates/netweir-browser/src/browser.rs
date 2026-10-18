@@ -414,6 +414,7 @@ impl Browser {
         let attaching = self.inner.attaching.clone();
         let handler: Handler = Arc::new(move |method, params| match method {
             "Target.attachedToTarget" => popped(&conn, &pages, &attaching, params),
+            "Browser.downloadWillBegin" => unclaimed(&pages, &downloads, params),
             "Browser.downloadProgress" => downloads.progress(params),
             GONE => downloads.gone(),
             _ => {}
@@ -664,6 +665,53 @@ fn popped(
             conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
         }
     }
+}
+
+/// For `Browser.downloadWillBegin`, which Chrome sends straight after
+/// the `Page.downloadWillBegin` of the page's own session, when there is
+/// one. A download none told of was started by a frame from another
+/// site, or by one inside it, whose sessions don't have the Page domain:
+/// it's told to the frame's page, whose listeners would otherwise never
+/// hear of it, and which cancels it if nobody holds it. One that's no
+/// page's of netweir's (a tab of a browser netweir connected to) is
+/// left.
+fn unclaimed(pages: &Mutex<Vec<Weak<PageInner>>>, downloads: &Arc<Downloads>, params: &Value) {
+    let guid = str_of(params, "guid");
+    if downloads.knows(&guid) {
+        return;
+    }
+    let frame = str_of(params, "frameId");
+    let pages: Vec<Page> = {
+        let pages = pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|inner| Page { inner })
+            .collect()
+    };
+    if let Some(page) = pages.iter().find(|page| page.opened(&frame)) {
+        page.download_began(params);
+        return;
+    }
+    // A frame inside one from another site: only that frame's process
+    // knows it, so each page's frames are asked.
+    let Some(runtime) = pages.first().map(Page::runtime) else {
+        return;
+    };
+    downloads.look_for(&guid);
+    let (downloads, params) = (downloads.clone(), params.clone());
+    runtime.spawn(async move {
+        for page in pages {
+            let Ok(frames) = page.frames().await else {
+                continue;
+            };
+            if frames.iter().any(|f| f.id() == frame) {
+                page.download_began(&params);
+                return;
+            }
+        }
+        downloads.forget(&guid);
+    });
 }
 
 impl Inner {
