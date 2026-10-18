@@ -639,13 +639,14 @@ impl Auth {
     }
 
     /// Whether the login goes with a request to `url`, when the request
-    /// started at the origin `started` (None for its first hop). One for
-    /// a domain goes to it and its subdomains, but not over plain HTTP
+    /// started at the origin `started` (None for its first hop), and
+    /// `left` says whether a redirect has taken it to another origin. One
+    /// for a domain goes to it and its subdomains, but not over plain HTTP
     /// once the request started over HTTPS; one without, only to the
-    /// origin the request started at.
-    pub fn applies(&self, url: &Url, started: Option<&str>) -> bool {
+    /// origin the request started at, and not again once it has left it.
+    pub fn applies(&self, url: &Url, started: Option<&str>, left: bool) -> bool {
         let Some(domain) = &self.domain else {
-            return started.is_none_or(|s| s == url.origin().ascii_serialization());
+            return !left;
         };
         let bare = |h: &str| {
             h.trim_end_matches('.')
@@ -726,6 +727,9 @@ pub struct Outgoing {
     tainted: bool,
     /// The origin of the first URL, once a redirect has moved on from it.
     started: Option<String>,
+    /// A redirect has taken it to another origin: Authorization stays
+    /// behind from then on, even if a later one leads back.
+    left: bool,
     /// Its timeout, redirect limit and login, kept across redirects.
     pub policy: Policy,
 }
@@ -749,6 +753,7 @@ impl Outgoing {
             furthest: Relation::SameOrigin,
             tainted: false,
             started: None,
+            left: false,
             policy: Policy::default(),
         }
     }
@@ -871,6 +876,9 @@ impl Outgoing {
                 .clone()
                 .unwrap_or_else(|| from.origin().ascii_serialization()),
         );
+        // As the Fetch standard's HTTP-redirect fetch deletes it: the
+        // moment a redirect crosses to another origin, and for good.
+        next.left = self.left || from.origin() != to.origin();
         // A form or a script's request with no page named came from its
         // own site's root; the request the redirect makes still does.
         if next.referer.is_none() && self.kind != Kind::Navigate {
@@ -896,24 +904,19 @@ impl Outgoing {
         next
     }
 
-    /// The caller's headers for the request to `url`, without what a
+    /// The caller's headers for this hop, without what a
     /// browser drops on the way there: the body's Content-Type once a
-    /// redirect has dropped the body, and Authorization once one has left
-    /// the first origin.
-    pub(crate) fn callers_headers(
-        &self,
-        headers: &[(String, String)],
-        url: &Url,
-    ) -> Vec<(String, String)> {
-        let Some(started) = &self.started else {
+    /// redirect has dropped the body, and Authorization once one has
+    /// crossed to another origin, wherever the next ones lead.
+    pub(crate) fn callers_headers(&self, headers: &[(String, String)]) -> Vec<(String, String)> {
+        if self.started.is_none() {
             return headers.to_vec();
-        };
-        let left = *started != url.origin().ascii_serialization();
+        }
         headers
             .iter()
             .filter(|(k, _)| {
                 !(self.body.is_none() && k.eq_ignore_ascii_case("content-type"))
-                    && !(left && k.eq_ignore_ascii_case("authorization"))
+                    && !(self.left && k.eq_ignore_ascii_case("authorization"))
             })
             .cloned()
             .collect()
@@ -1301,14 +1304,11 @@ impl Fetcher {
         hop: usize,
     ) -> Result<(Url, wreq::Response, Option<Record>), FetchError> {
         let parsed = Url::parse(url).ok();
-        let mut headers = match &parsed {
-            Some(u) => outgoing.callers_headers(headers, u),
-            None => headers.to_vec(),
-        };
+        let mut headers = outgoing.callers_headers(headers);
         // The login, where it may go and the caller sent none of its own;
         // the profile lists Authorization where its browser sends it.
         if let (Some(auth), Some(u)) = (&outgoing.policy.auth, &parsed)
-            && auth.applies(u, outgoing.started.as_deref())
+            && auth.applies(u, outgoing.started.as_deref(), outgoing.left)
             && !headers
                 .iter()
                 .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
@@ -1900,24 +1900,18 @@ mod tests {
             ("Authorization".to_string(), "Bearer x".to_string()),
             ("X-Keep".to_string(), "1".to_string()),
         ];
-        let names = |o: &Outgoing, at: &str| -> Vec<String> {
-            o.callers_headers(&headers, &at.parse().unwrap())
+        let names = |o: &Outgoing| -> Vec<String> {
+            o.callers_headers(&headers)
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect()
         };
         let post = Outgoing::fetch("POST", Some(b"a".to_vec()), None, None);
-        assert_eq!(names(&post, "https://example.com/a").len(), 3);
+        assert_eq!(names(&post).len(), 3);
         let got = post.redirected(303, &start, &"https://example.com/b".parse().unwrap());
-        assert_eq!(
-            names(&got, "https://example.com/b"),
-            ["Authorization", "X-Keep"]
-        );
+        assert_eq!(names(&got), ["Authorization", "X-Keep"]);
         let away = post.redirected(307, &start, &"https://other.org/".parse().unwrap());
-        assert_eq!(
-            names(&away, "https://other.org/"),
-            ["Content-Type", "X-Keep"]
-        );
+        assert_eq!(names(&away), ["Content-Type", "X-Keep"]);
     }
 
     #[test]

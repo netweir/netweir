@@ -32,7 +32,9 @@ netweir.get("https://example.com/list?sort=new", params={"tag": ["a", "b"], "pag
 
 `auth=(user, password)` sends HTTP Basic authentication, up front, with
 the first request. It goes to the URL's own origin, and a redirect to
-another site, or another port, leaves it behind. A login written into
+another site, or another port, leaves it behind for good: a later
+redirect back doesn't pick it up again, as the Fetch standard has it.
+Your own `Authorization` header goes the same way. A login written into
 the URL (`https://ada:secret@intranet.example/`) does the same; `auth`
 wins if you give both.
 

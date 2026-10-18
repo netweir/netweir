@@ -201,6 +201,33 @@ async fn a_login_is_sent_as_basic_to_the_requests_own_origin() {
     assert_eq!(authorization(&seen[1]), None, "leaked to another origin");
 }
 
+/// As the Fetch standard drops Authorization from a request the moment a
+/// redirect takes it to another origin: for good, not until it comes back.
+#[tokio::test]
+async fn a_login_left_behind_by_a_redirect_stays_behind_when_it_comes_back() {
+    let mut server = Server::start().await.unwrap();
+    let port = server.port;
+    let url = format!(
+        "https://localhost:{port}/redirect?to=https://127.0.0.1:{port}/redirect?to=https://localhost:{port}/after"
+    );
+    fetcher().send(&url, &with(login(None)), &[]).await.unwrap();
+    let seen = captures(&mut server, 3).await;
+    assert_eq!(seen.len(), 3);
+    assert_eq!(authorization(&seen[0]), Some(basic().as_str()));
+    assert_eq!(authorization(&seen[1]), None, "leaked to 127.0.0.1");
+    assert_eq!(authorization(&seen[2]), None, "came back with it");
+    // The caller's own Authorization goes the same way.
+    let mine = [("Authorization".to_string(), "Bearer t0ken".to_string())];
+    fetcher()
+        .send(&url, &Outgoing::navigate(), &mine)
+        .await
+        .unwrap();
+    let seen = captures(&mut server, 3).await;
+    assert_eq!(authorization(&seen[0]), Some("Bearer t0ken"));
+    assert_eq!(authorization(&seen[1]), None);
+    assert_eq!(authorization(&seen[2]), None, "came back with it");
+}
+
 #[tokio::test]
 async fn a_login_for_a_domain_goes_to_that_domain_alone() {
     let mut server = Server::start().await.unwrap();
@@ -227,7 +254,7 @@ async fn a_login_for_a_domain_goes_to_that_domain_alone() {
 #[test]
 fn a_domain_covers_its_subdomains_and_nothing_that_merely_ends_like_it() {
     let auth = Auth::new("ada", password(), Some("example.com".into()));
-    let applies = |url: &str| auth.applies(&url::Url::parse(url).unwrap(), None);
+    let applies = |url: &str| auth.applies(&url::Url::parse(url).unwrap(), None, false);
     assert!(applies("https://example.com/"));
     assert!(applies("https://intranet.Example.com./a"));
     assert!(!applies("https://badexample.com/"));

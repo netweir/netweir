@@ -66,9 +66,11 @@ and the Scrapy meta keys, read when the field isn't set:
 | `http_user`, `http_pass`, `http_auth_domain` | `auth`, for that domain and its subdomains (the request's own host without `http_auth_domain`) |
 
 `auth=` on a Request goes to the request's own origin and is dropped when
-a redirect leaves it, as a browser drops a page's Authorization. Netweir
-honoured Scrapy's `proxy` and `deltafetch_*` meta keys already; these join
-them.
+a redirect leaves it, as a browser drops a page's Authorization: for
+good, as the Fetch standard's HTTP-redirect fetch deletes the header at
+the first step to another origin, so an A to B to A chain sends it to
+the first A only. Netweir honoured Scrapy's `proxy` and `deltafetch_*`
+meta keys already; these join them.
 
 ### Settings
 
