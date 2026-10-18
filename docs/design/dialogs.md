@@ -252,6 +252,28 @@ of its own, as every other wait does, rather than wait forever on a
 server that stops sending; giving up leaves the download going, since
 the caller may still want it, and `cancel()` is the way to stop it.
 
+**A download nobody holds is cancelled.** Before this milestone Chrome
+cancelled every download in a context Netweir made; saving them all
+instead, with no listener and no size limit, would let any link fill the
+disk. So a `Download` that's let go before it finishes, every copy of it
+dropped, sends `Browser.cancelDownload` as it goes. With nobody
+listening, the page's handler makes the `Download`, tells nobody and
+drops it, so the download is cancelled the moment it's heard of; a
+listener that ignores downloads (one reading responses, say, or a
+Python page whose listeners want none) drops it the same way, and so
+does whoever takes one and loses interest. Only a download someone
+holds goes on, and a finished one is never touched.
+
+The other way, keeping Chrome's behaviour at `deny` until a listener
+comes, was turned down because it races: the behaviour is a context's
+and listeners are a page's, and `Browser.setDownloadBehavior` takes a
+round trip, so a click sent just after `on_download` could start its
+download under the old behaviour, and one sent just after the last
+listener went could be saved for nobody. Deciding at the download's own
+event can't race: what holds it is known then. The cost is one round
+trip of the download's bytes before the cancel reaches Chrome, which
+the cancel then deletes.
+
 **A download that `goto()` started** fails the navigation with
 `net::ERR_ABORTED`, as it always has, since no document came; the
 download carries on, and a listener hears it.
@@ -345,7 +367,11 @@ Tests in `crates/netweir-browser/tests/events.rs` and
   when the context closes. One cancelled, and one whose server hangs
   up, report `canceled`. Waiting on one whose server sends ten bytes
   and stalls gives up at the browser's timeout, or at one of its own,
-  in Rust and Python, and the download can still be cancelled.
+  in Rust and Python, and the download can still be cancelled. One
+  started with nobody listening, or with only a request listener in
+  Python, is cancelled at once (its server sees Chrome hang up, and
+  its file goes); one held goes on until it's let go or cancelled, and
+  one finished stays.
 - A browser connected to with a tab already open leaves that tab with
   nobody attached.
 - The opener's timers across a same-site popup, as under Stealth.

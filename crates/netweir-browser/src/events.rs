@@ -230,7 +230,9 @@ impl Drop for DialogInner {
 
 /// A file the page downloaded, or is downloading, into its context's own
 /// folder, where Chrome names it after its GUID. It's removed when the
-/// context closes.
+/// context closes. One let go before it finishes, every copy dropped (or
+/// never heard, with nobody listening), is cancelled: nothing could
+/// read it.
 #[derive(Clone)]
 pub struct Download {
     inner: Arc<DownloadInner>,
@@ -307,18 +309,35 @@ impl Download {
     /// Stops it, if it hasn't finished.
     pub async fn cancel(&self) -> Result<()> {
         let inner = &self.inner;
-        let mut params = json!({"guid": inner.guid});
-        if let Some(id) = &inner.context {
-            params["browserContextId"] = Value::from(id.as_str());
-        }
-        match inner
-            .conn
-            .call_within(inner.timeout, "", "Browser.cancelDownload", params)
-            .await
-        {
+        let cancel = inner.conn.call_within(
+            inner.timeout,
+            "",
+            "Browser.cancelDownload",
+            inner.cancel_params(),
+        );
+        match cancel.await {
             // Already over.
             Ok(_) | Err(Error::Protocol { .. }) => Ok(()),
             Err(e) => Err(e),
+        }
+    }
+}
+
+impl DownloadInner {
+    fn cancel_params(&self) -> Value {
+        let mut params = json!({"guid": self.guid});
+        if let Some(id) = &self.context {
+            params["browserContextId"] = Value::from(id.as_str());
+        }
+        params
+    }
+}
+
+impl Drop for DownloadInner {
+    fn drop(&mut self) {
+        if self.done.borrow().is_none() {
+            self.conn
+                .send("", "Browser.cancelDownload", self.cancel_params());
         }
     }
 }

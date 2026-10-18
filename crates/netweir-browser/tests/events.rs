@@ -574,17 +574,31 @@ async fn a_download_is_saved_in_its_contexts_own_folder() {
     assert!(!files[1].exists(), "everything goes with the browser");
 }
 
+/// A server of downloads, to see what Chrome does with them.
+struct Stalling {
+    url: String,
+    /// Lets each `/slow` go.
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// How many `/slow` downloads Chrome hung up on.
+    hung_up: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
 /// Serves `/slow` as a download that sends ten bytes of a million and
-/// then waits, and `/broken` as one that sends ten and hangs up.
-fn stalling_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+/// then waits, `/broken` as one that sends ten and hangs up, and
+/// `/whole` as ten bytes that are all of it.
+fn stalling_server() -> Stalling {
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop = done.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let hung_up = Arc::new(AtomicUsize::new(0));
+    let (stop, hangups) = (done.clone(), hung_up.clone());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let stop = stop.clone();
+            let (stop, hangups) = (stop.clone(), hangups.clone());
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -598,31 +612,49 @@ fn stalling_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) 
                         break;
                     }
                 }
+                let length = if path == "/whole" { 10 } else { 1_000_000 };
                 let reply = match path.as_str() {
                     "/" => {
-                        let body =
-                            "<a id=slow href=/slow>slow</a><a id=broken href=/broken>broken</a>";
+                        let body = "<a id=slow href=/slow>slow</a><a id=broken href=/broken>broken</a>\
+                                    <a id=whole href=/whole>whole</a>";
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         )
                     }
-                    _ => "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
-                          Content-Disposition: attachment; filename=\"big.bin\"\r\n\
-                          Content-Length: 1000000\r\nConnection: close\r\n\r\n0123456789"
-                        .to_string(),
+                    _ => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                         Content-Disposition: attachment; filename=\"big.bin\"\r\n\
+                         Content-Length: {length}\r\nConnection: close\r\n\r\n0123456789"
+                    ),
                 };
                 let _ = stream.write_all(reply.as_bytes());
                 let _ = stream.flush();
                 if path == "/slow" {
-                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                        std::thread::sleep(Duration::from_millis(50));
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(50)))
+                        .unwrap();
+                    while !stop.load(Ordering::SeqCst) {
+                        match stream.read(&mut [0; 64]) {
+                            Ok(0) => {
+                                hangups.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
+                            Err(e)
+                                if e.kind() != std::io::ErrorKind::WouldBlock
+                                    && e.kind() != std::io::ErrorKind::TimedOut =>
+                            {
+                                hangups.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
+                            _ => {}
+                        }
                     }
                 }
             });
         }
     });
-    (url, done)
+    Stalling { url, done, hung_up }
 }
 
 #[tokio::test]
@@ -630,7 +662,7 @@ async fn a_cancelled_or_broken_download_says_it_didnt_finish() {
     let Some(browser) = browser().await else {
         return;
     };
-    let (url, done) = stalling_server();
+    let Stalling { url, done, .. } = stalling_server();
     let page = browser.new_page().await.unwrap();
     page.goto(&url, WaitUntil::Load, None).await.unwrap();
     let mut events = page.listen();
@@ -820,7 +852,7 @@ async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
         ..Default::default()
     })
     .await;
-    let (url, done) = stalling_server();
+    let Stalling { url, done, .. } = stalling_server();
     let page = browser.new_page().await.unwrap();
     page.goto(&url, WaitUntil::Load, None).await.unwrap();
     let mut events = page.listen();
@@ -843,5 +875,67 @@ async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
     d.cancel().await.unwrap();
     assert_eq!(d.failure(None).await.unwrap().as_deref(), Some("canceled"));
     done.store(true, std::sync::atomic::Ordering::SeqCst);
+    browser.close().await.unwrap();
+}
+
+/// Waits up to ten seconds for Chrome to have hung up on `n` downloads.
+async fn hung_up_on(server: &Stalling, n: usize) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while server.hung_up.load(std::sync::atomic::Ordering::SeqCst) < n {
+        if Instant::now() > deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    true
+}
+
+#[tokio::test]
+async fn a_download_nobody_holds_is_cancelled() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = stalling_server();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#whole", None).await.unwrap();
+    let whole = download(&mut events).await;
+    let folder = whole
+        .path(None)
+        .await
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    drop(events);
+
+    // Nobody listening: nothing would ever read it.
+    page.click("#slow", None).await.unwrap();
+    assert!(
+        hung_up_on(&server, 1).await,
+        "a download nobody heard went on"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_dir(&folder).unwrap().count() > 1 {
+        assert!(Instant::now() < deadline, "its file stayed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Held, it goes on; let go unfinished, it's cancelled.
+    let mut events = page.listen();
+    page.click("#slow", None).await.unwrap();
+    let held = download(&mut events).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(server.hung_up.load(std::sync::atomic::Ordering::SeqCst), 1);
+    drop(held);
+    assert!(hung_up_on(&server, 2).await, "a download let go went on");
+
+    // One that's finished is kept, held or not.
+    let path = whole.path(None).await.unwrap();
+    drop(whole);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(path.exists());
+    server.done.store(true, std::sync::atomic::Ordering::SeqCst);
     browser.close().await.unwrap();
 }

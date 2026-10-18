@@ -2,6 +2,7 @@
 NETWEIR_REQUIRE_CHROME is set."""
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -121,8 +122,9 @@ PRICES = b"name,price\ntea,3\n"
 UPLOADS: list[bytes] = []
 SERVED: dict[str, int] = {}
 LOCK = threading.Lock()
-# Lets /stall, which sends ten bytes of a million and waits, go.
-STALLED = threading.Event()
+# How many times Chrome hung up on /stall, which sends ten bytes of a
+# million and waits for that.
+HUNG_UP = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -177,7 +179,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"0123456789")
             self.wfile.flush()
-            STALLED.wait(30)
+            self.connection.settimeout(30)
+            with contextlib.suppress(OSError):
+                self.connection.recv(1)
+            with LOCK:
+                HUNG_UP.append(self.path)
             return
         body = PAGES.get(self.path)
         self.send_response(200 if body else 404)
@@ -724,18 +730,42 @@ async def test_waiting_on_a_stalled_download_gives_up_at_the_timeout(browser, ba
     async with page.expect_download() as info:
         await page.click("#stall")
     download = await info.value
-    try:
-        for waiting in (
-            download.path(timeout=0.3),
-            download.body(timeout=0.3),
-            download.save_as(tmp_path / "big.bin", timeout=0.3),
-            download.failure(timeout=0.3),
-        ):
-            with pytest.raises(netweir.BrowserTimeout, match="download"):
-                await asyncio.wait_for(waiting, 10)
-        assert not (tmp_path / "big.bin").exists()
-        # Giving up on it leaves it going, for cancel() to stop.
-        await download.cancel()
-        assert await download.failure() == "canceled"
-    finally:
-        STALLED.set()
+    for waiting in (
+        download.path(timeout=0.3),
+        download.body(timeout=0.3),
+        download.save_as(tmp_path / "big.bin", timeout=0.3),
+        download.failure(timeout=0.3),
+    ):
+        with pytest.raises(netweir.BrowserTimeout, match="download"):
+            await asyncio.wait_for(waiting, 10)
+    assert not (tmp_path / "big.bin").exists()
+    # Giving up on it leaves it going, for cancel() to stop.
+    await download.cancel()
+    assert await download.failure() == "canceled"
+
+
+async def _hung_up(n, timeout=10.0):
+    """Whether Chrome has hung up on /stall ``n`` times, within ``timeout``."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(HUNG_UP) < n:
+        if asyncio.get_running_loop().time() > deadline:
+            return False
+        await asyncio.sleep(0.05)
+    return True
+
+
+async def test_a_download_nobody_listens_for_is_cancelled(browser, base):
+    page = await browser.new_page()
+    await page.goto(base + "/opens")
+    before = len(HUNG_UP)
+    # Heard, but by nobody who wants downloads.
+    page.on_request(lambda request: None)
+    await page.click("#stall")
+    assert await _hung_up(before + 1), "a download nobody listened for went on"
+    kept = []
+    page.on_download(kept.append)
+    await page.click("#stall")
+    await asyncio.sleep(1)
+    assert len(HUNG_UP) == before + 1, "a download held went on"
+    await kept.pop().cancel()
+    assert await _hung_up(before + 2)

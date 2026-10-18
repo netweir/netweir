@@ -136,6 +136,9 @@ class Network:
         try:
             while (event := await events.next()) is not None:
                 await self._dispatch(event)
+                # Not held while the next is awaited: a download nobody
+                # kept is cancelled once let go.
+                del event
         except asyncio.CancelledError:
             if self._pump is asyncio.current_task():
                 # Not stopped on purpose: the event loop is ending. Its

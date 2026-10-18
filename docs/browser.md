@@ -484,9 +484,15 @@ download still under way when its context closes can keep its folder
 there until the browser closes, since Windows won't delete a file Chrome
 has open.
 
+Nobody listening, nothing downloads. A download that reaches no
+`on_download`, `wait_for_download` or `expect_download` is cancelled as
+it starts, so a link to a 4 GB file can't fill your disk behind your
+back, and so is one you let go of before it finishes. Keep hold of the
+download (or of `save_as()` running on it) for as long as you want it.
+
 `goto()` to a file raises `netweir.FetchError` with `net::ERR_ABORTED`,
-since no page came back. The download happens all the same, and
-`on_download` hears it.
+since no page came back. With a download listener, the download happens
+all the same, and `on_download` hears it.
 
 With `connect=`, the folder is on the machine running Netweir, so a
 Chrome running somewhere else (in Docker, say) can't save there.
