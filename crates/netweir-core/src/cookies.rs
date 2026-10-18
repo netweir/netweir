@@ -518,6 +518,12 @@ impl Jar {
                 cookie.name, cookie.domain
             )
         })?;
+        if !host_only && is_public_suffix(&domain) {
+            return Err(format!(
+                "the cookie {:?} is for {:?}, a public suffix: it would go to every site under it",
+                cookie.name, cookie.domain
+            ));
+        }
         let path = match (cookie.path.starts_with('/'), url) {
             (true, _) => cookie.path.clone(),
             (false, Some(url)) => default_path(url),
@@ -1227,5 +1233,27 @@ mod tests {
         assert_eq!(held(&jar), ["b", "c"]);
         jar.snapshot();
         assert_eq!(held(&jar), ["c"]);
+    }
+
+    #[test]
+    fn a_cookie_given_whole_cant_be_for_a_public_suffix() {
+        let jar = Jar::new();
+        let wide = |domain: &str| Cookie {
+            name: "a".into(),
+            value: "1".into(),
+            domain: domain.into(),
+            path: "/".into(),
+            expires: -1.0,
+            http_only: false,
+            secure: false,
+            same_site: None,
+            partition_key: None,
+        };
+        assert!(jar.add(&wide(".com"), None).is_err());
+        assert!(jar.add(&wide(".github.io"), None).is_err());
+        // A host that is a public suffix may have one of its own.
+        jar.add(&wide("github.io"), None).unwrap();
+        jar.add(&wide(".me.github.io"), None).unwrap();
+        assert_eq!(jar.len(), 2);
     }
 }
