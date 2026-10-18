@@ -693,3 +693,115 @@ async fn choosing_on_an_opener_behind_its_popup_brings_it_back_first() {
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_popup_of_a_guarded_page_is_guarded_from_its_first_request() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<a id=a target=_blank href=/refused>open</a>
+<button id=b onclick="window.open('/refused')">open</button>"#,
+            ),
+        ),
+        ("/refused", html("<p>refused</p>")),
+    ]);
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = asked.clone();
+    let guard: netweir_browser::Guard = std::sync::Arc::new(move |url: String| {
+        log.lock().unwrap().push(url.clone());
+        Box::pin(async move { !url.ends_with("/refused") })
+    });
+    let page = browser.new_guarded_page(guard).await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    for (n, opener) in ["#a", "#b"].into_iter().enumerate() {
+        page.click(opener, None).await.unwrap();
+        popup(&mut events).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|u| u.ends_with("/refused"))
+            .count()
+            <= n
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{opener}: the guard was never asked about the popup's document: {:?}",
+                asked.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let seen: Vec<String> = server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert!(
+        !seen.iter().any(|p| p == "/refused"),
+        "a popup fetched what the guard refuses: {seen:?}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_popup_on_another_site_keeps_its_openers_route() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<button id=b onclick="window.open(`http://localhost:${location.port}/popped`)">open</button>"#,
+            ),
+        ),
+        ("/popped", html(POPPED)),
+        ("/api", html("from the server")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.block(&["image"], &[]).await.unwrap();
+    let mut routes = page.route().await.unwrap();
+    tokio::spawn(async move {
+        while let Some(route) = routes.recv().await {
+            if route.request().url.ends_with("/api") {
+                route.fulfill(200, &[], b"routed").await.unwrap();
+            }
+        }
+    });
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    assert!(server.url.contains("127.0.0.1"), "{}", server.url);
+    let mut events = page.listen();
+    page.click("#b", None).await.unwrap();
+    let popped = popup(&mut events).await;
+    popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    assert!(
+        popped.url().starts_with("http://localhost:"),
+        "{}",
+        popped.url()
+    );
+    let api = popped
+        .wait_for_function_value("document.querySelector('#p').dataset.api")
+        .await;
+    assert_eq!(api, json!("routed"), "the opener's route");
+    let seen: Vec<String> = server
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert!(
+        !seen.iter().any(|p| p == "/api" || p == "/pop.png"),
+        "{seen:?}"
+    );
+    browser.close().await.unwrap();
+}

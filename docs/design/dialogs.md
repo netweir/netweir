@@ -327,7 +327,10 @@ Tests in `crates/netweir-browser/tests/events.rs` and
 - A `target=_blank` link and a `window.open` from a click give a popup
   that loads and reads back with its document's response, carrying the
   opener's route, block and the user agent override from its first
-  request; a context's route reaches it too. A click in a frame from
+  request; a context's route reaches it too, and a `window.open` to
+  another site keeps the opener's route and block. A guarded page's
+  popups, from a link and from `window.open`, are refused what the guard
+  refuses before their first request reaches the server. A click in a frame from
   another site opens one as well, and so does a blank `window.open('')`
   a script writes into. The second click on an opener whose popup is in
   front brings it back first (`visibilitychange` says so), and so do
