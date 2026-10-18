@@ -97,6 +97,10 @@ struct Stored {
     /// When it was made, in seconds since the epoch, for "Lax allowing
     /// unsafe".
     created: f64,
+    /// When it was last sent or set, which decides what goes first when a
+    /// site or the jar holds too many.
+    #[serde(default)]
+    accessed: f64,
     /// Creation order, which orders cookies of equal path length.
     seq: u64,
 }
@@ -145,18 +149,47 @@ impl Stored {
 
 #[derive(Debug, Default)]
 struct Store {
-    /// By domain: the host for a host-only cookie.
-    by_domain: HashMap<String, Vec<Stored>>,
+    /// By site, as Chrome counts cookies: the registrable domain of each
+    /// cookie's domain.
+    by_key: HashMap<String, Vec<Stored>>,
+    /// How many cookies there are, expired ones among them.
+    count: usize,
+    /// No cookie was last used before this, as of the last purge: until a
+    /// month after it, a jar over its limit has nothing a purge would
+    /// drop, so it isn't looked through on every change.
+    earliest: f64,
     seq: u64,
     /// Bumped by every change, for whoever saves the jar.
     changes: u64,
 }
 
+/// The site a cookie of `domain` counts toward: its registrable domain,
+/// or `domain` itself for an address or a name with none.
+fn key_of(domain: &str) -> &str {
+    if is_ip(domain) {
+        return domain;
+    }
+    psl::domain_str(domain).unwrap_or(domain)
+}
+
+/// Chrome's limits: a site keeps 180 cookies, and going over drops it to
+/// 150; the jar keeps 3300, and going over drops those unsent for a
+/// month until it holds 3000.
+const SITE_MAX: usize = 180;
+const SITE_PURGE: usize = 30;
+const JAR_MAX: usize = 3300;
+const JAR_PURGE: usize = 300;
+const SAFE_FROM_GLOBAL_PURGE: f64 = 30.0 * 24.0 * 3600.0;
+
 impl Store {
     /// Puts `cookie` in, replacing the same cookie; one with the same
-    /// value keeps its place in the order, as in Chrome.
-    fn put(&mut self, mut cookie: Stored) {
-        let list = self.by_domain.entry(cookie.domain.clone()).or_default();
+    /// value keeps its place in the order, as in Chrome. Then drops what
+    /// Chrome would: the site's expired cookies, and what's over the
+    /// limits.
+    fn put(&mut self, mut cookie: Stored, now: f64) {
+        let key = key_of(&cookie.domain).to_string();
+        cookie.accessed = now;
+        let list = self.by_key.entry(key.clone()).or_default();
         match list.iter_mut().find(|c| c.same_cookie(&cookie)) {
             Some(old) => {
                 if old.value == cookie.value {
@@ -172,30 +205,74 @@ impl Store {
                 self.seq += 1;
                 cookie.seq = self.seq;
                 list.push(cookie);
+                self.count += 1;
             }
+        }
+        let before = list.len();
+        list.retain(|c| !c.expired(now));
+        if list.len() > SITE_MAX {
+            // Insecure cookies first, each kind least recently used first.
+            list.sort_by(|a, b| {
+                (a.secure, a.accessed, a.seq)
+                    .partial_cmp(&(b.secure, b.accessed, b.seq))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            list.drain(..list.len() - (SITE_MAX - SITE_PURGE));
+        }
+        self.count -= before - list.len();
+        if self.count > JAR_MAX && self.earliest < now - SAFE_FROM_GLOBAL_PURGE {
+            self.purge(now);
         }
         self.changes += 1;
     }
 
+    /// Chrome's purge of a jar over its limit: expired cookies, then, of
+    /// the least recently used it would need to drop, those unsent for a
+    /// month.
+    fn purge(&mut self, now: f64) {
+        self.drop_where(|c| c.expired(now));
+        if self.count <= JAR_MAX {
+            self.earliest = 0.0;
+            return;
+        }
+        let goal = self.count - (JAR_MAX - JAR_PURGE);
+        let mut used: Vec<(f64, u64)> = self
+            .by_key
+            .values()
+            .flatten()
+            .map(|c| (c.accessed, c.seq))
+            .collect();
+        used.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let safe = now - SAFE_FROM_GLOBAL_PURGE;
+        let old = used[..goal].partition_point(|(accessed, _)| *accessed < safe);
+        let gone: std::collections::HashSet<u64> = used[..old].iter().map(|(_, s)| *s).collect();
+        self.earliest = used.get(old).map_or(now, |(accessed, _)| *accessed);
+        if !gone.is_empty() {
+            self.drop_where(|c| gone.contains(&c.seq));
+        }
+    }
+
     fn delete(&mut self, cookie: &Stored) {
-        if let Some(list) = self.by_domain.get_mut(&cookie.domain) {
+        if let Some(list) = self.by_key.get_mut(key_of(&cookie.domain)) {
             let before = list.len();
             list.retain(|c| !c.same_cookie(cookie));
             if list.len() != before {
+                self.count -= before - list.len();
                 self.changes += 1;
             }
         }
     }
 
-    /// Drops what `keep` refuses; how many went.
+    /// Drops what `gone` picks; how many went.
     fn drop_where(&mut self, mut gone: impl FnMut(&Stored) -> bool) -> usize {
         let mut n = 0;
-        for list in self.by_domain.values_mut() {
+        for list in self.by_key.values_mut() {
             let before = list.len();
             list.retain(|c| !gone(c));
             n += before - list.len();
         }
-        self.by_domain.retain(|_, list| !list.is_empty());
+        self.by_key.retain(|_, list| !list.is_empty());
+        self.count -= n;
         if n > 0 {
             self.changes += 1;
         }
@@ -205,11 +282,14 @@ impl Store {
     /// Whether an http response would replace a Secure cookie (RFC
     /// 6265bis 5.7, step 16).
     fn overlays_secure(&self, name: &str, domain: &str, path: &str, now: f64) -> bool {
-        self.by_domain.iter().any(|(d, list)| {
-            (domain_match(d, domain) || domain_match(domain, d))
-                && list.iter().any(|c| {
-                    c.secure && c.name == name && !c.expired(now) && path_match(path, &c.path)
-                })
+        self.by_key.get(key_of(domain)).is_some_and(|list| {
+            list.iter().any(|c| {
+                (domain_match(&c.domain, domain) || domain_match(domain, &c.domain))
+                    && c.secure
+                    && c.name == name
+                    && !c.expired(now)
+                    && path_match(path, &c.path)
+            })
         })
     }
 }
@@ -399,6 +479,7 @@ impl Jar {
             same_site,
             partition,
             created: now,
+            accessed: now,
             seq: 0,
         };
         let mut store = self.lock();
@@ -408,7 +489,7 @@ impl Jar {
         if cookie.expired(now) {
             store.delete(&cookie);
         } else {
-            store.put(cookie);
+            store.put(cookie, now);
         }
         true
     }
@@ -455,13 +536,14 @@ impl Jar {
             same_site: cookie.same_site.as_deref().and_then(SameSite::parse),
             partition: cookie.partition_key.clone(),
             created: now,
+            accessed: now,
             seq: 0,
         };
         let mut store = self.lock();
         if stored.expired(now) {
             store.delete(&stored);
         } else {
-            store.put(stored);
+            store.put(stored, now);
         }
         Ok(())
     }
@@ -471,7 +553,7 @@ impl Jar {
         let now = now();
         let store = self.lock();
         let mut all: Vec<&Stored> = store
-            .by_domain
+            .by_key
             .values()
             .flatten()
             .filter(|c| !c.expired(now))
@@ -483,7 +565,7 @@ impl Jar {
     pub fn len(&self) -> usize {
         let now = now();
         self.lock()
-            .by_domain
+            .by_key
             .values()
             .flatten()
             .filter(|c| !c.expired(now))
@@ -502,7 +584,7 @@ impl Jar {
         let wanted = Wanted::new(domain);
         let store = self.lock();
         let mut found: Vec<&Stored> = store
-            .by_domain
+            .by_key
             .values()
             .flatten()
             .filter(|c| {
@@ -556,19 +638,18 @@ impl Jar {
         let now = now();
         let https = url.scheme() == "https";
         let path = url.path();
-        let store = self.lock();
-        // The host and each domain above it.
-        let mut domains = vec![host.as_str()];
-        if !is_ip(&host) {
-            domains.extend(host.match_indices('.').map(|(i, _)| &host[i + 1..]));
-        }
-        let mut sent: Vec<&Stored> = domains
-            .iter()
-            .filter_map(|d| store.by_domain.get(*d))
-            .flatten()
+        let mut store = self.lock();
+        let Some(list) = store.by_key.get_mut(key_of(&host)) else {
+            return Vec::new();
+        };
+        let mut sent: Vec<&mut Stored> = list
+            .iter_mut()
             .filter(|c| {
-                (!c.host_only || c.domain == host)
-                    && !c.expired(now)
+                (if c.host_only {
+                    c.domain == host
+                } else {
+                    domain_match(&host, &c.domain)
+                }) && !c.expired(now)
                     && path_match(path, &c.path)
                     && (!c.secure || https)
                     && c.partition
@@ -584,7 +665,12 @@ impl Jar {
                 a.seq.cmp(&b.seq)
             })
         });
-        sent.into_iter().map(Stored::pair).collect()
+        sent.into_iter()
+            .map(|c| {
+                c.accessed = now;
+                c.pair()
+            })
+            .collect()
     }
 
     /// A count that changes whenever the jar does.
@@ -592,18 +678,21 @@ impl Jar {
         self.lock().changes
     }
 
-    /// The jar as JSON, everything kept, for `restore`.
+    /// The jar as JSON, everything kept, for `restore`. Expired cookies
+    /// are dropped from the jar on the way. Written after the jar is let
+    /// go, so requests aren't held up by a big one.
     pub fn snapshot(&self) -> String {
         let now = now();
-        let store = self.lock();
-        let mut all: Vec<&Stored> = store
-            .by_domain
-            .values()
-            .flatten()
-            .filter(|c| !c.expired(now))
-            .collect();
+        let mut store = self.lock();
+        // Nothing anyone can see changes, so this isn't a change to save.
+        let changes = store.changes;
+        store.drop_where(|c| c.expired(now));
+        store.changes = changes;
+        let mut all: Vec<Stored> = store.by_key.values().flatten().cloned().collect();
+        let seq = store.seq;
+        drop(store);
         all.sort_by_key(|c| c.seq);
-        serde_json::json!({"seq": store.seq, "cookies": all}).to_string()
+        serde_json::json!({"seq": seq, "cookies": all}).to_string()
     }
 
     /// Replaces what the jar holds with a `snapshot`.
@@ -616,9 +705,18 @@ impl Jar {
         let read: Snapshot = serde_json::from_str(snapshot)
             .map_err(|e| format!("a cookie jar that won't read: {e}"))?;
         let mut store = self.lock();
-        store.by_domain.clear();
-        for c in read.cookies {
-            store.by_domain.entry(c.domain.clone()).or_default().push(c);
+        store.by_key.clear();
+        store.count = read.cookies.len();
+        store.earliest = 0.0;
+        for mut c in read.cookies {
+            if c.accessed == 0.0 {
+                c.accessed = c.created;
+            }
+            store
+                .by_key
+                .entry(key_of(&c.domain).to_string())
+                .or_default()
+                .push(c);
         }
         store.seq = read.seq;
         store.changes += 1;
@@ -1027,5 +1125,107 @@ mod tests {
             serde_json::from_str::<f64>(&serde_json::to_string(&t).unwrap()).unwrap(),
             t
         );
+    }
+
+    /// What the jar holds, expired or not, by name.
+    fn held(jar: &Jar) -> Vec<String> {
+        let mut names: Vec<String> = jar
+            .lock()
+            .by_key
+            .values()
+            .flatten()
+            .map(|c| c.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_site_keeps_180_cookies_losing_the_least_used_insecure_ones_first() {
+        let jar = Jar::new();
+        for i in 0..10 {
+            set(&jar, "https://shop.example/", &format!("s{i}=1; Secure"));
+        }
+        // On a subdomain, for the whole site: one site's all the same.
+        for i in 0..170 {
+            set(
+                &jar,
+                "https://www.shop.example/",
+                &format!("n{i}=1; Domain=shop.example; Path=/p{i}"),
+            );
+        }
+        assert_eq!(jar.len(), 180);
+        // Sent, so no longer the least recently used.
+        assert_eq!(sent(&jar, "https://www.shop.example/p0"), ["n0=1"]);
+        set(
+            &jar,
+            "https://www.shop.example/",
+            "n170=1; Domain=shop.example; Path=/p170",
+        );
+        assert_eq!(jar.len(), 150);
+        let left = held(&jar);
+        for kept in ["s0", "s9", "n0", "n32", "n170"] {
+            assert!(left.contains(&kept.to_string()), "{kept} went");
+        }
+        for gone in ["n1", "n31"] {
+            assert!(!left.contains(&gone.to_string()), "{gone} stayed");
+        }
+        // Another site is counted apart.
+        set(&jar, "https://other.example/", "o=1");
+        assert_eq!(jar.len(), 151);
+    }
+
+    /// A snapshot of `n` cookies over sites of 100, made and last sent
+    /// at `at` but for the first site's, sent now.
+    fn many(n: usize, at: f64) -> String {
+        let cookies: Vec<Stored> = (0..n)
+            .map(|i| Stored {
+                name: format!("c{i}"),
+                value: "1".into(),
+                domain: format!("site{}.example", i / 100),
+                host_only: true,
+                path: "/".into(),
+                expires: None,
+                secure: false,
+                http_only: false,
+                same_site: None,
+                partition: None,
+                created: at,
+                accessed: if i < 100 { now() } else { at },
+                seq: i as u64,
+            })
+            .collect();
+        serde_json::json!({"seq": n, "cookies": cookies}).to_string()
+    }
+
+    #[test]
+    fn past_3300_cookies_those_unsent_for_a_month_go_oldest_first() {
+        let jar = Jar::new();
+        jar.restore(&many(3400, now() - 31.0 * 86400.0)).unwrap();
+        set(&jar, "https://new.example/", "a=1");
+        assert_eq!(jar.len(), 3000);
+        let left = held(&jar);
+        assert!(left.contains(&"a".to_string()));
+        assert!(left.contains(&"c0".to_string()) && left.contains(&"c99".to_string()));
+        assert!(!left.contains(&"c100".to_string()));
+        // Cookies sent within the month all stay, as in Chrome.
+        let jar = Jar::new();
+        jar.restore(&many(3400, now() - 86400.0)).unwrap();
+        set(&jar, "https://new.example/", "a=1");
+        assert_eq!(jar.len(), 3401);
+    }
+
+    #[test]
+    fn expired_cookies_are_dropped_not_kept() {
+        let jar = Jar::new();
+        set(&jar, "https://e.com/", "a=1; Max-Age=600");
+        set(&jar, "https://f.com/", "b=1; Max-Age=600");
+        for list in jar.lock().by_key.values_mut() {
+            list[0].expires = Some(now() - 1.0);
+        }
+        set(&jar, "https://e.com/", "c=1");
+        assert_eq!(held(&jar), ["b", "c"]);
+        jar.snapshot();
+        assert_eq!(held(&jar), ["c"]);
     }
 }

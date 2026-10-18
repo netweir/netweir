@@ -61,6 +61,16 @@ and what Chrome does where the draft leaves room:
   `Secure` cookie only from https, and an http response can't replace
   one. `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no Domain and
   Path=/. `SameSite=None` needs `Secure`.
+- **Limits.** Chrome's: a site (a registrable domain, subdomains and
+  all) keeps 180 cookies, and one more drops it to 150, insecure cookies
+  first and each kind least recently sent or set first. Past 3300 in
+  the jar, the least recently used are dropped down to 3000, but only
+  those unsent for a month, so a jar whose cookies are all in use may
+  hold more, as Chrome's does. Expired cookies go when their site
+  changes and when the jar is saved. The jar is written out after its
+  lock is let go: a 50,000-cookie jar saved over and over kept a request
+  waiting at most 9 ms, against 4.4 s when it was written under the
+  lock.
 - **Sending.** Domain, path, `Secure` (https only) and expiry, ordered as
   each browser orders them: longest path first, then oldest first
   (Chrome, Firefox) or newest first (Safari), as the profiles already
