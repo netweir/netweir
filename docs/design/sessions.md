@@ -152,7 +152,10 @@ an address needs the jar's requests to name a proxy of their own
 
 A browser request in a named jar opens its page with the jar's cookies,
 and when the page closes (after the callback, which may have logged in
-through it), the page's cookies go back into the jar. A browser request
+through it), what changed in the page's context goes back into the jar:
+cookies Chrome set or changed, and the removal of the jar's cookies it
+deleted. A cookie Chrome left as it started isn't written back, so a
+value the jar took in over HTTP while the page was open stays. A browser request
 in the crawl's own jar keeps today's behaviour: a page of its own, with
 only the request's own `cookies`, and on a block passed to Chrome, the
 cookies Chrome earns go to the host's next session.

@@ -164,9 +164,12 @@ rotation picks. If a site ties a login to an address, give the jar's
 requests a proxy of their own with `Request(proxy=...)`.
 
 A browser request in a named jar opens its Chrome page with the jar's
-cookies, and when the page closes, after the callback, Chrome's cookies
-go back into the jar. So a login done by hand in Chrome inside a callback
-carries on over HTTP:
+cookies, and when the page closes, after the callback, what changed in
+Chrome goes back into the jar: the cookies it set or changed, and the
+removal of those it deleted, so a logout in Chrome is a logout. A cookie
+Chrome left alone isn't put back, so one the jar got over HTTP while the
+page was open keeps its newer value. A login done by hand in Chrome
+inside a callback carries on over HTTP:
 
 ```python
 async def start(self):

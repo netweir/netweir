@@ -242,6 +242,63 @@ async fn a_blocked_request_gets_through_in_chrome_and_hands_its_cookies_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_named_jar_gets_back_only_what_changed_in_chrome() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<p>in</p>"))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    let jar = c.jar(Some("ada"));
+    let cookie = |name: &str, value: &str| netweir_core::cookies::Cookie {
+        name: name.into(),
+        value: value.into(),
+        domain: "127.0.0.1".into(),
+        path: "/".into(),
+        expires: -1.0,
+        http_only: false,
+        secure: false,
+        same_site: None,
+        partition_key: None,
+    };
+    for name in ["sid", "kept", "logged_in"] {
+        jar.add(&cookie(name, "1"), None).unwrap();
+    }
+    c.submit(CrawlRequest {
+        cookies: netweir_core::RequestCookies {
+            jar: Some("ada".into()),
+            ..Default::default()
+        },
+        ..request(1, site.url("/"), true)
+    });
+    let events = drain(&c).await;
+    let Some(Event::Fetched {
+        page: Some(page), ..
+    }) = main(&events)
+    else {
+        panic!("{events:?}");
+    };
+    // In Chrome, a logout and a new cookie; meanwhile, over HTTP, the site
+    // gives the session a new id.
+    page.page()
+        .evaluate(
+            "() => { document.cookie = 'logged_in=; max-age=0; path=/'; \
+             document.cookie = 'fresh=1; path=/'; }",
+        )
+        .await
+        .unwrap();
+    jar.add(&cookie("sid", "2"), None).unwrap();
+    page.close().await;
+    let mut left: Vec<(String, String)> =
+        jar.all().into_iter().map(|c| (c.name, c.value)).collect();
+    left.sort();
+    let pair = |n: &str, v: &str| (n.to_string(), v.to_string());
+    assert_eq!(
+        left,
+        [pair("fresh", "1"), pair("kept", "1"), pair("sid", "2")]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrome() {
     let Some(_chrome) = chrome().await else {
         return;

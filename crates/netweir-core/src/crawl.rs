@@ -438,16 +438,49 @@ struct Live {
     /// Told when the page's slot frees, so a browser request waiting for
     /// one can start.
     shared: std::sync::Weak<Shared>,
-    /// The named jar the page's cookies go back to when it closes.
-    jar: Option<Arc<Jar>>,
+    /// The named jar the page's cookies go back to when it closes, and
+    /// the cookies the page started with.
+    jar: Option<(Arc<Jar>, Vec<Cookie>)>,
 }
 
-/// Puts what the page's context holds into `jar`, as the page closes.
-async fn give_back(page: &netweir_browser::Page, jar: &Jar) {
-    if let Ok(cookies) = page.cookies().await {
-        for c in &cookies {
+/// Puts what changed in the page's context since it opened with `seed`
+/// into `jar`, as the page closes: the cookies Chrome set or changed, and
+/// the removal of those of `seed` it deleted (a logout). A cookie Chrome
+/// left as it was stays out, so one the jar took in over HTTP meanwhile
+/// isn't put back to the value the page started with.
+async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &[Cookie]) {
+    let Ok(now) = page.cookies().await else {
+        return;
+    };
+    let same = |a: &Cookie, b: &Cookie| {
+        a.name == b.name
+            && a.domain == b.domain
+            && a.path == b.path
+            && a.partition_key == b.partition_key
+    };
+    for c in &now {
+        let unchanged = seed.iter().any(|s| {
+            same(s, c)
+                && s.value == c.value
+                && s.secure == c.secure
+                && s.http_only == c.http_only
+                && s.same_site == c.same_site
+                // Chrome keeps expiry times to the microsecond.
+                && (s.expires - c.expires).abs() < 1.0
+        });
+        if !unchanged {
             let _ = jar.add(c, None);
         }
+    }
+    for s in seed.iter().filter(|s| !now.iter().any(|c| same(s, c))) {
+        // An expired cookie removes the one it matches.
+        let _ = jar.add(
+            &Cookie {
+                expires: 0.0,
+                ..s.clone()
+            },
+            None,
+        );
     }
 }
 
@@ -471,10 +504,10 @@ impl LivePage {
     }
 
     pub async fn close(&self) {
-        if let Some(jar) = &self.inner.jar
+        if let Some((jar, seed)) = &self.inner.jar
             && !self.inner.page.is_closed()
         {
-            give_back(&self.inner.page, jar).await;
+            give_back(&self.inner.page, jar, seed).await;
         }
         let _ = self.inner.page.close().await;
         self.inner.free();
@@ -487,8 +520,8 @@ impl Drop for Live {
         if !self.page.is_closed() {
             let (page, jar) = (self.page.clone(), self.jar.take());
             self.runtime.spawn(async move {
-                if let Some(jar) = jar {
-                    give_back(&page, &jar).await;
+                if let Some((jar, seed)) = jar {
+                    give_back(&page, &jar, &seed).await;
                 }
                 let _ = page.close().await;
             });
@@ -3303,7 +3336,7 @@ async fn render(
             permit: Mutex::new(Some(permit)),
             runtime: shared.runtime.clone(),
             shared: Arc::downgrade(&shared),
-            jar,
+            jar: jar.map(|jar| (jar, seed)),
         }),
     };
     let timeout = shared.options.timeout;
