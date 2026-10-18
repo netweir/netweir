@@ -22,6 +22,12 @@ shop.example and every subdomain, `"shop.example"` to that host alone.
 session. Playwright's spelling (`httpOnly`, `sameSite`, `partitionKey`)
 is read too, so cookies from a Playwright context go straight in.
 
+One difference from Playwright: its `add_cookies` reads `"domain":
+"shop.example"` as the domain and its subdomains. Netweir keeps that
+cookie the host's alone, in `set_cookies` and `cookies.add` alike, as
+the dot says in the cookies Chrome itself reports. Write
+`".shop.example"` for the domain-wide one.
+
 ## A client's cookies
 
 ```python
@@ -50,7 +56,9 @@ async with netweir.Client(storage_state="state.json") as client:
 `storage_state` takes the path or the dict itself. The file is
 Playwright's storage state format, so one Playwright saved loads here, and
 the other way round. It's written readable by you alone (permissions
-0600), since anyone holding it is logged in as you.
+0600), since anyone holding it is logged in as you. On Windows the file
+takes its folder's permissions instead, so keep it in a folder only you
+can open.
 
 ## Log in with Chrome, crawl over HTTP
 
@@ -194,7 +202,8 @@ own `cookies` and nothing else.
 
 - A crawl with a checkpoint saves its jars as it goes, and a resumed crawl
   is still logged in. Requests still waiting keep their own cookies. The
-  checkpoint file is made readable by you alone, as it holds the cookies.
+  checkpoint file is made readable by you alone, as it holds the cookies
+  (on Windows it takes its folder's permissions).
 - With `workers`, every jar stays in the main process, where requests are
   sent, so callbacks in any worker see the same session.
 - In a crawl shared by several machines, a request's `cookies` and its

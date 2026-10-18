@@ -533,7 +533,8 @@ with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`,
 `same_site` and `partition_key`. `await page.set_cookies([...])` takes the
 same dicts, or Playwright's (`httpOnly`, `sameSite`); `name`, `value` and
 `domain` are required. A domain with a leading dot is the domain's and its
-subdomains'; without one, the cookie stays that host's alone.
+subdomains'; without one, the cookie stays that host's alone, where
+Playwright's `add_cookies` would make it the domain's.
 
 `await context.storage_state(path="state.json")` saves the context's
 cookies and localStorage in Playwright's format, and
