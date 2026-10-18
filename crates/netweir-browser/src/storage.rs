@@ -143,10 +143,15 @@ pub fn cookie_of(c: &Value) -> Result<Cookie> {
 
 /// Writes `bytes` to `path` through a new file, made readable by its owner
 /// alone before anything is in it, then renamed over `path`: what it
-/// holds is never readable by others on the way. Known limit: on Windows
-/// the file takes its folder's permissions.
+/// holds is never readable by others on the way. Each save has a file of
+/// its own, so saves to one path at once each land whole, the last
+/// renamed winning. Known limit: on Windows the file takes its folder's
+/// permissions.
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::hash::{BuildHasher, Hasher};
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SAVES: AtomicU64 = AtomicU64::new(0);
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -155,7 +160,6 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -163,11 +167,27 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let _ = std::fs::remove_file(&temp);
-    let written = options.open(&temp).and_then(|mut f| {
-        f.write_all(bytes)?;
-        f.sync_all()
-    });
+    // The process, a count and a random part: unique among this
+    // process's saves, and another's on a shared disk. A name that's
+    // taken all the same is passed over, never removed.
+    let mut tries = 0;
+    let (temp, mut file) = loop {
+        let random = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        let temp = dir.join(format!(
+            ".{name}.{}.{}.{random:016x}.tmp",
+            std::process::id(),
+            SAVES.fetch_add(1, Ordering::Relaxed)
+        ));
+        match options.open(&temp) {
+            Ok(file) => break (temp, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 16 => tries += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
     match written.and_then(|()| std::fs::rename(&temp, path)) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -351,6 +371,50 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         // Nothing left behind but the file.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saves_to_one_file_at_once_each_land_whole() {
+        let dir = std::env::temp_dir().join(format!("netweir-state-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let reader = s.spawn(|| {
+                let mut torn = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let whole = bytes.len() == 1 << 16 && bytes.iter().all(|b| *b == bytes[0]);
+                        torn += usize::from(!whole);
+                    }
+                }
+                torn
+            });
+            let writers: Vec<_> = (0..8u8)
+                .map(|i| {
+                    let path = &path;
+                    s.spawn(move || {
+                        let bytes = vec![b'a' + i; 1 << 16];
+                        (0..40)
+                            .map(|_| write_private(path, &bytes))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let results: Vec<_> = writers
+                .into_iter()
+                .flat_map(|w| w.join().unwrap())
+                .collect();
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let torn = reader.join().unwrap();
+            for written in results {
+                written.unwrap();
+            }
+            assert_eq!(torn, 0, "a read found a file half written");
+        });
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
