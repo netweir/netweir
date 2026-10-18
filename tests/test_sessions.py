@@ -182,6 +182,34 @@ def test_named_jars_keep_two_logins_apart_in_one_crawl(base):
     assert sorted(carried("/echo")) == ["user=ada", "user=bob"]
 
 
+def test_deltafetch_skips_a_page_only_for_the_jar_it_gave_items_in(base, tmp_path):
+    delta = str(tmp_path / "delta")
+
+    class Spider(netweir.Spider):
+        users = ("ada",)
+
+        async def start(self):
+            for user in self.users:
+                yield netweir.Request(f"{base}/login?user={user}", meta={"cookiejar": user})
+
+        def parse(self, page):
+            if "/login" in page.url:
+                yield netweir.Request(
+                    f"{base}/echo", meta={"cookiejar": page.meta["cookiejar"]}, callback=self.me
+                )
+
+        def me(self, page):
+            yield {"cookie": json.loads(page.text)["cookie"]}
+
+    run(Spider, deltafetch=delta)
+    assert carried("/echo") == ["user=ada"]
+    Handler.seen.clear()
+    Spider.users = ("ada", "bob")
+    run(Spider, deltafetch=delta)
+    # Ada's page gave items last time; Bob's is his own and still to do.
+    assert carried("/echo") == ["user=bob"]
+
+
 def test_jar_names_are_told_apart_by_type_as_in_scrapy(base):
     class Spider(netweir.Spider):
         async def start(self):

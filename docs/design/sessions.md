@@ -126,7 +126,11 @@ Request(url, meta={"dont_merge_cookies": True})
   two jars, as in Scrapy); `None` is the crawl's own. Like the proxy and
   the callbacks, it travels with the request, so a page's
   `page.follow()` keeps the jar only if the callback passes the meta on,
-  as in Scrapy.
+  as in Scrapy. A named jar is part of the request's fingerprint, so
+  the duplicate filter, the cache and deltafetch tell one user's request
+  from another's for the same page: Bob is never served Ada's cached
+  page. The crawl's own jar keeps the fingerprint as it was, so existing
+  caches, checkpoints and deltafetch records stay valid.
 - `meta["dont_merge_cookies"]` leaves the jar out of this request: none of
   its cookies are sent and nothing the response sets is kept. Unlike
   Scrapy, which then ignores `Request.cookies`, Netweir still sends the

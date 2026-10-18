@@ -1457,19 +1457,24 @@ impl Crawler {
     }
 
     /// A request's 16-byte key in the deltafetch record: `delta_key`
-    /// when given, else its fingerprint. None for a URL that can't be
-    /// crawled.
+    /// when given, else its fingerprint in the cookie jar `jar` names (as
+    /// `submit` takes it). None for a URL that can't be crawled.
     #[staticmethod]
-    #[pyo3(signature = (method, url, body=None, delta_key=None))]
+    #[pyo3(signature = (method, url, body=None, delta_key=None, jar=None))]
     fn delta_key<'py>(
         py: Python<'py>,
         method: &str,
         url: &str,
         body: Option<Vec<u8>>,
         delta_key: Option<Vec<u8>>,
+        jar: Option<&str>,
     ) -> Option<Bound<'py, PyBytes>> {
-        netweir_core::deltafetch::key(method, url, body.as_deref(), delta_key.as_deref())
-            .map(|k| PyBytes::new(py, &k))
+        let key = netweir_core::deltafetch::key(method, url, body.as_deref(), delta_key.as_deref());
+        key.map(|k| match delta_key {
+            Some(_) => k,
+            None => netweir_core::canonical::in_jar(k, jar),
+        })
+        .map(|k| PyBytes::new(py, &k))
     }
 
     /// Records that the pages with these keys (from `delta_key`) gave

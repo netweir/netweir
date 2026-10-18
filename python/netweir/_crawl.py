@@ -985,9 +985,10 @@ class _Run:
         self.unrecorded: list[str] = []
         self.delta = self.settings.deltafetch is not None
         #: With deltafetch: the page the running callback was given, as
-        #: (method, url, body, deltafetch_key) or None, and whether it has
-        #: given a delivered item yet. It's recorded only if the callback
-        #: finishes: one that raises part way may have had more to give.
+        #: (method, url, body, deltafetch_key, cookie jar) or None, and
+        #: whether it has given a delivered item yet. It's recorded only if
+        #: the callback finishes: one that raises part way may have had more
+        #: to give.
         self.from_page: tuple | None = None
         self.gave = False
         #: Keys of pages that gave items, until their items are on disk.
@@ -2630,15 +2631,16 @@ class _Run:
 
     def delta_of(self, request: Request | None) -> tuple | None:
         """The request as the engine keys it for deltafetch: (method, url,
-        body, deltafetch_key). None without deltafetch, or for a request
-        that leaves it out."""
+        body, deltafetch_key, cookie jar). None without deltafetch, or for
+        a request that leaves it out."""
         if not self.delta or request is None:
             return None
-        delta = _delta_meta(request.meta or {})
+        meta = request.meta or {}
+        delta = _delta_meta(meta)
         if delta is None or not delta[0]:
             return None
         body = request.body.encode() if isinstance(request.body, str) else request.body
-        return (request.method, request.url, body, delta[1])
+        return (request.method, request.url, body, delta[1], _jar_name(meta))
 
     def page_gave_item(self) -> None:
         """The running callback's page has given a delivered item."""

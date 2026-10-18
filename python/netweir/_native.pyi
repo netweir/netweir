@@ -479,7 +479,11 @@ class Crawler:
     def settle(self, items: list[str], state: str) -> None: ...
     @staticmethod
     def delta_key(
-        method: str, url: str, body: bytes | None = None, delta_key: bytes | None = None
+        method: str,
+        url: str,
+        body: bytes | None = None,
+        delta_key: bytes | None = None,
+        jar: str | None = None,
     ) -> bytes | None: ...
     def produced(
         self, keys: list[bytes], files: list[tuple[str, int, str | None, bool]]

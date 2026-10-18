@@ -85,6 +85,24 @@ pub fn fingerprint_with(method: &str, url: &str, body: Option<&[u8]>) -> Option<
     Some(out)
 }
 
+/// `fp` for a request in the cookie jar `jar` names: another visitor's
+/// request for the same page is another request, to the duplicate filter,
+/// the cache and deltafetch alike. The crawl's own jar (None or "") keeps
+/// `fp` as it is, so files written before named jars stay valid.
+pub fn in_jar(fp: Fingerprint, jar: Option<&str>) -> Fingerprint {
+    let Some(jar) = jar.filter(|j| !j.is_empty()) else {
+        return fp;
+    };
+    let digest = Sha256::new()
+        .chain_update(fp)
+        .chain_update(b"\0cookiejar\0")
+        .chain_update(jar.as_bytes())
+        .finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

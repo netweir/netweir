@@ -151,6 +151,12 @@ def logged_in(self, page):
 
 Any JSON value names a jar, and `1` and `"1"` are two jars, as in Scrapy.
 
+Each jar's requests are their own to the duplicate filter, the cache and
+deltafetch. Bob's request for a page Ada already fetched still goes out,
+and never comes back with Ada's page from the cache. Requests without a
+jar keep the keys they always had, so an existing cache or checkpoint
+stays valid.
+
 A named jar is yours: a block never empties it. A blocked site still gets
 a new session (another proxy, and a fresh jar for requests without a
 named one), and requests in a named jar go out through whatever proxy the

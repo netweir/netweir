@@ -319,3 +319,109 @@ async fn a_requests_own_cookies_stay_with_its_host_through_a_redirect() {
     // A redirect on the same host still carries them.
     assert_eq!(carried(&site, "/me"), ["sid=secret; more=2", "solo=3"]);
 }
+
+#[tokio::test]
+async fn each_named_jar_fetches_a_page_another_jar_has_seen() {
+    let site = Site::start(site_pages()).await;
+    let c = crawler(settings());
+    let filtered = |id, path: &str, jar: Option<&str>| {
+        let mut r = match jar {
+            Some(jar) => in_jar(id, site.url(path), jar),
+            None => request(id, site.url(path)),
+        };
+        r.dont_filter = false;
+        r
+    };
+    one_by_one(
+        &c,
+        vec![
+            in_jar(1, site.url("/login/ada"), "ada"),
+            in_jar(2, site.url("/login/bob"), "bob"),
+            filtered(3, "/me", Some("ada")),
+            filtered(4, "/me", Some("bob")),
+            filtered(5, "/me", Some("ada")),
+            filtered(6, "/me", None),
+        ],
+    )
+    .await;
+    assert_eq!(carried(&site, "/me"), ["user=ada", "user=bob", ""]);
+    assert_eq!(c.stats().duplicates, 1);
+}
+
+#[tokio::test]
+async fn the_cache_keeps_each_named_jars_pages_apart() {
+    let site = Site::start(site_pages()).await;
+    let dir = std::env::temp_dir().join(format!("netweir-jar-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cached = || CrawlSettings {
+        cache: Some(dir.join("cache.sqlite3")),
+        ..settings()
+    };
+    let c = crawler(cached());
+    one_by_one(
+        &c,
+        vec![
+            in_jar(1, site.url("/login/ada"), "ada"),
+            in_jar(2, site.url("/me"), "ada"),
+        ],
+    )
+    .await;
+    c.close().unwrap();
+    drop(c);
+    let c = crawler(cached());
+    one_by_one(
+        &c,
+        vec![
+            in_jar(3, site.url("/login/bob"), "bob"),
+            in_jar(4, site.url("/me"), "bob"),
+            in_jar(5, site.url("/me"), "ada"),
+        ],
+    )
+    .await;
+    // Bob's page is his own, not Ada's from the cache; Ada's comes from it.
+    assert_eq!(carried(&site, "/me"), ["user=ada", "user=bob"]);
+    assert_eq!(c.stats().cache_hits, 1);
+    c.close().unwrap();
+    drop(c);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn deltafetch_knows_a_page_by_its_jar() {
+    use netweir_core::canonical::in_jar as keyed;
+    use netweir_core::{Submitted, deltafetch::key};
+    let site = Site::start(site_pages()).await;
+    let dir = std::env::temp_dir().join(format!("netweir-jar-delta-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let delta = || CrawlSettings {
+        deltafetch: Some(dir.join("deltafetch.sqlite3")),
+        ..settings()
+    };
+    let me = site.url("/me");
+    let c = crawler(delta());
+    let ada = keyed(key("GET", &me, None, None).unwrap(), Some("ada"));
+    c.produced(&[ada], &[]).unwrap();
+    c.close().unwrap();
+    drop(c);
+    let c = crawler(delta());
+    let filtered = |id, jar: Option<&str>| {
+        let mut r = match jar {
+            Some(jar) => in_jar(id, me.clone(), jar),
+            None => request(id, me.clone()),
+        };
+        r.dont_filter = false;
+        r
+    };
+    assert_eq!(c.submit(filtered(1, Some("ada"))), Submitted::Delta);
+    assert_eq!(c.submit(filtered(2, Some("bob"))), Submitted::Queued);
+    assert_eq!(c.submit(filtered(3, None)), Submitted::Queued);
+    // The crawl's own jar keeps the key it always had.
+    assert_eq!(
+        keyed(key("GET", &me, None, None).unwrap(), None),
+        key("GET", &me, None, None).unwrap()
+    );
+    drain(&c).await;
+    c.close().unwrap();
+    drop(c);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

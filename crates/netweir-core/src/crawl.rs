@@ -14,7 +14,7 @@ use url::Url;
 
 use crate::archive::Archive;
 use crate::cache::{Cache, Policy, Redirect};
-use crate::canonical::{Fingerprint, fingerprint, fingerprint_with};
+use crate::canonical::{Fingerprint, fingerprint, fingerprint_with, in_jar};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
 use crate::classify::{BlockKind, Outcome, classify};
 use crate::cookies::Jar;
@@ -1411,7 +1411,8 @@ impl Crawler {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let id = request.id;
         let o = &request.outgoing;
-        let fp = fingerprint_with(&o.method, &request.url, o.body.as_deref());
+        let fp = fingerprint_with(&o.method, &request.url, o.body.as_deref())
+            .map(|fp| in_jar(fp, request.cookies.jar.as_deref()));
         let bad_proxy = request
             .proxy
             .as_deref()
@@ -1464,7 +1465,9 @@ impl Crawler {
         // Below every download's, which an item is waiting for.
         request.priority = request.priority.min(DOWNLOAD_PRIORITY - 1);
         let o = &request.outgoing;
-        let Some(fp) = fingerprint_with(&o.method, &request.url, o.body.as_deref()) else {
+        let Some(fp) = fingerprint_with(&o.method, &request.url, o.body.as_deref())
+            .map(|fp| in_jar(fp, request.cookies.jar.as_deref()))
+        else {
             return Submitted::Invalid;
         };
         let Ok(parsed) = Url::parse(&request.url) else {
@@ -2798,6 +2801,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
         (Ok(Hop::Redirect(next, then, cookies)), _) => {
             // A download's redirect isn't a page the crawl has seen.
             let seen = fingerprint_with(&then.method, &next, then.body.as_deref())
+                .map(|fp| in_jar(fp, q.request.cookies.jar.as_deref()))
                 .filter(|_| !state.is_download(&q));
             if let Some(fp) = seen {
                 state.seen.insert(fp);
@@ -3123,6 +3127,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
             // Chrome follows redirects itself: where it ended up counts as
             // seen, as a redirect the HTTP client followed would.
             if let Some(fp) = fingerprint("GET", &response.url)
+                .map(|fp| in_jar(fp, q.request.cookies.jar.as_deref()))
                 && state.seen.insert(fp)
                 && let Some(cp) = &shared.checkpoint
             {
