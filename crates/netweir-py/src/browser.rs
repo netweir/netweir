@@ -1665,17 +1665,32 @@ impl BrowserDownload {
     }
 
     /// Waits for it to finish, and resolves to the path of the file.
-    /// Raises BrowserError if it didn't finish.
-    fn path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Raises BrowserError if it didn't finish, and BrowserTimeout if it
+    /// hasn't after `timeout` seconds (the browser's if None), leaving it
+    /// going.
+    #[pyo3(signature = (timeout=None))]
+    fn path<'py>(&self, py: Python<'py>, timeout: Option<f64>) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
         let download = self.inner.clone();
-        crate::aio::future_into_py(py, async move { download.path().await.map_err(raise) })
+        crate::aio::future_into_py(
+            py,
+            async move { download.path(timeout).await.map_err(raise) },
+        )
     }
 
-    /// Waits for it to finish, and copies the file to `path`.
-    fn save_as<'py>(&self, py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
+    /// Waits for it to finish, as `path` does, and copies the file to
+    /// `path`.
+    #[pyo3(signature = (path, timeout=None))]
+    fn save_as<'py>(
+        &self,
+        py: Python<'py>,
+        path: PathBuf,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
         let download = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let from = download.path().await.map_err(raise)?;
+            let from = download.path(timeout).await.map_err(raise)?;
             tokio::task::spawn_blocking(move || std::fs::copy(from, path))
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))??;
@@ -1683,11 +1698,14 @@ impl BrowserDownload {
         })
     }
 
-    /// Waits for it to finish, and resolves to the file's bytes.
-    fn body<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Waits for it to finish, as `path` does, and resolves to the file's
+    /// bytes.
+    #[pyo3(signature = (timeout=None))]
+    fn body<'py>(&self, py: Python<'py>, timeout: Option<f64>) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
         let download = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let from = download.path().await.map_err(raise)?;
+            let from = download.path(timeout).await.map_err(raise)?;
             let body = tokio::task::spawn_blocking(move || std::fs::read(from))
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))??;
@@ -1697,10 +1715,15 @@ impl BrowserDownload {
 
     /// Waits for it to end, and resolves to None if it finished, or why
     /// it didn't ("canceled", for one cancelled or whose connection
-    /// broke).
-    fn failure<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// broke). Raises BrowserTimeout as `path` does.
+    #[pyo3(signature = (timeout=None))]
+    fn failure<'py>(&self, py: Python<'py>, timeout: Option<f64>) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
         let download = self.inner.clone();
-        crate::aio::future_into_py(py, async move { Ok(download.failure().await) })
+        crate::aio::future_into_py(
+            py,
+            async move { download.failure(timeout).await.map_err(raise) },
+        )
     }
 
     /// Stops it, if it hasn't finished.

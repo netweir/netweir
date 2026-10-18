@@ -260,26 +260,37 @@ impl Download {
         &self.inner.suggested_filename
     }
 
-    /// Waits for it to end: Ok once the whole file is there, or why not
-    /// ("canceled", which is also what Chrome says of one whose
-    /// connection broke).
-    async fn finished(&self) -> std::result::Result<(), String> {
-        let mut done = self.inner.done.subscribe();
-        match done.wait_for(Option::is_some).await {
-            Ok(end) => end.clone().expect("waited for"),
-            Err(_) => Err("the browser closed".into()),
+    /// Waits for it to end, for no longer than `timeout` (the browser's
+    /// if None): Ok once the whole file is there, or why not ("canceled",
+    /// which is also what Chrome says of one whose connection broke).
+    async fn finished(&self, timeout: Option<Duration>) -> Result<std::result::Result<(), String>> {
+        let inner = &self.inner;
+        let mut done = inner.done.subscribe();
+        let ended = tokio::time::timeout(
+            timeout.unwrap_or(inner.timeout),
+            done.wait_for(Option::is_some),
+        );
+        match ended.await {
+            Ok(Ok(end)) => Ok(end.clone().expect("waited for")),
+            Ok(Err(_)) => Ok(Err("the browser closed".into())),
+            Err(_) => Err(Error::Timeout(format!(
+                "waiting for the download of {} to finish",
+                inner.url
+            ))),
         }
     }
 
-    /// Waits for it to end; None if it finished, or why it didn't.
-    pub async fn failure(&self) -> Option<String> {
-        self.finished().await.err()
+    /// Waits for it to end; None if it finished, or why it didn't. Gives
+    /// up after `timeout`, the browser's if None, and leaves it going.
+    pub async fn failure(&self, timeout: Option<Duration>) -> Result<Option<String>> {
+        Ok(self.finished(timeout).await?.err())
     }
 
-    /// Waits for it to finish, and returns the file Chrome wrote.
-    pub async fn path(&self) -> Result<PathBuf> {
+    /// Waits for it to finish, and returns the file Chrome wrote. Gives up
+    /// after `timeout`, the browser's if None, and leaves it going.
+    pub async fn path(&self, timeout: Option<Duration>) -> Result<PathBuf> {
         let inner = &self.inner;
-        if let Err(why) = self.finished().await {
+        if let Err(why) = self.finished(timeout).await? {
             return Err(Error::Gone(format!(
                 "the download of {} didn't finish: {why}",
                 inner.url

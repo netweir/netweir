@@ -466,6 +466,12 @@ download to finish, and raise `netweir.BrowserError` if it didn't.
 `await download.failure()` waits too, and gives `None`, or `"canceled"`:
 that's what Chrome reports for a download that was cancelled and for one
 whose connection broke. `await download.cancel()` stops one.
+
+Like every other wait, none of them waits longer than the browser's
+`timeout`. A big file on a slow line can need more, so each takes
+`timeout=` in seconds: `save_as(path, timeout=600)`, say. Running out
+raises `netweir.BrowserTimeout` and leaves the download going, so cancel
+it if you've given up on it.
 `wait_for_download` and `expect_download` take a pattern as
 `wait_for_response` does, or none for the next download, and
 `on_download(callback)` hears each one.

@@ -47,10 +47,10 @@ async with page.expect_download("**/*.csv") as info:
     await page.click("a.export")
 download = await info.value
 download.url, download.suggested_filename
-await download.path()           # waits for it to finish; the file Chrome wrote
-await download.save_as(path)
-await download.body()           # bytes
-await download.failure()        # None, or why it didn't finish
+await download.path(timeout=None)     # waits for it to finish; the file Chrome wrote
+await download.save_as(path, timeout=None)
+await download.body(timeout=None)     # bytes
+await download.failure(timeout=None)  # None, or why it didn't finish
 await download.cancel()
 ```
 
@@ -247,6 +247,10 @@ wrote, or raises if it was cancelled or failed. `save_as` copies it,
 `body` reads it, and `failure()` waits and returns `None` or
 `"canceled"`, which is what Chrome reports for a cancelled download and
 for one whose connection broke. `cancel()` sends `Browser.cancelDownload`.
+Each of the waits gives up after the browser's timeout, or a `timeout`
+of its own, as every other wait does, rather than wait forever on a
+server that stops sending; giving up leaves the download going, since
+the caller may still want it, and `cancel()` is the way to stop it.
 
 **A download that `goto()` started** fails the navigation with
 `net::ERR_ABORTED`, as it always has, since no document came; the
@@ -339,7 +343,9 @@ Tests in `crates/netweir-browser/tests/events.rs` and
 - A download is heard with its name and URL, saved and read; its file is
   in its context's folder, which no other context sees and which goes
   when the context closes. One cancelled, and one whose server hangs
-  up, report `canceled`.
+  up, report `canceled`. Waiting on one whose server sends ten bytes
+  and stalls gives up at the browser's timeout, or at one of its own,
+  in Rust and Python, and the download can still be cancelled.
 - A browser connected to with a tab already open leaves that tab with
   nobody attached.
 - The opener's timers across a same-site popup, as under Stealth.

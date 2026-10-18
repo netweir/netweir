@@ -105,6 +105,7 @@ PAGES = {
     "/opens": b"""<!DOCTYPE html><title>opens</title>
 <a id=a target=_blank href="/popped">open</a>
 <a id=dl href="/prices.csv">prices</a>
+<a id=stall href="/stall">stalls</a>
 """,
     "/popped": b"""<!DOCTYPE html><title>popped</title><p id=p>popped up</p>
 <script>
@@ -120,6 +121,8 @@ PRICES = b"name,price\ntea,3\n"
 UPLOADS: list[bytes] = []
 SERVED: dict[str, int] = {}
 LOCK = threading.Lock()
+# Lets /stall, which sends ten bytes of a million and waits, go.
+STALLED = threading.Event()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -165,6 +168,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(PRICES)))
             self.end_headers()
             self.wfile.write(PRICES)
+            return
+        if self.path == "/stall":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="big.bin"')
+            self.send_header("Content-Length", "1000000")
+            self.end_headers()
+            self.wfile.write(b"0123456789")
+            self.wfile.flush()
+            STALLED.wait(30)
             return
         body = PAGES.get(self.path)
         self.send_response(200 if body else 404)
@@ -703,3 +716,26 @@ async def test_a_download_is_heard_saved_and_goes_with_its_page(browser, base, t
         other = await browser.new_page()
         await other.goto(base + "/opens")
         await other.wait_for_download(timeout=0.5)
+
+
+async def test_waiting_on_a_stalled_download_gives_up_at_the_timeout(browser, base, tmp_path):
+    page = await browser.new_page()
+    await page.goto(base + "/opens")
+    async with page.expect_download() as info:
+        await page.click("#stall")
+    download = await info.value
+    try:
+        for waiting in (
+            download.path(timeout=0.3),
+            download.body(timeout=0.3),
+            download.save_as(tmp_path / "big.bin", timeout=0.3),
+            download.failure(timeout=0.3),
+        ):
+            with pytest.raises(netweir.BrowserTimeout, match="download"):
+                await asyncio.wait_for(waiting, 10)
+        assert not (tmp_path / "big.bin").exists()
+        # Giving up on it leaves it going, for cancel() to stop.
+        await download.cancel()
+        assert await download.failure() == "canceled"
+    finally:
+        STALLED.set()

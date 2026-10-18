@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::time::{Duration, Instant};
 
 use common::{Reply, browser, html, serve};
-use netweir_browser::{Dialog, Download, Page, PageEvent, WaitUntil};
+use netweir_browser::{Dialog, Download, Error, Page, PageEvent, WaitUntil};
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -544,8 +544,8 @@ async fn a_download_is_saved_in_its_contexts_own_folder() {
         let d = download(&mut events).await;
         assert_eq!(d.suggested_filename(), "prices.csv");
         assert_eq!(d.url(), format!("{}/prices.csv", server.url));
-        assert_eq!(d.failure().await, None);
-        let path = d.path().await.unwrap();
+        assert_eq!(d.failure(None).await.unwrap(), None);
+        let path = d.path(None).await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), FILE.as_bytes());
         files.push(path);
         contexts.push(context);
@@ -567,7 +567,7 @@ async fn a_download_is_saved_in_its_contexts_own_folder() {
     page.click("#new", None).await.unwrap();
     let d = download(&mut events).await;
     assert_eq!(
-        std::fs::read(d.path().await.unwrap()).unwrap(),
+        std::fs::read(d.path(None).await.unwrap()).unwrap(),
         FILE.as_bytes()
     );
     browser.close().await.unwrap();
@@ -638,13 +638,16 @@ async fn a_cancelled_or_broken_download_says_it_didnt_finish() {
     page.click("#slow", None).await.unwrap();
     let d = download(&mut events).await;
     d.cancel().await.unwrap();
-    assert_eq!(d.failure().await.as_deref(), Some("canceled"));
-    assert!(d.path().await.is_err());
+    assert_eq!(d.failure(None).await.unwrap().as_deref(), Some("canceled"));
+    assert!(d.path(None).await.is_err());
 
     page.click("#broken", None).await.unwrap();
     let d = download(&mut events).await;
-    assert!(d.failure().await.is_some(), "a broken download failed");
-    assert!(d.path().await.is_err());
+    assert!(
+        d.failure(None).await.unwrap().is_some(),
+        "a broken download failed"
+    );
+    assert!(d.path(None).await.is_err());
     done.store(true, std::sync::atomic::Ordering::SeqCst);
     browser.close().await.unwrap();
 }
@@ -803,5 +806,42 @@ async fn a_popup_on_another_site_keeps_its_openers_route() {
         !seen.iter().any(|p| p == "/api" || p == "/pop.png"),
         "{seen:?}"
     );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        timeout: Duration::from_secs(2),
+        ..Default::default()
+    })
+    .await;
+    let (url, done) = stalling_server();
+    let page = browser.new_page().await.unwrap();
+    page.goto(&url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#slow", None).await.unwrap();
+    let d = download(&mut events).await;
+
+    // The browser's timeout, as for any other wait.
+    let started = Instant::now();
+    let waited = tokio::time::timeout(Duration::from_secs(10), d.path(None))
+        .await
+        .expect("waited on a stalled download past the browser's timeout");
+    assert!(matches!(waited, Err(Error::Timeout(_))), "{waited:?}");
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    // Or one of its own.
+    let started = Instant::now();
+    let failure = d.failure(Some(Duration::from_millis(300))).await;
+    assert!(matches!(failure, Err(Error::Timeout(_))), "{failure:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // Giving up on it leaves it going, for cancel() to stop.
+    d.cancel().await.unwrap();
+    assert_eq!(d.failure(None).await.unwrap().as_deref(), Some("canceled"));
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
     browser.close().await.unwrap();
 }
