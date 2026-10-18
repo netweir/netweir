@@ -308,8 +308,10 @@ async fn at_origin(
                     .await;
             }
         });
+        let origin = origin.trim_end_matches('/');
         page.goto(&format!("{origin}/"), WaitUntil::Load, None)
             .await?;
+        landed(origin, page.evaluate("location.origin").await?.as_str())?;
         page.evaluate(&js).await
     }
     .await;
@@ -317,9 +319,35 @@ async fn at_origin(
     result
 }
 
+/// Whether the page asked for `origin` is at it (`at`, its
+/// `location.origin`): HSTS or HTTPS-Upgrades can move an http origin to
+/// https, whose localStorage is another's.
+fn landed(origin: &str, at: Option<&str>) -> Result<()> {
+    match at {
+        Some(at) if at.eq_ignore_ascii_case(origin) => Ok(()),
+        at => Err(Error::Invalid(format!(
+            "localStorage for {origin} can't be reached: Chrome took the page to {}, \
+             a different origin (HSTS or HTTPS-Upgrades can do that to an http one)",
+            at.unwrap_or("nowhere")
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localstorage_is_only_read_at_the_origin_asked_for() {
+        assert!(landed("http://shop.example", Some("http://shop.example")).is_ok());
+        assert!(landed("http://Shop.Example", Some("http://shop.example")).is_ok());
+        let moved = landed("http://shop.example", Some("https://shop.example")).unwrap_err();
+        assert!(
+            moved.to_string().contains("https://shop.example"),
+            "{moved}"
+        );
+        assert!(landed("http://shop.example", None).is_err());
+    }
 
     #[test]
     fn playwrights_json_and_netweirs_keys_read_the_same() {
