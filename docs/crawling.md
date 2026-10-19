@@ -692,7 +692,11 @@ the same engine as the pages, so everything that keeps the crawl polite
 and unblocked applies to them too: robots.txt and TDMRep, each site's
 delay and `per_domain`, the session's cookies, the proxies and their
 rotation, retries, the cache, the WARC and HAR files, and
-`max_response_size`. A file goes out as a page's own script would ask for
+`max_response_size`. A file is fetched in the cookie jar of the request
+whose page gave the item (its `meta["cookiejar"]`, or the crawl's own),
+so a file behind a login comes with the login; a named jar's files are
+stored under the SHA-1 of the jar's name and the URL, apart from other
+users' copies. A file goes out as a page's own script would ask for
 it, and an image as an `<img>` on the page would, with the page as the
 Referer:
 

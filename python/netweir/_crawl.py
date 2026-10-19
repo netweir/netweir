@@ -1012,6 +1012,9 @@ class _Run:
         #: The URL of the page items being handled come from, when there is
         #: one: the Referer netweir.files sends.
         self.page_url: str | None = None
+        #: The cookie jar of the request that page came from (as the engine
+        #: names it): the one netweir.files downloads in.
+        self.page_jar: str | None = None
         #: Whether the item being handled has met a validate stage yet, and
         #: failed one: each is counted once an item.
         self.validating = False
@@ -1143,11 +1146,14 @@ class _Run:
             self.found[name] = found
         return found
 
-    async def download(self, url: str, kind: str, referer: str | None) -> tuple | None:
+    async def download(
+        self, url: str, kind: str, referer: str | None, jar: str | None = None
+    ) -> tuple | None:
         """Fetches a file an item links to through the engine, ahead of the
-        pages and outside them: for netweir.files and netweir.images,
-        which the crawl waits for. See the engine's ``download``."""
-        return await self.engine.download(next(self.ids), url, kind, referer)
+        pages and outside them, in the cookie jar ``jar`` names (None for
+        the crawl's own): for netweir.files and netweir.images, which the
+        crawl waits for. See the engine's ``download``."""
+        return await self.engine.download(next(self.ids), url, kind, referer, jar=jar)
 
     def resume(self) -> dict[str, int] | None:
         """Queues what an earlier run of this crawl left unfinished, and
@@ -1916,6 +1922,7 @@ class _Run:
             self.source, self.position = f"rule{rule}:{url}", 0
             self.page = None
             self.page_url = url
+            self.page_jar = None
             # The page a rule's link led to, fetched as a plain GET. Its
             # one item is all it gives.
             self.from_page = ("GET", url, None, None) if self.delta else None
@@ -2409,6 +2416,7 @@ class _Run:
         self.source = source.url if isinstance(source, (Page, Request)) else url
         self.page = source if isinstance(source, Page) else None
         self.page_url = self.page.url if self.page is not None else None
+        self.page_jar = _jar_of(self.page.request) if self.page is not None else None
         # An errback's or on_block's items came with no page to skip.
         self.from_page = self.delta_of(self.page.request) if self.page is not None else None
         self.gave = False
@@ -2486,6 +2494,7 @@ class _Run:
         # The page stayed in the worker.
         self.page = None
         self.page_url = page_url
+        self.page_jar = _jar_of(request)
         self.from_page = self.delta_of(request)
         self.gave = False
         self.position = 0
@@ -2755,6 +2764,18 @@ def _jar_name(meta: dict[str, Any]) -> str | None:
         raise TypeError(
             f'meta["cookiejar"] must be a JSON value (a str, a number...), not {type(key).__name__}'
         ) from None
+
+
+def _jar_of(request: Request | None) -> str | None:
+    """The jar ``request``'s ``meta["cookiejar"]`` names, or None for the
+    crawl's own (or a name that isn't JSON, which never got as far as a
+    page)."""
+    if request is None:
+        return None
+    try:
+        return _jar_name(request.meta or {})
+    except TypeError:
+        return None
 
 
 def _restored(

@@ -274,7 +274,7 @@ class _Media:
         self._run: Any = None
         #: Each URL's download in this crawl, by URL: one for every item
         #: that names it, made the first time one does.
-        self._tasks: dict[str, asyncio.Future] = {}
+        self._tasks: dict[tuple[str, str | None], asyncio.Future] = {}
 
     def __repr__(self) -> str:
         return f"netweir.{type(self).__name__}({self.store.url!r})"
@@ -297,12 +297,15 @@ class _Media:
         if isinstance(urls, str):
             urls = [urls]
         referer = self._referer()
+        # In the jar of the request the item's page came from, so a file
+        # behind a login comes with the login; once per URL and jar.
+        jar = self._run.page_jar
         tasks = []
         for url in urls:
-            task = self._tasks.get(url)
+            task = self._tasks.get((url, jar))
             if task is None:
-                task = asyncio.ensure_future(self._get(url, referer))
-                self._tasks[url] = task
+                task = asyncio.ensure_future(self._get(url, referer, jar))
+                self._tasks[(url, jar)] = task
             tasks.append(task)
         results = await asyncio.gather(*tasks)
         # Copies: a later stage changing one item's entry leaves another's.
@@ -319,7 +322,9 @@ class _Media:
         self._run.counts["files_failed"] += 1
         log.warning("%s: not downloaded: %s", url, why)
 
-    async def _get(self, url: str, referer: str | None) -> dict[str, Any] | None:
+    async def _get(
+        self, url: str, referer: str | None, jar: str | None = None
+    ) -> dict[str, Any] | None:
         """The URL's entry, or None when it failed, which is logged and
         counted. Never raises (but for cancelling): a store or a Pillow that
         fails in a way of its own (a cloud SDK's error, a MemoryError) fails
@@ -329,19 +334,24 @@ class _Media:
             self._failed(str(url), "not an absolute http(s) URL")
             return None
         try:
-            return await self._fetch(url, referer)
+            return await self._fetch(url, referer, jar)
         except Exception as e:  # noqa: BLE001 - logged and counted; see above
             self._failed(url, f"{type(e).__name__}: {e}")
             return None
 
-    async def _fetch(self, url: str, referer: str | None) -> dict[str, Any] | None:
-        name = hashlib.sha1(url.encode()).hexdigest()
+    async def _fetch(
+        self, url: str, referer: str | None, jar: str | None = None
+    ) -> dict[str, Any] | None:
+        # A named jar's file is kept apart: behind a login, each user's may
+        # differ. The crawl's own keeps Scrapy's name, the URL's SHA-1.
+        key = url if jar is None else f"{jar}\0{url}"
+        name = hashlib.sha1(key.encode()).hexdigest()
         stored = await asyncio.to_thread(self._fresh, name, url)
         if stored is not None:
             path, checksum = stored
             self._run.counts["files_uptodate"] += 1
             return {"url": url, "path": path, "checksum": checksum, "status": "uptodate"}
-        outcome = await self._run.download(url, self.kind, referer)
+        outcome = await self._run.download(url, self.kind, referer, jar)
         if outcome is None:
             self._failed(url, "the crawl stopped first")
             return None

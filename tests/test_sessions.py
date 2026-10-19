@@ -243,6 +243,29 @@ def test_deltafetch_skips_a_page_only_for_the_jar_it_gave_items_in(base, tmp_pat
     assert carried("/echo") == ["user=bob"]
 
 
+def test_an_items_files_download_in_the_jar_of_the_page_it_came_from(base, tmp_path):
+    class Spider(netweir.Spider):
+        pipelines = [netweir.files(tmp_path)]
+
+        async def start(self):
+            for user in ("ada", "bob"):
+                yield netweir.Request(f"{base}/login?user={user}", meta={"cookiejar": user})
+
+        def parse(self, page):
+            if "/login" in page.url:
+                user = page.meta["cookiejar"]
+                yield netweir.Request(
+                    f"{base}/echo?page={user}", meta={"cookiejar": user}, callback=self.item
+                )
+
+        def item(self, page):
+            # Both users' items name the same file: each fetches its own.
+            yield {"file_urls": [f"{base}/file.txt"]}
+
+    run(Spider)
+    assert sorted(carried("/file.txt")) == ["user=ada", "user=bob"]
+
+
 def test_jar_names_are_told_apart_by_type_as_in_scrapy(base):
     class Spider(netweir.Spider):
         async def start(self):

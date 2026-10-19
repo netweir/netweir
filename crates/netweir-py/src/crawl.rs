@@ -1221,7 +1221,7 @@ impl Crawler {
     /// - ("dropped", "robots" | "tdm")
     /// - ("blocked", vendor, kind, Response)
     /// - None, if the crawl stopped first
-    #[pyo3(signature = (id, url, kind="fetch", referer=None, headers=None, proxy=None))]
+    #[pyo3(signature = (id, url, kind="fetch", referer=None, headers=None, proxy=None, jar=None))]
     #[allow(clippy::too_many_arguments)]
     fn download<'py>(
         &self,
@@ -1232,6 +1232,7 @@ impl Crawler {
         referer: Option<String>,
         headers: Option<Vec<(String, String)>>,
         proxy: Option<String>,
+        jar: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let outgoing = match kind {
             "fetch" => netweir_core::Outgoing::fetch("GET", None, None, referer),
@@ -1257,7 +1258,10 @@ impl Crawler {
             retry_post: false,
             proxy,
             delta_key: netweir_core::DeltaKey::Off,
-            cookies: Default::default(),
+            cookies: netweir_core::RequestCookies {
+                jar,
+                ..Default::default()
+            },
         };
         let done = self.engine.core.download(request);
         crate::aio::future_into_py(py, async move {
