@@ -690,7 +690,13 @@ impl Page {
             }
             for (method, params) in environment.commands(Kind::Page) {
                 steps.push(Box::pin(async move {
-                    me.call(method, params).await.map(drop).map_err(refused)
+                    match me.call(method, params).await {
+                        // A popup `window.open` made shares its opener's
+                        // renderer, which has the locale already; so may a
+                        // page of the same context, which has the same one.
+                        Err(Error::Protocol { message, .. }) if shared_process(&message) => Ok(()),
+                        r => r.map(drop).map_err(refused),
+                    }
                 }));
             }
             if let Some(g) = environment.geolocation {

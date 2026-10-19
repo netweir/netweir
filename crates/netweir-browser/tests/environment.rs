@@ -971,3 +971,113 @@ async fn a_frame_with_init_scripts_tells_of_its_dialog_once() {
     assert_eq!(answered, true);
     browser.close().await.unwrap();
 }
+
+/// A popup `window.open` makes shares its opener's renderer, whose
+/// locale is already set: it opens with that locale rather than being
+/// closed over it.
+async fn same_process_popup(options: LaunchOptions, env: Environment) {
+    let browser = common::launch(options).await;
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<button id=open style='width:200px;height:80px' \
+                 onclick=\"window.pop = window.open('/popup')\">open</button>",
+            ),
+        ),
+        (
+            "/popup",
+            html(
+                "<script>window.first = [navigator.language, \
+                 Intl.DateTimeFormat().resolvedOptions().locale, \
+                 Intl.DateTimeFormat().resolvedOptions().timeZone];</script>",
+            ),
+        ),
+    ]);
+    let page = browser.new_page_with(env).await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    page.click("#open", None).await.unwrap();
+    let popup = loop {
+        match tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("no popup")
+        {
+            Some(netweir_browser::PageEvent::Popup(p)) => break p,
+            Some(_) => {}
+            None => panic!("the page went away"),
+        }
+    };
+    popup.wait_for_load(WaitUntil::Load, None).await.unwrap();
+    assert!(!popup.is_closed(), "the popup was closed");
+    assert_eq!(
+        popup.evaluate("first").await.unwrap(),
+        json!(["sv-SE", "sv-SE", "Europe/Stockholm"])
+    );
+    // The opener reads it too, as one process.
+    assert_eq!(
+        page.evaluate("pop.navigator.language").await.unwrap(),
+        "sv-SE"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_same_process_popup_keeps_a_pages_locale() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let env = Environment {
+        locale: Some("sv-SE".into()),
+        timezone: Some("Europe/Stockholm".into()),
+        ..Default::default()
+    };
+    same_process_popup(options, env).await;
+}
+
+#[tokio::test]
+async fn a_same_process_popup_keeps_a_browsers_locale() {
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    options.environment = Environment {
+        locale: Some("sv-SE".into()),
+        timezone: Some("Europe/Stockholm".into()),
+        ..Default::default()
+    };
+    same_process_popup(options, Environment::default()).await;
+}
+
+#[tokio::test]
+async fn a_kept_profiles_pages_share_one_locale() {
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("netweir-env-profile-{}", std::process::id()));
+    options.user_data_dir = Some(dir.clone());
+    options.environment.locale = Some("de-DE".into());
+    let browser = common::launch(options).await;
+    // Its pages are all in the profile's context, so all one locale.
+    let err = browser
+        .new_page_with(Environment {
+            locale: Some("fr-FR".into()),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("profile"), "{err}");
+    let page = browser
+        .new_page_with(Environment {
+            locale: Some("de-DE".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    page.goto("about:blank", WaitUntil::Load, None)
+        .await
+        .unwrap();
+    assert_eq!(page.evaluate("navigator.language").await.unwrap(), "de-DE");
+    browser.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -674,6 +674,15 @@ impl Browser {
     /// [`Browser::new_page`], in `env` (over the browser's own
     /// environment). Its permissions are granted in the page's context.
     pub async fn new_page_with(&self, env: Environment) -> Result<Page> {
+        if self.inner.keep_profile {
+            // The profile's own context, which every such page shares.
+            shares_process(
+                &env,
+                &self.inner.environment,
+                "With a profile to keep, every page shares the profile's own context: give it \
+                 to the browser's environment",
+            )?;
+        }
         let env = env.over(&self.inner.environment);
         added_screen(&env, &self.inner.environment)?;
         if self.inner.keep_profile {
@@ -1498,18 +1507,11 @@ impl Context {
     /// each per renderer process, and pages of a context can share one.
     pub async fn new_page_with(&self, env: Environment) -> Result<Page> {
         let context = self.environment();
-        for (what, own, theirs) in [
-            ("timezone", &env.timezone, &context.timezone),
-            ("locale", &env.locale, &context.locale),
-        ] {
-            if own.is_some() && own != theirs {
-                return Err(Error::Invalid(format!(
-                    "a page's {what} must be its context's: Chrome keeps one per renderer \
-                     process, and a context's pages of one site can share one. Give it to the \
-                     context, or open the page with Browser.new_page"
-                )));
-            }
-        }
+        shares_process(
+            &env,
+            &context,
+            "Give it to the context, or open the page with Browser.new_page",
+        )?;
         let env = env.over(&context);
         added_screen(&env, &self.browser.environment)?;
         Page::open(
@@ -1674,6 +1676,24 @@ fn gone_is_fine(r: Result<()>) -> Result<()> {
         Err(Error::PageClosed) => Ok(()),
         r => r,
     }
+}
+
+/// Checks a page of a shared context (`shared`'s) asks for no timezone or
+/// locale of its own: Chrome keeps one of each per renderer process, and
+/// a context's pages of one site can share one.
+fn shares_process(env: &Environment, shared: &Environment, instead: &str) -> Result<()> {
+    for (what, own, theirs) in [
+        ("timezone", &env.timezone, &shared.timezone),
+        ("locale", &env.locale, &shared.locale),
+    ] {
+        if own.is_some() && own != theirs {
+            return Err(Error::Invalid(format!(
+                "a page's {what} must be its context's: Chrome keeps one per renderer process, \
+                 and a context's pages of one site can share one. {instead}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Checks a screen that isn't the browser's own can be added.
