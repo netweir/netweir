@@ -56,11 +56,17 @@ element for an HTML one.
 
 **It keeps one `id` attribute per element.** `lxb_dom_element_attr_append`
 drops an earlier attribute whose lowercased local name is `id` (or
-`class`), and XML may have `id` and `ID`, or `id` and `xml:id`. Only an
-attribute named exactly `id` or `class` gets lexbor's own id, which its
-`#id` and `.class` matching needs; any other attribute's id is its name
-as written. Attribute lookup by name in XML compares the written name in
-Rust, since lexbor's would also match `x:href` for `href`.
+`class`), and XML may have `id` and `ID` side by side. An XML attribute
+gets lexbor's id for its whole name lowercased (`href`, `x:href`), which is
+what lexbor's CSS attribute selectors look up, so `a[href]` works on XML
+as on HTML and ignores case as it does there. The one exception is a
+name that lowercases to `id` or `class` without being written so: `ID`
+keeps an id of its written form, so it can't displace an `id`. The first
+version gave every attribute but `id` and `class` the id of its written
+form, which broke `a[href]` even on XHTML served as XML, since lexbor's
+ids for names HTML knows are static ones. Attribute lookup by name in XML
+compares the written name in Rust, since lexbor's would also match
+`x:href` for `href`.
 
 Namespace declarations aren't attributes in XPath's data model, so they
 aren't lexbor attributes either: `XmlNames` keeps each element's in
@@ -101,25 +107,55 @@ abuse is therefore in netweir's code, where it's bounded:
   times), which a depth limit alone wouldn't.
 - **Depth.** Elements nest at most 2048 deep, lxml's limit with
   `huge_tree`, which Scrapy's selectors turn on.
-- **Time.** The builder checks the parse budget every 1024 events, as the
-  HTML parser checks between chunks.
+- **Time.** The builder counts work, events, attributes and 64-byte
+  pieces of expanded entities, and reads the clock every 1024 units, so
+  a single start tag with 200,000 attributes, which is one event, still
+  runs out of time. The first version counted only events; 30,000
+  attributes in one tag took 26 seconds against a 100 ms budget and
+  returned a document.
+- **Attributes.** Duplicates are found with a hash set of names (and of
+  namespace and local name, for two prefixes of one namespace), not
+  quick-xml's own check, which compares every attribute with every other.
+  Namespace prefixes resolve through a map of prefix to bindings, so
+  thousands of declarations on one element cost thousands of steps, not
+  millions. The tests hold both to linear time.
 
 Expanding declared entities differs from parsel, which leaves them as
 references (`resolve_entities=False`): `text()` misses them there and
 `string()` has them. Expanding within bounds gives what the document
 says, safely.
 
-## Strict, not recovering
+## Strict by default, recovering when asked
 
-parsel parses XML with lxml's `recover=True`. A document that breaks
-part way is cut off at the break, and the selector shows the half it
-read, with no error; a stray `&nbsp;` is dropped. For a scraper that
-means silently missing items. Netweir's parser stops at the first
+parsel parses XML with lxml's `recover=True`, which carries on past most
+breakage (a stray `&`, an undeclared `&nbsp;`, junk after the root) and
+keeps the items around it, saying nothing; a document cut off part way
+is cut short at the break. Scrapy's iternodes, by contrast, is strict.
+Netweir's parser is strict by default: it stops at the first
 well-formedness error with an `XmlError` giving the line, the column (in
-characters) and what's wrong, and nothing in the tree is invented. In a
-crawl, the engine still hands the page to the callback, where reading
-its document raises the error and `page.text` is there to repair. That
-costs some leniency on broken feeds; the docs show the usual repair.
+characters) and what's wrong. In a crawl, the engine still hands the page
+to the callback, where reading its document raises the error and
+`page.text` is there to repair.
+
+Recover mode (`XmlOptions::recover`, `recover=True` in Python,
+`Settings.xml_recover` for a crawl) repairs the faults feeds most often
+have, each repair counted and the first ten kept with their line and
+column, so a warning can say what was done: an undeclared entity is read
+as HTML's named character (from lexbor's HTML5 entity table) or kept as
+text, a bare `&` is text, an undeclared prefix leaves its element or
+attribute in no namespace, anything after the root is ignored,
+characters XML doesn't allow are dropped, the first of two attributes of
+one name is kept, and elements open at the end are closed. Each repair
+is a `repair(problem, fix)` call at the point the strict parser would
+fail, so the strict errors and the repairs can't drift apart. What isn't
+on the list (an end tag that closes the wrong element, `<` in text) is
+still an error, and every limit on hostile XML holds in both modes. An
+empty document is "Document is empty" when strict, as lxml says, and an
+empty document when recovering.
+
+Whitespace before the XML declaration is accepted in both modes: feeds
+generated by templates often start with a blank line, and lxml reads
+them.
 
 ## Namespaces on queries
 
@@ -147,14 +183,25 @@ clears `XmlNames`' node maps but not its URIs, for the same reason.
 
 `XmlNodes` is Scrapy's `iternodes`: it reads the document once, and each
 element with the wanted name becomes a document of its own, handed out
-as soon as it ends, so memory is one node's worth however big the feed.
+as soon as it ends, so the tree in memory is one node's worth however
+big the feed. The feed's text is read whole first (decoded in Python and
+copied into the iterator); reading from the bytes as they arrive would
+save that copy, and is left for a crawl that streams responses.
 The whole document is still checked as it's read; a break ends the
 iteration with the error, after every node before it. The top element of
 each node keeps the declarations it had in scope, so it's written out as
 it would be from the whole document. Reading resumes from a byte offset
 with a fresh quick-xml reader, which keeps the iterator free of
 self-borrowing; end tags are checked against the builder's own stack for
-that reason.
+that reason. Several nodes can end inside one entity expansion; finished
+nodes wait in a queue, and each `next()` gives the oldest. Each `next()`
+has a budget of its own (10 seconds in XMLFeedSpider), for the same
+reason a whole parse has one.
+
+A prefix in the tag that the caller doesn't bind means what the document
+binds it to where each element is, as Scrapy's `xmliter_lxml` reads it;
+the binding goes with the node, so the node's own queries can use the
+prefix too.
 
 Each node costs a lexbor document, about 3.5 µs to make, which is most
 of the 270 ms 50,000 nodes take. Scrapy's `xmliter_lxml` took 1.2 s on
@@ -165,17 +212,26 @@ until the last is dropped, which defeats reading one at a time.
 ## Sitemaps
 
 Sitemaps were read by a quick-xml loop of their own, which left
-declared entities unexpanded and knew nothing of the rest. They now go
-through `Document::parse_xml`, with its limits, and the entries are read
-off the tree by local name, in any case and namespace, as before. That
-holds a sitemap's whole tree at once, as Scrapy's `Sitemap` does with
-lxml; it was faster than reading entry by entry (150 ms for the 50,000
-URLs, where the per-node documents above would add 180 ms), and a
-sitemap's size is capped by `max_response_size` anyway.
+declared entities unexpanded and knew nothing of the rest. The first
+version of this work read them through `Document::parse_xml`: whole, and
+strictly. That broke on sitemaps the old loop and Scrapy both read (an
+undeclared `image:` or `xhtml:` prefix, `&nbsp;`, a `\x0b`, a PHP warning
+after the root, an attribute given twice), and a 200,000-URL sitemap went
+from 196 MB to 864 MB.
+
+So sitemaps are now walked, not parsed: `walk_xml` runs the same builder
+with an `XmlVisitor` instead of a tree, so it has the same checks, entity
+limits and budget (10 seconds a sitemap), in recover mode, with what was
+repaired returned for one warning per sitemap. The visitor matches
+`urlset`, `sitemapindex`, `url`, `sitemap`, `loc`, `lastmod`,
+`changefreq`, `priority` and alternate `link`s by local name, in any case
+and namespace. The 200,000-URL sitemap is back to 195 MB, and reads in
+0.7 s.
 
 ## Known limits
 
-- CSS type selectors on XML ignore namespaces and case.
+- CSS type selectors on XML ignore namespaces and case; CSS attribute
+  names ignore case.
 - The `namespace::` axis gives nothing.
 - DTD attribute defaults aren't applied (nor are they by lxml as Scrapy
   sets it up).

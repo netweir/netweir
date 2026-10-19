@@ -148,13 +148,20 @@ class Recent(netweir.Spider):
                 yield entry
 ```
 
-A sitemap that isn't valid, or ends part way through, is logged and
-skipped. Sitemaps are read no further than `max_response_size`, after
-unzipping, and with the same limits as any XML (see
-[Broken and hostile XML](xml.md#broken-and-hostile-xml)): nothing is
-fetched, and entities a sitemap declares are expanded only so far, so a
-hostile one can't fill memory. Element names are matched without regard
-to case or namespace, as sitemaps in the wild vary in both.
+Sitemaps are read in one pass, without building a tree, so one of
+hundreds of thousands of URLs costs little more memory than its entries.
+They're read in recover mode (see
+[Broken and hostile XML](xml.md#broken-and-hostile-xml)), since so many
+are a little broken: an undeclared `image:` or `xhtml:` prefix, an
+`&nbsp;`, a stray `&`, a control character, a PHP warning after the end
+or an attribute given twice is repaired, with one warning for the
+sitemap saying what was. One that can't be read is logged and skipped.
+Sitemaps are read no further than `max_response_size`, after unzipping,
+for no more than 10 seconds each, and with the same limits as any XML:
+nothing is fetched, and entities a sitemap declares are expanded only so
+far, so a hostile one can't fill memory. Element names are matched
+without regard to case or namespace, as sitemaps in the wild vary in
+both.
 
 `sitemap_urls` and `start_urls` can be used together.
 

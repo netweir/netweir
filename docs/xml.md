@@ -10,7 +10,11 @@ for crawling feeds.
 
 A page whose Content-Type says it's XML is parsed as XML. That's
 `text/xml`, `application/xml`, and any `+xml` type (RSS's, Atom's, SOAP's)
-except XHTML's, which is a web page and is parsed as one:
+except XHTML's, which is a web page and is parsed as one. A page with no
+Content-Type, or only `application/octet-stream` (some servers send feeds
+that way), is judged by how it starts, as Scrapy judges it: `<html` means
+HTML, and an XML declaration or a first element HTML doesn't have
+(`<rss>`, `<urlset>`) means XML:
 
 ```python
 page = netweir.get("https://example.com/feed.rss")
@@ -32,7 +36,9 @@ doc = netweir.parse("<prices><price currency='EUR'>12.50</price></prices>", type
 
 `type="html"` (the default) parses as HTML. `page.text` already reads the
 encoding an XML declaration names (`<?xml version="1.0"
-encoding="ISO-8859-1"?>`) when the Content-Type gives none.
+encoding="ISO-8859-1"?>`) when the Content-Type gives none, and finds
+UTF-16 and UTF-32 by their first bytes when there's no byte order mark,
+as the XML spec describes. `page.encoding` names the encoding it used.
 
 What's different from HTML:
 
@@ -101,10 +107,16 @@ namespace's URI.
 
 ## CSS on XML
 
-CSS works, with two allowances: type selectors match an element's local
-name whatever its namespace, and whatever its case. `page.css("entry
-title::text")` reads an Atom feed without `remove_namespaces()`. When the
-namespace or the case matters, use XPath.
+CSS works, with allowances where it can't tell what XML tells apart:
+
+- Type selectors match an element's local name whatever its namespace and
+  whatever its case: `page.css("entry title::text")` reads an Atom feed
+  without `remove_namespaces()`, and `css("item")` finds `<Item>` too.
+- Attribute names ignore case, as in HTML: `[href]` matches `HREF="..."`.
+  A prefixed attribute is matched by its whole name, so `[href]` doesn't
+  match `xlink:href`.
+
+When the namespace or the case matters, use XPath, which respects both.
 
 ## Broken and hostile XML
 
@@ -118,17 +130,41 @@ except netweir.XMLError as e:
     print(e.line, e.column, e.reason)  # 2 10 </feed> doesn't close <entry>
 ```
 
-This is stricter than Scrapy. parsel reads XML in lxml's recover mode,
-which cuts a broken document short and carries on without a word, so a
-feed that breaks half way gives you half its items and no error. Netweir
-tells you. In a crawl, the callback still gets the page, and reading its
-document there raises the error; `page.text` and `page.body` are still
-yours to fix up and parse again. An undeclared entity such as `&nbsp;`
-is an error too, since XML has no `&nbsp;` of its own:
+That's the default, and it's stricter than Scrapy. parsel reads XML in
+lxml's recover mode, which carries on past a stray `&`, an undeclared
+`&nbsp;` or junk after the root and keeps the items around them, without
+a word; only a document cut off part way is cut short there. (Scrapy's
+iternodes is strict.) Netweir tells you what's wrong, and in a crawl the
+callback still gets the page: reading its document raises the error, and
+`page.text` and `page.body` are still yours to fix up and parse again.
+An empty or blank body raises `XMLError("Document is empty")`, as lxml
+does.
+
+For feeds you know to be sloppy, ask for recover mode:
 
 ```python
-fixed = netweir.parse(page.text.replace("&nbsp;", "&#160;"), type="xml")
+doc = netweir.parse(page.text, type="xml", recover=True)
+root = page._response.parse(recover=True)   # or for a whole crawl:
+settings = netweir.Settings(xml_recover=True)
 ```
+
+It repairs what feeds most often get wrong, and logs one warning per
+document saying how many problems it repaired, with the line, column and
+fix of the first ten:
+
+| Problem | Repair |
+|---|---|
+| An undeclared entity (`&nbsp;`, `&eacute;`) | read as HTML's character of that name if there is one, kept as text if not |
+| A `&` that starts no reference (`Tom & Jerry`) | kept as text |
+| An undeclared prefix (`<media:content>`) | the element or attribute is in no namespace, named as written |
+| Anything after the root element (a PHP warning) | ignored |
+| A character XML doesn't allow (`\x0b`) | dropped |
+| An attribute given twice | the first is kept |
+| The document ends with elements open | they're closed |
+| An empty document | an empty document |
+
+Anything else, an end tag that doesn't match say, is still an error, and
+the limits below still hold.
 
 XML can also be written to hurt the program reading it. These are
 refused, each with an `XMLError`:
@@ -139,7 +175,7 @@ refused, each with an `XMLError`:
 | Entities the document declares | expanded, but no more than 16 deep, and to no more than 1 MiB plus 8 bytes per byte of the document in all. The "billion laughs" (10 levels of 10 references each, a gigabyte from a kilobyte) stops at the limit |
 | Entities that refer to themselves | refused |
 | Nesting | 2048 elements deep, lxml's limit with Scrapy's settings (lxml cuts a deeper document off there without a word) |
-| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds |
+| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds; the clock is read every thousand or so events, attributes or kilobytes of expanded entity, so one enormous start tag can't outrun it. In a crawl, pages the engine parses itself have 10 seconds, a sitemap 10 seconds, and iternodes 10 seconds for each node |
 
 Parameter entities (`%name;`) are never expanded, and declarations after
 one aren't read.
@@ -166,13 +202,16 @@ class Blog(netweir.XMLFeedSpider):
 ```
 
 `parse_node` gets the page and the node, and returns or yields items and
-requests, like any callback. It can be async.
+requests, like any callback. It can be async. The node is a Selection of
+one, as Scrapy hands over a Selector: `node.xpath()`, `node.css()`,
+`node.get()`, `node.getall()`, `node.attrib`, `node.re()`,
+`node.re_first()` and `node.register_namespace()` all work on it.
 
 `iterator` says how the feed is read:
 
 | `iterator` | Reads |
 |---|---|
-| `"iternodes"` (the default) | one node at a time, as the feed is read, so a feed of a million items is never in memory whole. Each node is a document of its own. |
+| `"iternodes"` (the default) | one node at a time, as the feed is read, so a feed of a million items is never a tree in memory. The feed's text is still read whole (decoded, and copied into Rust), but each node is a document of its own, gone once you're done with it. |
 | `"xml"` | the whole feed, as XML, before the first node |
 | `"html"` | the whole feed, as HTML, for markup too broken to be XML. `<link>` comes out empty. |
 
@@ -180,7 +219,8 @@ requests, like any callback. It can be async.
 the time Scrapy's iternodes does.
 
 For a feed with namespaces, list them in `namespaces`. They're registered
-on every node, and `itertag` can use them:
+on every node, and `itertag` can use them, with every iterator (in Scrapy
+only `iterator = "xml"` uses them for `itertag`):
 
 ```python
 class Sitemap(netweir.XMLFeedSpider):
@@ -192,15 +232,26 @@ class Sitemap(netweir.XMLFeedSpider):
         yield page.follow(node.xpath("s:loc/text()").get(), callback="product")
 ```
 
-An Atom feed's entries are in its namespace, so `itertag = "entry"` finds
-none of them; use `itertag = "atom:entry"` with the Atom namespace listed,
-as you would in Scrapy. (For sitemaps themselves, `sitemap_urls` on any
-spider does the work; see [Sitemaps](crawling.md#sitemaps).)
+A prefix in `itertag` that isn't in `namespaces` means what the feed
+declares it to mean where the element is, as Scrapy's iternodes reads
+it: `itertag = "g:item"` finds a Google Merchant feed's items, and
+`node.xpath("g:id/text()")` works on them. An Atom feed's entries are in
+its default namespace, which has no prefix, so `itertag = "entry"` finds
+none of them; use `itertag = "atom:entry"` with the Atom namespace listed.
+(For sitemaps themselves, `sitemap_urls` on any spider does the work; see
+[Sitemaps](crawling.md#sitemaps).)
+
+`recover = True` reads the feed in recover mode (see
+[Broken and hostile XML](#broken-and-hostile-xml)); the default, `None`,
+follows `Settings.xml_recover`.
 
 Two more methods, both optional, both sync or async:
 
 - `adapt_response(page)` gets the page before it's read, and returns the
-  page to read. `page.replace(body=...)` makes one with a new body.
+  page to read. `page.replace(body=...)` makes one with a new body; text
+  is encoded in the page's own encoding, so its charset and any XML
+  declaration stay true (or in UTF-8, with the charset changed, if that
+  encoding can't hold it).
 - `process_results(page, results)` gets what `parse_node` gave for one
   node, as a list, and returns the list to keep.
 
@@ -253,15 +304,18 @@ and the feed spiders' attributes carry over. The differences:
 
 - `parse_node(self, page, node)` and `parse_row(self, page, row)` get a
   Netweir `Page`, as every callback does.
-- Broken XML raises `XMLError` instead of being cut short quietly, and
-  undeclared entities are errors (see above).
+- Broken XML raises `XMLError` unless you ask for recover mode, and
+  undeclared entities are errors then too (see above). Scrapy's
+  selectors always recover.
 - Entities a document declares in its own DTD are expanded, within the
   limits, so `text()` has them. parsel keeps them as references, which
   `text()` leaves out and `string()` doesn't.
 - Attribute names keep their prefix (`xml:lang`) where lxml writes the
   namespace in braces.
-- CSS type selectors on XML ignore namespaces and case; cssselect's
-  respect both.
+- CSS type selectors on XML ignore namespaces and case, and attribute
+  names ignore case; cssselect respects both.
+- `itertag` uses `namespaces` with every iterator, and an unlisted prefix
+  means the feed's own.
 - `get()` on a document's root gives the whole document, a processing
   instruction before the root element included; parsel gives the root
   element.
