@@ -65,6 +65,17 @@ def base():
         "/semi.csv": (SEMI, "text/csv; charset=utf-8"),
         "/empty.csv": (b"", "text/csv"),
         "/next": (b"<h1>next</h1>", "text/html"),
+        "/gfeed": (
+            b'<rss xmlns:g="http://base.google.com/ns/1.0"><channel>'
+            b"<g:item><g:id>1</g:id></g:item><item>x</item><g:item><g:id>2</g:id></g:item>"
+            b"</channel></rss>",
+            "application/rss+xml",
+        ),
+        "/nbsp": (
+            b"<rss><channel><item><title>a&nbsp;b</title></item><item><title>c</title></item>"
+            b"</channel></rss>",
+            "application/rss+xml",
+        ),
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield base
@@ -355,3 +366,86 @@ def test_a_feed_spiders_other_callbacks_work_as_a_spiders(base):
     items, stats = run(Feed)
     # Both items' requests go to one URL, crawled once.
     assert items == [{"h1": "next"}]
+
+
+@pytest.mark.parametrize("iterator", ["iternodes", "xml", "html"])
+def test_parse_node_gets_a_selector_as_in_scrapy(base, iterator):
+    class Feed(netweir.XMLFeedSpider):
+        start_urls = [f"{base}/rss"]
+
+        def parse_node(self, page, node):
+            assert isinstance(node, netweir.Selection) and len(node) == 1
+            yield {
+                "get": node.get(),
+                "getall": node.getall(),
+                "attrib": node.attrib,
+                "re": node.re(r"<title>(\w+)"),
+                "re_first": node.re_first(r"id=\"(\d)"),
+                "title": node.xpath("title/text()").get(),
+            }
+
+    Feed.iterator = iterator
+    items, _ = run(Feed)
+    first = next(i for i in items if i["title"] == "First")
+    assert first["get"].startswith("<item ") and 'id="1"' in first["get"]
+    assert first["getall"] == [first["get"]]
+    assert first["attrib"] == {"id": "1"}
+    assert first["re"] == ["First"]
+    assert first["re_first"] == "1"
+
+
+@pytest.mark.parametrize("iterator", ["iternodes", "xml"])
+def test_an_itertag_prefix_the_feed_declares_needs_no_namespaces(base, iterator):
+    class Products(netweir.XMLFeedSpider):
+        start_urls = [f"{base}/gfeed"]
+        itertag = "g:item"
+
+        def parse_node(self, page, node):
+            yield {"id": node.xpath("g:id/text()").get()}
+
+    Products.iterator = iterator
+    items, stats = run(Products)
+    assert sorted(i["id"] for i in items) == ["1", "2"]
+    assert stats["callback_errors"] == 0
+
+
+def test_a_feed_spider_can_recover(base, caplog):
+    class Strict(netweir.XMLFeedSpider):
+        start_urls = [f"{base}/nbsp"]
+
+        def parse_node(self, page, node):
+            yield {"title": node.xpath("title/text()").get()}
+
+    items, stats = run(Strict)
+    assert items == [] and stats["callback_errors"] == 1
+    for iterator in ["iternodes", "xml"]:
+
+        class Lenient(Strict):
+            recover = True
+
+        Lenient.iterator = iterator
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="netweir"):
+            items, stats = run(Lenient)
+        assert sorted(i["title"] for i in items) == ["a\xa0b", "c"], iterator
+        assert "&nbsp; isn't declared; read as HTML's" in caplog.text
+        assert f"{base}/nbsp" in caplog.text
+
+
+def test_settings_xml_recover_reaches_feed_spiders(base):
+    class Lenient(netweir.XMLFeedSpider):
+        start_urls = [f"{base}/nbsp"]
+
+        def parse_node(self, page, node):
+            yield {"title": node.xpath("title/text()").get()}
+
+    items = []
+
+    class Collect(Lenient):
+        settings = netweir.Settings(
+            throttle=False, start_delay=0, obey_tdmrep=False, xml_recover=True
+        )
+        pipelines = [lambda item: items.append(item) or item]
+
+    Collect().run()
+    assert sorted(i["title"] for i in items) == ["a\xa0b", "c"]

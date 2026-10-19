@@ -313,7 +313,8 @@ class {cls}(netweir.XMLFeedSpider):
     itertag = "item"
 {settings}
     def parse_node(self, page, node):
-        """What to take from each node of the feed."""
+        """What to take from each node of the feed: a selection of one, as
+        Scrapy's Selector, with xpath(), css(), get() and attrib."""
         yield {{
             "title": node.xpath("title/text()").get(),
             "link": node.xpath("link/text()").get(),

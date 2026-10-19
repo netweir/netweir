@@ -12,11 +12,15 @@ from typing import Any
 
 from netweir._crawl import Spider
 from netweir._errors import NotConfigured
-from netweir._fetch import Page
+from netweir._fetch import Page, _xml_recover
 from netweir._hooks import _NOT_MANY
-from netweir._native import Node, _xml_nodes, parse
+from netweir._native import Selection, _xml_nodes
 
 log = logging.getLogger("netweir")
+
+#: Seconds iternodes may take to read one node: a crawl's budget for a
+#: page.
+_NODE_BUDGET = 10.0
 
 
 async def _results(value: Any) -> list[Any]:
@@ -68,8 +72,17 @@ class XMLFeedSpider(Spider):
 
     ``namespaces`` lists ``(prefix, uri)`` pairs, registered on every node
     so its queries can use the prefixes, and usable in ``itertag``
-    (``"n:url"``). As in XPath, a tag without a prefix is in no namespace:
-    an Atom feed's entries need one.
+    (``"n:url"``). A prefix in ``itertag`` that isn't listed means what the
+    feed itself declares it to mean. As in XPath, a tag without a prefix is
+    in no namespace: an Atom feed's entries need one.
+
+    Each node goes to ``parse_node`` as a Selection of one, as Scrapy hands
+    over a Selector: ``node.xpath()``, ``node.css()``, ``node.get()``,
+    ``node.attrib``, ``node.re()`` and ``node.register_namespace()`` work.
+
+    ``recover = True`` reads broken XML in recover mode (see
+    ``netweir.parse``); ``None``, the default, follows
+    ``Settings.xml_recover``.
 
     ``adapt_response(page)`` can change the page before it's read and must
     return a Page (``page.replace(body=...)`` makes one).
@@ -83,6 +96,8 @@ class XMLFeedSpider(Spider):
     itertag: str = "item"
     #: (prefix, uri) pairs.
     namespaces: Sequence[tuple[str, str]] = ()
+    #: Read broken XML in recover mode; None follows Settings.xml_recover.
+    recover: bool | None = None
 
     def adapt_response(self, page: Page) -> Page:
         """The page to read, given the page fetched. Unchanged by default."""
@@ -105,13 +120,22 @@ class XMLFeedSpider(Spider):
             for out in await _processed(self, page, results):
                 yield out
 
-    def _nodes(self, page: Page) -> Iterable[Node]:
+    def _nodes(self, page: Page) -> Iterable[Selection]:
         namespaces = [(str(prefix), str(uri)) for prefix, uri in self.namespaces]
+        recover = self.settings.xml_recover if self.recover is None else bool(self.recover)
         if self.iterator == "iternodes":
-            for node in _xml_nodes(page.text, self.itertag, namespaces):
+            nodes = _xml_nodes(
+                page.text,
+                self.itertag,
+                namespaces,
+                recover=recover,
+                timeout=_NODE_BUDGET,
+                place=page.url,
+            )
+            for node in nodes:
                 for prefix, uri in namespaces:
                     node.register_namespace(prefix, uri)
-                yield node
+                yield node.xpath(".")
             return
         if self.iterator not in ("xml", "html"):
             raise ValueError(
@@ -122,11 +146,23 @@ class XMLFeedSpider(Spider):
         # the namespaces go on these nodes and not on page.root.
         parsed = page._root
         kind = parsed.type if parsed is not None else page._response.markup
-        root = page.root if kind == self.iterator else parse(page.text, type=self.iterator)
+        if kind == self.iterator and (parsed is not None or recover == _xml_recover.get()):
+            root = page.root
+        else:
+            root = page._response.parse(type=self.iterator, recover=recover)
         top = root.xpath("/")[0]
         for prefix, uri in namespaces:
             top.register_namespace(prefix, uri)
-        yield from top.xpath(f"//{self.itertag}")
+        prefix = self.itertag.partition(":")[0] if ":" in self.itertag else None
+        if prefix is not None and prefix not in {p for p, _ in namespaces}:
+            # As iternodes reads it: what the feed declares the prefix as.
+            uri = top.xpath("namespace-uri((//*[name()=$tag])[1])", tag=self.itertag).get()
+            if not uri:
+                return
+            top.register_namespace(prefix, uri)
+        nodes = top.xpath(f"//{self.itertag}")
+        for i in range(len(nodes)):
+            yield nodes[i : i + 1]
 
 
 class CSVFeedSpider(Spider):
