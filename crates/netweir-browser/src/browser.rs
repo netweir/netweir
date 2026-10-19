@@ -180,10 +180,21 @@ fn bare(options: &LaunchOptions) -> (Environment, Size, f64) {
 /// doesn't know that yet, and the page's languages. None leaves the page
 /// as Chrome makes it.
 /// Boxed, since reading what Chrome says opens a page, which comes here.
-/// What `user_agent_for` gives: the override, and the page's languages.
-type Overriding<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(Option<Value>, String)>> + Send + 'a>,
->;
+/// What `user_agent_for` gives.
+pub(crate) struct Overrides {
+    /// The page's, its frames' and its dedicated workers'.
+    pub user_agent: Option<Value>,
+    /// Service and shared workers', whose user agent is always the
+    /// --user-agent switch's: the page's where it's that, and otherwise
+    /// the browser's own with the page's languages, so a worker's
+    /// `navigator.userAgentData` says what its `navigator.userAgent` does.
+    pub switched: Option<Value>,
+    /// The page's languages.
+    pub languages: String,
+}
+
+type Overriding<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Overrides>> + Send + 'a>>;
 
 pub(crate) fn user_agent_for<'a>(
     browser: &'a Arc<Inner>,
@@ -193,11 +204,7 @@ pub(crate) fn user_agent_for<'a>(
     Box::pin(user_agent_of(browser, env, own))
 }
 
-async fn user_agent_of(
-    browser: &Arc<Inner>,
-    env: &Environment,
-    own: &str,
-) -> Result<(Option<Value>, String)> {
+async fn user_agent_of(browser: &Arc<Inner>, env: &Environment, own: &str) -> Result<Overrides> {
     // A locale of the page's or its context's own; the browser's is the
     // one Chrome already shows, in each context as it computes it there.
     let languages = match &env.locale {
@@ -214,7 +221,13 @@ async fn user_agent_of(
     let wanted = env.changes_user_agent() || !own_languages;
     let base = match (&browser.identity, wanted) {
         (Some(i), _) => Some(i.clone()),
-        (None, false) => return Ok((None, languages)),
+        (None, false) => {
+            return Ok(Overrides {
+                user_agent: None,
+                switched: None,
+                languages,
+            });
+        }
         (None, true) => browser
             .own
             .get_or_try_init(|| async {
@@ -234,15 +247,31 @@ async fn user_agent_of(
             .await?
             .clone(),
     };
-    let overridden = env.user_agent_override(
-        base.as_ref().map(|i| (i.user_agent.as_str(), &i.metadata)),
-        full,
-        // Chrome's own are left to it: an override's Accept-Language goes
-        // out after User-Agent, where Chrome's own is last.
-        (!own_languages && !languages.is_empty()).then_some(languages.as_str()),
-        own_languages,
-    )?;
-    Ok((overridden, languages))
+    let base = base.as_ref().map(|i| (i.user_agent.as_str(), &i.metadata));
+    // Chrome's own are left to it: an override's Accept-Language goes
+    // out after User-Agent, where Chrome's own is last.
+    let given = (!own_languages && !languages.is_empty()).then_some(languages.as_str());
+    let user_agent = env.user_agent_override(base, full, given, own_languages)?;
+    let agent = |o: &Option<Value>| {
+        o.as_ref()
+            .and_then(|o| o["userAgent"].as_str().map(str::to_string))
+    };
+    let switched = if browser.agent.is_none() || agent(&user_agent) == browser.agent {
+        user_agent.clone()
+    } else {
+        let plain = Environment {
+            phone: None,
+            user_agent: None,
+            mobile: None,
+            ..env.clone()
+        };
+        plain.user_agent_override(base, full, given, own_languages)?
+    };
+    Ok(Overrides {
+        user_agent,
+        switched,
+        languages,
+    })
 }
 
 impl Browser {
@@ -303,6 +332,9 @@ impl Browser {
         }
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
         launch::turn_off_preloading(&profile, &options.args)?;
+        if options.environment.is_mobile() {
+            launch::open_pdfs_outside(&profile, &options.args)?;
+        }
         let mut args = vec![
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".into(),
@@ -948,7 +980,7 @@ fn shared_worker(
         return;
     };
     conn.send(session, "Network.enable", json!({}));
-    if let Some(user_agent) = &env.user_agent {
+    if let Some(user_agent) = &env.switched_user_agent {
         conn.send(
             session,
             "Network.setUserAgentOverride",
@@ -1801,8 +1833,8 @@ fn gone_is_fine(r: Result<()>) -> Result<()> {
 impl Inner {
     /// What Chrome adds to a request itself, as its switches say, for a
     /// page whose sessions have a user agent override: None where netweir
-    /// knows neither.
-    /// `own` is the context's own languages, as Chrome shows them.
+    /// knows neither. `own` is the context's own languages, as Chrome
+    /// shows them.
     pub(crate) fn tidy(&self, own: &str) -> Option<crate::network::Tidy> {
         let accept_language = (!own.is_empty()).then(|| crate::environment::q_values(own));
         (self.agent.is_some() || accept_language.is_some()).then(|| crate::network::Tidy {
@@ -1830,10 +1862,24 @@ fn shares_process(env: &Environment, shared: &Environment, instead: &str) -> Res
     Ok(())
 }
 
-/// Checks a screen that isn't the browser's own can be added.
+/// Checks a screen that isn't the browser's own can be added, and says
+/// once what a phone on one gives away.
 fn added_screen(env: &Environment, browser: &Environment) -> Result<()> {
     if env.screen != browser.screen || env.device_scale_factor != browser.device_scale_factor {
         env.validate_added_screen()?;
+    }
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if env.is_mobile()
+        && !browser.is_mobile()
+        && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        crate::warn(
+            "a phone given to one page or context is shown on a screen of its own beside the \
+             browser's, so screen.isExtended is true and a frame from another site reads where \
+             that screen is; its service and shared workers keep the browser's user agent, and \
+             it keeps the browser's PDF viewer. Give the phone to the whole browser \
+             (LaunchOptions::environment, or environment= in Python) where those matter",
+        );
     }
     Ok(())
 }

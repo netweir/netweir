@@ -201,6 +201,8 @@ pub(crate) struct PageInner {
 pub(crate) struct PageEnv {
     pub env: Environment,
     pub user_agent: Option<Value>,
+    /// Service and shared workers' (see `browser::Overrides`).
+    pub switched_user_agent: Option<Value>,
     /// The page's languages, and those Chrome shows in its context of
     /// itself, with no override.
     pub languages: String,
@@ -492,12 +494,12 @@ impl Page {
         let session = str_of(&attached?, "sessionId");
         let worked_out = async {
             let own = own_languages(&browser, &session, context.is_none()).await?;
-            let (user_agent, languages) =
-                crate::browser::user_agent_for(&browser, &env, &own).await?;
+            let o = crate::browser::user_agent_for(&browser, &env, &own).await?;
             Ok::<_, Error>(PageEnv {
                 env,
-                user_agent,
-                languages,
+                user_agent: o.user_agent,
+                switched_user_agent: o.switched,
+                languages: o.languages,
                 own_languages: own,
             })
         };
@@ -1846,7 +1848,7 @@ impl Watch {
             Some("service_worker") if lock_env(&self.env).env.reaches_service_workers() => {
                 let PageEnv {
                     env,
-                    user_agent,
+                    switched_user_agent: user_agent,
                     own_languages,
                     ..
                 } = lock_env(&self.env).clone();

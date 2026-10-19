@@ -262,14 +262,42 @@ pub(crate) fn profile_in(dir: &Path, args: &[String]) -> Result<String> {
 /// preferences are kept as they are; a file already set this way isn't
 /// written.
 pub(crate) fn turn_off_preloading(dir: &Path, args: &[String]) -> Result<()> {
+    // 2 is "never": what the setting saves when it's switched off.
+    set_pref(
+        dir,
+        args,
+        ("net", "network_prediction_options"),
+        serde_json::json!(2),
+        "turn off preloading",
+    )
+}
+
+/// Has Chrome download PDFs rather than show them, as Chrome on a phone
+/// does, which has no PDF viewer: with it, `navigator.plugins` and
+/// `navigator.mimeTypes` are empty and `navigator.pdfViewerEnabled` is
+/// false, as they are there.
+pub(crate) fn open_pdfs_outside(dir: &Path, args: &[String]) -> Result<()> {
+    set_pref(
+        dir,
+        args,
+        ("plugins", "always_open_pdf_externally"),
+        serde_json::json!(true),
+        "turn off the PDF viewer",
+    )
+}
+
+/// Sets the preference `section.key` to `value` in the profile Chrome
+/// will open in `dir`, saying it couldn't `what` if it can't.
+fn set_pref(
+    dir: &Path,
+    args: &[String],
+    (section, key): (&str, &str),
+    value: serde_json::Value,
+    what: &str,
+) -> Result<()> {
     let profile = dir.join(profile_in(dir, args)?);
     let file = profile.join("Preferences");
-    let failed = |why: String| {
-        Error::Launch(format!(
-            "can't turn off preloading in {}: {why}",
-            file.display()
-        ))
-    };
+    let failed = |why: String| Error::Launch(format!("can't {what} in {}: {why}", file.display()));
     let mut prefs = match std::fs::read(&file) {
         // Chrome starts afresh from an empty file, as one cut short by a
         // crash can be; anything else that isn't JSON is someone's to
@@ -280,19 +308,17 @@ pub(crate) fn turn_off_preloading(dir: &Path, args: &[String]) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(failed(e.to_string())),
     };
-    let Some(net) = prefs
+    let Some(group) = prefs
         .as_object_mut()
-        .map(|p| p.entry("net").or_insert_with(|| serde_json::json!({})))
-        .and_then(|net| net.as_object_mut())
+        .map(|p| p.entry(section).or_insert_with(|| serde_json::json!({})))
+        .and_then(|group| group.as_object_mut())
     else {
         return Err(failed("it isn't the preferences Chrome writes".into()));
     };
-    // 2 is "never": what the setting saves when it's switched off.
-    let off = serde_json::json!(2);
-    if net.get("network_prediction_options") == Some(&off) {
+    if group.get(key) == Some(&value) {
         return Ok(());
     }
-    net.insert("network_prediction_options".into(), off);
+    group.insert(key.into(), value);
     std::fs::create_dir_all(&profile).map_err(|e| failed(e.to_string()))?;
     replace(&file, prefs.to_string().as_bytes()).map_err(|e| failed(e.to_string()))
 }

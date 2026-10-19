@@ -154,11 +154,13 @@ fn site() -> common::Server {
         ("/style.css", text("body{}", "text/css")),
         ("/sw.js", js(SERVICE_WORKER.into())),
         ("/sw.html", html(SW_PAGE)),
+        ("/sw-fetch", text("x", "text/plain")),
     ])
 }
 
-const SERVICE_WORKER: &str = "self.onmessage = (e) => e.source.postMessage([navigator.language, \
-    Intl.DateTimeFormat().resolvedOptions().timeZone, Intl.DateTimeFormat().resolvedOptions().locale]);";
+const SERVICE_WORKER: &str = "self.onmessage = (e) => fetch('/sw-fetch').finally(() => \
+    e.source.postMessage([navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone, \
+    Intl.DateTimeFormat().resolvedOptions().locale]));";
 
 const SW_PAGE: &str = r#"<!doctype html><script>
 window.sw = (async () => {
@@ -350,8 +352,21 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
     let page = browser.new_page_with(phone).await.unwrap();
     let s = surfaces(&page, &probe).await;
 
-    all_are(&s, "uaMobile", json!(true));
-    all_are(&s, "uaPlatform", json!("Android"));
+    for w in ["main", "worker", "frame", "frameWorker"] {
+        assert_eq!(s[w]["uaMobile"], true, "{w}: {s:#}");
+        assert_eq!(s[w]["uaPlatform"], "Android", "{w}: {s:#}");
+    }
+    // A shared worker's user agent is the --user-agent switch's whatever
+    // CDP says, so for one page's phone it's the desktop's, and its client
+    // hints say the same as its user agent does.
+    assert!(
+        !s["shared"]["userAgent"]
+            .as_str()
+            .unwrap()
+            .contains("Android"),
+        "{s:#}"
+    );
+    assert_eq!(s["shared"]["uaMobile"], false, "{s:#}");
     // A worker's navigator.platform is the system's whatever CDP says (a
     // known limit; see the design note).
     assert_eq!(s["main"]["platform"], "Linux armv81");
@@ -368,7 +383,7 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
         ua.contains("Android") && ua.contains("Mobile Safari"),
         "{ua}"
     );
-    for w in ["main", "worker", "shared", "frame", "frameWorker"] {
+    for w in ["main", "worker", "frame", "frameWorker"] {
         assert_eq!(s[w]["hints"]["model"], "SM-S911B", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["platformVersion"], "14.0.0", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["formFactors"], "Mobile", "{w}: {s:#}");
@@ -392,7 +407,6 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
         "/frame-worker.js",
         "/frame-fetch",
         "/shared.js",
-        "/shared-fetch",
     ] {
         let agent = probe.header(path, "user-agent").unwrap();
         assert_eq!(agent, ua, "{path}");
@@ -413,6 +427,15 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
             "{path}"
         );
     }
+    // What a shared worker fetches goes with its own user agent, the
+    // switch's.
+    assert_eq!(
+        probe.header("/shared-fetch", "user-agent").as_ref(),
+        s["shared"]["userAgent"]
+            .as_str()
+            .map(str::to_string)
+            .as_ref()
+    );
     // Asked for by the page, the model goes with what it loads.
     assert_eq!(
         probe.header("/style.css", "sec-ch-ua-model").as_deref(),
@@ -420,6 +443,42 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
     );
     browser.close().await.unwrap();
 }
+
+/// What the reverse check finds on a desktop's Chrome made a phone, that
+/// nothing over CDP can change: desktop APIs a phone's Chrome hasn't, and
+/// its connection's type, which only a phone's has.
+const PHONE_DESKTOP_APIS: [&str; 7] = [
+    "connection.type",
+    "hid",
+    "serial",
+    "keyboard",
+    "showOpenFilePicker",
+    "getScreenDetails",
+    "isExtended",
+];
+
+/// And for one page's phone: its PDF viewer, plugins and MIME types, the
+/// switch's user agent in its shared worker, its workers' platform, and
+/// the real window's width that a frame from another site reads.
+const PHONE_LIMITS_ONE_PAGE: [&str; 17] = [
+    "plugins",
+    "mimeTypes",
+    "pdfViewerEnabled",
+    PHONE_DESKTOP_APIS[0],
+    PHONE_DESKTOP_APIS[1],
+    PHONE_DESKTOP_APIS[2],
+    PHONE_DESKTOP_APIS[3],
+    PHONE_DESKTOP_APIS[4],
+    PHONE_DESKTOP_APIS[5],
+    PHONE_DESKTOP_APIS[6],
+    "worker platform",
+    "shared userAgent",
+    "shared platform",
+    "shared uaMobile",
+    "shared uaPlatform",
+    "frameWorker platform",
+    "frame outer",
+];
 
 /// What a detection script looks for: settings that disagree with each
 /// other, with the worker's and the frame's, or that were patched in by
@@ -455,6 +514,16 @@ const DETECT: &str = r#"
   const platforms = { Android: /Android/, macOS: /Mac OS X/, Windows: /Windows/, Linux: /Linux/ };
   if (!platforms[navigator.userAgentData.platform].test(navigator.userAgent)) flag('UA-CH platform vs user agent');
   if (/Android/.test(navigator.userAgent) !== /arm|aarch/.test(navigator.platform)) flag('navigator.platform vs user agent');
+  // What a phone's Chrome has, or hasn't, that a desktop's has.
+  if (navigator.userAgentData.mobile) {
+    if (navigator.plugins.length) flag('plugins');
+    if (navigator.mimeTypes.length) flag('mimeTypes');
+    if (navigator.pdfViewerEnabled) flag('pdfViewerEnabled');
+    if (!navigator.connection || !('type' in navigator.connection)) flag('connection.type');
+    for (const [where, name] of [[navigator, 'hid'], [navigator, 'serial'], [navigator, 'keyboard'], [window, 'showOpenFilePicker'], [window, 'getScreenDetails'], [screen, 'isExtended']]) {
+      if (name in where) flag(name);
+    }
+  }
   // The worker and the frame from another site.
   for (const [w, o] of [['worker', s.worker], ['shared', s.shared], ['frame', s.frame], ['frameWorker', s.frameWorker]]) {
     for (const k of ['language', 'languages', 'intlLocale', 'timeZone', 'offsets', 'dateString', 'userAgent', 'platform', 'uaMobile', 'uaPlatform', 'cores', 'onLine']) {
@@ -522,17 +591,7 @@ async fn detection_tricks_on_a_phone_find_only_the_known_limits() {
     // system Chrome runs on, and Chrome won't make a window narrower than
     // 500 pixels, which a frame from another site reads where the page
     // reads the phone's. The design note says more.
-    assert_eq!(
-        found,
-        [
-            "worker platform",
-            "shared userAgent",
-            "shared platform",
-            "frameWorker platform",
-            "frame outer"
-        ],
-        "{s:#}"
-    );
+    assert_eq!(found, PHONE_LIMITS_ONE_PAGE, "{s:#}");
     browser.close().await.unwrap();
 }
 
@@ -762,6 +821,7 @@ async fn a_service_worker_keeps_the_pages_language_and_clock() {
         .new_page_with(Environment {
             locale: Some("ja-JP".into()),
             timezone: Some("Asia/Tokyo".into()),
+            extra_headers: vec![("X-Extra".into(), "yes".into())],
             ..Default::default()
         })
         .await
@@ -774,6 +834,19 @@ async fn a_service_worker_keeps_the_pages_language_and_clock() {
         .expect("the service worker never answered")
         .unwrap();
     assert_eq!(said, json!(["ja-JP", "Asia/Tokyo", "ja-JP"]));
+    // What it fetches goes with the page's language and headers too. Its
+    // own script doesn't: Chrome fetches that from no session at all, so
+    // it goes with Chrome's own language and no extra headers (a known
+    // limit; a browser's environment gives Chrome its language).
+    assert_eq!(
+        probe.header("/sw.js", "accept-language").as_deref(),
+        Some("en-US,en;q=0.9")
+    );
+    assert_eq!(
+        probe.header("/sw-fetch", "accept-language").as_deref(),
+        Some("ja-JP,ja;q=0.9")
+    );
+    assert_eq!(probe.header("/sw-fetch", "x-extra").as_deref(), Some("yes"));
     browser.close().await.unwrap();
 }
 
@@ -1119,4 +1192,42 @@ async fn a_kept_profiles_pages_share_one_locale() {
     assert_eq!(page.evaluate("navigator.language").await.unwrap(), "de-DE");
     browser.close().await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_browser_launched_as_a_phone_hides_more_than_one_pages_phone() {
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    options.environment = Environment::device("Galaxy S22").unwrap();
+    let browser = common::launch(options).await;
+    let probe = Probe::new();
+    let page = browser.new_page().await.unwrap();
+    let s = surfaces(&page, &probe).await;
+    // The phone is Chrome's own from the start: its shared worker's user
+    // agent too, and no PDF viewer, as a phone's Chrome has none.
+    all_are(&s, "userAgent", s["main"]["userAgent"].clone());
+    all_are(&s, "uaMobile", json!(true));
+    assert!(
+        s["shared"]["userAgent"]
+            .as_str()
+            .unwrap()
+            .contains("Android")
+    );
+    assert_eq!(
+        page.evaluate("[navigator.plugins.length, navigator.mimeTypes.length, navigator.pdfViewerEnabled, screen.isExtended]")
+            .await
+            .unwrap(),
+        json!([0, 0, false, false])
+    );
+    let found = detected(&page, &s).await;
+    let mut want: Vec<&str> = PHONE_DESKTOP_APIS.to_vec();
+    want.extend([
+        "worker platform",
+        "shared platform",
+        "frameWorker platform",
+        "frame outer",
+    ]);
+    assert_eq!(found, want, "{s:#}");
+    browser.close().await.unwrap();
 }
