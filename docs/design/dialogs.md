@@ -368,20 +368,28 @@ Nothing here is visible to page script:
   only when a popup has put another tab in front.
 - A dialog is never answered faster than a person could, as above.
 - A popup is held while it's set up, as DevTools holds it when it's
-  open: the page that opened it sees `window.open()` return at once, and
-  the popup's first request starts a few round trips later. Holding a
-  popup that shares its opener's process could stall that process, the
-  opener's timers with it, so a test measures it: the longest gap
-  between ticks of a 5 ms `setInterval` in the opener, from just before
-  the click on a same-site `window.open` until the popup has loaded,
-  three times each, with and without a block for the popup to carry.
-  Measured on an M-series Mac with Chrome for Testing 154, the median of
-  three was 22 to 33 ms held, against 19 to 23 ms with the popup let go
-  at once, as before this milestone; single runs either way reached 40
-  to 200 ms now and then. Opening a tab in front costs the opener a frame
-  or two however it's done, and the hold adds no more than frame jitter,
-  so every popup is held, not only those with rules to carry. The test
-  fails if the median passes 250 ms.
+  open, and the popup's first request starts a few round trips later.
+  A popup that shares its opener's process holds the opener too: Chrome
+  keeps the opener inside `window.open()` until the popup is let go, and
+  none of its timers fire meanwhile. So the browser's reader thread
+  sends the setup and lets the popup go the moment Chrome reports it,
+  without waiting for the runtime's thread, and the hold costs the
+  opener one round trip to Netweir and back. A test measures it: the
+  longest gap between ticks of a 5 ms `setInterval` in the opener, from
+  just before the click on a same-site `window.open` until the popup has
+  loaded, three times each, with and without a block for the popup to
+  carry. Measured on an M-series Mac with Chrome for Testing 154, the
+  median of three was 22 to 33 ms held, against 19 to 23 ms with the
+  popup let go at once, as before this milestone; single runs either way
+  reached 40 to 200 ms now and then. On a Windows runner with Chrome for
+  Testing 155 it was 35 to 50 ms held, against about 21 ms let go. The
+  round trip grows with load: with eight busy loops on the runner's four
+  cores, it was 105 to 125 ms held (around 155 ms when the runtime's
+  thread let the popup go), against 25 to 30 ms let go. Opening a tab in
+  front costs the opener a frame or two however it's done, and on a
+  machine that isn't overloaded the hold adds little more, so every
+  popup is held, not only those with rules to carry. The test fails if
+  the median passes 250 ms.
 - Chrome's popup blocker stays on, as a person has it: a popup opened
   without a click is blocked.
 

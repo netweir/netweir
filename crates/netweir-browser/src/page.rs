@@ -607,6 +607,8 @@ impl Page {
             // which Chrome holds, is let go after them: Chrome takes a
             // session's commands in the order they come, so it runs set up,
             // and some answers (Page.enable's) only come once it runs.
+            // Nothing before this waits: the reader thread polls a popup's
+            // start once (`adopt_now`), and lets it go in that poll.
             let mut setup = Box::pin(futures_util::future::try_join_all(steps));
             let first = futures_util::future::poll_immediate(&mut setup).await;
             if opener.is_some() {

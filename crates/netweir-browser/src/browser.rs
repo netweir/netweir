@@ -658,12 +658,34 @@ fn popped(
     match opener {
         Some(opener) => {
             let runtime = opener.runtime();
-            runtime.spawn(Page::adopt(opener, str_of(info, "targetId"), session));
+            adopt_now(
+                &runtime,
+                Page::adopt(opener, str_of(info, "targetId"), session),
+            );
         }
         None => {
             conn.send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
             conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
         }
+    }
+}
+
+/// Runs `adopting` here, on the reader thread, as far as it goes without
+/// waiting, and the rest on `runtime`. A same-site popup shares its
+/// opener's renderer, and while Chrome holds it the opener is stopped
+/// inside `window.open()`, its timers with it. Here the popup's setup is
+/// sent and the popup let go before Chrome's next message is read, with
+/// no wait for the runtime's thread to be free and scheduled. On a
+/// Windows runner kept busy, that wait was 35 to 50 ms of every popup.
+fn adopt_now(
+    runtime: &tokio::runtime::Handle,
+    adopting: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let _entered = runtime.enter();
+    let mut adopting = Box::pin(adopting);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    if adopting.as_mut().poll(&mut cx).is_pending() {
+        runtime.spawn(adopting);
     }
 }
 
