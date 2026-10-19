@@ -218,10 +218,8 @@ fn request_cookies(
         .map(|c| crate::cookies::cookie_from(c, true))
         .collect::<PyResult<Vec<_>>>()?;
     if let (false, Ok(parsed)) = (add.is_empty(), Url::parse(url)) {
-        let scratch = netweir_core::cookies::Jar::new();
         for c in &add {
-            scratch
-                .add(c, Some(&parsed))
+            netweir_core::cookies::Jar::check(c, Some(&parsed))
                 .map_err(|e| PyValueError::new_err(format!("{url}: {e}")))?;
         }
     }

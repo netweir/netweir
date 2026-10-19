@@ -426,19 +426,6 @@ impl Jar {
             Some(value) => (String::new(), value.to_string()),
             None => (parsed.name().to_string(), parsed.value().to_string()),
         };
-        if name.len() + value.len() > MAX_SIZE || (name.is_empty() && value.is_empty()) {
-            return false;
-        }
-        // Nor may a cookie without a name pass for a prefixed one, nor for
-        // another cookie: sent as its value alone, "=x=y" reads as x.
-        let lower = value.to_ascii_lowercase();
-        if name.is_empty()
-            && (lower.starts_with("__secure-")
-                || lower.starts_with("__host-")
-                || value.contains('='))
-        {
-            return false;
-        }
         let secure = parsed.secure().unwrap_or(false);
         if secure && !trusted {
             return false;
@@ -469,37 +456,25 @@ impl Jar {
             .path()
             .filter(|p| p.starts_with('/'))
             .map_or_else(|| default_path(url), str::to_string);
-        let lower = name.to_ascii_lowercase();
-        if lower.starts_with("__secure-") && !secure {
-            return false;
-        }
-        if lower.starts_with("__host-") && (!secure || attribute.is_some() || path != "/") {
+        // A Domain attribute naming the host itself still makes a
+        // __Host- cookie no host's own; `valid` checks the rest.
+        if name.to_ascii_lowercase().starts_with("__host-") && attribute.is_some() {
             return false;
         }
         let same_site = parsed
             .same_site()
             .and_then(|s| SameSite::parse(&s.to_string()));
-        if same_site == Some(SameSite::None) && !secure {
-            return false;
-        }
         // A cross-site subresource can't set a cookie that wouldn't be sent
         // back to it (unspecified counts as Lax).
         if same_site != Some(SameSite::None) && context.cross_site && !context.navigation {
             return false;
         }
-        let partition = if parsed.partitioned().unwrap_or(false) {
-            if !secure {
-                return false;
-            }
-            Some(
-                context
-                    .top_level_site
-                    .clone()
-                    .unwrap_or_else(|| site_of(url)),
-            )
-        } else {
-            None
-        };
+        let partition = parsed.partitioned().unwrap_or(false).then(|| {
+            context
+                .top_level_site
+                .clone()
+                .unwrap_or_else(|| site_of(url))
+        });
         // Max-Age wins over Expires; either is kept as a deadline.
         let expires = match parsed.max_age() {
             Some(age) => Some(now + age.as_seconds_f64()),
@@ -523,6 +498,9 @@ impl Jar {
             accessed: now,
             seq: 0,
         };
+        if valid(&cookie).is_err() {
+            return false;
+        }
         let mut store = self.lock();
         if !trusted && store.overlays_secure(&cookie.name, &cookie.domain, &cookie.path, now) {
             return false;
@@ -539,14 +517,28 @@ impl Jar {
     /// domain with a leading dot is the domain's and its subdomains';
     /// without one, the host's alone. With `url`, an empty domain is the
     /// URL's host's and an empty path the URL's directory; without, both
-    /// are needed. One already expired removes the cookie it matches.
+    /// are needed. One already expired removes the cookie it matches. One
+    /// a Set-Cookie couldn't set either is refused, saying why (never with
+    /// its value): so is one Chrome would refuse, which would fail every
+    /// page the jar's cookies are handed to.
     pub fn add(&self, cookie: &Cookie, url: Option<&Url>) -> Result<(), String> {
-        if cookie.name.is_empty() && cookie.value.is_empty() {
-            return Err("a cookie needs a name or a value".into());
+        let now = now();
+        let stored = Jar::stored(cookie, url, now)?;
+        let mut store = self.lock();
+        if stored.expired(now) {
+            store.delete(&stored);
+        } else {
+            store.put(stored, now);
         }
-        if cookie.name.len() + cookie.value.len() > MAX_SIZE {
-            return Err(format!("the cookie {:?} is too large", cookie.name));
-        }
+        Ok(())
+    }
+
+    /// Whether `add` would take `cookie`, and if not, why.
+    pub fn check(cookie: &Cookie, url: Option<&Url>) -> Result<(), String> {
+        Jar::stored(cookie, url, now()).map(|_| ())
+    }
+
+    fn stored(cookie: &Cookie, url: Option<&Url>, now: f64) -> Result<Stored, String> {
         let (domain, host_only) = match (cookie.domain.strip_prefix('.'), url) {
             (Some(d), _) => (canonical(d), false),
             (None, _) if !cookie.domain.is_empty() => (canonical(&cookie.domain), true),
@@ -570,7 +562,6 @@ impl Jar {
             (false, Some(url)) => default_path(url),
             (false, None) => "/".into(),
         };
-        let now = now();
         let stored = Stored {
             name: cookie.name.clone(),
             value: cookie.value.clone(),
@@ -586,13 +577,8 @@ impl Jar {
             accessed: now,
             seq: 0,
         };
-        let mut store = self.lock();
-        if stored.expired(now) {
-            store.delete(&stored);
-        } else {
-            store.put(stored, now);
-        }
-        Ok(())
+        valid(&stored)?;
+        Ok(stored)
     }
 
     /// Every cookie, oldest first.
@@ -769,6 +755,60 @@ impl Jar {
         store.changes += 1;
         Ok(())
     }
+}
+
+/// The rules a cookie keeps however it comes, from a Set-Cookie or given
+/// whole, as Chrome keeps them: what's wrong, if anything, never with
+/// the cookie's value in it.
+fn valid(c: &Stored) -> Result<(), String> {
+    let name = &c.name;
+    let refuse = |why: &str| Err(format!("the cookie {name:?} {why}"));
+    if name.is_empty() && c.value.is_empty() {
+        return Err("a cookie needs a name or a value".into());
+    }
+    if name.len() + c.value.len() > MAX_SIZE {
+        return refuse("is too large");
+    }
+    // Control characters, a tab among them, and what would end the pair.
+    let broken = |s: &str| s.chars().any(|ch| ch.is_ascii_control() || ch == ';');
+    if broken(name) || name.contains('=') {
+        return refuse("has a name with '=', ';' or a control character in it");
+    }
+    if broken(&c.value) {
+        return refuse("has a value with ';' or a control character in it");
+    }
+    if c.path.chars().any(|ch| ch.is_ascii_control()) {
+        return refuse("has a path with a control character in it");
+    }
+    let lower = c.value.to_ascii_lowercase();
+    if name.is_empty() {
+        // Sent as its value alone, it would read as another cookie, or as
+        // a prefixed one it isn't.
+        if c.value.contains('=') {
+            return Err("a cookie without a name can't have '=' in its value".into());
+        }
+        if lower.starts_with("__secure-") || lower.starts_with("__host-") {
+            return Err(
+                "a cookie without a name can't have a value starting __Secure- or __Host-".into(),
+            );
+        }
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("__secure-") && !c.secure {
+        return refuse("needs to be secure, as its name starts __Secure-");
+    }
+    if lower.starts_with("__host-") && (!c.secure || !c.host_only || c.path != "/") {
+        return refuse(
+            "needs to be secure, its host's alone and for the path /, as its name starts __Host-",
+        );
+    }
+    if c.same_site == Some(SameSite::None) && !c.secure {
+        return refuse("needs to be secure to be SameSite=None");
+    }
+    if c.partition.is_some() && !c.secure {
+        return refuse("needs to be secure to be partitioned");
+    }
+    Ok(())
 }
 
 /// Whether SameSite lets `cookie` go with a request in `context`, as
@@ -1340,5 +1380,75 @@ mod tests {
         assert!(set(&jar, "https://e.com/", "plain2; Path=/b"));
         assert!(!set(&jar, "https://e.com/", ""));
         assert!(!set(&jar, "https://e.com/", "; Path=/"));
+    }
+
+    #[test]
+    fn control_characters_in_a_name_or_value_are_refused_as_in_chrome() {
+        let jar = Jar::new();
+        for refused in [
+            "t1=a\tb",
+            "t\t5=1",
+            "u=a\u{1}b",
+            "v=1; Path=/x\ty",
+            "w=1\u{7f}",
+        ] {
+            assert!(!set(&jar, "https://e.com/", refused), "{refused:?}");
+        }
+        // A tab at either end is only space.
+        assert!(set(&jar, "https://e.com/", "t2=\ta"));
+        assert_eq!(sent(&jar, "https://e.com/"), ["t2=a"]);
+    }
+
+    #[test]
+    fn a_cookie_given_whole_keeps_the_rules_a_set_cookie_does() {
+        let jar = Jar::new();
+        let cookie = |name: &str, value: &str, domain: &str, secure: bool| Cookie {
+            name: name.into(),
+            value: value.into(),
+            domain: domain.into(),
+            path: "/".into(),
+            expires: -1.0,
+            http_only: false,
+            secure,
+            same_site: None,
+            partition_key: None,
+        };
+        let refused = [
+            cookie("__Host-x", "1", "e.com", false),
+            cookie("__Secure-x", "1", "e.com", false),
+            cookie("__Host-y", "1", ".e.com", true),
+            Cookie {
+                path: "/a".into(),
+                ..cookie("__Host-z", "1", "e.com", true)
+            },
+            Cookie {
+                same_site: Some("None".into()),
+                ..cookie("ssn", "1", "e.com", false)
+            },
+            Cookie {
+                partition_key: Some("https://top.com".into()),
+                ..cookie("p", "1", "e.com", false)
+            },
+            cookie("", "a=b", "e.com", false),
+            cookie("", "__Secure-a", "e.com", true),
+            cookie("x", "a\tb", "e.com", false),
+            cookie("x\ty", "1", "e.com", false),
+            cookie("a=b", "1", "e.com", false),
+            cookie("x", "a;b", "e.com", false),
+        ];
+        for c in &refused {
+            let error = jar.add(c, None).unwrap_err();
+            assert_eq!(Jar::check(c, None), Err(error));
+        }
+        assert!(jar.is_empty());
+        for c in [
+            cookie("__Host-ok", "1", "e.com", true),
+            cookie("", "plain", "e.com", false),
+            cookie("sp", "a b", "e.com", false),
+        ] {
+            assert_eq!(Jar::check(&c, None), Ok(()));
+            jar.add(&c, None).unwrap();
+        }
+        assert_eq!(jar.len(), 3);
     }
 }

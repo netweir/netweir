@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import os
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -14,6 +15,8 @@ from netweir._form import Files, Form, read_form
 from netweir._helpers import Article
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
 from netweir._request import Request
+
+log = logging.getLogger("netweir")
 
 Headers = Mapping[str, str] | Iterable[tuple[str, str]] | None
 Params = Mapping[str, Any] | Iterable[tuple[str, Any]] | str | bytes | None
@@ -453,7 +456,8 @@ class Client:
         self._auth = checked_auth(auth)
         self.cookies = Cookies(self._fetcher)
         if storage_state is not None:
-            self._fetcher.load_storage_state(storage_state)
+            for why in self._fetcher.load_storage_state(storage_state):
+                log.warning("a cookie in the storage state was left out: %s", why)
 
     def storage_state(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         """The client's cookies as a storage state dict, in Playwright's

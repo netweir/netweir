@@ -175,12 +175,16 @@ impl Fetcher {
         crate::cookies::cookie_list(py, &self.inner.jar().find(name, domain, path))
     }
 
-    /// Adds cookie dicts, as `cookies()` gives them, or a browser does.
+    /// Adds cookie dicts, as `cookies()` gives them, or a browser does:
+    /// all of them, or, if one won't go in, none.
     fn add_cookies(&self, cookies: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
         let cookies = cookies
             .iter()
             .map(|c| crate::cookies::cookie_from(c, false))
             .collect::<PyResult<Vec<_>>>()?;
+        for c in &cookies {
+            netweir_core::cookies::Jar::check(c, None).map_err(PyValueError::new_err)?;
+        }
         for c in &cookies {
             self.inner
                 .jar()
@@ -219,15 +223,15 @@ impl Fetcher {
     }
 
     /// Adds a storage state's cookies: a path to its file, or its dict.
-    fn load_storage_state(&self, source: Bound<'_, PyAny>) -> PyResult<()> {
+    /// One that won't go in is left out, and what's wrong with it given
+    /// back, so the rest of a saved login still loads.
+    fn load_storage_state(&self, source: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         let state = crate::cookies::storage_state_from(&source)?;
-        for c in &state.cookies {
-            self.inner
-                .jar()
-                .add(c, None)
-                .map_err(PyValueError::new_err)?;
-        }
-        Ok(())
+        Ok(state
+            .cookies
+            .iter()
+            .filter_map(|c| self.inner.jar().add(c, None).err())
+            .collect())
     }
 
     /// Awaitable GET. Resolves to a Response.

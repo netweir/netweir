@@ -76,7 +76,10 @@ class Cookies:
         return self._fetcher.cookies()
 
     def add(self, cookies: Iterable[dict[str, Any]]) -> None:
-        """Adds cookie dicts, from ``all()``, a browser or a saved state."""
+        """Adds cookie dicts, from ``all()``, a browser or a saved state:
+        all of them, or ValueError, saying which cookie and why, and none.
+        One Chrome would refuse is refused here too (a ``__Host-`` name
+        that isn't secure, say), as it would fail every page it went to."""
         self._fetcher.add_cookies(list(cookies))
 
     def __iter__(self) -> Iterator[dict[str, Any]]:

@@ -129,6 +129,39 @@ async def test_cookies_in_playwrights_spelling_go_in_as_they_are(base):
         assert json.loads(page.text)["cookie"] == "pw=1"
 
 
+async def test_a_cookie_chrome_would_refuse_is_refused_and_a_saved_state_loads_the_rest(
+    base, caplog
+):
+    async with netweir.Client() as client:
+        good = {"name": "ok", "value": "1", "domain": "127.0.0.1"}
+        bad = {"name": "__Host-sid", "value": "s3cret", "domain": "127.0.0.1"}
+        with pytest.raises(ValueError, match="__Host-") as raised:
+            client.cookies.add([good, bad])
+        assert "s3cret" not in str(raised.value)
+        # All or nothing.
+        assert client.cookies.all() == []
+        with pytest.raises(ValueError, match="'='"):
+            client.cookies.set("", "a=b", domain="127.0.0.1")
+    state = {"cookies": [good, bad, {**good, "name": "tab", "value": "a\tb"}], "origins": []}
+    async with netweir.Client(storage_state=state) as client:
+        assert [c["name"] for c in client.cookies.all()] == ["ok"]
+    left_out = [r.getMessage() for r in caplog.records if "left out" in r.getMessage()]
+    assert len(left_out) == 2 and "__Host-sid" in left_out[0]
+    assert not any("s3cret" in m for m in left_out)
+
+
+def test_a_request_with_a_cookie_chrome_would_refuse_is_an_error(base):
+    class Spider(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                f"{base}/echo", cookies=[{"name": "x", "value": "1", "same_site": "None"}]
+            )
+
+    with pytest.raises(ValueError, match="SameSite=None"):
+        run(Spider, fail_fast=True)
+    assert carried("/echo") == []
+
+
 def run(spider_class, **settings):
     spider = spider_class()
     spider.settings = netweir.Settings(

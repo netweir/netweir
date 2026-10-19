@@ -60,6 +60,16 @@ the other way round. It's written readable by you alone (permissions
 takes its folder's permissions instead, so keep it in a folder only you
 can open.
 
+A cookie Chrome would refuse is refused everywhere: a `__Host-` or
+`__Secure-` name on a cookie that isn't secure, `SameSite=None` or a
+partition key without `secure`, a tab or other control character in a
+name or value, a cookie without a name whose value has an `=` in it.
+Chrome turns down a whole batch of cookies for one of those, so letting
+it into the jar would break every page it went to. `cookies.add` and
+`cookies.set` raise `ValueError` and add nothing, and so does a request
+whose `cookies=` has one. A storage state loads the rest and logs a
+warning for each cookie it leaves out.
+
 ## Log in with Chrome, crawl over HTTP
 
 Some logins need a real browser: a script that builds the form, a

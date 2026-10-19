@@ -63,7 +63,12 @@ and what Chrome does where the draft leaves room:
   one. `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no Domain and
   Path=/. `SameSite=None` needs `Secure`. A Set-Cookie without a name
   (`token`, or `=token`) is a cookie with an empty name, as in Chrome,
-  sent as its value alone, unless the value starts like a prefixed name.
+  sent as its value alone, unless the value starts like a prefixed name
+  or has an `=` in it. A cookie given whole (`cookies.add`, a request's
+  `cookies`, a storage state) keeps the same rules, Chrome's, since one
+  Chrome refuses fails `Storage.setCookies` for every cookie in the call:
+  one check serves both ways in. The API calls raise; a storage state
+  file leaves the cookie out and says so.
 - **Limits.** Chrome's: a site (a registrable domain, subdomains and
   all) keeps 180 cookies, and one more drops it to 150, insecure cookies
   first and each kind least recently sent or set first. Past 3300 in
