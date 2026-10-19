@@ -212,8 +212,9 @@ own `cookies` and nothing else.
 
 - A crawl with a checkpoint saves its jars as it goes, and a resumed crawl
   is still logged in. Requests still waiting keep their own cookies. The
-  checkpoint file is made readable by you alone, as it holds the cookies
-  (on Windows it takes its folder's permissions).
+  checkpoint file is made readable by you alone, as it holds the cookies,
+  and so is the cache's, which holds the pages they logged in to (on
+  Windows each takes its folder's permissions).
 - With `workers`, every jar stays in the main process, where requests are
   sent, so callbacks in any worker see the same session.
 - In a crawl shared by several machines, a request's `cookies` and its

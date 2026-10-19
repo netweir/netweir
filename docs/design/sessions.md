@@ -242,7 +242,9 @@ set into Chrome (given by URL, not domain), which they didn't before.
 - A storage state file is written with permissions 0600 (only its owner
   can read it) on Unix, through a new file renamed over the old one, so
   it's never readable on the way.
-- A checkpoint holds the jars, so its file is made 0600 on Unix too.
+- A checkpoint holds the jars, so its file is made 0600 on Unix too, and
+  so is the HTTP cache, which holds the pages each jar's login reached
+  and the cookies redirects set; their -wal and -shm with them.
 
 ## Testing
 

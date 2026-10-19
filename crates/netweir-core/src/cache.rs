@@ -16,6 +16,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::Fingerprint;
+#[cfg(unix)]
+use crate::checkpoint::owners_only;
 use crate::checkpoint::retrying;
 use crate::fetch::Response;
 
@@ -94,6 +96,9 @@ impl Cache {
                 dir.display()
             )
         };
+        // It holds the pages a crawl's logins reached.
+        #[cfg(unix)]
+        owners_only(path).map_err(unusable)?;
         // The format is read before anything is written, so a file this
         // build can't read is left as it was.
         let (conn, format) = retrying(|| {
@@ -336,6 +341,39 @@ mod tests {
         /// the moment when `close` can't take it, and leaves it to `with`.
         pub(super) static CLOSE_BEFORE_RELEASE: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cache_is_readable_by_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("netweir-cache-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = Policy {
+            robots: None,
+            tdm: false,
+        };
+        let path = dir.join("cache.sqlite3");
+        let mode = |f: &Path| std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+        drop(Cache::open(&path, None, policy.clone()).unwrap());
+        assert_eq!(mode(&path), 0o600, "a new cache");
+        // One from before, left readable by anyone with its -wal and -shm,
+        // by a run still holding it open.
+        let older = Connection::open(&path).unwrap();
+        older.pragma_update(None, "journal_mode", "WAL").unwrap();
+        older
+            .execute_batch("CREATE TABLE IF NOT EXISTS t (x)")
+            .unwrap();
+        let files = ["", "-wal", "-shm"].map(|end| dir.join(format!("cache.sqlite3{end}")));
+        for f in &files {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let cache = Cache::open(&path, None, policy).unwrap();
+        for f in &files {
+            assert_eq!(mode(f), 0o600, "{}", f.display());
+        }
+        drop((cache, older));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

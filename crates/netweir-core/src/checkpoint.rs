@@ -400,9 +400,10 @@ pub(crate) fn retrying<T>(mut open: impl FnMut() -> rusqlite::Result<T>) -> rusq
 /// Makes `path` readable and writable by its owner alone, creating it
 /// empty if it isn't there, as are a WAL and shared-memory file already
 /// beside it. SQLite gives the ones it makes the database's own mode. A
-/// checkpoint holds the logins requests were given.
+/// checkpoint holds the logins requests were given and the crawl's
+/// cookies, the cache the pages they logged in to.
 #[cfg(unix)]
-fn owners_only(path: &Path) -> rusqlite::Result<()> {
+pub(crate) fn owners_only(path: &Path) -> rusqlite::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let failed = |e: std::io::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(e));
     std::fs::OpenOptions::new()
