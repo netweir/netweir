@@ -552,6 +552,9 @@ struct Builder<'v> {
     bindings: Vec<(String, String)>,
     by_prefix: HashMap<String, Vec<usize>>,
     open: Vec<Open>,
+    /// How many of `open` have each name, so recover mode can tell at once
+    /// whether an end tag closes anything open.
+    open_names: HashMap<String, usize>,
     entities: HashMap<String, Entity>,
     /// Entities being expanded, outermost first.
     expanding: Vec<String>,
@@ -604,6 +607,7 @@ impl<'v> Builder<'v> {
             bindings: Vec::new(),
             by_prefix: HashMap::new(),
             open: Vec::new(),
+            open_names: HashMap::new(),
             entities: HashMap::new(),
             expanding: Vec::new(),
             floor: 0,
@@ -997,10 +1001,16 @@ impl<'v> Builder<'v> {
                 }
                 b'\n' | b'\t' => out.push(' '),
                 _ => {
-                    // A reference is a name (or #digits) and a `;`.
-                    let end = rest
-                        .find(';')
-                        .filter(|&e| e > 0 && (rest[..e].starts_with('#') || is_name(&rest[..e])));
+                    // A reference is a name (or #digits) and a `;`. Read as
+                    // far as one could go, not to the next `;`, which for a
+                    // value of many `&`s would mean rereading the rest.
+                    let len = rest
+                        .char_indices()
+                        .find(|&(i, c)| !(c == ':' || name_char(c) || (i == 0 && c == '#')))
+                        .map_or(rest.len(), |(i, _)| i);
+                    let end = (rest[len..].starts_with(';') && len > 0)
+                        .then_some(len)
+                        .filter(|&e| rest[..e].starts_with('#') || is_name(&rest[..e]));
                     let Some(end) = end else {
                         self.repair(
                             "`&` in an attribute value starts no reference (write &amp;)",
@@ -1301,6 +1311,7 @@ impl<'v> Builder<'v> {
         if top {
             self.binding = doc_binding;
         }
+        *self.open_names.entry(qname.clone()).or_default() += 1;
         self.open.push(Open { qname, mark, node });
         if empty {
             self.close()?;
@@ -1326,9 +1337,17 @@ impl<'v> Builder<'v> {
         // As lxml's recover mode does: an end tag for an element further
         // out closes everything inside it; one for no open element is
         // ignored.
-        let ancestor = self.open[self.floor..]
-            .iter()
-            .rposition(|o| o.qname == name)
+        // Looked up first: a run of end tags that close nothing would
+        // otherwise each search every open element.
+        let ancestor = self
+            .open_names
+            .contains_key(name)
+            .then(|| {
+                self.open[self.floor..]
+                    .iter()
+                    .rposition(|o| o.qname == name)
+            })
+            .flatten()
             .map(|i| i + self.floor);
         match ancestor {
             Some(at) => {
@@ -1351,6 +1370,12 @@ impl<'v> Builder<'v> {
     fn close(&mut self) -> Step {
         self.flush();
         let top = self.open.pop().expect("an element is open");
+        if let Some(count) = self.open_names.get_mut(&top.qname) {
+            *count -= 1;
+            if *count == 0 {
+                self.open_names.remove(&top.qname);
+            }
+        }
         self.unbind_to(top.mark);
         if let Some(visitor) = self.visitor.as_deref_mut() {
             visitor.end(&top.qname);
@@ -1379,6 +1404,28 @@ impl<'v> Builder<'v> {
         loop {
             let before = start + reader.buffer_position() as usize;
             self.at = before;
+            // A `<` that can't start markup, in recover mode: it's text.
+            // Looked at here, not left to quick-xml, which reads on to
+            // the next `>` before giving up on it, so a run of them would
+            // cost the square of its length.
+            if self.recover
+                && let Some(after) = src[before..].strip_prefix('<')
+                && !after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| name_start(c) || matches!(c, '/' | '!' | '?'))
+            {
+                self.tick(1)
+                    .and_then(|()| self.repair(LESS_THAN, "kept as text"))
+                    .and_then(|()| self.text("<"))
+                    .map_err(|s| (s, before))?;
+                if self.stopped {
+                    return Ok(src.len());
+                }
+                start = before + 1;
+                reader = self::reader(&src[start..], self.recover);
+                continue;
+            }
             let ev = match reader.read_event() {
                 Ok(ev) => ev,
                 Err(e) => {

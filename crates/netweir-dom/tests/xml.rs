@@ -1098,3 +1098,33 @@ fn recover_mode_keeps_a_processing_instruction_its_repair_changed() {
     ];
     let _ = Document::parse_xml_with(&String::from_utf8_lossy(crash), recover());
 }
+
+#[test]
+fn recovering_from_runs_of_bad_markup_takes_linear_time() {
+    // Each was quadratic: quick-xml read on to the next `>` for every
+    // `<`; every `&` in an attribute was read on to the next `;`; and
+    // every stray end tag searched every open element.
+    let mb = 1 << 20;
+    for (xml, check) in [
+        (format!("<r>{}>x</r>", "<".repeat(mb)), "<"),
+        (format!("<r>{}x</r>", "< ".repeat(mb / 2)), "<"),
+        (format!("<r a=\"{}\"/>", "&".repeat(mb)), "&"),
+        (
+            format!("<r>{}{}", "<a>".repeat(2000), "</zz>".repeat(200_000)),
+            "</zz>",
+        ),
+    ] {
+        let start = std::time::Instant::now();
+        let options = XmlOptions {
+            recover: true,
+            budget: Duration::from_secs(30),
+        };
+        let (_, repairs) =
+            Document::parse_xml_with(&xml, options).unwrap_or_else(|e| panic!("{check}: {e}"));
+        assert!(repairs.count > 100_000, "{check}: {}", repairs.count);
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(5), "{check}: {took:?}");
+    }
+    let (doc, _) = recovered(&format!("<r>{} x</r>", "<".repeat(10)));
+    assert_eq!(xpath(&doc, "/r/text()"), [format!("{} x", "<".repeat(10))]);
+}
