@@ -193,10 +193,23 @@ waiting on frames that never came. A person switches back to a tab
 before using it, so Netweir does too: the pages of one opener and its
 popups share which of them is in front, and an action that sends input
 (`click`, `fill`, `press`, `hover`, `scroll`, `select_option`,
-`set_input_files`, and `check` through `click`) on one that isn't sends `Page.bringToFront` first, then waits a
-moment as a person looks at the tab (the same pause as a dialog's). The
+`set_input_files`, and `check` through `click`) on one that isn't sends
+`Page.bringToFront` first, then waits a moment as a person looks at the
+tab (the same pause as a dialog's). The
 page sees `visibilitychange` to `visible`, as it would. Nothing is sent
 for a page already in front, so pages without popups see no change.
+
+When the tab in front closes, Chrome shows the one behind it again by
+itself: a popup closed by `close()` or by its own `window.close()`
+leaves its opener visible. So a page Netweir doesn't take to be in
+front is asked first, reading `document.visibilityState` in Netweir's
+own isolated world, which page script can't see; one already visible
+is only noted as in front, with no `Page.bringToFront`, no pause, and
+no second `visibilitychange`. That costs one round trip, and only for a
+page that has had a popup in front of it. A test closes a popup each
+way, with a pause long enough to see, and the opener's next click
+takes no pause and fires no `visibilitychange`; before, it paused a
+second and a half.
 
 A wait on the page itself does the same: `wait_for`,
 `wait_for_navigation` and `wait_for_load`. What they wait for is
@@ -398,10 +411,9 @@ Known limit: a page that opens dialogs in a loop costs about a second
 each, unless `dialog_pause` is lowered, which a page can notice.
 
 Known limit: which tab is in front is known only for a page and the
-popups it opened, from what Netweir did. A tab a person brings to the
-front of a headed Chrome, or a popup the page closes itself, leaves
-Netweir's idea of it behind; the cost is one `Page.bringToFront` too
-many, or a slow action on a hidden tab, as before this milestone.
+popups it opened. A page Netweir takes to be in front isn't asked, so a
+tab a person brings to the front of a headed Chrome leaves a slow action
+on a hidden tab, as before this milestone.
 
 ## Testing
 

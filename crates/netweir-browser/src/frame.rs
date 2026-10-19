@@ -189,7 +189,7 @@ impl Frame {
     }
 
     /// Runs `expression` in netweir's isolated world, awaiting a promise.
-    async fn helper(&self, expression: &str) -> Result<Value> {
+    pub(crate) async fn helper(&self, expression: &str) -> Result<Value> {
         let id = self.world(false).await?;
         match self.run(Some(id), expression, true).await {
             // The document changed under it, or the frame moved to another

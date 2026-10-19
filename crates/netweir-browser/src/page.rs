@@ -637,16 +637,23 @@ impl Page {
     /// Brings the page's tab in front of a popup it opened (or of its
     /// opener, for a popup), as a person switches to the tab they're
     /// about to use: in a tab behind, Chrome runs no animation frames and
-    /// routes the mouse elsewhere. Nothing is sent for a page in front.
+    /// routes the mouse elsewhere. Nothing is sent for a page in front,
+    /// nor for one Chrome has shown again by itself.
     pub(crate) async fn to_front(&self) -> Result<()> {
         let target = &self.inner.target;
         if *self.inner.front.lock().unwrap_or_else(|e| e.into_inner()) == *target {
             return Ok(());
         }
-        self.call("Page.bringToFront", json!({})).await?;
+        // Chrome shows a tab again by itself when the one in front of it
+        // closes, whoever closed it, so the page is asked first, in
+        // netweir's own world, where page script can't see the asking.
+        let shown = self.main_frame().helper("document.visibilityState").await;
+        if !matches!(shown, Ok(v) if v == "visible") {
+            self.call("Page.bringToFront", json!({})).await?;
+            // A person looks at the tab before using it.
+            tokio::time::sleep(crate::events::pause(self.inner.browser.pause)).await;
+        }
         *self.inner.front.lock().unwrap_or_else(|e| e.into_inner()) = target.clone();
-        // A person looks at the tab before using it.
-        tokio::time::sleep(crate::events::pause(self.inner.browser.pause)).await;
         Ok(())
     }
 

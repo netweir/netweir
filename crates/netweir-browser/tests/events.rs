@@ -1111,3 +1111,72 @@ async fn a_download_a_service_worker_answers_is_its_pages() {
     }
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn an_opener_shown_again_when_its_popup_closes_is_used_at_once() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    // A pause long enough to tell from a click.
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        dialog_pause: (Duration::from_millis(1500), Duration::from_millis(1600)),
+        ..Default::default()
+    })
+    .await;
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<a id=a target=_blank href=/popped>open</a>
+<button id=b onclick="window.open('/closes')">open one that closes</button>
+<p id=p>here</p>
+<script>
+  window.seen = [];
+  addEventListener('visibilitychange', () => seen.push(document.visibilityState));
+</script>"#,
+            ),
+        ),
+        ("/popped", html(POPPED)),
+        (
+            "/closes",
+            html("<script>setTimeout(() => window.close(), 200)</script>"),
+        ),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut events = page.listen();
+    for (opener, closed_by) in [("#a", "netweir"), ("#b", "itself")] {
+        page.click(opener, None).await.unwrap();
+        let popped = popup(&mut events).await;
+        if closed_by == "netweir" {
+            popped.close().await.unwrap();
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !popped.is_closed() {
+                assert!(Instant::now() < deadline, "the popup never closed");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        // Chrome shows the opener again by itself.
+        let shown = page
+            .wait_for_function_value("document.visibilityState == 'visible' || null")
+            .await;
+        assert_eq!(shown, json!(true), "closed by {closed_by}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let before = page.evaluate("seen.length").await.unwrap();
+        let started = Instant::now();
+        page.click("#p", None).await.unwrap();
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(1200),
+            "closed by {closed_by}: the click paused as if switching tabs: {took:?}"
+        );
+        assert_eq!(
+            page.evaluate("seen.length").await.unwrap(),
+            before,
+            "closed by {closed_by}: nothing switched to a tab in front"
+        );
+    }
+    browser.close().await.unwrap();
+}
