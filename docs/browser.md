@@ -823,8 +823,11 @@ Netweir avoids these giveaways:
   infobar that took 56 pixels from every page's window, and without the
   field trial config that showed page script one language and moved
   Accept-Language among a document's headers.
-- A worker's script asks for itself with its headers in Google Chrome's
-  order, which DevTools' user agent override would otherwise change.
+- With `netweir.browser(worker_header_order=True)`, a worker's script
+  is asked for with its headers in Google Chrome's order, which DevTools'
+  user agent override otherwise changes (User-Agent comes early). It's
+  off by default because it slows every page; see
+  [A page's environment](environment.md#what-it-cant-hide).
 
 A test in the repository loads a page that checks the first two from page
 script and the server checks the request headers; the test also fails if

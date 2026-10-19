@@ -234,3 +234,12 @@ Chrome lets DevTools change a great deal, but not everything:
   `outerWidth` is `innerWidth` there too.
 - **A permission prompt** is turned down at once, where a person would
   take a moment.
+- **A worker's script request** has its User-Agent early among its
+  headers (after `Accept`, where Chrome sends it after `Referer`): the
+  user agent override every page has, to keep Chrome's client hints,
+  puts it there, and a server that reads header order can see it.
+  `netweir.browser(worker_header_order=True)` (or
+  `Settings.browser_worker_header_order` in a crawl) puts it back, at a
+  price: every request of every page is paused on its way out, which
+  took a page with 300 subresources from 93 ms to 118, and one with
+  frames and workers from 200 ms to 292.

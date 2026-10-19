@@ -232,7 +232,8 @@ These are rules of the driver, not options, and tests enforce them:
   `--disable-field-trial-config`, as Google Chrome is shipped: its
   infobar made every window 143 pixels taller than its page (Google
   Chrome's is 87), and its field trial config showed page script one
-  language and sent a document's Accept-Language early. A worker's
+  language and sent a document's Accept-Language early. With
+  `worker_header_order` (off by default, for what it costs), a worker's
   script request, whose User-Agent the override moves, is paused and
   sent on without the headers Chrome adds back in their place.
   [environment.md](environment.md) has both, measured.

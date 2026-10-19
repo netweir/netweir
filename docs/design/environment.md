@@ -89,9 +89,7 @@ So Chrome is started with `--disable-infobars` and
 `--disable-field-trial-config`; then the frame is 87, the languages two,
 and a document's headers in Google Chrome's order. Google Chrome takes
 both switches as nothing to turn off: the environment and stealth tests
-pass with it as the executable, and with it connected. It's also given
-its languages (`--accept-lang`, `en-US,en` unless the environment names
-others), so what it sends of itself is known and matches the profiles.
+pass with it as the executable, and with it connected.
 
 ## The screen and the window
 
@@ -229,9 +227,15 @@ The rest of the identity goes everywhere:
   `pointerdown` with `pointerType` `touch`, `touchstart`, `touchend`
   and a `click` from a touch. (Chrome gives the lifted touch's
   `pointerup` a width of 1 however the tap is sent, `touchEnd` with its
-  point or without, or `synthesizeTapGesture`.) Scrolling is
-  `Input.synthesizeScrollGesture` from a touch, without a fling, so the
-  page gets touches and no `wheel` events. A key pressed is what an
+  point or without, or `synthesizeTapGesture`.) Scrolling is a finger dragging the page,
+  as touch events: it lands, moves in steps of 20 pixels every 16 ms,
+  15 pixels further than the distance (what Chrome takes as a tap's
+  wobble before it scrolls), holds still 120 ms and lifts, so the page
+  doesn't fling on (lifted without the hold, a 300-pixel drag went 380).
+  A drag too long for the screen goes as several. The page gets touches
+  and no `wheel` events, and its pointer is a fingertip's size all the
+  way; `Input.synthesizeScrollGesture`, used before, gave it a width
+  of 1. A key pressed is what an
   on-screen keyboard sends: `keydown` and `keyup` "Unidentified" with
   `keyCode` 229, no `keypress`, and the text as `input`
   (`Input.insertText`). `hover()` is refused.
@@ -286,8 +290,13 @@ What the list is matters. Chrome's own header for a German speaker is
 person's Chrome sends, so a locale goes over as `de-DE,de`, which Chrome
 sends as `de-DE,de;q=0.9`.
 
-**Chrome's own languages differ by context.** Launched with
-`--accept-lang`, Chrome's own context shows that list, but a context
+**Chrome's own languages differ by context.** With no locale given,
+Chrome is left its own: the machine's, as its `Intl` is (giving it
+`en-US,en` always, as an earlier version did, showed `navigator.language`
+`en-US` beside an `Intl` in `de-DE` on a German machine); with field
+trials off, an English machine's are `["en-US", "en"]`, as Google
+Chrome's. Launched with `--accept-lang`, Chrome's own context shows that
+list, but a context
 made over CDP (as every `new_page` and `new_context` is) adds its own UI
 language for some lists, the same in page and worker: `de-DE,de` became
 `de-DE,de,en-US,en`, `en-GB,en` became `en-GB,en-US,en`, while `fr-FR`
@@ -328,20 +337,44 @@ so. Order honoured in `Fetch.continueRequest`'s headers it isn't: Chrome
 kept `User-Agent` where it was. Left out, though, Chrome adds it back in
 its own place.
 
-So each session with an override has the Fetch domain pause requests of
-type Other, which is what a worker's script is, as part of the patterns
-routes and the guard already need, so nothing is paused twice. One that
-carries no client hints and no `Origin` (a module a worker imports has
-one, and comes with `User-Agent` first as Chrome sends it) goes on
-without its `User-Agent` and `Accept-Language` where their values are
-the ones Chrome adds itself (the switch's, and its own languages), and
-Chrome puts them back. What a route decides goes on with those headers
-left out too, unless it gives others. It costs a round trip per such
-request: 100 worker scripts one after another took 210 ms unpaused and
-270 ms paused, about 0.6 ms each. The stealth test checks every kind of
-worker script, and what each imports, against Google Chrome's order.
-Where a value differs from the switches (one page's user agent or
-locale), it can't be left out, and stays where the override put it.
+So, when `worker_header_order` is on, each session with an override has
+the Fetch domain pause requests of type Other, as part of the patterns
+routes and the guard already need, so nothing is paused twice. Only a
+worker's script is changed: Other, no client hints, no `Origin` (a
+module a worker imports has one, and comes with `User-Agent` first as
+Chrome sends it), `Accept: */*`, and `Sec-Fetch-Dest` worker or
+sharedworker where the request has one. On a page that isn't a secure
+context (plain http, not loopback) a favicon's request is Other with no
+client hints and no Sec-Fetch headers too; its `Accept` tells it apart,
+and its `User-Agent` stays first, as Chrome sends it. A worker's script
+goes on without its `User-Agent` and `Accept-Language` where their
+values are the ones Chrome adds itself (the switch's, and its own
+languages), and Chrome puts them back. What a route decides goes on with
+those headers left out too, unless it gives others. The stealth tests
+check every kind of worker script, what each imports, and a page that
+isn't a secure context, against Google Chrome's order. Where a value
+differs from the switches (one page's user agent or locale), it can't be
+left out, and stays where the override put it.
+
+**It's off by default, because of what it costs.** Any `Fetch.enable`
+puts every request of the session through the interceptor, whatever the
+patterns say, and a frame's session waits for its Fetch setup before
+it's let go. Loading one page at a time, alternating, 15 times each:
+
+| page | off | on |
+|---|---|---|
+| 300 subresources | 93 ms | 118 ms |
+| 300 subresources, 30 dedicated and 4 shared workers, 12 frames (half from another site) with 2 workers each | 200 ms | 292 ms |
+
+A lighter way was tried first: turning the pattern on only once a page
+starts a worker. It can't work. A dedicated worker's script is asked
+for before its target is attached and held (the server had the request
+10 ms before the session heard of the worker), and so are a module
+worker's and a shared worker's; by the time a session could turn Fetch
+on, the request has gone. So it's `worker_header_order` (on
+`LaunchOptions`, `netweir.browser()` and, for a crawl,
+`Settings.browser_worker_header_order`), for those who'd rather pay than
+leave the order changed, and the leak is said plainly in the guide.
 
 ## Shared and service workers
 
@@ -440,6 +473,16 @@ would grant:
   them, so the cookies come back with the same visitor's headers.
 
 ## Found on the way
+
+- **`uaFullVersion` was empty** in every headless page, and so was
+  `Sec-CH-UA-Full-Version` when a site asked for it, since the driver's
+  first launch: the client hints Netweir reads from Chrome left it out.
+  Deprecated, it's still a hint Chrome gives; it's read now, and set to
+  the full version where the brands are Netweir's.
+- **Going offline with a dedicated worker running** warned every time:
+  a worker's session answers `Network.overrideNetworkState` "Not
+  supported", and the worker's `navigator.onLine` follows its page. It
+  goes to pages and frames alone now.
 
 - **`outerWidth` is 0 during the first parse** of a document Chrome has
   just put in a new process by a browser-started navigation
