@@ -536,7 +536,15 @@ impl Jar {
                 let Some(d) = canonical(d) else {
                     return false;
                 };
-                if is_public_suffix(&d) {
+                if is_ip(&host) || is_ip(&d) {
+                    // An address names itself alone: a Domain of the
+                    // host's own address is a host-only cookie, any other
+                    // refused, as in Chrome.
+                    if d != host {
+                        return false;
+                    }
+                    (host.clone(), true)
+                } else if is_public_suffix(&d) {
                     // A site that is a public suffix may still set a cookie
                     // for itself alone.
                     if d != host {
@@ -554,10 +562,11 @@ impl Jar {
             .path()
             .filter(|p| p.starts_with('/'))
             .map_or_else(|| default_path(url), str::to_string);
-        // __Host- needs Path=/ said, and no Domain attribute (Chrome's
-        // HasValidHostPrefixAttributes); `valid` checks the rest.
+        // __Host- needs Path=/ said, and no Domain attribute but the host's
+        // own address (Chrome's HasValidHostPrefixAttributes); `valid`
+        // checks the rest.
         if name.to_ascii_lowercase().starts_with("__host-")
-            && (parsed.path() != Some("/") || attribute.is_some())
+            && (parsed.path() != Some("/") || (attribute.is_some() && !is_ip(&host)))
         {
             return false;
         }
@@ -641,7 +650,12 @@ impl Jar {
 
     fn stored(cookie: &Cookie, url: Option<&Url>, now: f64) -> Result<Stored, String> {
         let (domain, host_only) = match (cookie.domain.strip_prefix('.'), url) {
-            (Some(d), _) => (canonical(d), false),
+            // An address is its own alone, dot or no dot, as in Chrome.
+            (Some(d), _) => {
+                let d = canonical(d);
+                let ip = d.as_deref().is_some_and(is_ip);
+                (d, ip)
+            }
             (None, _) if !cookie.domain.is_empty() => (canonical(&cookie.domain), true),
             (None, Some(url)) => (url.host_str().and_then(canonical), true),
             (None, None) => return Err(format!("the cookie {:?} needs a domain", cookie.name)),
@@ -1602,5 +1616,35 @@ mod tests {
         assert_eq!(jar.len(), 180);
         set(&jar, "https://shop.example/", "plain=1");
         assert!(!held(&jar).contains(&"plain".to_string()));
+    }
+
+    #[test]
+    fn a_domain_that_is_an_address_makes_a_host_only_cookie_as_in_chrome() {
+        let jar = Jar::new();
+        assert!(set(&jar, "http://127.0.0.1/", "b=2; Domain=127.0.0.1"));
+        assert!(set(&jar, "http://127.0.0.1/", "c=3; Domain=.127.0.0.1"));
+        assert!(!set(&jar, "http://127.0.0.1/", "d=4; Domain=127.0.0.2"));
+        // The one address that may also be named as a Domain for __Host-.
+        assert!(set(
+            &jar,
+            "https://127.0.0.1/",
+            "__Host-e=5; Secure; Path=/; Domain=127.0.0.1"
+        ));
+        let domains: Vec<String> = jar.all().into_iter().map(|c| c.domain).collect();
+        assert_eq!(domains, ["127.0.0.1", "127.0.0.1", "127.0.0.1"]);
+        // Given whole with a dot, likewise.
+        let given = Cookie {
+            name: "f".into(),
+            value: "6".into(),
+            domain: ".127.0.0.1".into(),
+            path: "/".into(),
+            expires: -1.0,
+            http_only: false,
+            secure: false,
+            same_site: None,
+            partition_key: None,
+        };
+        jar.add(&given, None).unwrap();
+        assert_eq!(jar.find("f", None, None)[0].domain, "127.0.0.1");
     }
 }
