@@ -1229,6 +1229,8 @@ class _Run:
             proxy = meta["proxy"] or ""
         delta = _delta_meta(meta) if self.delta else (True, None)
         message = None
+        # What fail_fast raises: the class of what went wrong.
+        error: type[Exception] = TypeError
         if delta is None:
             message = (
                 f'{request.url}: meta["deltafetch_key"] must be a str or bytes, not'
@@ -1241,11 +1243,12 @@ class _Run:
                 Crawler.check_cookies(request.url, request.cookies)
         except (TypeError, ValueError) as e:
             message = f"{request.url}: {e}; skipped"
+            error = type(e)
         if message is not None:
             # As a callback's error would be, from a callback or start().
             self.counts["callback_errors"] += 1
             if self.settings.fail_fast:
-                raise TypeError(message)
+                raise error(message)
             log.error("%s", message)
             return None
         payload = self.payload(request) if row is None else "{}"

@@ -157,7 +157,7 @@ def test_a_request_with_a_cookie_chrome_would_refuse_is_an_error(base):
                 f"{base}/echo", cookies=[{"name": "x", "value": "1", "same_site": "None"}]
             )
 
-    with pytest.raises(TypeError, match="SameSite=None"):
+    with pytest.raises(ValueError, match="SameSite=None"):
         run(Spider, fail_fast=True)
     assert carried("/echo") == []
 
