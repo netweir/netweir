@@ -651,6 +651,7 @@ def parse(
     type: Literal["html", "xml"] | None = None,
     recover: bool = False,
 ) -> Node: ...
+def _encode(text: str, encoding: str) -> bytes | None: ...
 def _xml_nodes(
     text: str,
     tag: str,

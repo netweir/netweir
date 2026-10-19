@@ -24,7 +24,7 @@ import signal
 import threading
 import time
 import weakref
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
@@ -65,7 +65,7 @@ class Settings:
     #: Seconds one page may take to parse, wherever it's parsed: in the
     #: engine, or when a callback first reads it. A defence against
     #: markup made to be slow; ParseTimeout past it.
-    parse_timeout: float = 10.0
+    parse_timeout: float | None = 10.0
     #: Requests in flight across all sites, and to one host.
     concurrency: int = 64
     per_domain: int = 8
@@ -218,8 +218,8 @@ class Settings:
         if self.concurrency < 1 or self.per_domain < 1:
             raise ValueError("concurrency and per_domain must be at least 1")
         seconds(self.timeout)
-        if not self.parse_timeout >= 0:
-            raise ValueError("parse_timeout must be 0 seconds or more")
+        if self.parse_timeout is not None and not self.parse_timeout > 0:
+            raise ValueError("parse_timeout must be a positive number of seconds, or None")
         if not 0 <= self.min_delay <= self.max_delay or self.start_delay < 0:
             raise ValueError("delays must be non-negative, with min_delay <= max_delay")
         if self.target_concurrency <= 0:
@@ -547,16 +547,17 @@ class Spider:
         ``alternates``. Applies to an index's entries too."""
         return entries
 
-    def _sitemap(self, page: Page) -> Iterator[Request]:
+    async def _sitemap(self, page: Page) -> AsyncIterator[Request]:
         """Reads a sitemap, an index or a robots.txt, and yields the pages
-        and sitemaps it leads to."""
+        and sitemaps it leads to. The sitemap is read on a thread of its
+        own, so a large one doesn't hold up the crawl."""
         if urlsplit(page.url).path.endswith("/robots.txt"):
             for url in _robots_sitemaps(page.text):
                 yield Request(page.urljoin(url), callback="_sitemap")
             return
         limit = self.settings.max_response_size or 1 << 30
         try:
-            kind, entries, repaired = _parse_sitemap(page.body, limit)
+            kind, entries, repaired = await asyncio.to_thread(_parse_sitemap, page.body, limit)
         except ValueError as e:
             log.warning("%s: not read as a sitemap: %s", page.url, e)
             return

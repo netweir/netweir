@@ -3,9 +3,11 @@ Scrapy's XMLFeedSpider and CSVFeedSpider read them."""
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import inspect
 import io
+import itertools
 import logging
 from collections.abc import AsyncIterator, Iterable, Sequence
 from typing import Any
@@ -17,6 +19,10 @@ from netweir._hooks import _NOT_MANY
 from netweir._native import Selection, _xml_nodes
 
 log = logging.getLogger("netweir")
+
+#: Nodes read on the thread at a time: enough to make the trip worth it,
+#: few enough to hold (each is a document of its own, some 80 KB).
+_BATCH = 32
 
 #: Seconds iternodes may take to read one node: a crawl's budget for a
 #: page.
@@ -65,7 +71,7 @@ class XMLFeedSpider(Spider):
 
     - ``"iternodes"`` (the default) reads one node at a time, so a large
       feed never has to be in memory whole. Each node is a document of its
-      own: ``node.xpath("/..")`` finds nothing above it.
+      own: ``node.xpath("..")`` finds nothing above it, as in Scrapy.
     - ``"xml"`` parses the whole feed as XML first.
     - ``"html"`` parses it as HTML, for markup too broken to be XML. HTML
       parsing loses what's inside a ``<link>``, which RSS uses for URLs.
@@ -115,35 +121,63 @@ class XMLFeedSpider(Spider):
                 " to read this XML feed"
             )
         page = await _adapted(self, page)
-        for node in self._nodes(page):
+        async for node in self._nodes(page):
             results = await _results(self.parse_node(page, node))
             for out in await _processed(self, page, results):
                 yield out
 
-    def _nodes(self, page: Page) -> Iterable[Selection]:
+    async def _nodes(self, page: Page) -> AsyncIterator[Selection]:
+        """The nodes, read on a thread of their own, a batch at a time, so a
+        large feed doesn't hold up the rest of the crawl."""
         namespaces = [(str(prefix), str(uri)) for prefix, uri in self.namespaces]
         recover = self.settings.xml_recover if self.recover is None else bool(self.recover)
         if self.iterator == "iternodes":
-            nodes = _xml_nodes(
-                page.text,
-                self.itertag,
-                namespaces,
-                recover=recover,
-                timeout=_NODE_BUDGET,
-                place=page.url,
-            )
-            for node in nodes:
-                for prefix, uri in namespaces:
-                    node.register_namespace(prefix, uri)
-                yield node.xpath(".")
-            return
+
+            def start() -> Any:
+                return _xml_nodes(
+                    page.text,
+                    self.itertag,
+                    namespaces,
+                    recover=recover,
+                    timeout=_NODE_BUDGET,
+                    place=page.url,
+                )
+
+            def batch(nodes: Any) -> tuple[list[Selection], BaseException | None]:
+                # The nodes before a break in the feed, and then the break.
+                out = []
+                try:
+                    for node in itertools.islice(nodes, _BATCH):
+                        for prefix, uri in namespaces:
+                            node.register_namespace(prefix, uri)
+                        out.append(node.xpath("."))
+                except Exception as e:  # noqa: BLE001 - raised once they're given
+                    return out, e
+                return out, None
+
+            nodes = await asyncio.to_thread(start)
+            while True:
+                selections, error = await asyncio.to_thread(batch, nodes)
+                for selection in selections:
+                    yield selection
+                if error is not None:
+                    raise error
+                if len(selections) < _BATCH:
+                    return
         if self.iterator not in ("xml", "html"):
             raise ValueError(
                 f"unknown iterator {self.iterator!r}: use 'iternodes', 'xml' or 'html'"
             )
+        found = await asyncio.to_thread(self._whole, page, namespaces, recover)
+        for i in range(len(found)):
+            yield found[i : i + 1]
+
+    def _whole(self, page: Page, namespaces: list, recover: bool) -> Any:
+        """Every node of the feed parsed whole, as one Selection."""
         # The page's own document when it's the right kind, so it isn't
-        # parsed twice, through a handle of this spider's own ("/"), so
-        # the namespaces go on these nodes and not on page.root.
+        # parsed twice, through a handle of this spider's own (the root
+        # element), so the namespaces go on these nodes and not on
+        # page.root.
         parsed = page._root
         kind = parsed.type if parsed is not None else page._response.markup
         timeout, page_recover = page._parse
@@ -151,7 +185,10 @@ class XMLFeedSpider(Spider):
             root = page.root
         else:
             root = page._response.parse(type=self.iterator, recover=recover, timeout=timeout)
-        top = root.xpath("/")[0]
+        handles = root.xpath("/*")
+        if not handles:
+            return []
+        top = handles[0]
         for prefix, uri in namespaces:
             top.register_namespace(prefix, uri)
         prefix = self.itertag.partition(":")[0] if ":" in self.itertag else None
@@ -159,11 +196,9 @@ class XMLFeedSpider(Spider):
             # As iternodes reads it: what the feed declares the prefix as.
             uri = top.xpath("namespace-uri((//*[name()=$tag])[1])", tag=self.itertag).get()
             if not uri:
-                return
+                return []
             top.register_namespace(prefix, uri)
-        nodes = top.xpath(f"//{self.itertag}")
-        for i in range(len(nodes)):
-            yield nodes[i : i + 1]
+        return top.xpath(f"//{self.itertag}")
 
 
 class CSVFeedSpider(Spider):

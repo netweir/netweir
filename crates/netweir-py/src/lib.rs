@@ -317,6 +317,17 @@ fn _xml_nodes(
     })
 }
 
+/// `text` encoded as a browser would encode it in `encoding` (so that
+/// decoding gives it back); None if that encoding can't hold it.
+#[pyfunction]
+fn _encode<'py>(
+    py: Python<'py>,
+    text: &str,
+    encoding: &str,
+) -> Option<Bound<'py, pyo3::types::PyBytes>> {
+    netweir_core::encode(text, encoding).map(|b| pyo3::types::PyBytes::new(py, &b))
+}
+
 /// The crawl's identity for a GET of `url`, as hex: equal for the same
 /// page however its URL is written. None for anything but http(s).
 #[pyfunction]
@@ -419,6 +430,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(_sitemap, m)?)?;
     m.add_function(wrap_pyfunction!(_xml_nodes, m)?)?;
+    m.add_function(wrap_pyfunction!(_encode, m)?)?;
     m.add_class::<XmlNodeIter>()?;
     m.add_function(wrap_pyfunction!(_robots_sitemaps, m)?)?;
     m.add_function(wrap_pyfunction!(_offsite, m)?)?;

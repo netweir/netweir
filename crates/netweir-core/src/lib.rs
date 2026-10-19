@@ -29,7 +29,7 @@ pub use crawl::{
     ProxyRotation, ProxyStats, RETRY_STATUSES, RequestCookies, Stats, Submitted, allowed_domains,
     offsite,
 };
-pub use decode::{decode, encoding_name, meta_content};
+pub use decode::{decode, encode, encoding_name, meta_content};
 pub use deltafetch::DeltaKey;
 pub use fetch::{
     Auth, FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, MAX_REDIRECTS, Outgoing,

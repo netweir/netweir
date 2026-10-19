@@ -360,9 +360,15 @@ fn xpath_entries(
         let mut out = Vec::new();
         for id in scopes {
             // SAFETY: every scope id came from `doc`.
-            let hits = xpath
+            let mut hits = xpath
                 .run_in(unsafe { doc.node(id) }, &vars, &namespaces)
                 .map_err(|e| e.to_string())?;
+            // As lxml (so parsel) has it in XML: the document node is no
+            // result, so `/*/..` finds nothing, as `..` from a node read
+            // on its own doesn't.
+            if doc.is_xml() {
+                hits.retain(|h| !matches!(h, Hit::Node(n) if n.kind() == NodeKind::Document));
+            }
             out.extend(entries_of(hits));
         }
         Ok::<_, String>(out)

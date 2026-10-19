@@ -22,6 +22,47 @@ pub fn encoding_name(body: &[u8], content_type: Option<&str>) -> &'static str {
     }
 }
 
+/// `text` in the encoding named `name`, as a browser would write it (the
+/// WHATWG encoders, which Python's codecs don't always agree with, for
+/// Big5 and EUC-KR among others), so that `decode` with that encoding
+/// gives it back. UTF-16 and UTF-32 get a byte order mark, which is how
+/// they're found again. None for an encoding that can't hold the text, or
+/// that isn't one.
+pub fn encode(text: &str, name: &str) -> Option<Vec<u8>> {
+    let utf32 = |big_endian: bool| {
+        let mut out = Vec::with_capacity(4 + text.len() * 4);
+        for c in std::iter::once('\u{feff}').chain(text.chars()) {
+            let n = c as u32;
+            out.extend_from_slice(&if big_endian {
+                n.to_be_bytes()
+            } else {
+                n.to_le_bytes()
+            });
+        }
+        out
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "utf-32-be" | "utf-32be" => return Some(utf32(true)),
+        "utf-32-le" | "utf-32le" | "utf-32" => return Some(utf32(false)),
+        _ => {}
+    }
+    let encoding = Encoding::for_label(name.as_bytes())?;
+    if encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE {
+        let big_endian = encoding == encoding_rs::UTF_16BE;
+        let mut out = Vec::with_capacity(2 + text.len() * 2);
+        for unit in std::iter::once(0xFEFF).chain(text.encode_utf16()) {
+            out.extend_from_slice(&if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            });
+        }
+        return Some(out);
+    }
+    let (bytes, used, unmappable) = encoding.encode(text);
+    (used == encoding && !unmappable).then(|| bytes.into_owned())
+}
+
 enum Found {
     Encoding(&'static Encoding),
     /// encoding_rs has no UTF-32, which XML allows.
@@ -254,6 +295,25 @@ mod tests {
         let mut bom = vec![0xFF, 0xFE, 0, 0];
         bom.extend_from_slice(&le32);
         assert_eq!(decode(&bom, None), text);
+    }
+
+    #[test]
+    fn encoding_gives_what_decoding_reads_back() {
+        for (text, name) in [
+            ("繁體中文 測試", "big5"),
+            ("한국어 텍스트", "euc-kr"),
+            ("日本語", "shift_jis"),
+            ("Zoë €", "windows-1252"),
+            ("Zoë", "UTF-16LE"),
+            ("Zoë", "utf-32-be"),
+        ] {
+            let bytes = encode(text, name).unwrap_or_else(|| panic!("{name}"));
+            let content_type = format!("text/plain; charset={name}");
+            let content_type = (!name.starts_with("utf-32")).then_some(content_type.as_str());
+            assert_eq!(decode(&bytes, content_type), text, "{name}");
+        }
+        assert_eq!(encode("€ 日本", "iso-8859-2"), None);
+        assert_eq!(encode("x", "no-such-encoding"), None);
     }
 
     #[test]

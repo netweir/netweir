@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json as _json
 import logging
 import os
+import threading
 from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import unquote, urlencode, urljoin, urlsplit, urlunsplit
@@ -14,7 +14,7 @@ from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
 from netweir._helpers import Article
-from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _response
+from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _encode, _response
 from netweir._request import Request
 
 log = logging.getLogger("netweir")
@@ -175,17 +175,16 @@ def _encoded(
     """``text`` as bytes a response with headers ``pairs`` decodes back
     to it, and the headers to send with them."""
     encoding = _response(url, status, version, pairs, old).encoding
-    try:
-        name = codecs.lookup(encoding).name
-        if name.startswith(("utf-16", "utf-32")):
-            # With a byte order mark, which is how it's found again.
-            text = "\ufeff" + text
-        return text.encode(name), pairs
-    except (LookupError, UnicodeEncodeError):
-        if not any(k == "content-type" for k, _ in pairs):
-            # Says nothing of what it is, so the body is still looked at.
-            pairs = [*pairs, ("content-type", "application/octet-stream")]
-        return text.encode("utf-8"), [(k, _utf8(v) if k == "content-type" else v) for k, v in pairs]
+    # By the encoder a browser has, which is the decoder's other half:
+    # Python's codecs for Big5, EUC-KR and others write bytes WHATWG's
+    # decoders read as other characters.
+    body = _encode(text, encoding)
+    if body is not None:
+        return body, pairs
+    if not any(k == "content-type" for k, _ in pairs):
+        # Says nothing of what it is, so the body is still looked at.
+        pairs = [*pairs, ("content-type", "application/octet-stream")]
+    return text.encode("utf-8"), [(k, _utf8(v) if k == "content-type" else v) for k, v in pairs]
 
 
 def _utf8(content_type: str) -> str:
@@ -208,7 +207,16 @@ def _from_form(form: Form) -> tuple[str, dict[str, Any]]:
 class Page:
     """A fetched page: the response, and the document parsed from it."""
 
-    __slots__ = ("_base", "_outcome", "_parse", "_response", "_root", "browser", "request")
+    __slots__ = (
+        "_base",
+        "_lock",
+        "_outcome",
+        "_parse",
+        "_response",
+        "_root",
+        "browser",
+        "request",
+    )
 
     def __init__(
         self,
@@ -223,6 +231,9 @@ class Page:
         #: A crawl gives its pages Settings.parse_timeout and xml_recover;
         #: a page made by hand has no budget.
         self._parse = parse
+        #: So threads reading the page at once parse it once, and all get
+        #: the same document.
+        self._lock = threading.Lock()
         #: Parsed on first use, unless the crawl engine already parsed it.
         self._root: Node | None = root
         self._base: str | None = None
@@ -298,8 +309,10 @@ class Page:
         Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
         ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
-            timeout, recover = self._parse
-            self._root = self._response.parse(timeout=timeout, recover=recover)
+            with self._lock:
+                if self._root is None:
+                    timeout, recover = self._parse
+                    self._root = self._response.parse(timeout=timeout, recover=recover)
         return self._root
 
     @property

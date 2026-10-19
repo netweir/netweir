@@ -880,7 +880,7 @@ impl Crawler {
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None,
-        xml_recover=false, parse_timeout=10.0,
+        xml_recover=false, parse_timeout=Some(10.0),
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -932,7 +932,7 @@ impl Crawler {
         retry_http_codes: Option<Vec<u16>>,
         http_auth: Option<AuthPy>,
         xml_recover: bool,
-        parse_timeout: f64,
+        parse_timeout: Option<f64>,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         if http_auth.as_ref().is_some_and(|(_, _, d)| d.is_none()) {
@@ -1074,7 +1074,7 @@ impl Crawler {
                 next_id: AtomicU64::new(RULE_IDS),
                 base: Query::new("base[href]::attr(href)").expect("a valid selector"),
                 xml_recover,
-                parse_budget: crate::budget(Some(parse_timeout))?,
+                parse_budget: crate::budget(parse_timeout)?,
             }),
         })
     }

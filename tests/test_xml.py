@@ -635,6 +635,138 @@ def test_a_page_parsed_when_read_keeps_its_crawls_budget(feeds, caplog):
     assert page._parse == (None, False)
 
 
-def test_parse_timeout_must_not_be_negative():
-    with pytest.raises(ValueError, match="parse_timeout"):
-        netweir.Settings(parse_timeout=-1)
+def test_parse_timeout_is_positive_or_none():
+    for bad in (-1, 0, 0.0):
+        with pytest.raises(ValueError, match="parse_timeout"):
+            netweir.Settings(parse_timeout=bad)
+    assert netweir.Settings(parse_timeout=None).parse_timeout is None
+
+
+def test_no_parse_timeout_means_no_limit(feeds):
+    counts = []
+
+    class Reader(netweir.Spider):
+        start_urls = [f"{feeds}/slow"]
+        settings = netweir.Settings(
+            throttle=False, start_delay=0, obey_tdmrep=False, parse_timeout=None
+        )
+
+        def parse(self, page):
+            assert page._parse == (None, False)
+            counts.append(page.xpath("count(//a)").get())
+
+    Reader().run()
+    assert counts == ["200000.0"]
+
+
+@pytest.mark.parametrize(
+    "text, charset",
+    [
+        # Python's codecs and the WHATWG decoders disagree on these: Python
+        # writes Ё in Big5 as bytes the decoder reads as シ, and 갂 in
+        # EUC-KR as an eight-byte sequence of jamo.
+        ("<r>Ё ¢ 繁體</r>", "big5"),
+        ("<r>갂 한국어</r>", "euc-kr"),
+        ("<r>¢ ¬ 日本語</r>", "shift_jis"),
+    ],
+)
+def test_page_replace_encodes_as_the_page_is_decoded(text, charset):
+    page = page_of(b"<r>old</r>", f"text/xml; charset={charset}")
+    new = page.replace(body=text)
+    assert new.text == text
+    assert new.xpath("/r/text()").get() == text[3:-4]
+
+
+def test_threads_reading_a_page_at_once_parse_it_once():
+    body = (
+        "<rss><channel>" + "".join(f"<item><t>{i}</t></item>" for i in range(20000))
+    ).encode() + b"</channel></rss>"
+    for _ in range(10):
+        page = page_of(body, "application/rss+xml")
+        roots = [None] * 8
+        barrier = threading.Barrier(8)
+
+        def read(i, page=page, barrier=barrier, roots=roots):
+            barrier.wait()
+            roots[i] = page.root
+
+        threads = [threading.Thread(target=read, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(r is roots[0] for r in roots)
+
+
+def test_the_document_node_is_no_xpath_result_in_xml():
+    # As in parsel: from the root element, or from a node read on its own,
+    # there's nothing above.
+    root = netweir.parse("<r><a>x</a></r>", type="xml")
+    assert root.xpath("/*/..").getall() == []
+    assert root.xpath("/").getall() == []
+    assert root.xpath("//a/..").getall() == ["<r><a>x</a></r>"]
+    assert root.xpath("count(/*/..)").get() == "1.0"
+    from netweir._native import _xml_nodes
+
+    (node,) = _xml_nodes("<r><i>1</i></r>", "i", [])
+    assert node.xpath("..").getall() == []
+    assert node.xpath(".").getall() == ["<i>1</i>"]
+    # HTML keeps its document node, as Netweir always gave it.
+    assert netweir.parse("<p>x</p>").xpath("/html/..").getall() != []
+
+
+def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds):
+    """Sitemaps and iternodes are read on threads of their own: the event
+    loop goes on answering while they're read."""
+    import asyncio
+    import gzip
+    import time
+
+    items = "".join(f"<item><t>{'< ' * 3000}{i}</t></item>" for i in range(300))
+    Feeds.pages["/bigfeed"] = (
+        f"<rss><channel>{items}</channel></rss>".encode(),
+        "application/rss+xml",
+    )
+    rows = "".join(
+        f"<url><loc>https://e.invalid/{i}</loc><x>{'< ' * 40}</x></url>" for i in range(20_000)
+    )
+    Feeds.pages["/bigmap.xml"] = (
+        gzip.compress(f"<urlset>{rows}</urlset>".encode()),
+        "application/gzip",
+    )
+    nodes = []
+
+    class Big(netweir.XMLFeedSpider):
+        start_urls = [f"{feeds}/bigfeed"]
+        sitemap_urls = [f"{feeds}/bigmap.xml"]
+        sitemap_rules = []
+        recover = True
+        settings = netweir.Settings(throttle=False, start_delay=0, obey_tdmrep=False)
+
+        def parse_node(self, page, node):
+            nodes.append(1)
+
+    async def main():
+        gaps = []
+        done = asyncio.Event()
+
+        async def tick():
+            last = time.perf_counter()
+            while not done.is_set():
+                await asyncio.sleep(0.005)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        ticker = asyncio.create_task(tick())
+        started = time.perf_counter()
+        await Big().crawl()
+        took = time.perf_counter() - started
+        done.set()
+        await ticker
+        return took, max(gaps)
+
+    took, worst = asyncio.run(main())
+    assert len(nodes) == 300
+    # The reading took a while, and the loop was never held for long.
+    assert worst < max(0.25, took / 4), (took, worst)
