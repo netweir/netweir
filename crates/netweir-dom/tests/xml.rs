@@ -1150,8 +1150,10 @@ fn recovering_from_runs_of_bad_markup_takes_linear_time() {
         let (_, repairs) =
             Document::parse_xml_with(&xml, options).unwrap_or_else(|e| panic!("{check}: {e}"));
         assert!(repairs.count > 100_000, "{check}: {}", repairs.count);
+        // Linear, each takes well under a second; quadratic, minutes. The
+        // margin is for a slow runner's debug build.
         let took = start.elapsed();
-        assert!(took < Duration::from_secs(5), "{check}: {took:?}");
+        assert!(took < Duration::from_secs(20), "{check}: {took:?}");
     }
     let (doc, _) = recovered(&format!("<r>{} x</r>", "<".repeat(10)));
     assert_eq!(xpath(&doc, "/r/text()"), [format!("{} x", "<".repeat(10))]);
