@@ -250,10 +250,18 @@ fn parse(
 /// document is read (XMLFeedSpider's `iternodes`).
 #[pyclass(frozen, module = "netweir")]
 struct XmlNodeIter {
-    nodes: Mutex<XmlNodes>,
+    /// Boxed: the reader holds a Document, which is aligned to 128 bytes,
+    /// and Python allocates a class's objects aligned only to 16.
+    nodes: Mutex<Box<XmlNodes>>,
     /// For the warning when recovering repaired anything.
     place: Option<String>,
 }
+
+// Every class here is allocated by Python, which aligns to 16 bytes and
+// no more: anything held inline that wants more goes in a Box or an Arc.
+const _: () = assert!(std::mem::align_of::<XmlNodeIter>() <= 16);
+const _: () = assert!(std::mem::align_of::<node::Node>() <= 16);
+const _: () = assert!(std::mem::align_of::<node::Selection>() <= 16);
 
 #[pymethods]
 impl XmlNodeIter {
@@ -312,7 +320,7 @@ fn _xml_nodes(
     };
     let nodes = XmlNodes::new(text, tag, &namespaces, options).map_err(PyValueError::new_err)?;
     Ok(XmlNodeIter {
-        nodes: Mutex::new(nodes),
+        nodes: Mutex::new(Box::new(nodes)),
         place,
     })
 }
