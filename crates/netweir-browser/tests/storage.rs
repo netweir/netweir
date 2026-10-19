@@ -139,17 +139,20 @@ async fn an_http_sites_local_storage_stays_on_http() {
     let Some(browser) = browser().await else {
         return;
     };
-    // A site on a name, not an address, which Chrome might move to https;
-    // nothing reaches it, as Chrome answers every request itself.
-    let state = StorageState {
-        cookies: Vec::new(),
-        origins: vec![netweir_browser::OriginStorage {
-            origin: "http://shop.example".into(),
-            local_storage: vec![("cart".into(), "[1]".into())],
-        }],
-    };
-    let context = browser.new_context().await.unwrap();
-    context.set_storage_state(&state).await.unwrap();
-    assert_eq!(context.storage_state().await.unwrap(), state);
+    // Sites on real names, which HTTPS-Upgrades tries over https first;
+    // nothing reaches them, as Chrome answers every request itself.
+    for origin in ["http://example.com", "http://shop.example"] {
+        let state = StorageState {
+            cookies: Vec::new(),
+            origins: vec![netweir_browser::OriginStorage {
+                origin: origin.into(),
+                local_storage: vec![("cart".into(), "[1]".into())],
+            }],
+        };
+        let context = browser.new_context().await.unwrap();
+        context.set_storage_state(&state).await.unwrap();
+        assert_eq!(context.storage_state().await.unwrap(), state);
+        context.close().await.unwrap();
+    }
     browser.close().await.unwrap();
 }

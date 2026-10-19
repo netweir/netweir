@@ -950,6 +950,22 @@ impl Page {
         Ok(self.response_for(None))
     }
 
+    /// Waits until the page, opened on about:blank, shows another
+    /// document that has reached `wait`: one a script navigated it to.
+    pub(crate) async fn wait_for_new_document(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        let event = wait.event();
+        self.until(
+            || format!("{event} of a document after about:blank"),
+            self.timeout(timeout),
+            |s| !s.url.is_empty() && s.url != "about:blank" && s.reached(&s.loader, event),
+        )
+        .await
+    }
+
     fn response_for(&self, loader: Option<&str>) -> Response {
         let state = self.state();
         let loader = loader.unwrap_or(&state.loader);

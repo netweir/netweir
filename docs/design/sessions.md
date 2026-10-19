@@ -213,7 +213,22 @@ context's pages loaded a document from, and for each opens a page of its
 own in the context whose requests never leave Chrome (each is answered
 with an empty page by the page's own routes), reads (or fills) the
 origin's localStorage there, and closes it. sessionStorage and IndexedDB
-aren't saved, as in Playwright. Host-only cookies stay host-only when
+aren't saved, as in Playwright.
+
+An http origin on a real domain (`http://example.com`) can't be reached
+by navigating there: HTTPS-Upgrades sends the GET over https first, and
+since the page answers every request itself, https always answers
+(Chrome 155 then shows the https origin; Chrome for Testing 154 stops at
+a warning if https fails instead). Playwright turns HTTPS-Upgrades off
+for the whole browser, which changes how every page the crawl opens
+behaves. DevTools' DOMStorage domain needs a frame of the origin, which
+puts the same question back, and a frame of it under another page reads
+partitioned storage. What works without touching anything else: a form
+POST from the page's about:blank to the origin. Neither build upgrades a
+POST navigation, so the page lands on the http origin, whose
+localStorage is the one a visit there uses. The page then checks
+`location.origin`, so an origin HSTS still moves to https fails with an
+error saying so rather than reading another origin's storage. Host-only cookies stay host-only when
 set into Chrome (given by URL, not domain), which they didn't before.
 
 ## Security

@@ -273,8 +273,9 @@ pub(crate) async fn write_local(
 }
 
 /// Runs `js` in a page of `context` at `origin`, opened for it and closed
-/// after. Nothing it asks for leaves Chrome: every request is answered
-/// with an empty page, so the site never sees it.
+/// after. Nothing it asks for leaves Chrome: a request to `origin` is
+/// answered with an empty page, so the site never sees it, and any other
+/// fails.
 async fn at_origin(
     browser: &Arc<Inner>,
     context: Option<&str>,
@@ -294,10 +295,16 @@ async fn at_origin(
         None,
     )
     .await?;
+    let origin = origin.trim_end_matches('/').to_string();
     let result = async {
         let mut routes = page.route().await?;
+        let answered = format!("{origin}/");
         tokio::spawn(async move {
             while let Some(route) = routes.recv().await {
+                if !route.request().url.starts_with(&answered) {
+                    let _ = route.abort().await;
+                    continue;
+                }
                 let _ = route
                     .fulfill(
                         200,
@@ -308,10 +315,23 @@ async fn at_origin(
                     .await;
             }
         });
-        let origin = origin.trim_end_matches('/');
-        page.goto(&format!("{origin}/"), WaitUntil::Load, None)
+        let ours = format!("{origin}/");
+        if origin.starts_with("http://") {
+            // HTTPS-Upgrades would send a GET to an http site over https
+            // first (and some builds then stop at a warning); a form's
+            // POST is never upgraded, and lands on the origin itself.
+            let url = serde_json::to_string(&ours).unwrap_or_default();
+            page.evaluate(&format!(
+                "(() => {{ const f = document.createElement('form'); f.method = 'post'; \
+                 f.action = {url}; document.documentElement.appendChild(f); f.submit(); \
+                 return true; }})()"
+            ))
             .await?;
-        landed(origin, page.evaluate("location.origin").await?.as_str())?;
+            page.wait_for_new_document(WaitUntil::Load, None).await?;
+        } else {
+            page.goto(&ours, WaitUntil::Load, None).await?;
+        }
+        landed(&origin, page.evaluate("location.origin").await?.as_str())?;
         page.evaluate(&js).await
     }
     .await;
@@ -320,14 +340,14 @@ async fn at_origin(
 }
 
 /// Whether the page asked for `origin` is at it (`at`, its
-/// `location.origin`): HSTS or HTTPS-Upgrades can move an http origin to
-/// https, whose localStorage is another's.
+/// `location.origin`): HSTS can move an http origin to https, whose
+/// localStorage is another's.
 fn landed(origin: &str, at: Option<&str>) -> Result<()> {
     match at {
         Some(at) if at.eq_ignore_ascii_case(origin) => Ok(()),
         at => Err(Error::Invalid(format!(
             "localStorage for {origin} can't be reached: Chrome took the page to {}, \
-             a different origin (HSTS or HTTPS-Upgrades can do that to an http one)",
+             a different origin (HSTS does that to an http one)",
             at.unwrap_or("nowhere")
         ))),
     }
