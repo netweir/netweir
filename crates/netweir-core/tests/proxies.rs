@@ -889,3 +889,27 @@ async fn a_sites_saved_session_keeps_no_proxy_password() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn a_site_whose_session_holds_no_cookies_saves_none() {
+    let proxy = Site::start(vec![("http://a.test/x", Page::html("x"))]).await;
+    let dir = std::env::temp_dir().join(format!("netweir-empty-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("crawl.sqlite3");
+    let crawl = crawler(CrawlSettings {
+        checkpoint: Some(path.clone()),
+        ..settings(ProxyRotation::PerHost, &[&proxy])
+    });
+    crawl.submit(request(1, "http://a.test/x"));
+    drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    let saved: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM jars WHERE kind = 'host'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(saved, 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

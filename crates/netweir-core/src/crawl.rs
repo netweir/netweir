@@ -719,19 +719,29 @@ impl Shared {
             }
         }
         // And each host's own session's, kept apart from the named ones.
-        // With the identity each goes out with, its cookies' other half.
-        let hosts: Vec<(String, Arc<Jar>, String)> = self
+        // With the identity each goes out with, its cookies' other half:
+        // only the sessions are taken under the crawl's lock, and written
+        // after it's let go.
+        let hosts: Vec<(String, Arc<Jar>, FetchOptions)> = self
             .lock()
             .hosts
             .iter()
             .filter_map(|(host, h)| {
-                let options = h.options.as_ref().unwrap_or(&self.options);
-                let identity = serde_json::to_string(&Identity::of(options)).ok()?;
-                Some((host.clone(), h.session.as_ref()?.jar().clone(), identity))
+                let options = h.options.clone().unwrap_or_else(|| self.options.clone());
+                Some((host.clone(), h.session.as_ref()?.jar().clone(), options))
             })
             .collect();
-        for (host, jar, identity) in hosts {
-            let (key, now) = (host_key(&host), host_saved(&jar, &identity));
+        for (host, jar, options) in hosts {
+            let key = host_key(&host);
+            // A session with no cookies, never saved with any, has nothing
+            // to keep: per_host gives every site one.
+            if jar.is_empty() && !saved.contains_key(&key) {
+                continue;
+            }
+            let Ok(identity) = serde_json::to_string(&Identity::of(&options)) else {
+                continue;
+            };
+            let now = host_saved(&jar, &identity);
             if saved.get(&key) != Some(&now) {
                 cp.host_jar(host, jar.snapshot(), identity);
                 saved.insert(key, now);
