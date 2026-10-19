@@ -305,3 +305,24 @@ def test_a_crawl_s_environment_is_checked_when_the_settings_are_made():
         netweir.Settings(browser_environment="Galaxy S23")
     settings = netweir.Settings(browser_environment={"device": "Galaxy S23"})
     assert settings.browser_environment == {"device": "Galaxy S23"}
+
+
+async def test_media_and_no_viewport_are_as_playwright_has_them(browser, base):
+    page = await browser.new_page(viewport=None, forced_colors="active")
+    assert page.viewport_size is None
+    await page.goto(base + "/plain")
+    queries = "['print', '(forced-colors: active)', '(prefers-contrast: more)'].map((q) => matchMedia(q).matches)"
+    assert await page.evaluate(queries) == [False, True, False]
+    await page.emulate_media(media="print", contrast="more")
+    assert await page.evaluate(queries) == [True, True, True]
+    await page.emulate_media(media="null", forced_colors="null")
+    assert await page.evaluate(queries) == [False, False, True]
+    with pytest.raises(ValueError, match="media"):
+        await page.emulate_media(media="paper")
+
+
+async def test_a_phone_without_touch_or_a_desktop_with_it_is_refused(browser):
+    with pytest.raises(ValueError, match="touch"):
+        await browser.new_page(device="Galaxy S23", has_touch=False)
+    with pytest.raises(ValueError, match="desktop"):
+        await browser.new_page(has_touch=True)

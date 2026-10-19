@@ -300,6 +300,9 @@ impl Page {
         }
         let (window, bounds) = self.window().await?;
         let insets = self.insets(&window).await?;
+        // No viewport: the window as Chrome opened it, moved onto its
+        // screen.
+        let resize = resize && !env.no_viewport;
         let scale = env.device_scale_factor.unwrap_or(browser.screen_scale);
         let mobile = env.is_mobile();
         // A phone's window is its viewport: its browser has no frame
@@ -319,8 +322,14 @@ impl Page {
         // A window bigger than the work area is made to fit it, as Chrome
         // makes a window of its own.
         let switched = browser.window_size.map(|(w, h)| Size {
-            width: (w as i64).min(screen.avail.2).saturating_sub(frame.0).max(1) as u32,
-            height: (h as i64).min(screen.avail.3).saturating_sub(frame.1).max(1) as u32,
+            width: (w as i64)
+                .min(screen.avail.2)
+                .saturating_sub(frame.0)
+                .max(1) as u32,
+            height: (h as i64)
+                .min(screen.avail.3)
+                .saturating_sub(frame.1)
+                .max(1) as u32,
         });
         let viewport = match env.viewport.or(switched) {
             Some(v) if fits(&screen, v) => v,

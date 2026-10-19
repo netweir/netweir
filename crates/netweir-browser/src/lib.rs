@@ -18,7 +18,8 @@ mod window;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};
 pub use environment::{
-    ColorScheme, Environment, Geolocation, Phone, ReducedMotion, Size, device_names,
+    ColorScheme, Contrast, Environment, ForcedColors, Geolocation, Media, MediaChange, Phone,
+    ReducedMotion, Size, device_names,
 };
 pub use events::{Dialog, Download, PageEvent};
 pub use frame::{Frame, Pick};

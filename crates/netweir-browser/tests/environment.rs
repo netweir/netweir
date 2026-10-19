@@ -786,9 +786,12 @@ async fn settings_changed_later_reach_the_page() {
         })
     );
 
-    page.emulate_media(Some(ColorScheme::Dark), None)
-        .await
-        .unwrap();
+    page.emulate_media(&netweir_browser::MediaChange {
+        color_scheme: Some(Some(ColorScheme::Dark)),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     assert_eq!(
         page.evaluate("matchMedia('(prefers-color-scheme: dark)').matches")
             .await
@@ -1376,5 +1379,203 @@ async fn a_viewport_too_big_for_its_screen_is_refused_not_moved() {
             .unwrap(),
         json!([1280, 720, 1920])
     );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn touch_that_contradicts_the_device_is_refused() {
+    let mut no_touch = Environment::device("Galaxy S23").unwrap();
+    no_touch.has_touch = Some(false);
+    assert!(no_touch.validate().is_err());
+    // Chrome's touch emulation makes the pointer coarse and hover none:
+    // no laptop with a touch screen and a trackpad is that.
+    let touch_desktop = Environment {
+        has_touch: Some(true),
+        ..Default::default()
+    };
+    let err = touch_desktop.validate().unwrap_err();
+    assert!(err.to_string().contains("desktop"), "{err}");
+}
+
+#[tokio::test]
+async fn a_desktop_page_in_a_phones_context_is_no_phone() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let context = browser
+        .new_context_with(Environment {
+            locale: Some("nl-NL".into()),
+            ..Environment::device("Galaxy S23").unwrap()
+        })
+        .await
+        .unwrap();
+    let page = context
+        .new_page_with(Environment {
+            mobile: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    assert_eq!(
+        page.evaluate(
+            "[navigator.userAgentData.mobile, navigator.maxTouchPoints, screen.width, \
+             devicePixelRatio, innerWidth, navigator.language]"
+        )
+        .await
+        .unwrap(),
+        json!([false, 0, 1920, 1, 1280, "nl-NL"])
+    );
+    browser.close().await.unwrap();
+}
+
+const EVENTS: &str = "<meta name=viewport content='width=device-width'>\
+    <button id=b style='margin-top:100px;width:200px;height:80px'>tap</button><input id=i>\
+    <script>window.seen = []; for (const k of ['pointerdown', 'touchstart', 'touchend', 'keydown', \
+    'keypress', 'keyup', 'beforeinput', 'input']) addEventListener(k, (e) => seen.push([k, \
+    e.width || (e.changedTouches ? e.changedTouches[0].radiusX : 0), e.height || \
+    (e.changedTouches ? e.changedTouches[0].radiusY : 0), e.key || '', e.keyCode || 0, \
+    e.inputType || '', e.data || '']), true);</script>";
+
+#[tokio::test]
+async fn a_finger_is_the_same_size_down_and_up_and_types_as_a_phone_does() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let server = serve(vec![("/", html(EVENTS))]);
+    let page = browser
+        .new_page_with(Environment::device("Galaxy S21").unwrap())
+        .await
+        .unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let mut sizes = Vec::new();
+    for _ in 0..3 {
+        page.evaluate("seen.length = 0").await.unwrap();
+        page.click("#b", None).await.unwrap();
+        let seen = page.evaluate("seen").await.unwrap();
+        let find = |k: &str| {
+            seen.as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e[0] == k)
+                .unwrap()
+                .clone()
+        };
+        let (down, start, end) = (find("pointerdown"), find("touchstart"), find("touchend"));
+        assert!(down[1].as_f64().unwrap() > 1.0, "{seen}");
+        // The finger lifts as big as it landed. (Chrome itself gives a
+        // lifted touch's pointerup a width of 1, however it's sent.)
+        assert_eq!((&start[1], &start[2]), (&end[1], &end[2]), "{seen}");
+        sizes.push(down[1].clone());
+    }
+    assert!(sizes.windows(2).any(|w| w[0] != w[1]), "always {sizes:?}");
+    // Typing on a phone's keyboard: the key is "Unidentified", 229, with
+    // no keypress, and the text arrives as input.
+    page.click("#i", None).await.unwrap();
+    page.evaluate("seen.length = 0").await.unwrap();
+    page.press("a").await.unwrap();
+    let seen: Vec<Value> = serde_json::from_value(page.evaluate("seen").await.unwrap()).unwrap();
+    let kinds: Vec<&str> = seen.iter().map(|e| e[0].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        ["keydown", "beforeinput", "input", "keyup"],
+        "{seen:?}"
+    );
+    assert_eq!(seen[0][3], "Unidentified");
+    assert_eq!(seen[0][4], 229);
+    assert_eq!(seen[2][5], "insertText");
+    assert_eq!(seen[2][6], "a");
+    assert_eq!(page.evaluate("i.value").await.unwrap(), "a");
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn media_is_set_and_taken_away_as_playwright_does() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let page = browser
+        .new_page_with(Environment {
+            color_scheme: Some(ColorScheme::Dark),
+            forced_colors: Some(netweir_browser::ForcedColors::Active),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    page.goto("about:blank", WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let read = "['(prefers-color-scheme: dark)', '(forced-colors: active)', 'print', \
+                '(prefers-contrast: more)'].map((q) => matchMedia(q).matches)";
+    assert_eq!(
+        page.evaluate(read).await.unwrap(),
+        json!([true, true, false, false])
+    );
+    page.emulate_media(&netweir_browser::MediaChange {
+        media: Some(Some(netweir_browser::Media::Print)),
+        contrast: Some(Some(netweir_browser::Contrast::More)),
+        forced_colors: Some(None),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        page.evaluate(read).await.unwrap(),
+        json!([true, false, true, true])
+    );
+    // Left out, the colour scheme stayed; taken away, it's Chrome's own.
+    page.emulate_media(&netweir_browser::MediaChange {
+        color_scheme: Some(None),
+        media: Some(None),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let own = page
+        .evaluate("matchMedia('(prefers-color-scheme: dark)').matches")
+        .await
+        .unwrap();
+    let fresh = browser.new_page().await.unwrap();
+    assert_eq!(
+        fresh
+            .evaluate("matchMedia('(prefers-color-scheme: dark)').matches")
+            .await
+            .unwrap(),
+        own
+    );
+    assert_eq!(
+        page.evaluate("matchMedia('print').matches").await.unwrap(),
+        false
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn no_viewport_leaves_the_window_as_chrome_opens_it() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let page = browser
+        .new_page_with(Environment {
+            no_viewport: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.viewport(), None);
+    page.goto("about:blank", WaitUntil::Load, None)
+        .await
+        .unwrap();
+    // On the screen, inside its work area, at whatever size Chrome chose.
+    let fits = page
+        .evaluate("outerWidth <= screen.availWidth && outerHeight <= screen.availHeight && innerWidth > 0")
+        .await
+        .unwrap();
+    assert_eq!(fits, true);
     browser.close().await.unwrap();
 }

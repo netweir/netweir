@@ -72,6 +72,80 @@ impl std::str::FromStr for ReducedMotion {
     }
 }
 
+/// The CSS media type: `@media print` matching, or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Media {
+    Screen,
+    Print,
+}
+
+/// What `forced-colors` matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForcedColors {
+    Active,
+    None,
+}
+
+/// What `prefers-contrast` matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contrast {
+    More,
+    NoPreference,
+}
+
+impl std::str::FromStr for Media {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Media> {
+        match s {
+            "screen" => Ok(Media::Screen),
+            "print" => Ok(Media::Print),
+            _ => Err(Error::Invalid(format!(
+                "media must be \"screen\" or \"print\", not {s:?}"
+            ))),
+        }
+    }
+}
+
+impl std::str::FromStr for ForcedColors {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<ForcedColors> {
+        match s {
+            "active" => Ok(ForcedColors::Active),
+            "none" => Ok(ForcedColors::None),
+            _ => Err(Error::Invalid(format!(
+                "forced_colors must be \"active\" or \"none\", not {s:?}"
+            ))),
+        }
+    }
+}
+
+impl std::str::FromStr for Contrast {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Contrast> {
+        match s {
+            "more" => Ok(Contrast::More),
+            "no-preference" => Ok(Contrast::NoPreference),
+            _ => Err(Error::Invalid(format!(
+                "contrast must be \"more\" or \"no-preference\", not {s:?}"
+            ))),
+        }
+    }
+}
+
+/// A change [`crate::Page::emulate_media`] makes: for each, None leaves
+/// it, `Some(None)` takes the emulation away, and `Some(Some(v))` sets it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MediaChange {
+    pub media: Option<Option<Media>>,
+    pub color_scheme: Option<Option<ColorScheme>>,
+    pub reduced_motion: Option<Option<ReducedMotion>>,
+    pub forced_colors: Option<Option<ForcedColors>>,
+    pub contrast: Option<Option<Contrast>>,
+}
+
 /// The phone a page says it's on: what its client hints and its
 /// navigator name, beyond the screen and window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +169,9 @@ pub struct Environment {
     /// shows 1280 by 720 where its screen has room, and fills the screen's
     /// work area where it hasn't.
     pub viewport: Option<Size>,
+    /// No viewport of netweir's at all: the window is as Chrome opens it,
+    /// as Playwright's `no_viewport` has it.
+    pub no_viewport: bool,
     /// The display the window is on: `screen.width` and `screen.height`.
     pub screen: Option<Size>,
     /// `devicePixelRatio`, the screen's.
@@ -115,6 +192,9 @@ pub struct Environment {
     pub permissions: Vec<String>,
     pub color_scheme: Option<ColorScheme>,
     pub reduced_motion: Option<ReducedMotion>,
+    pub forced_colors: Option<ForcedColors>,
+    pub contrast: Option<Contrast>,
+    pub media: Option<Media>,
     /// Sent with every request, after Chrome's own.
     pub extra_headers: Vec<(String, String)>,
     pub offline: Option<bool>,
@@ -242,8 +322,24 @@ impl Environment {
 
     /// This environment, with what it leaves unset taken from `base`:
     /// init scripts and permissions are added to the base's, and extra
-    /// headers replace the base's of the same name.
+    /// headers replace the base's of the same name. One that says it's
+    /// no phone (`mobile` false) takes nothing of a phone from its base:
+    /// its screen, ratio, viewport, touch, user agent or identity.
     pub fn over(&self, base: &Environment) -> Environment {
+        if self.mobile == Some(false) && base.is_mobile() {
+            let desktop = Environment {
+                viewport: None,
+                no_viewport: false,
+                screen: None,
+                device_scale_factor: None,
+                mobile: None,
+                has_touch: None,
+                user_agent: None,
+                phone: None,
+                ..base.clone()
+            };
+            return self.over(&desktop);
+        }
         let mut extra_headers = base.extra_headers.clone();
         for (name, value) in &self.extra_headers {
             extra_headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
@@ -257,6 +353,7 @@ impl Environment {
         }
         Environment {
             viewport: self.viewport.or(base.viewport),
+            no_viewport: self.no_viewport || (base.no_viewport && self.viewport.is_none()),
             screen: self.screen.or(base.screen),
             device_scale_factor: self.device_scale_factor.or(base.device_scale_factor),
             mobile: self.mobile.or(base.mobile),
@@ -267,6 +364,9 @@ impl Environment {
             permissions,
             color_scheme: self.color_scheme.or(base.color_scheme),
             reduced_motion: self.reduced_motion.or(base.reduced_motion),
+            forced_colors: self.forced_colors.or(base.forced_colors),
+            contrast: self.contrast.or(base.contrast),
+            media: self.media.or(base.media),
             extra_headers,
             offline: self.offline.or(base.offline),
             user_agent: self.user_agent.clone().or_else(|| base.user_agent.clone()),
@@ -337,6 +437,21 @@ impl Environment {
         }
         if self.mobile == Some(false) && (self.phone.is_some() || is_phone_agent(self)) {
             return bad("a phone's user agent needs mobile left on".into());
+        }
+        if self.is_mobile() && self.has_touch == Some(false) {
+            return bad(
+                "a phone without touch: Chrome on a phone has no mouse, and a page reading \
+                 maxTouchPoints 0 next to a phone's client hints sees a contradiction"
+                    .into(),
+            );
+        }
+        if self.has_touch == Some(true) && !self.is_mobile() {
+            return bad(
+                "has_touch on a desktop: Chrome's touch emulation makes the device touch-only \
+                 (pointer: coarse, hover: none, no fine pointer), which no laptop with a touch \
+                 screen and a trackpad is, and media emulation can't put the pointer back"
+                    .into(),
+            );
         }
         if let Some(locale) = &self.locale
             && (locale.is_empty()
@@ -527,24 +642,9 @@ impl Environment {
             out.push(("Emulation.setTimezoneOverride", json!({"timezoneId": tz})));
         }
         if page {
-            let mut features = Vec::new();
-            if let Some(c) = self.color_scheme {
-                let value = match c {
-                    ColorScheme::Light => "light",
-                    ColorScheme::Dark => "dark",
-                    ColorScheme::NoPreference => "no-preference",
-                };
-                features.push(json!({"name": "prefers-color-scheme", "value": value}));
-            }
-            if let Some(m) = self.reduced_motion {
-                let value = match m {
-                    ReducedMotion::Reduce => "reduce",
-                    ReducedMotion::NoPreference => "no-preference",
-                };
-                features.push(json!({"name": "prefers-reduced-motion", "value": value}));
-            }
-            if !features.is_empty() {
-                out.push(("Emulation.setEmulatedMedia", json!({"features": features})));
+            let media = self.media_param();
+            if media != json!({"media": "", "features": []}) {
+                out.push(("Emulation.setEmulatedMedia", media));
             }
             if self.has_touch == Some(true) {
                 let points = self.phone.as_ref().map_or(10, |p| p.touch_points);
@@ -575,6 +675,52 @@ impl Environment {
             }
         }
         out
+    }
+
+    /// `Emulation.setEmulatedMedia`'s parameters: every media emulation
+    /// the environment has, which replace any there were.
+    pub(crate) fn media_param(&self) -> Value {
+        let mut features = Vec::new();
+        let mut feature = |name: &str, value: Option<&str>| {
+            if let Some(value) = value {
+                features.push(json!({"name": name, "value": value}));
+            }
+        };
+        feature(
+            "prefers-color-scheme",
+            self.color_scheme.map(|c| match c {
+                ColorScheme::Light => "light",
+                ColorScheme::Dark => "dark",
+                ColorScheme::NoPreference => "no-preference",
+            }),
+        );
+        feature(
+            "prefers-reduced-motion",
+            self.reduced_motion.map(|m| match m {
+                ReducedMotion::Reduce => "reduce",
+                ReducedMotion::NoPreference => "no-preference",
+            }),
+        );
+        feature(
+            "forced-colors",
+            self.forced_colors.map(|f| match f {
+                ForcedColors::Active => "active",
+                ForcedColors::None => "none",
+            }),
+        );
+        feature(
+            "prefers-contrast",
+            self.contrast.map(|c| match c {
+                Contrast::More => "more",
+                Contrast::NoPreference => "no-preference",
+            }),
+        );
+        let media = match self.media {
+            Some(Media::Print) => "print",
+            Some(Media::Screen) => "screen",
+            None => "",
+        };
+        json!({"media": media, "features": features})
     }
 
     pub(crate) fn headers_param(&self) -> Value {

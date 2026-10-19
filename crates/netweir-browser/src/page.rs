@@ -1394,6 +1394,20 @@ impl Page {
     pub async fn press(&self, key: &str) -> Result<()> {
         let k = Key::of(key)?;
         self.to_front().await?;
+        if let (true, Some(text)) = (self.touches(), &k.text)
+            && k.key != "Enter"
+        {
+            // A phone's on-screen keyboard tells the page nothing of the
+            // key: keydown and keyup are "Unidentified" with keyCode 229,
+            // there's no keypress, and the text comes as input.
+            let unknown = |kind: &str| json!({"type": kind, "key": "Unidentified", "code": "", "windowsVirtualKeyCode": 229});
+            self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
+                .await?;
+            self.call("Input.insertText", json!({"text": text})).await?;
+            self.call("Input.dispatchKeyEvent", unknown("keyUp"))
+                .await?;
+            return Ok(());
+        }
         let mut down = json!({
             "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
             "key": k.key,
@@ -1427,8 +1441,12 @@ impl Page {
     /// phone, taps there, as a finger does: down, a moment, and up.
     pub(crate) async fn mouse_press(&self, x: f64, y: f64) -> Result<()> {
         if self.touches() {
-            let point =
-                json!([{"x": x, "y": y, "radiusX": 11.5, "radiusY": 11.5, "force": 1, "id": 0}]);
+            // A fingertip's contact, a little different each time (about 8
+            // to 14 pixels across, as Android reports one), the same from
+            // the finger landing to its lifting.
+            let spread = (Duration::from_millis(0), Duration::from_millis(6000));
+            let radius = 8.0 + crate::events::pause(spread).as_millis() as f64 / 1000.0;
+            let point = json!([{"x": x, "y": y, "radiusX": radius, "radiusY": radius, "force": 1, "id": 0}]);
             self.call(
                 "Input.dispatchTouchEvent",
                 json!({"type": "touchStart", "touchPoints": point}),
@@ -1438,7 +1456,7 @@ impl Page {
             tokio::time::sleep(crate::events::pause(held)).await;
             self.call(
                 "Input.dispatchTouchEvent",
-                json!({"type": "touchEnd", "touchPoints": []}),
+                json!({"type": "touchEnd", "touchPoints": point}),
             )
             .await?;
             return Ok(());
@@ -1950,7 +1968,7 @@ impl Watch {
                     Err(Error::Protocol { message, .. }) if shared_process(&message) => {}
                     Err(e) if went_away(&e) => return Err(e),
                     Err(e) => crate::warn(&format!(
-                        "{method} failed in a {} of the page, which may show it isn't the page's                          own: {e}",
+                        "{method} failed in a {} of the page, which may show it isn't the page's own: {e}",
                         if frame { "frame" } else { "worker" }
                     )),
                     Ok(_) => {}
@@ -2187,23 +2205,27 @@ impl Page {
 
     /// What `prefers-color-scheme` and `prefers-reduced-motion` match, in
     /// the page and its frames; None leaves one as it is.
-    pub async fn emulate_media(
-        &self,
-        color_scheme: Option<crate::ColorScheme>,
-        reduced_motion: Option<crate::ReducedMotion>,
-    ) -> Result<()> {
+    pub async fn emulate_media(&self, change: &crate::MediaChange) -> Result<()> {
         let mut env = self.environment();
-        env.color_scheme = color_scheme.or(env.color_scheme);
-        env.reduced_motion = reduced_motion.or(env.reduced_motion);
-        let Some((method, params)) = env
-            .commands(Kind::Page)
-            .into_iter()
-            .find(|(m, _)| *m == "Emulation.setEmulatedMedia")
-        else {
-            return Ok(());
-        };
+        if let Some(v) = change.media {
+            env.media = v;
+        }
+        if let Some(v) = change.color_scheme {
+            env.color_scheme = v;
+        }
+        if let Some(v) = change.reduced_motion {
+            env.reduced_motion = v;
+        }
+        if let Some(v) = change.forced_colors {
+            env.forced_colors = v;
+        }
+        if let Some(v) = change.contrast {
+            env.contrast = v;
+        }
+        let params = env.media_param();
         self.replace_environment(env);
-        self.everywhere(Kind::Page, method, params).await
+        self.everywhere(Kind::Page, "Emulation.setEmulatedMedia", params)
+            .await
     }
 
     /// Runs `script` in every document the page and its frames load from

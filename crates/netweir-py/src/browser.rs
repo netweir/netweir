@@ -600,29 +600,33 @@ impl BrowserPage {
         })
     }
 
-    /// What prefers-color-scheme ("light", "dark", "no-preference") and
-    /// prefers-reduced-motion ("reduce", "no-preference") match; None
-    /// leaves one as it is.
-    #[pyo3(signature = (*, color_scheme=None, reduced_motion=None))]
+    /// The CSS media type ("screen", "print") and what prefers-color-scheme
+    /// ("light", "dark", "no-preference"), prefers-reduced-motion ("reduce",
+    /// "no-preference"), forced-colors ("active", "none") and
+    /// prefers-contrast ("more", "no-preference") match, as Playwright's
+    /// emulate_media takes them: one left out stays as it is, and "null"
+    /// takes its emulation away.
+    #[pyo3(signature = (*, media=None, color_scheme=None, reduced_motion=None, forced_colors=None, contrast=None))]
     fn emulate_media<'py>(
         &self,
         py: Python<'py>,
+        media: Option<String>,
         color_scheme: Option<String>,
         reduced_motion: Option<String>,
+        forced_colors: Option<String>,
+        contrast: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let color_scheme = color_scheme
-            .map(|c| c.parse::<netweir_browser::ColorScheme>())
-            .transpose()
-            .map_err(raise)?;
-        let reduced_motion = reduced_motion
-            .map(|m| m.parse::<netweir_browser::ReducedMotion>())
-            .transpose()
-            .map_err(raise)?;
+        use crate::environment::media_setting;
+        let change = netweir_browser::MediaChange {
+            media: media_setting(media)?,
+            color_scheme: media_setting(color_scheme)?,
+            reduced_motion: media_setting(reduced_motion)?,
+            forced_colors: media_setting(forced_colors)?,
+            contrast: media_setting(contrast)?,
+        };
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            page.emulate_media(color_scheme, reduced_motion)
-                .await
-                .map_err(raise)
+            page.emulate_media(&change).await.map_err(raise)
         })
     }
 

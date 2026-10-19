@@ -21,6 +21,8 @@ pub(crate) const KEYS: &[&str] = &[
     "permissions",
     "color_scheme",
     "reduced_motion",
+    "forced_colors",
+    "contrast",
     "extra_http_headers",
     "offline",
     "user_agent",
@@ -53,8 +55,15 @@ pub(crate) fn environment_from(given: Option<&Bound<'_, PyDict>>) -> PyResult<En
         }
         None => Environment::default(),
     };
-    if let Some(v) = get("viewport")? {
-        env.viewport = Some(size_from("viewport", &v)?);
+    match given.get_item("viewport")? {
+        // Given as None, as Playwright's no_viewport: the window as
+        // Chrome opens it.
+        Some(v) if v.is_none() => {
+            env.viewport = None;
+            env.no_viewport = true;
+        }
+        Some(v) => env.viewport = Some(size_from("viewport", &v)?),
+        None => {}
     }
     if let Some(v) = get("screen")? {
         env.screen = Some(size_from("screen", &v)?);
@@ -99,6 +108,20 @@ pub(crate) fn environment_from(given: Option<&Bound<'_, PyDict>>) -> PyResult<En
                 .map_err(crate::browser::raise)?,
         );
     }
+    if let Some(v) = get("forced_colors")? {
+        env.forced_colors = Some(
+            v.extract::<String>()?
+                .parse()
+                .map_err(crate::browser::raise)?,
+        );
+    }
+    if let Some(v) = get("contrast")? {
+        env.contrast = Some(
+            v.extract::<String>()?
+                .parse()
+                .map_err(crate::browser::raise)?,
+        );
+    }
     if let Some(v) = get("extra_http_headers")? {
         env.extra_headers = headers_from(&v)?;
     }
@@ -118,6 +141,18 @@ pub(crate) fn environment_from(given: Option<&Bound<'_, PyDict>>) -> PyResult<En
     }
     env.validate().map_err(crate::browser::raise)?;
     Ok(env)
+}
+
+/// One of emulate_media's settings: None (left out) leaves it, "null" (or
+/// "no-override") takes its emulation away, and anything else is parsed.
+pub(crate) fn media_setting<T: std::str::FromStr<Err = netweir_browser::Error>>(
+    given: Option<String>,
+) -> PyResult<Option<Option<T>>> {
+    match given.as_deref() {
+        None => Ok(None),
+        Some("null" | "no-override") => Ok(Some(None)),
+        Some(v) => Ok(Some(Some(v.parse().map_err(crate::browser::raise)?))),
+    }
 }
 
 /// `{"width": 1280, "height": 720}`, as Playwright gives a size.

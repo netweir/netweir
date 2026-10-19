@@ -698,7 +698,7 @@ class Geolocation(TypedDict, total=False):
 
 class Environment(TypedDict, total=False):
     device: str
-    viewport: Size
+    viewport: Size | None
     screen: Size
     device_scale_factor: float
     is_mobile: bool
@@ -709,6 +709,8 @@ class Environment(TypedDict, total=False):
     permissions: list[str]
     color_scheme: Literal["light", "dark", "no-preference"]
     reduced_motion: Literal["reduce", "no-preference"]
+    forced_colors: Literal["active", "none"]
+    contrast: Literal["more", "no-preference"]
     extra_http_headers: dict[str, str]
     offline: bool
     user_agent: str
@@ -740,6 +742,8 @@ class Browser:
         permissions: list[str] | None = None,
         color_scheme: Literal["light", "dark", "no-preference"] | None = None,
         reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        forced_colors: Literal["active", "none"] | None = None,
+        contrast: Literal["more", "no-preference"] | None = None,
         extra_http_headers: dict[str, str] | None = None,
         offline: bool | None = None,
         user_agent: str | None = None,
@@ -761,6 +765,8 @@ class Browser:
         permissions: list[str] | None = None,
         color_scheme: Literal["light", "dark", "no-preference"] | None = None,
         reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        forced_colors: Literal["active", "none"] | None = None,
+        contrast: Literal["more", "no-preference"] | None = None,
         extra_http_headers: dict[str, str] | None = None,
         offline: bool | None = None,
         user_agent: str | None = None,
@@ -787,6 +793,8 @@ class BrowserContext:
         permissions: list[str] | None = None,
         color_scheme: Literal["light", "dark", "no-preference"] | None = None,
         reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        forced_colors: Literal["active", "none"] | None = None,
+        contrast: Literal["more", "no-preference"] | None = None,
         extra_http_headers: dict[str, str] | None = None,
         offline: bool | None = None,
         user_agent: str | None = None,
@@ -831,8 +839,11 @@ class BrowserPage:
     def emulate_media(
         self,
         *,
-        color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-        reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        media: Literal["screen", "print", "null"] | None = None,
+        color_scheme: Literal["light", "dark", "no-preference", "null"] | None = None,
+        reduced_motion: Literal["reduce", "no-preference", "null"] | None = None,
+        forced_colors: Literal["active", "none", "null"] | None = None,
+        contrast: Literal["more", "no-preference", "null"] | None = None,
     ) -> Awaitable[None]: ...
     def add_init_script(
         self, script: str | None = None, *, path: str | os.PathLike[str] | None = None
