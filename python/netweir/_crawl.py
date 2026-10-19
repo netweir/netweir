@@ -1211,7 +1211,6 @@ class _Run:
         """Hands ``request`` to the engine; with ``answered``, only to be
         screened, as a middleware has its page. What the engine said, or
         None for a request it was never given."""
-        payload = self.payload(request) if row is None else "{}"
         rid = next(self.ids)
         # A request with no callback on a rules spider is the rules' to read.
         apply_rules = bool(self.rules) and request.callback is None
@@ -1231,6 +1230,9 @@ class _Run:
             )
         try:
             policy = _policy(request, meta, self.settings.max_redirects)
+            jar = _jar_name(meta)
+            if request.cookies:
+                Crawler.check_cookies(request.url, request.cookies)
         except (TypeError, ValueError) as e:
             message = f"{request.url}: {e}; skipped"
         if message is not None:
@@ -1240,6 +1242,7 @@ class _Run:
                 raise TypeError(message)
             log.error("%s", message)
             return None
+        payload = self.payload(request) if row is None else "{}"
         if request.auth is not None and _meta_login(meta) and not self.warned_login:
             self.warned_login = True
             log.warning(
@@ -1271,7 +1274,7 @@ class _Run:
             delta_key=delta[1],
             answered=answered,
             **policy,
-            jar=_jar_name(meta),
+            jar=jar,
             cookies=request.cookies,
             dont_merge_cookies=bool(meta.get("dont_merge_cookies")),
         )

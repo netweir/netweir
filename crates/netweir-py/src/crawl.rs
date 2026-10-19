@@ -1454,6 +1454,19 @@ impl Crawler {
         self.engine.core.settle(items, state);
     }
 
+    /// Checks a request's cookie dicts against its URL as `submit` will:
+    /// TypeError or ValueError, saying which cookie and why, for one the
+    /// jar won't take.
+    #[staticmethod]
+    fn check_cookies(url: &str, cookies: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
+        let url = Url::parse(url).ok();
+        for c in &cookies {
+            let c = crate::cookies::cookie_from(c, true)?;
+            netweir_core::cookies::Jar::check(&c, url.as_ref()).map_err(PyValueError::new_err)?;
+        }
+        Ok(())
+    }
+
     /// A request's 16-byte key in the deltafetch record: `delta_key`
     /// when given, else its fingerprint in the cookie jar `jar` names (as
     /// `submit` takes it). None for a URL that can't be crawled.

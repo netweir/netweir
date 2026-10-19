@@ -157,7 +157,7 @@ def test_a_request_with_a_cookie_chrome_would_refuse_is_an_error(base):
                 f"{base}/echo", cookies=[{"name": "x", "value": "1", "same_site": "None"}]
             )
 
-    with pytest.raises(ValueError, match="SameSite=None"):
+    with pytest.raises(TypeError, match="SameSite=None"):
         run(Spider, fail_fast=True)
     assert carried("/echo") == []
 
@@ -258,6 +258,28 @@ def test_jar_names_are_told_apart_by_type_as_in_scrapy(base):
 
     run(Spider)
     assert sorted(carried("/echo")) == ["", "user=one"]
+
+
+@pytest.mark.parametrize("saving", [False, True])
+def test_a_request_whose_cookies_or_jar_cant_work_is_skipped_not_the_crawl(base, tmp_path, saving):
+    class Spider(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                f"{base}/echo?bad", cookies=[{"name": "x", "value": "1", "same_site": "None"}]
+            )
+            yield netweir.Request(
+                f"{base}/echo?odd", cookies=[{"name": "x", "value": "1", "expires": object()}]
+            )
+            yield netweir.Request(f"{base}/echo?jar", meta={"cookiejar": object()})
+            yield netweir.Request(f"{base}/echo?good")
+
+        def parse(self, page):
+            pass
+
+    settings = {"checkpoint": str(tmp_path / "state")} if saving else {}
+    stats = run(Spider, **settings)
+    assert carried("/echo") == [""]
+    assert stats["callback_errors"] == 3
 
 
 def test_dont_merge_cookies_leaves_the_jar_out(base):
