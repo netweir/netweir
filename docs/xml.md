@@ -137,6 +137,12 @@ a word; only a document cut off part way is cut short there. (Scrapy's
 iternodes is strict.) Netweir tells you what's wrong, and in a crawl the
 callback still gets the page: reading its document raises the error, and
 `page.text` and `page.body` are still yours to fix up and parse again.
+That's because a page read as XML is parsed when something first reads
+it (`page.root`, `page.xpath()`, `page.css()`), not before the callback
+runs, unless the crawl's rules need it first; then a parse error is
+logged by the crawl, and raised again where the callback reads the page.
+An iternodes spider never reads the page's document, so the whole tree
+is never built.
 An empty or blank body raises `XMLError("Document is empty")`, as lxml
 does.
 
@@ -161,10 +167,16 @@ fix of the first ten:
 | A character XML doesn't allow (`\x0b`) | dropped |
 | An attribute given twice | the first is kept |
 | The document ends with elements open | they're closed |
+| An end tag for an element further out (`</channel>` with `<title>` open) | the elements inside it are closed with it |
+| An end tag that closes nothing open | ignored |
+| A `<` that starts no markup (`1 < 2`) | kept as text |
 | An empty document | an empty document |
 
-Anything else, an end tag that doesn't match say, is still an error, and
-the limits below still hold.
+Anything else, a start tag that never ends say, is still an error, and
+the limits below still hold. Where lxml's recover mode repairs these
+differently, Netweir keeps more: lxml ends the document at an end tag
+that closes nothing, losing the rest, drops a lone `<`, and lets `</a>`
+close only the innermost element when `<a>` is further out.
 
 XML can also be written to hurt the program reading it. These are
 refused, each with an `XMLError`:
@@ -175,7 +187,7 @@ refused, each with an `XMLError`:
 | Entities the document declares | expanded, but no more than 16 deep, and to no more than 1 MiB plus 8 bytes per byte of the document in all. The "billion laughs" (10 levels of 10 references each, a gigabyte from a kilobyte) stops at the limit |
 | Entities that refer to themselves | refused |
 | Nesting | 2048 elements deep, lxml's limit with Scrapy's settings (lxml cuts a deeper document off there without a word) |
-| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds; the clock is read every thousand or so events, attributes or kilobytes of expanded entity, so one enormous start tag can't outrun it. In a crawl, pages the engine parses itself have 10 seconds, a sitemap 10 seconds, and iternodes 10 seconds for each node |
+| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds; the clock is read every thousand or so events, attributes or kilobytes of expanded entity, so one enormous start tag can't outrun it. In a crawl, a sitemap has 10 seconds, iternodes 10 seconds for each node, and a page the crawl's rules read 10 seconds; a page parsed when your callback first reads it has no limit, as with `netweir.parse` |
 
 Parameter entities (`%name;`) are never expanded, and declarations after
 one aren't read.
