@@ -864,9 +864,13 @@ async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
     .await;
     let Stalling { url, done, .. } = stalling_server();
     let page = browser.new_page().await.unwrap();
-    page.goto(&url, WaitUntil::Load, None).await.unwrap();
+    // The browser's 2 s is for the wait under test: getting there has a
+    // limit of its own, as a cold Chrome on a loaded Windows runner has
+    // taken longer than 2 s to load the page.
+    let setup = Some(Duration::from_secs(30));
+    page.goto(&url, WaitUntil::Load, setup).await.unwrap();
     let mut events = page.listen();
-    page.click("#slow", None).await.unwrap();
+    page.click("#slow", setup).await.unwrap();
     let d = download(&mut events).await;
 
     // The browser's timeout, as for any other wait.
