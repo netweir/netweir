@@ -221,8 +221,8 @@ use a named jar, which keeps all three apart.
 
 ### Resuming, workers and several machines
 
-- A crawl with a checkpoint saves its jars as it goes, and a resumed crawl
-  is still logged in. Requests still waiting keep their own cookies. The
+- A crawl with a checkpoint saves its jars as it goes, the sessions a
+  block gave a site among them, and a resumed crawl is still logged in. Requests still waiting keep their own cookies. The
   checkpoint file is made readable by you alone, as it holds the cookies,
   and so is the cache's, which holds the pages they logged in to (on
   Windows each takes its folder's permissions).

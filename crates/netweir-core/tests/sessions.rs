@@ -477,3 +477,43 @@ async fn a_request_answered_from_the_cache_still_puts_its_cookies_in_its_jar() {
     drop(c);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn a_hosts_own_session_is_kept_in_the_checkpoint_and_back_on_resume() {
+    let site = Site::scripted(vec![
+        (
+            "/guarded",
+            vec![
+                Page::status(
+                    403,
+                    "<title>Attention Required! | Cloudflare</title>\
+                     <h1>Sorry, you have been blocked</h1>",
+                )
+                .with_header("server", "cloudflare"),
+                Page::html("welcome").with_header("set-cookie", "pass=1; Path=/"),
+            ],
+        ),
+        ("/me", vec![Page::html("me")]),
+    ])
+    .await;
+    let dir = std::env::temp_dir().join(format!("netweir-host-jars-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("crawl.sqlite3");
+    let with_checkpoint = || CrawlSettings {
+        checkpoint: Some(path.clone()),
+        ..settings()
+    };
+    let c = crawler(with_checkpoint());
+    one_by_one(&c, vec![request(1, site.url("/guarded"))]).await;
+    assert_eq!(c.stats().sessions_replaced, 1);
+    // The cookie went to the host's new session, not the crawl's jar.
+    assert!(c.jar(None).is_empty());
+    c.close().unwrap();
+    drop(c);
+    let c = crawler(with_checkpoint());
+    one_by_one(&c, vec![request(2, site.url("/me"))]).await;
+    assert_eq!(carried(&site, "/me"), ["pass=1"]);
+    c.close().unwrap();
+    drop(c);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

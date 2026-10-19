@@ -718,6 +718,20 @@ impl Shared {
                 saved.insert(name, changes);
             }
         }
+        // And each host's own session's, kept apart from the named ones.
+        let hosts: Vec<(String, Arc<Jar>)> = self
+            .lock()
+            .hosts
+            .iter()
+            .filter_map(|(host, h)| Some((host.clone(), h.session.as_ref()?.jar().clone())))
+            .collect();
+        for (host, jar) in hosts {
+            let (key, changes) = (host_key(&host), jar.changes());
+            if saved.get(&key) != Some(&changes) {
+                cp.host_jar(host, jar.snapshot());
+                saved.insert(key, changes);
+            }
+        }
     }
 
     /// The fetcher `request` goes out with, from its route's `session`:
@@ -741,6 +755,38 @@ impl Shared {
         }
         session
     }
+}
+
+/// The key a host's own session's jar has among the saved jars' changes:
+/// one no jar's name can be, as names are never empty.
+fn host_key(host: &str) -> String {
+    format!("\0host {host}")
+}
+
+/// Gives `host` back the session a block had given it before the crawl
+/// stopped, with the cookies it had: through a proxy picked as a new one
+/// would be, with the crawl's own profile. Whether it did; never with
+/// `per_request`, whose hosts have no sessions of their own.
+fn restore_session(shared: &Shared, state: &mut State, host: &str, jar: Arc<Jar>) -> bool {
+    if shared.settings.proxy_rotation == ProxyRotation::PerRequest {
+        return false;
+    }
+    let proxy = pick(shared, state, None);
+    let mut options = shared.options.clone();
+    if proxy.is_some() {
+        options.proxy = proxy.clone();
+    }
+    let Ok(fetcher) = Fetcher::new(options.clone()) else {
+        return false;
+    };
+    let h = state
+        .hosts
+        .entry(host.to_string())
+        .or_insert_with(|| Host::new(&shared.settings));
+    h.session = Some(fetcher.with_jar(jar));
+    h.proxy = proxy;
+    h.options = Some(options);
+    true
 }
 
 /// Puts `request`'s own cookies in `jar`, as if the URL it was submitted
@@ -1220,6 +1266,30 @@ impl Crawler {
             pages: Arc::new(Semaphore::new(settings_pages)),
             runtime: tokio::runtime::Handle::current(),
         });
+        // Each host's own session the checkpoint kept, with its cookies.
+        let host_jars = shared
+            .saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.host_jars.clone())
+            .unwrap_or_default();
+        for (host, snapshot) in host_jars {
+            let jar = Arc::new(Jar::new());
+            if jar.restore(&snapshot).is_ok() {
+                let changes = jar.changes();
+                let mut state = shared.lock();
+                if restore_session(&shared, &mut state, &host, jar) {
+                    drop(state);
+                    shared
+                        .jars_saved
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                        .insert(host_key(&host), changes);
+                }
+            }
+        }
         tokio::spawn(schedule_loop(shared.clone()));
         if let Some(inbox) = inbox {
             spawn_queue(shared.clone(), inbox);

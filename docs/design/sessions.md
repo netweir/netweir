@@ -205,9 +205,15 @@ put the login cookies on its requests.
 
 The crawl's own jar and every named jar are saved with the checkpoint,
 when the crawl settles a round, if they changed since the last save, and
-restored on resume: a resumed crawl is still logged in. A host's session
-after a block isn't saved; a resumed crawl starts it again. The format
-goes up by one (`jars` table), and older files are upgraded on open.
+restored on resume: a resumed crawl is still logged in. So is each
+host's own session's jar (the one a block, a hand-back from Chrome or
+`per_host` gave it), kept apart from the named jars (`kind` "host"
+beside "jar"), so no jar name can clash with a host. On resume the host
+gets its session back with those cookies, through a proxy picked as for
+a new session, and with the crawl's own profile: a session a hand-back
+gave a Chrome profile of its own looks like the crawl's after a resume.
+The format goes up by one (`jars` table), and older files are upgraded
+on open.
 
 ## Browser contexts
 
