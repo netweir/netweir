@@ -15,6 +15,7 @@ mod rules;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use netweir_dom::xml::{Repairs, XmlOptions};
 use netweir_dom::{Document, ParseXmlError, XmlNodes};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyTimeoutError, PyValueError};
@@ -82,26 +83,67 @@ impl Markup {
         }
     }
 
-    /// What a response's Content-Type says it is. XML for the types
-    /// Scrapy gives an XmlResponse (text/xml, application/xml, and RSS,
-    /// Atom and RDF), and for any other `+xml` type (SOAP's, SVG) but
+    /// What a response is, as Scrapy's response types decide it: by its
+    /// Content-Type, or when there's none (or it's only
+    /// `application/octet-stream`) by the start of its text. XML for the
+    /// types Scrapy gives an XmlResponse (text/xml, application/xml, and
+    /// RSS, Atom and RDF), and for any other `+xml` type (SOAP's, SVG) but
     /// XHTML's, which is a web page and is parsed as one.
-    pub(crate) fn of(content_type: Option<&str>) -> Markup {
-        let Some(ct) = content_type else {
-            return Markup::Html;
-        };
-        let mime = ct
-            .split(';')
-            .next()
+    pub(crate) fn of(content_type: Option<&str>, text: &str) -> Markup {
+        let mime = content_type
+            .and_then(|ct| ct.split(';').next())
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
+        if mime.is_empty() || mime == "application/octet-stream" || mime == "binary/octet-stream" {
+            return Markup::sniff(text);
+        }
         let xhtml = mime.ends_with("xhtml+xml");
         if !xhtml && (mime == "text/xml" || mime == "application/xml" || mime.ends_with("+xml")) {
             Markup::Xml
         } else {
             Markup::Html
         }
+    }
+
+    /// A body with nothing to say what it is: HTML if `<html` comes early,
+    /// XML if an XML declaration does or the first element isn't one HTML
+    /// has (`<rss>`, `<urlset>`), HTML otherwise.
+    fn sniff(text: &str) -> Markup {
+        let mut head = text.trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n']);
+        let mut cut = head.len().min(5000);
+        while !head.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let lower = head[..cut].to_ascii_lowercase();
+        if lower.contains("<html") || lower.contains("<!doctype html") {
+            return Markup::Html;
+        }
+        if lower.starts_with("<?xml") {
+            return Markup::Xml;
+        }
+        // Past comments, processing instructions and a doctype, to the
+        // first element.
+        while let Some(rest) = head.strip_prefix('<') {
+            if rest.starts_with('!') || rest.starts_with('?') {
+                match rest.find('>') {
+                    Some(end) => {
+                        head = rest[end + 1..].trim_start();
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            let name: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | '/'))
+                .collect();
+            if !name.is_empty() && (name.contains(':') || !netweir_dom::xml::is_html_tag(&name)) {
+                return Markup::Xml;
+            }
+            break;
+        }
+        Markup::Html
     }
 }
 
@@ -129,22 +171,41 @@ impl ParseFailure {
     }
 }
 
-/// Parses `text` as `markup`, giving up after `budget`. Call without the
-/// GIL.
+/// Parses `text` as `markup`, giving up after `budget`, recovering from
+/// broken XML if `recover`. Call without the GIL.
 pub(crate) fn parse_markup(
     text: &str,
     markup: Markup,
     budget: Duration,
-) -> Result<Document, ParseFailure> {
+    recover: bool,
+) -> Result<(Document, Repairs), ParseFailure> {
     match markup {
-        Markup::Html => {
-            Document::parse_within(text, budget).map_err(|e| ParseFailure::Timeout(e.to_string()))
+        Markup::Html => Document::parse_within(text, budget)
+            .map(|doc| (doc, Repairs::default()))
+            .map_err(|e| ParseFailure::Timeout(e.to_string())),
+        Markup::Xml => {
+            Document::parse_xml_with(text, XmlOptions { recover, budget }).map_err(|e| match e {
+                ParseXmlError::Malformed(e) => ParseFailure::Xml(e),
+                ParseXmlError::Timeout(t) => ParseFailure::Timeout(t.to_string()),
+            })
         }
-        Markup::Xml => Document::parse_xml_within(text, budget).map_err(|e| match e {
-            ParseXmlError::Malformed(e) => ParseFailure::Xml(e),
-            ParseXmlError::Timeout(t) => ParseFailure::Timeout(t.to_string()),
-        }),
     }
+}
+
+/// Logs what recovering from broken XML repaired, once, on the "netweir"
+/// logger, naming `place` (a URL) if there is one.
+pub(crate) fn warn_repairs(py: Python<'_>, place: Option<&str>, repairs: &Repairs) -> PyResult<()> {
+    if repairs.is_empty() {
+        return Ok(());
+    }
+    let message = match place {
+        Some(place) => format!("{place}: {}", repairs.summary()),
+        None => repairs.summary(),
+    };
+    py.import("logging")?
+        .call_method1("getLogger", ("netweir",))?
+        .call_method1("warning", ("%s", message))?;
+    Ok(())
 }
 
 /// Seconds from Python to a parse budget; `None` means no limit.
@@ -165,15 +226,23 @@ pub(crate) fn budget(timeout: Option<f64>) -> PyResult<Duration> {
 ///
 /// With `timeout` (seconds), gives up and raises ParseTimeout on pages that
 /// take longer, such as deeply nested hostile markup. XML that isn't
-/// well-formed raises XMLError.
+/// well-formed raises XMLError, unless `recover` is true: then what can be
+/// repaired is, and a warning says what.
 #[pyfunction]
-#[pyo3(signature = (html, timeout=None, r#type=None))]
-fn parse(py: Python<'_>, html: &str, timeout: Option<f64>, r#type: Option<&str>) -> PyResult<Node> {
+#[pyo3(signature = (html, timeout=None, r#type=None, recover=false))]
+fn parse(
+    py: Python<'_>,
+    html: &str,
+    timeout: Option<f64>,
+    r#type: Option<&str>,
+    recover: bool,
+) -> PyResult<Node> {
     let budget = budget(timeout)?;
     let markup = Markup::named(r#type)?.unwrap_or(Markup::Html);
-    let doc = py
-        .detach(|| parse_markup(html, markup, budget))
+    let (doc, repairs) = py
+        .detach(|| parse_markup(html, markup, budget, recover))
         .map_err(|e| e.into_py(py))?;
+    warn_repairs(py, None, &repairs)?;
     Ok(Node::root_of(Arc::new(doc)))
 }
 
@@ -182,6 +251,8 @@ fn parse(py: Python<'_>, html: &str, timeout: Option<f64>, r#type: Option<&str>)
 #[pyclass(frozen, module = "netweir")]
 struct XmlNodeIter {
     nodes: Mutex<XmlNodes>,
+    /// For the warning when recovering repaired anything.
+    place: Option<String>,
 }
 
 #[pymethods]
@@ -191,22 +262,58 @@ impl XmlNodeIter {
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Node>> {
-        let next = py.detach(|| self.nodes.lock().unwrap_or_else(|e| e.into_inner()).next());
+        let next = py.detach(|| {
+            self.nodes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .next_node()
+        });
         match next {
-            None => Ok(None),
+            None => {
+                let repairs = self
+                    .nodes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .repairs();
+                warn_repairs(py, self.place.as_deref(), &repairs)?;
+                Ok(None)
+            }
             Some(Err(e)) => Err(xml_error(py, &e)),
-            Some(Ok(doc)) => Ok(Some(Node::top_element_of(Arc::new(doc)))),
+            Some(Ok((doc, binding))) => {
+                let node = Node::top_element_of(Arc::new(doc));
+                // A prefix the tag took from the document works in the
+                // node's queries too.
+                if let Some((prefix, uri)) = binding {
+                    node.bind(prefix, uri);
+                }
+                Ok(Some(node))
+            }
         }
     }
 }
 
-/// `tag` is `name` or `prefix:name` with the prefix in `namespaces`.
+/// `tag` is `name` or `prefix:name`, the prefix bound in `namespaces` or
+/// by the document. `timeout` is for reading each node; with `recover`,
+/// broken XML is repaired where it can be, and a warning naming `place`
+/// says what was, once the nodes run out.
 #[pyfunction]
-fn _xml_nodes(text: String, tag: &str, namespaces: Vec<(String, String)>) -> PyResult<XmlNodeIter> {
-    let nodes = XmlNodes::new(text, tag, &namespaces, Default::default())
-        .map_err(PyValueError::new_err)?;
+#[pyo3(signature = (text, tag, namespaces, recover=false, timeout=None, place=None))]
+fn _xml_nodes(
+    text: String,
+    tag: &str,
+    namespaces: Vec<(String, String)>,
+    recover: bool,
+    timeout: Option<f64>,
+    place: Option<String>,
+) -> PyResult<XmlNodeIter> {
+    let options = XmlOptions {
+        recover,
+        budget: budget(timeout)?,
+    };
+    let nodes = XmlNodes::new(text, tag, &namespaces, options).map_err(PyValueError::new_err)?;
     Ok(XmlNodeIter {
         nodes: Mutex::new(nodes),
+        place,
     })
 }
 
@@ -218,15 +325,21 @@ fn fingerprint(url: &str) -> Option<String> {
         .map(|fp| fp.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// A sitemap's kind ("urlset" or "index") and its entries, as dicts with
-/// loc, lastmod, changefreq, priority and alternates. Gzip is unzipped, to
-/// at most `max` bytes. ValueError if it isn't a sitemap.
+/// A sitemap's kind ("urlset" or "index"), its entries, as dicts with
+/// loc, lastmod, changefreq, priority and alternates, and what reading a
+/// broken one repaired (None if nothing). Gzip is unzipped, to at most
+/// `max` bytes. ValueError if it isn't a sitemap.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 fn _sitemap<'py>(
     py: Python<'py>,
     body: &[u8],
     max: usize,
-) -> PyResult<(&'static str, Vec<Bound<'py, pyo3::types::PyDict>>)> {
+) -> PyResult<(
+    &'static str,
+    Vec<Bound<'py, pyo3::types::PyDict>>,
+    Option<String>,
+)> {
     let map = py
         .detach(|| netweir_core::sitemap::parse(body, max))
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -244,7 +357,7 @@ fn _sitemap<'py>(
         d.set_item("alternates", e.alternates)?;
         entries.push(d);
     }
-    Ok((kind, entries))
+    Ok((kind, entries, map.repaired))
 }
 
 /// Whether `url` is outside `allowed`, as `allowed_domains` judges it.

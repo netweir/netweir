@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
+import contextvars
 import json as _json
 import logging
 import os
@@ -168,6 +170,25 @@ def payload(
     return {"method": method, "kind": "fetch"}
 
 
+def _encoded(
+    text: str, url: str, status: int, version: str, pairs: list, old: bytes
+) -> tuple[bytes, list]:
+    """``text`` as bytes a response with headers ``pairs`` decodes back
+    to it, and the headers to send with them."""
+    encoding = _response(url, status, version, pairs, old).encoding
+    try:
+        name = codecs.lookup(encoding).name
+        if name.startswith(("utf-16", "utf-32")):
+            # With a byte order mark, which is how it's found again.
+            text = "\ufeff" + text
+        return text.encode(name), pairs
+    except (LookupError, UnicodeEncodeError):
+        if not any(k == "content-type" for k, _ in pairs):
+            # Says nothing of what it is, so the body is still looked at.
+            pairs = [*pairs, ("content-type", "application/octet-stream")]
+        return text.encode("utf-8"), [(k, _utf8(v) if k == "content-type" else v) for k, v in pairs]
+
+
 def _utf8(content_type: str) -> str:
     """``content_type`` with its charset UTF-8."""
     params = [
@@ -176,6 +197,11 @@ def _utf8(content_type: str) -> str:
     return "; ".join(
         [content_type.split(";")[0].strip(), *[p.strip() for p in params], "charset=utf-8"]
     )
+
+
+#: Whether pages read their XML in recover mode: set for its callbacks by
+#: a crawl with ``Settings(xml_recover=True)``.
+_xml_recover: contextvars.ContextVar[bool] = contextvars.ContextVar("xml_recover", default=False)
 
 
 def _from_form(form: Form) -> tuple[str, dict[str, Any]]:
@@ -269,8 +295,14 @@ class Page:
         Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
         ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
-            self._root = self._response.parse()
+            self._root = self._response.parse(recover=_xml_recover.get())
         return self._root
+
+    @property
+    def encoding(self) -> str:
+        """The encoding ``text`` was decoded with (``"UTF-8"``,
+        ``"windows-1252"``)."""
+        return self._response.encoding
 
     def replace(
         self,
@@ -282,14 +314,16 @@ class Page:
     ) -> Page:
         """A copy of the page with some of its response changed, as
         Scrapy's ``response.replace()``: for a feed spider's
-        ``adapt_response``, say. A ``str`` body is sent as UTF-8 and the
-        Content-Type's charset changed to match. The copy answers the
-        same request and is parsed afresh."""
+        ``adapt_response``, say. A ``str`` body is encoded as Scrapy
+        encodes one, in the encoding the copy's text will be decoded with
+        (``encoding``), so a Content-Type charset or an XML declaration in
+        the body still tells the truth; if that encoding can't hold the
+        text, it's UTF-8, and the Content-Type's charset says so. The copy
+        answers the same request and is parsed afresh."""
         r = self._response
         pairs = r.headers if headers is None else [(k.lower(), v) for k, v in _pairs(headers)]
         if isinstance(body, str):
-            body = body.encode("utf-8")
-            pairs = [(k, _utf8(v) if k == "content-type" else v) for k, v in pairs]
+            body, pairs = _encoded(body, r.url, r.status, r.version, pairs, r.body)
         copy = Page(
             _response(
                 r.url if url is None else url,

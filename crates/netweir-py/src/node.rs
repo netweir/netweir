@@ -54,9 +54,9 @@ pub(crate) struct Selection {
     /// relocated, the nearest candidate's score when nothing was similar
     /// enough, None when there was nothing to look for.
     score: Option<f64>,
-    /// The namespaces of the node it came from, which its nodes and their
-    /// queries inherit.
-    namespaces: Namespaces,
+    /// The namespaces of the node it came from, or registered on it,
+    /// which its nodes and their queries inherit.
+    namespaces: Mutex<Namespaces>,
 }
 
 impl Selection {
@@ -66,8 +66,15 @@ impl Selection {
             entries,
             relocated: false,
             score: None,
-            namespaces,
+            namespaces: Mutex::new(namespaces),
         }
+    }
+
+    fn ns(&self) -> Namespaces {
+        self.namespaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -94,6 +101,11 @@ impl Node {
             id,
             namespaces: Mutex::new(namespaces),
         }
+    }
+
+    /// Binds `prefix` to `uri` for queries from this node on.
+    pub(crate) fn bind(&self, prefix: String, uri: String) {
+        bind(&self.namespaces, prefix, uri);
     }
 
     fn namespaces(&self) -> Namespaces {
@@ -294,6 +306,23 @@ fn xpath_vars(vars: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<(String, XValue)
         out.push((name, value));
     }
     Ok(out)
+}
+
+fn bind(namespaces: &Mutex<Namespaces>, prefix: String, uri: String) {
+    let mut namespaces = namespaces.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = (**namespaces).clone();
+    all.push((prefix, uri));
+    *namespaces = Arc::new(all);
+}
+
+fn check_prefix(prefix: &str) -> PyResult<()> {
+    if netweir_dom::xml::is_ncname(prefix) {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{prefix:?} isn't a valid namespace prefix"
+        )))
+    }
 }
 
 /// The namespaces a query runs with: those inherited, then those passed to
@@ -572,7 +601,7 @@ impl Node {
             entries,
             relocated,
             score,
-            namespaces: self.namespaces(),
+            namespaces: Mutex::new(self.namespaces()),
         })
     }
 
@@ -614,15 +643,8 @@ impl Node {
     /// node, and from the nodes and selections they give, as parsel's
     /// `register_namespace` does.
     fn register_namespace(&self, prefix: &str, uri: &str) -> PyResult<()> {
-        if !netweir_dom::xml::is_ncname(prefix) {
-            return Err(PyValueError::new_err(format!(
-                "{prefix:?} isn't a valid namespace prefix"
-            )));
-        }
-        let mut namespaces = self.namespaces.lock().unwrap_or_else(|e| e.into_inner());
-        let mut all = (**namespaces).clone();
-        all.push((prefix.to_string(), uri.to_string()));
-        *namespaces = Arc::new(all);
+        check_prefix(prefix)?;
+        self.bind(prefix.to_string(), uri.to_string());
         Ok(())
     }
 
@@ -1228,11 +1250,9 @@ impl Selection {
         let reading = self.doc.read();
         Ok(match entry {
             // SAFETY: ids in a Selection all come from its `doc`.
-            Entry::Node(id) if unsafe { self.doc.node(*id) }.kind() != NodeKind::Text => Py::new(
-                py,
-                Node::with(self.doc.clone(), *id, self.namespaces.clone()),
-            )?
-            .into_any(),
+            Entry::Node(id) if unsafe { self.doc.node(*id) }.kind() != NodeKind::Text => {
+                Py::new(py, Node::with(self.doc.clone(), *id, self.ns()))?.into_any()
+            }
             other => {
                 let text = self.string_of(other);
                 drop(reading);
@@ -1282,11 +1302,25 @@ impl Selection {
     /// Runs `query` below every element in this selection.
     fn css(&self, py: Python<'_>, query: &str) -> PyResult<Selection> {
         let entries = css_entries(py, &self.doc, self.scopes("css")?, query)?;
-        Ok(Selection::of(
-            self.doc.clone(),
-            entries,
-            self.namespaces.clone(),
-        ))
+        Ok(Selection::of(self.doc.clone(), entries, self.ns()))
+    }
+
+    /// Binds `prefix` to `uri` for queries from this selection, and from
+    /// the nodes in it, as on a parsel Selector (XMLFeedSpider hands each
+    /// node to parse_node as a selection of one).
+    fn register_namespace(&self, prefix: &str, uri: &str) -> PyResult<()> {
+        check_prefix(prefix)?;
+        bind(&self.namespaces, prefix.to_string(), uri.to_string());
+        Ok(())
+    }
+
+    /// Takes every element and attribute of the document out of its
+    /// namespace, as `Node.remove_namespaces()` does.
+    fn remove_namespaces(&self, py: Python<'_>) -> PyResult<()> {
+        let doc = self.doc.clone();
+        // SAFETY: no ids are involved; other threads read through `Held`.
+        py.detach(move || unsafe { doc.remove_namespaces() })
+            .map_err(edit_error)
     }
 
     /// Runs an XPath query from every element in this selection, with the
@@ -1299,13 +1333,9 @@ impl Selection {
         namespaces: Option<&Bound<'_, PyAny>>,
         vars: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Selection> {
-        let all = query_namespaces(&self.namespaces, namespaces)?;
+        let all = query_namespaces(&self.ns(), namespaces)?;
         let entries = xpath_entries(py, &self.doc, self.scopes("xpath")?, query, vars, all)?;
-        Ok(Selection::of(
-            self.doc.clone(),
-            entries,
-            self.namespaces.clone(),
-        ))
+        Ok(Selection::of(self.doc.clone(), entries, self.ns()))
     }
 
     /// Every match of `pattern` in every result, as parsel does it: whole
@@ -1407,11 +1437,7 @@ impl Selection {
                 picked.push(self.entries[i as usize].clone());
                 i += ix.step;
             }
-            return Ok(Py::new(
-                py,
-                Selection::of(self.doc.clone(), picked, self.namespaces.clone()),
-            )?
-            .into_any());
+            return Ok(Py::new(py, Selection::of(self.doc.clone(), picked, self.ns()))?.into_any());
         }
         let i: isize = index.extract()?;
         let len = self.entries.len() as isize;

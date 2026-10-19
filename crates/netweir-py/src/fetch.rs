@@ -516,28 +516,49 @@ impl Response {
     }
 
     /// Decodes and parses the body; returns the document's root node.
-    /// XML (by its Content-Type, or with `type="xml"`) is parsed as XML,
-    /// anything else as HTML (or as XML with `type="xml"`).
-    #[pyo3(signature = (timeout=None, r#type=None))]
-    fn parse(&self, py: Python<'_>, timeout: Option<f64>, r#type: Option<&str>) -> PyResult<Node> {
+    /// XML (by its Content-Type, or its start when that says nothing) is
+    /// parsed as XML, anything else as HTML; `type` says which instead.
+    /// With `recover`, XML that isn't well-formed is repaired where it can
+    /// be, and a warning says what was.
+    #[pyo3(signature = (timeout=None, r#type=None, recover=false))]
+    fn parse(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+        r#type: Option<&str>,
+        recover: bool,
+    ) -> PyResult<Node> {
         let r = self.inner.clone();
         let budget = crate::budget(timeout)?;
-        let markup = crate::Markup::named(r#type)?
-            .unwrap_or_else(|| crate::Markup::of(r.header("content-type")));
-        let doc = py
-            .detach(move || crate::parse_markup(&r.text(), markup, budget))
+        let named = crate::Markup::named(r#type)?;
+        let (doc, repairs) = py
+            .detach(move || {
+                let text = r.text();
+                let markup =
+                    named.unwrap_or_else(|| crate::Markup::of(r.header("content-type"), &text));
+                crate::parse_markup(&text, markup, budget, recover)
+            })
             .map_err(|e| e.into_py(py))?;
+        crate::warn_repairs(py, Some(&self.inner.url), &repairs)?;
         Ok(Node::root_of(Arc::new(doc)))
     }
 
-    /// What `parse()` reads the body as by default: "xml" when the
-    /// Content-Type says it's XML, "html" otherwise.
+    /// What `parse()` reads the body as by default: "xml" or "html".
     #[getter]
-    fn markup(&self) -> &'static str {
-        match crate::Markup::of(self.inner.header("content-type")) {
+    fn markup(&self, py: Python<'_>) -> &'static str {
+        let r = self.inner.clone();
+        let markup = py.detach(move || crate::Markup::of(r.header("content-type"), &r.text()));
+        match markup {
             crate::Markup::Xml => "xml",
             crate::Markup::Html => "html",
         }
+    }
+
+    /// The encoding `text()` decodes the body with, by name ("UTF-8",
+    /// "windows-1252").
+    #[getter]
+    fn encoding(&self) -> &'static str {
+        self.inner.encoding()
     }
 }
 

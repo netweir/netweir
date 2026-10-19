@@ -123,6 +123,8 @@ struct Processed {
     error: Option<String>,
     /// Why the rules left the page alone: an error status, or not HTML.
     ignored: Option<String>,
+    /// What recovering from broken XML repaired, for the log.
+    repaired: Option<String>,
 }
 
 /// One event for Python, built under the GIL at the end of a batch.
@@ -293,6 +295,8 @@ struct Engine {
     tags: Mutex<HashMap<u64, Tag>>,
     next_id: AtomicU64,
     base: Query,
+    /// Whether the pages it parses as XML are read in recover mode.
+    xml_recover: bool,
 }
 
 impl Engine {
@@ -391,12 +395,16 @@ impl Engine {
             html: None,
             error: None,
             ignored: not_a_page(&response),
+            repaired: None,
         };
         if done.ignored.is_none() {
             let text = response.text();
-            let markup = crate::Markup::of(response.header("content-type"));
-            match crate::parse_markup(&text, markup, PARSE_BUDGET) {
-                Ok(doc) => {
+            let markup = crate::Markup::of(response.header("content-type"), &text);
+            match crate::parse_markup(&text, markup, PARSE_BUDGET, self.xml_recover) {
+                Ok((doc, repairs)) => {
+                    if !repairs.is_empty() {
+                        done.repaired = Some(format!("{}: {}", response.url, repairs.summary()));
+                    }
                     let root = doc.root();
                     if done.tag.apply_rules {
                         match self.links(rules, &response.url, root) {
@@ -625,6 +633,9 @@ impl Engine {
                         url: done.tag.url.clone(),
                         message,
                     });
+                }
+                if let Some(message) = done.repaired {
+                    out.push(Out::Warning { message });
                 }
                 if let Some(reason) = done.ignored {
                     out.push(Out::Ignored {
@@ -863,6 +874,7 @@ impl Crawler {
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None,
+        xml_recover=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -913,6 +925,7 @@ impl Crawler {
         max_redirects: u32,
         retry_http_codes: Option<Vec<u16>>,
         http_auth: Option<AuthPy>,
+        xml_recover: bool,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         if http_auth.as_ref().is_some_and(|(_, _, d)| d.is_none()) {
@@ -1053,6 +1066,7 @@ impl Crawler {
                 tags: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(RULE_IDS),
                 base: Query::new("base[href]::attr(href)").expect("a valid selector"),
+                xml_recover,
             }),
         })
     }

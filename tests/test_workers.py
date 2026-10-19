@@ -48,11 +48,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/price"):
             cls = "cost" if Handler.redesigned else "price_color"
             body = f'<div><p class="{cls}">£51.77</p></div>'
+        elif self.path == "/feed":
+            body = "<rss><item><title>a&nbsp;b</title></item></rss>"
         else:
             body = "<p>x</p>"
         data = body.encode()
         self.send_response(200)
-        self.send_header("Content-Type", "text/html")
+        kind = "application/rss+xml" if self.path == "/feed" else "text/html"
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -411,3 +414,10 @@ def test_abandoning_the_pool_cancels_the_jobs_it_handed_out(tmp_path):
         return job
 
     assert asyncio.run(go()).cancelled()
+
+
+def test_xml_recover_reaches_the_workers(base):
+    items, stats = crawl(worker_spiders.Feed, base + "/feed", workers=2)
+    assert items == [] and stats["callback_errors"] == 1
+    items, _ = crawl(worker_spiders.Feed, base + "/feed", workers=2, xml_recover=True)
+    assert items == [{"title": "a\xa0b"}]

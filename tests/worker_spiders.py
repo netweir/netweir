@@ -183,3 +183,12 @@ class Counts(netweir.Spider):
         self.stats.max_value("deepest", page.depth)
         time.sleep(0.02)
         yield from page.follow_all(page.css("a::attr(href)"))
+
+
+class Feed(netweir.Spider):
+    """Reads an XML page that needs recover mode."""
+
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        yield {"title": page.xpath("//title/text()").get()}

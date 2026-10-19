@@ -211,7 +211,9 @@ def test_processing_instructions_are_nodes():
         ("application/xhtml+xml", "html"),
         ("text/html", "html"),
         ("text/plain", "html"),
-        (None, "html"),
+        # Nothing said: the body is looked at, as Scrapy's from_body does.
+        (None, "xml"),
+        ("application/octet-stream", "xml"),
     ],
 )
 def test_a_response_is_read_as_its_content_type_says(content_type, kind):
@@ -268,7 +270,13 @@ def test_page_replace_gives_a_new_page():
     assert page.xpath("/r/text()").get() == "old"
     new = page.replace(body="<r>new é</r>")
     assert new.xpath("/r/text()").get() == "new é"
-    assert new.headers["content-type"] == "text/xml; charset=utf-8"
+    # Encoded as the page is, so its charset still tells the truth.
+    assert new.headers["content-type"] == "text/xml; charset=iso-8859-1"
+    assert new.body == "<r>new é</r>".encode("latin-1")
+    # What that encoding can't hold goes as UTF-8, and the charset says so.
+    euro = page.replace(body="<r>日本</r>")
+    assert euro.xpath("/r/text()").get() == "日本"
+    assert euro.headers["content-type"] == "text/xml; charset=utf-8"
     assert page.xpath("/r/text()").get() == "old"
     moved = page.replace(url="https://example.com/g", status=203, headers={"X-A": "1"})
     assert (moved.url, moved.status, moved.headers) == ("https://example.com/g", 203, {"x-a": "1"})
@@ -300,6 +308,8 @@ def feeds():
         "/xml": (RSS.encode(), "text/xml"),
         "/links": (b"<links><link>/xml</link></links>", "application/xml"),
         "/broken": (b"<rss><channel></rss>", "application/xml"),
+        "/nbsp": (b"<rss><item><title>a&nbsp;b</title></item></rss>", "text/xml"),
+        "/nbsp-rss": (b"<rss><item><title>a&nbsp;b</title></item></rss>", "application/rss+xml"),
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield base
@@ -410,3 +420,158 @@ def test_remove_namespaces_as_parsel_does():
     ours.remove_namespaces()
     for query in ["//Price", "//Price/@type", "name(/*)", "//Body"]:
         assert ours.xpath(query).getall() == theirs.xpath(query).getall(), query
+
+
+# --- found in review ----------------------------------------------------------------
+
+
+def page_of(body, content_type=None):
+    headers = [("content-type", content_type)] if content_type else []
+    return netweir.Page(_response("https://example.com/f", 200, "HTTP/1.1", headers, body))
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        (b"<rss><channel><item><link>/1</link></item></channel></rss>", "xml"),
+        (b'\n<?xml version="1.0"?><feed/>', "xml"),
+        (b"<!-- a comment --><urlset/>", "xml"),
+        (b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"/>', "html"),
+        (b"<!DOCTYPE html><title>t</title>", "html"),
+        (b"<div>hi</div>", "html"),
+        (b"just text", "html"),
+    ],
+)
+def test_a_body_with_no_type_is_read_as_it_starts(body, kind):
+    for content_type in [None, "application/octet-stream"]:
+        page = page_of(body, content_type)
+        assert page.root.type == kind, (body, content_type)
+        assert page._response.markup == kind
+
+
+def test_recover_repairs_and_warns(caplog):
+    broken = "<rss><channel><item><title>a&nbsp;b & c\x0b</title></item></channel></rss><b>PHP"
+    with pytest.raises(netweir.XMLError):
+        netweir.parse(broken, type="xml")
+    with caplog.at_level("WARNING", logger="netweir"):
+        root = netweir.parse(broken, type="xml", recover=True)
+    assert root.xpath("//title/text()").get() == "a\xa0b & c"
+    assert "repaired 4 problems in the XML" in caplog.text
+    assert "line 1, column" in caplog.text
+    caplog.clear()
+    # Nothing repaired, nothing said.
+    with caplog.at_level("WARNING", logger="netweir"):
+        netweir.parse("<r/>", type="xml", recover=True)
+    assert caplog.text == ""
+
+
+def test_an_empty_document_is_an_error_unless_recovering():
+    for empty in ["", "  \n"]:
+        with pytest.raises(netweir.XMLError, match="Document is empty"):
+            netweir.parse(empty, type="xml")
+        assert netweir.parse(empty, type="xml", recover=True).xpath("//*").getall() == []
+
+
+def test_a_response_parses_in_recover_mode_when_asked(caplog):
+    page = page_of(b"<r>&nbsp;</r>", "application/xml")
+    with pytest.raises(netweir.XMLError):
+        page._response.parse()
+    with caplog.at_level("WARNING", logger="netweir"):
+        root = page._response.parse(recover=True)
+    assert root.xpath("/r/text()").get() == "\xa0"
+    assert "https://example.com/f: repaired 1 problem" in caplog.text
+
+
+def test_page_replace_with_text_keeps_the_declared_encoding_true():
+    # No Content-Type: the XML declaration names the encoding, and the
+    # new body is encoded in it.
+    body = '<?xml version="1.0" encoding="ISO-8859-1"?><r>Zoë</r>'.encode("latin-1")
+    page = page_of(body)
+    assert page.encoding == "windows-1252"
+    new = page.replace(body=page.text.replace("Zoë", "Zoé &amp; Ann"))
+    assert new.xpath("/r/text()").get() == "Zoé & Ann"
+    # Nor does a UTF-16 page lose its way.
+    u16 = page_of('\ufeff<?xml version="1.0" encoding="UTF-16"?><r>a</r>'.encode("utf-16-le"))
+    assert u16.replace(body=u16.text.replace(">a<", ">ä<")).xpath("/r/text()").get() == "ä"
+
+
+def test_utf16_without_a_byte_order_mark_is_read_from_the_declaration():
+    text = '<?xml version="1.0" encoding="UTF-16"?><r><t>Zoë – €</t></r>'
+    for codec in ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]:
+        page = page_of(text.encode(codec), "application/xml")
+        assert page.xpath("//t/text()").get() == "Zoë – €", codec
+
+
+def test_css_attribute_selectors_find_html_names_on_xml():
+    page = page_of(
+        b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        b'<a href="/p/1" title="One">One</a><img src="/i.png" alt="x"/></body></html>',
+        "application/xml",
+    )
+    assert page.css("a[href]::attr(href)").getall() == ["/p/1"]
+    assert page.css("img[src]::attr(alt)").getall() == ["x"]
+    assert page.css("[title=One]::text").getall() == ["One"]
+
+
+def test_a_selection_takes_namespaces_too():
+    root = netweir.parse(ATOM, type="xml")
+    entries = root.xpath("//*[local-name()='entry']")
+    entries.register_namespace("a", ATOM_NS)
+    assert entries.xpath("a:title/text()").getall() == ["One", "Two"]
+    assert entries[0].xpath("a:title/text()").get() == "One"
+    with pytest.raises(ValueError):
+        entries.register_namespace("no good", ATOM_NS)
+    entries.remove_namespaces()
+    assert root.xpath("//entry/title/text()").getall() == ["One", "Two"]
+
+
+def test_a_crawl_can_recover_its_xml(feeds, caplog):
+    seen = []
+
+    class Lenient(netweir.Spider):
+        settings = netweir.Settings(
+            throttle=False, start_delay=0, obey_tdmrep=False, xml_recover=True
+        )
+        start_urls = [f"{feeds}/nbsp", f"{feeds}/nbsp-rss"]
+
+        def parse(self, page):
+            seen.append(page.xpath("//title/text()").get())
+
+    with caplog.at_level("WARNING", logger="netweir"):
+        Lenient().run()
+    assert seen == ["a\xa0b", "a\xa0b"]
+    # One warning each: from the engine's parse (text/xml), and from
+    # Python's (application/rss+xml, which the engine leaves alone).
+    assert caplog.text.count("isn't declared; read as HTML's") == 2
+
+
+def test_sitemaps_are_read_in_little_memory(tmp_path):
+    """A 200,000-URL sitemap took 864 MB when it was parsed whole; read in
+    one pass it's close to its own size."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "rss.py"
+    script.write_text(
+        "import gzip, resource, sys\n"
+        "from netweir._native import _sitemap\n"
+        "rows = ''.join(f'<url><loc>https://www.example.com/products/item-{i}-with-a-long-slug</loc>'\n"
+        '  f\'<lastmod>2026-01-01</lastmod><xhtml:link rel="alternate" hreflang="de" \'\n'
+        "  f'href=\"https://www.example.com/de/item-{i}\"/></url>' for i in range(200_000))\n"
+        "body = ('<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" '\n"
+        "  'xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">' + rows + '</urlset>').encode()\n"
+        "gz = gzip.compress(body); size = len(body); del rows, body\n"
+        "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "kind, entries, repaired = _sitemap(gz, 1 << 30)\n"
+        "grew = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before\n"
+        "scale = 1 if sys.platform == 'darwin' else 1024\n"
+        "print(len(entries), grew * scale, size)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, check=True
+    ).stdout.split()
+    entries, grew, size = map(int, out)
+    assert entries == 200_000
+    # The unzipped text, its decoding and the entries themselves; a tree
+    # would be several times the size.
+    assert grew < 6 * size, (grew, size)

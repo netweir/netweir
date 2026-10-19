@@ -29,7 +29,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _files, _hooks, _memory, _monitor, _stats, _track
+from netweir import _fetch, _files, _hooks, _memory, _monitor, _stats, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_limit, seconds
 from netweir._native import (
@@ -59,6 +59,9 @@ class Settings:
     #: Bytes of a response body, after decompression, beyond which the
     #: request fails with FetchError(kind="too_large"); None for no limit.
     max_response_size: int | None = 64 * 1024 * 1024
+    #: Read pages parsed as XML in recover mode: what can be repaired is,
+    #: with a warning saying what, instead of raising XMLError.
+    xml_recover: bool = False
     #: Requests in flight across all sites, and to one host.
     concurrency: int = 64
     per_domain: int = 8
@@ -426,6 +429,7 @@ class Settings:
             queue_key=self.queue_key or queue_key,
             queue_lease=self.queue_lease,
             queue_idle=self.queue_idle,
+            xml_recover=self.xml_recover,
         )
 
     def _checkpoint_file(self) -> str | None:
@@ -545,10 +549,12 @@ class Spider:
             return
         limit = self.settings.max_response_size or 1 << 30
         try:
-            kind, entries = _parse_sitemap(page.body, limit)
+            kind, entries, repaired = _parse_sitemap(page.body, limit)
         except ValueError as e:
             log.warning("%s: not read as a sitemap: %s", page.url, e)
             return
+        if repaired:
+            log.warning("%s: sitemap read, broken: %s", page.url, repaired)
         entries = self.sitemap_filter(entries)
         if kind == "index":
             follow = [re.compile(p) for p in self.sitemap_follow]
@@ -615,6 +621,8 @@ class Spider:
         #: it also sees an exception the caller is handling).
         raising = False
         stats: dict[str, int] | None = None
+        # For the callbacks: they run in tasks this one starts, which see it.
+        recovering = _fetch._xml_recover.set(self.settings.xml_recover)
         try:
             # Before anything is opened: a metrics port that's taken stops
             # the crawl here.
@@ -686,6 +694,7 @@ class Spider:
             raising = True
             raise
         finally:
+            _fetch._xml_recover.reset(recovering)
             try:
                 run.monitor.stop()
             except Exception:  # noqa: BLE001 - the crawl still winds up

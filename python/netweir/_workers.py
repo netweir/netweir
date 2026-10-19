@@ -149,6 +149,10 @@ def run(name: str, response: Any, request: Request) -> tuple:
     stats = getattr(_spider, "stats", None)
     if isinstance(stats, _stats.Stats):
         stats._ops = ops
+    from netweir import _fetch
+
+    settings = getattr(_spider, "settings", None)
+    _fetch._xml_recover.set(bool(getattr(settings, "xml_recover", False)))
     told = _track._report_sink.set(reports.append)
     asking = _track._repairs.set(ask if _repairing else None)
     error = None
