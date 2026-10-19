@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -100,14 +101,8 @@ class Request:
         if self.timeout is not None:
             self.timeout = seconds(self.timeout)
         redirect_limit(self.max_redirects)
-        if isinstance(self.cookies, dict):
-            self.cookies = [{"name": str(k), "value": str(v)} for k, v in self.cookies.items()]
-        elif self.cookies is not None:
-            if isinstance(self.cookies, (str, bytes)) or not all(
-                isinstance(c, dict) for c in self.cookies
-            ):
-                raise TypeError("cookies must be a dict of name to value, or a list of dicts")
-            self.cookies = [dict(c) for c in self.cookies]
+        if self.cookies is not None:
+            self.cookies = _cookies(self.url, self.cookies)
         has_body = self.form is not None or self.json is not None or self.body is not None
         self.method = (self.method or ("POST" if has_body else "GET")).upper()
         if self.form is not None or self.json is not None or self.kind is None:
@@ -154,3 +149,36 @@ class Request:
             formnumber=formnumber,
         )
         return form.request(callback=callback, **kwargs)
+
+
+def _text(value: Any) -> Any:
+    """A cookie's name or value as text: bytes as UTF-8, as Scrapy reads them."""
+    return value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+
+
+def _cookies(url: str, cookies: Any) -> list[dict[str, Any]]:
+    """``Request.cookies`` as a list of cookie dicts, from a dict of name to
+    value or any iterable of dicts. Bytes are read as UTF-8, and a cookie
+    whose value is None is left out with a warning, as in Scrapy."""
+    if isinstance(cookies, dict):
+        cookies = [{"name": k, "value": v} for k, v in cookies.items()]
+    elif isinstance(cookies, (str, bytes)):
+        raise TypeError("cookies must be a dict of name to value, or a list of dicts")
+    else:
+        cookies = list(cookies)
+        if not all(isinstance(c, dict) for c in cookies):
+            raise TypeError("cookies must be a dict of name to value, or a list of dicts")
+    out = []
+    for c in cookies:
+        c = {k: _text(v) for k, v in c.items()}
+        if "name" in c and not isinstance(c["name"], str):
+            c["name"] = str(c["name"])
+        if "value" in c and c["value"] is None:
+            logging.getLogger("netweir").warning(
+                "%s: the cookie %r has no value, so it's left out", url, c.get("name")
+            )
+            continue
+        if "value" in c and not isinstance(c["value"], str):
+            c["value"] = str(c["value"])
+        out.append(c)
+    return out

@@ -293,6 +293,19 @@ def test_request_cookies_are_kept_out_of_its_repr():
         netweir.Request("https://e.com/", cookies="sid=1")
 
 
+def test_request_cookies_take_a_generator_bytes_and_drop_none_as_scrapy(caplog):
+    pairs = netweir.Request("https://e.com/", cookies=(c for c in [{"name": "a", "value": "1"}]))
+    assert pairs.cookies == [{"name": "a", "value": "1"}]
+    r = netweir.Request("https://e.com/", cookies={"a": b"1", "b": None, b"c": "3"})
+    assert r.cookies == [{"name": "a", "value": "1"}, {"name": "c", "value": "3"}]
+    r = netweir.Request(
+        "https://e.com/", cookies=[{"name": "a", "value": b"1"}, {"name": "b", "value": None}]
+    )
+    assert r.cookies == [{"name": "a", "value": "1"}]
+    dropped = [m for m in caplog.messages if "has no value" in m]
+    assert len(dropped) == 2 and all("'b'" in m for m in dropped)
+
+
 def test_a_resumed_crawl_is_still_logged_in_and_keeps_waiting_requests_cookies(base, tmp_path):
     state = tmp_path / "state"
 
