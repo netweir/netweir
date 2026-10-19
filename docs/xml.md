@@ -114,7 +114,9 @@ CSS works, with allowances where it can't tell what XML tells apart:
   without `remove_namespaces()`, and `css("item")` finds `<Item>` too.
 - Attribute names ignore case, as in HTML: `[href]` matches `HREF="..."`,
   and `[id]` matches `ID="..."`, though `#x` and `.x` look only at the
-  attributes named exactly `id` and `class`. A prefixed attribute is
+  attributes named exactly `id` and `class`. On an element with both an
+  `ID` and an `id`, `[id]` and `[ID]` both mean the `id`, as `[id]` does
+  in parsel; read the `ID` with XPath. A prefixed attribute is
   matched by its whole name, so `[href]` doesn't match `xlink:href`.
 
 When the namespace or the case matters, use XPath, which respects both.

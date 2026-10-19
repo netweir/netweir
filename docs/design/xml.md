@@ -64,7 +64,11 @@ as on HTML and ignores case as it does there. A name that lowercases to
 too, so `[id]` finds it, but is linked into its element without
 `lxb_dom_element_attr_append`, whose bookkeeping would make it the
 element's one `id` and drop an `id` already there; `#x` and `.x` match
-only the attributes named exactly `id` and `class`. The first version gave
+only the attributes named exactly `id` and `class`. Beside an exact `id`
+(or `class`) on the same element, `ID` takes the id of its written name
+instead, as lexbor finds only the first attribute of an id, and `[id=x]`
+should read the `id` whichever comes first; lexbor lowercases the names
+in selectors, so `[ID]` then means the `id` too. The first version gave
 every attribute but `id` and `class` the id of its written form, which
 broke `a[href]` even on XHTML served as XML, since lexbor's ids for names
 HTML knows are static ones, and a second left `ID` out of `[id]`.

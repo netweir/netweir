@@ -856,6 +856,21 @@ fn css_attribute_selectors_work_on_xml_names_html_also_has() {
     assert_eq!(css("#up::text"), Vec::<String>::new());
     assert_eq!(css("#lo::text"), ["3"]);
     assert_eq!(css(".c::text"), Vec::<String>::new());
+    // With id and ID both there, in either order, [id] reads the id, as
+    // parsel does; ID is left to XPath.
+    let doc = Document::parse_xml(concat!(
+        r#"<r><x ID="up" id="lo">1</x><x id="lo" ID="up">2</x>"#,
+        r#"<y Class="c" class="d">3</y><y class="d" Class="c">4</y></r>"#
+    ))
+    .unwrap();
+    let css = |q: &str| Query::new(q).unwrap().strings(doc.root());
+    assert_eq!(css("[id=lo]::text"), ["1", "2"]);
+    assert_eq!(css("[id=up]::text"), Vec::<String>::new());
+    assert_eq!(css("#lo::text"), ["1", "2"]);
+    assert_eq!(css("[class=d]::text"), ["3", "4"]);
+    assert_eq!(css("[class~=c]::text"), Vec::<String>::new());
+    assert_eq!(css(".d::text"), ["3", "4"]);
+    assert_eq!(xpath(&doc, "//x/@ID"), ["up", "up"]);
 }
 
 #[test]

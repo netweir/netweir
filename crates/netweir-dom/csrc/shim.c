@@ -306,6 +306,43 @@ static int nw_xml_attr_set_local(lxb_dom_document_t *d, lxb_dom_attr_t *attr, co
                && !(qlen == 5 && memcmp(qname, "class", 5) == 0));
 }
 
+/* 1 if `attr` is named `name` (lowercase) in another case: `ID` for "id". */
+static int nw_xml_attr_variant(lxb_dom_attr_t *attr, const char *name, size_t len) {
+    size_t qlen;
+    const lxb_char_t *q = lxb_dom_attr_qualified_name(attr, &qlen);
+    if (qlen != len || memcmp(q, name, len) == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        lxb_char_t c = q[i] >= 'A' && q[i] <= 'Z' ? (lxb_char_t) (q[i] + 32) : q[i];
+        if (c != (lxb_char_t) name[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The local name id of an `ID` or `Class`: lexbor's `id` or `class`, so
+ * `[id]` finds it, unless the element also has an attribute written
+ * exactly `id` (or `class`). Then it's its own written name's, as in
+ * parsel, so `[id=x]` reads the `id` and not whichever came first. */
+static void nw_xml_attr_settle(lxb_dom_element_t *el, lxb_dom_attr_t *attr) {
+    if (nw_xml_attr_variant(attr, "id", 2)) {
+        attr->node.local_name = el->attr_id != NULL ? attr->qualified_name : LXB_DOM_ATTR_ID;
+    } else if (nw_xml_attr_variant(attr, "class", 5)) {
+        attr->node.local_name =
+            el->attr_class != NULL ? attr->qualified_name : LXB_DOM_ATTR_CLASS;
+    }
+}
+
+/* nw_xml_attr_settle for each of `el`'s attributes, once its `id` or
+ * `class` has come or gone. */
+static void nw_xml_attrs_settle(lxb_dom_element_t *el) {
+    for (lxb_dom_attr_t *a = el->first_attr; a != NULL; a = a->next) {
+        nw_xml_attr_settle(el, a);
+    }
+}
+
 /* Puts `attr` last among `el`'s attributes as lxb_dom_element_attr_append
  * does, but without taking it for the element's `id` or `class` (and
  * dropping the one there). */
@@ -343,10 +380,17 @@ lxb_dom_attr_t *nw_xml_attr(lxb_dom_node_t *n, const char *qname, size_t qlen, c
     if (lxb_dom_attr_set_value(attr, (const lxb_char_t *) value, vlen) != LXB_STATUS_OK) {
         return NULL;
     }
+    lxb_dom_element_t *el = lxb_dom_interface_element(n);
     if (special) {
-        nw_xml_attr_link(lxb_dom_interface_element(n), attr);
+        nw_xml_attr_link(el, attr);
+        nw_xml_attr_settle(el, attr);
     } else {
-        lxb_dom_element_attr_append(lxb_dom_interface_element(n), attr);
+        lxb_dom_element_attr_append(el, attr);
+        /* An element has one `id` and one `class` at most, so this runs
+         * at most twice for it. */
+        if (el->attr_id == attr || el->attr_class == attr) {
+            nw_xml_attrs_settle(el);
+        }
     }
     return attr;
 }
@@ -410,7 +454,12 @@ int nw_xml_rename(lxb_dom_node_t *n, const char *qname, size_t qlen) {
 /* Takes an attribute off its element, leaving it allocated: a string
  * borrowed from it stays valid until the document goes. */
 void nw_attr_remove(lxb_dom_node_t *n, lxb_dom_attr_t *a) {
-    lxb_dom_element_attr_remove(lxb_dom_interface_element(n), a);
+    lxb_dom_element_t *el = lxb_dom_interface_element(n);
+    int settle = el->attr_id == a || el->attr_class == a;
+    lxb_dom_element_attr_remove(el, a);
+    if (settle) {
+        nw_xml_attrs_settle(el);
+    }
 }
 
 /* The same for an attribute, whose new name must not be another of its
@@ -423,9 +472,24 @@ int nw_xml_attr_rename(lxb_dom_attr_t *a, const char *qname, size_t qlen) {
         return -1;
     }
     a->qualified_name = q->attr_id;
-    /* Only a prefixed name is renamed, and it's already linked in: the new
-     * name's id is all that changes, never the element's id or class. */
-    return nw_xml_attr_set_local(d, a, qname, qlen) < 0 ? -1 : 0;
+    /* Only a prefixed name is renamed, and it's already linked in; one
+     * renamed to `id` or `class` becomes the element's own. */
+    int special = nw_xml_attr_set_local(d, a, qname, qlen);
+    if (special < 0) {
+        return -1;
+    }
+    lxb_dom_element_t *el = a->owner;
+    if (special) {
+        nw_xml_attr_settle(el, a);
+    } else if (a->node.local_name == LXB_DOM_ATTR_ID || a->node.local_name == LXB_DOM_ATTR_CLASS) {
+        if (a->node.local_name == LXB_DOM_ATTR_ID) {
+            el->attr_id = a;
+        } else {
+            el->attr_class = a;
+        }
+        nw_xml_attrs_settle(el);
+    }
+    return 0;
 }
 
 /* HTML's named character `name` (given with its `;`), as UTF-8, or NULL

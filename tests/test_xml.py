@@ -771,3 +771,18 @@ def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds):
     assert len(nodes) == 300
     # The reading took a while, and the loop was never held for long.
     assert worst < max(0.25, took / 4), (took, worst)
+
+
+def test_an_id_a_prefix_came_off_is_the_element_s_id():
+    # remove_namespaces makes a:id the element's id, as if written so: #p
+    # finds it, and [id] reads it rather than the ID beside it.
+    for src in (
+        '<r xmlns:a="u"><x ID="up" a:id="p">1</x></r>',
+        '<r xmlns:a="u"><x a:ID="up" id="p">1</x></r>',
+    ):
+        doc = netweir.parse(src, type="xml")
+        doc.remove_namespaces()
+        assert doc.css("#p::text").getall() == ["1"], src
+        assert doc.css("[id=p]::text").getall() == ["1"], src
+        assert doc.css("[id=up]::text").getall() == [], src
+        assert doc.xpath("//x/@ID").getall() == ["up"], src
