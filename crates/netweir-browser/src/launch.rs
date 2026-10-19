@@ -446,7 +446,7 @@ pub(crate) struct Lifeline {
     end: Option<PipeWriter>,
     watcher: Option<Child>,
     #[cfg(windows)]
-    _job: Option<std::os::windows::io::OwnedHandle>,
+    job: Option<std::os::windows::io::OwnedHandle>,
 }
 
 impl Lifeline {
@@ -454,6 +454,11 @@ impl Lifeline {
     /// nothing to give time to, so on Windows, where it would wait ten
     /// seconds regardless, it's ended at once, before its read returns.
     /// Elsewhere it finds Chrome gone and ends at once by itself.
+    ///
+    /// On Windows, Chrome's helpers are ended with it, and waited for:
+    /// one can outlive Chrome by half a minute on a busy machine, holding
+    /// files in the profile that close() is about to remove, and Windows
+    /// won't delete an open file.
     pub(crate) fn chrome_gone(self) {
         #[cfg(windows)]
         {
@@ -461,6 +466,9 @@ impl Lifeline {
             if let Some(mut watcher) = lifeline.watcher.take() {
                 let _ = watcher.kill();
                 let _ = watcher.wait();
+            }
+            if let Some(job) = &lifeline.job {
+                end_job(job);
             }
         }
     }
@@ -716,7 +724,7 @@ fn tie(child: &Child) -> Lifeline {
             return Lifeline {
                 end: None,
                 watcher: None,
-                _job: None,
+                job: None,
             };
         }
     };
@@ -729,8 +737,100 @@ fn tie(child: &Child) -> Lifeline {
     Lifeline {
         end,
         watcher,
-        _job: Some(job),
+        job: Some(job),
     }
+}
+
+/// Ends every process in `job` and waits for each to be gone, as a
+/// process lets go of its files only once it has. Ending is quick to ask
+/// for but not to finish: Chrome runs some helpers at idle priority, and
+/// on a busy machine one told to end can wait over thirty seconds for the
+/// time to do it. Each is put back at normal priority first, which brings
+/// that to a few seconds, eleven at the slowest on a four-core runner
+/// with four or eight busy loops; thirty is the bound. The helpers are in
+/// a job of Chrome's own inside this one, which this job's own counts and
+/// lists leave out, so they're found among all the system's processes.
+/// Chrome itself has exited by now, so no new helper can start meanwhile.
+#[cfg(windows)]
+fn end_job(job: &std::os::windows::io::OwnedHandle) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+    use windows_sys::Win32::System::Threading::{
+        NORMAL_PRIORITY_CLASS, SetPriorityClass, WaitForSingleObject,
+    };
+
+    let processes = in_job(job);
+    // SAFETY: each handle is open while `processes` is, and the job's
+    // while `job` is borrowed.
+    unsafe {
+        for process in &processes {
+            SetPriorityClass(process.as_raw_handle() as _, NORMAL_PRIORITY_CLASS);
+        }
+        if TerminateJobObject(job.as_raw_handle() as _, 1) == 0 {
+            return;
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    for process in &processes {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        // SAFETY: as above.
+        unsafe { WaitForSingleObject(process.as_raw_handle() as _, left.as_millis() as u32) };
+    }
+}
+
+/// Every process in `job`, or in a job inside it, opened to wait on and
+/// to set the priority of.
+#[cfg(windows)]
+fn in_job(job: &std::os::windows::io::OwnedHandle) -> Vec<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_SYNCHRONIZE,
+    };
+
+    let mut found = Vec::new();
+    // SAFETY: each handle is checked, and owned from here on; the entry
+    // is the size it says.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return found;
+        }
+        let snapshot = OwnedHandle::from_raw_handle(snapshot as _);
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snapshot.as_raw_handle() as _, &mut entry) != 0;
+        while more {
+            let process = OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                entry.th32ProcessID,
+            );
+            if !process.is_null() {
+                let process = OwnedHandle::from_raw_handle(process as _);
+                let mut inside = 0;
+                if IsProcessInJob(
+                    process.as_raw_handle() as _,
+                    job.as_raw_handle() as _,
+                    &mut inside,
+                ) != 0
+                    && inside != 0
+                {
+                    found.push(process);
+                }
+            }
+            more = Process32NextW(snapshot.as_raw_handle() as _, &mut entry) != 0;
+        }
+    }
+    found
 }
 
 /// Starts Chrome's watcher, which holds a handle to its job too, so the
@@ -1447,5 +1547,49 @@ mod tests {
             found.display()
         );
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A helper as Chrome starts one, in a job of its own inside Chrome's
+    /// and at idle priority, holding a file in the profile: once Chrome
+    /// is gone and the lifeline let go, it's gone too, and the file free.
+    #[cfg(windows)]
+    #[test]
+    fn a_helper_holding_the_profile_is_gone_with_chrome() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        use windows_sys::Win32::System::Threading::{IDLE_PRIORITY_CLASS, SetPriorityClass};
+
+        let dir = scratch("held");
+        let held = std::fs::File::create(dir.join("held")).unwrap();
+        let mut helper = Command::new(system_dir().unwrap().join("PING.EXE"))
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(held)
+            .spawn()
+            .unwrap();
+        let lifeline = tie(&helper);
+        // SAFETY: the handle is checked and owned from here on; the
+        // helper's is open while `helper` is.
+        let _inner = unsafe {
+            let inner = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            assert!(!inner.is_null());
+            let inner = OwnedHandle::from_raw_handle(inner as _);
+            assert_ne!(
+                AssignProcessToJobObject(inner.as_raw_handle() as _, helper.as_raw_handle() as _),
+                0
+            );
+            assert_ne!(
+                SetPriorityClass(helper.as_raw_handle() as _, IDLE_PRIORITY_CLASS),
+                0
+            );
+            inner
+        };
+        lifeline.chrome_gone();
+        let gone = helper.try_wait().unwrap();
+        let removed = std::fs::remove_dir_all(&dir);
+        let _ = helper.kill();
+        let _ = helper.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone.is_some(), "the helper outlived the lifeline");
+        removed.unwrap();
     }
 }

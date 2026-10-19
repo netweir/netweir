@@ -915,7 +915,13 @@ impl Drop for Quitting {
 }
 
 /// Chrome's helper processes can hold files in the profile for a moment
-/// after the browser exits, and Windows won't delete an open file.
+/// after the browser exits, and Windows won't delete an open file. On
+/// Windows they've been ended and waited for by now (see
+/// [`launch::Lifeline::chrome_gone`]); what's left is a scanner or an
+/// indexer with a file open for a moment, which a few seconds' retrying
+/// outlasts. A file still held after that is said in the error, path and
+/// all, rather than waited on for good: Chrome is gone by then, and the
+/// directory is in the system's temporary folder.
 fn remove_profile(dir: &Path) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
