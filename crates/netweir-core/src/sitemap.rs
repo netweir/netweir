@@ -2,7 +2,9 @@
 //! sitemaps.org, gzipped or not, and plain-text sitemaps of one URL per
 //! line.
 
-use netweir_dom::{Document, Node, NodeKind};
+use std::time::Duration;
+
+use netweir_dom::xml::{XmlOptions, XmlVisitor, walk_xml};
 
 /// What a sitemap lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,13 +30,17 @@ pub struct Entry {
 pub struct Sitemap {
     pub kind: Kind,
     pub entries: Vec<Entry>,
+    /// What recovering from a broken sitemap repaired, for a warning;
+    /// None when nothing needed it.
+    pub repaired: Option<String>,
 }
 
 /// Parses `body`, unzipping it first if it's gzip, to at most `max` bytes.
 ///
-/// XML is read as netweir-dom reads any XML: nothing is ever fetched, and
-/// entities a sitemap declares are expanded only so far, so a "billion
-/// laughs" sitemap is refused rather than filling memory.
+/// XML is read with netweir-dom's limits on any XML: nothing is ever
+/// fetched, entities a sitemap declares are expanded only so far (a
+/// "billion laughs" sitemap is refused rather than filling memory), and
+/// reading takes at most [`BUDGET`].
 pub fn parse(body: &[u8], max: usize) -> Result<Sitemap, String> {
     let data = if body.starts_with(&[0x1f, 0x8b]) {
         gunzip(body, max)?
@@ -86,67 +92,124 @@ fn plain(text: &str) -> Result<Sitemap, String> {
     Ok(Sitemap {
         kind: Kind::Urlset,
         entries,
+        repaired: None,
     })
 }
 
-/// Read with netweir-dom's XML parser, with its limits on what a hostile
-/// document can cost. Names are matched by their local part, in any case
-/// and any namespace, as sitemaps in the wild vary in both.
+/// How long reading one sitemap may take.
+pub const BUDGET: Duration = Duration::from_secs(10);
+
+/// Read in one pass with netweir-dom's XML reader, building no tree, so a
+/// sitemap of hundreds of thousands of URLs costs little more memory than
+/// its entries. Sitemaps in the wild are often a little broken, so it's
+/// read in recover mode: what recovery repaired is in `Sitemap::repaired`.
+/// Names are matched by their local part, in any case and any namespace,
+/// as sitemaps vary in both.
 fn xml(text: &str) -> Result<Sitemap, String> {
-    let doc = Document::parse_xml(text).map_err(|e| format!("the sitemap isn't valid XML: {e}"))?;
-    let root = doc
-        .root()
-        .children()
-        .find(|n| n.kind() == NodeKind::Element);
-    let kind = match root.and_then(|r| r.tag()) {
-        Some(r) if is(r, "urlset") => Kind::Urlset,
-        Some(r) if is(r, "sitemapindex") => Kind::Index,
-        _ => return Err("not a sitemap: no <urlset> or <sitemapindex>".into()),
+    let options = XmlOptions {
+        recover: true,
+        budget: BUDGET,
     };
-    let mut entries = Vec::new();
-    for el in root.map(elements).unwrap_or_default() {
-        if !el.tag().is_some_and(|t| is(t, "url") || is(t, "sitemap")) {
-            continue;
-        }
-        let mut entry = Entry::default();
-        for field in elements(el) {
-            let name = field.tag().unwrap_or_default();
-            let value = || field.text().trim().to_string();
-            if is(name, "loc") {
-                entry.loc = value();
-            } else if is(name, "lastmod") {
-                entry.lastmod = Some(value());
-            } else if is(name, "changefreq") {
-                entry.changefreq = Some(value());
-            } else if is(name, "priority") {
-                entry.priority = value().parse().ok();
-            } else if is(name, "link")
-                && field
-                    .attr("rel")
-                    .is_some_and(|r| r.eq_ignore_ascii_case("alternate"))
-                && let Some(href) = field.attr("href")
-            {
+    let mut walk = Walk::default();
+    let repairs = walk_xml(text, options, &mut walk)
+        .map_err(|e| format!("the sitemap isn't valid XML: {e}"))?;
+    let kind = walk
+        .kind
+        .ok_or("not a sitemap: no <urlset> or <sitemapindex>")?;
+    Ok(Sitemap {
+        kind,
+        entries: walk.entries,
+        repaired: (!repairs.is_empty()).then(|| repairs.summary()),
+    })
+}
+
+/// What a sitemap's events add up to.
+#[derive(Default)]
+struct Walk {
+    /// Elements open, the root counting 1.
+    depth: usize,
+    /// The root's kind; None until it's read, and for any other root.
+    kind: Option<Kind>,
+    entry: Option<Entry>,
+    /// The field of the entry being read, lowercased, and its text.
+    field: Option<String>,
+    text: String,
+    entries: Vec<Entry>,
+}
+
+fn local(qname: &str) -> String {
+    qname
+        .split_once(':')
+        .map_or(qname, |(_, l)| l)
+        .to_ascii_lowercase()
+}
+
+impl XmlVisitor for Walk {
+    fn start(&mut self, qname: &str, attrs: &[(String, String)]) {
+        let name = local(qname);
+        match self.depth {
+            0 => {
+                self.kind = match name.as_str() {
+                    "urlset" => Some(Kind::Urlset),
+                    "sitemapindex" => Some(Kind::Index),
+                    _ => None,
+                }
+            }
+            1 if self.kind.is_some() && (name == "url" || name == "sitemap") => {
+                self.entry = Some(Entry::default());
+            }
+            2 if self.entry.is_some() => {
+                let attr = |wanted: &str| {
+                    attrs
+                        .iter()
+                        .find(|(k, _)| local(k) == wanted)
+                        .map(|(_, v)| v.as_str())
+                };
                 // <xhtml:link rel="alternate" href="...">: the page in
                 // another language.
-                entry.alternates.push(href.trim().to_string());
+                if name == "link"
+                    && attr("rel").is_some_and(|r| r.eq_ignore_ascii_case("alternate"))
+                    && let (Some(href), Some(entry)) = (attr("href"), self.entry.as_mut())
+                {
+                    entry.alternates.push(href.trim().to_string());
+                }
+                self.field = Some(name);
+                self.text.clear();
             }
+            _ => {}
         }
-        if !entry.loc.is_empty() {
-            entries.push(entry);
+        self.depth += 1;
+    }
+
+    fn text(&mut self, text: &str) {
+        if self.field.is_some() && self.depth == 3 {
+            self.text.push_str(text);
         }
     }
-    Ok(Sitemap { kind, entries })
-}
 
-/// The elements directly inside `n`.
-fn elements(n: Node<'_>) -> Vec<Node<'_>> {
-    n.children()
-        .filter(|c| c.kind() == NodeKind::Element)
-        .collect()
-}
-
-fn is(name: &str, wanted: &str) -> bool {
-    name.eq_ignore_ascii_case(wanted)
+    fn end(&mut self, _qname: &str) {
+        self.depth -= 1;
+        match self.depth {
+            2 => {
+                if let (Some(field), Some(entry)) = (self.field.take(), self.entry.as_mut()) {
+                    let value = self.text.trim().to_string();
+                    match field.as_str() {
+                        "loc" => entry.loc = value,
+                        "lastmod" => entry.lastmod = Some(value),
+                        "changefreq" => entry.changefreq = Some(value),
+                        "priority" => entry.priority = value.parse().ok(),
+                        _ => {}
+                    }
+                }
+            }
+            1 => {
+                if let Some(entry) = self.entry.take().filter(|e| !e.loc.is_empty()) {
+                    self.entries.push(entry);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -292,9 +355,86 @@ mod tests {
     }
 
     #[test]
-    fn a_sitemap_cut_off_part_way_is_an_error() {
-        let err = parse(b"<urlset><url><loc>https://example.com/a</loc>", MAX).unwrap_err();
-        assert!(err.contains("ends inside <urlset><url>"), "{err}");
+    fn a_sitemap_cut_off_part_way_gives_what_it_has_and_says_so() {
+        let map = parse(
+            b"<urlset><url><loc>https://example.com/a</loc></url><url><loc>",
+            MAX,
+        )
+        .unwrap();
+        let locs: Vec<&str> = map.entries.iter().map(|e| e.loc.as_str()).collect();
+        assert_eq!(locs, ["https://example.com/a"]);
+        let repaired = map.repaired.unwrap();
+        assert!(
+            repaired.contains("ends inside <urlset><url><loc>; closed"),
+            "{repaired}"
+        );
+    }
+
+    #[test]
+    fn the_broken_sitemaps_of_the_wild_are_read_and_the_repairs_named() {
+        let urlset = |decl: &str, x: &str, y: &str| {
+            format!(
+                "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"{decl}><url><loc>https://e/a{x}</loc>{y}</url><url><loc>https://e/b</loc></url></urlset>"
+            )
+        };
+        for (xml, a, alternates, says) in [
+            (
+                urlset(
+                    "",
+                    "",
+                    "<image:image><image:loc>https://e/i.jpg</image:loc></image:image>",
+                ),
+                "https://e/a",
+                vec![],
+                "prefix image of <image:image> isn't declared",
+            ),
+            (
+                urlset(
+                    "",
+                    "",
+                    r#"<xhtml:link rel="alternate" hreflang="de" href="https://e/de"/>"#,
+                ),
+                "https://e/a",
+                vec!["https://e/de"],
+                "prefix xhtml of <xhtml:link> isn't declared",
+            ),
+            (
+                urlset("", "&nbsp;", ""),
+                "https://e/a",
+                vec![],
+                "&nbsp; isn't declared",
+            ),
+            (
+                urlset("", "?a=1&b=2", ""),
+                "https://e/a?a=1&b=2",
+                vec![],
+                "starts no reference",
+            ),
+            (urlset("", "\u{b}", ""), "https://e/a", vec![], "U+000B"),
+            (
+                urlset("", "", "") + "\n<!-- generated --> <b>PHP notice</b>",
+                "https://e/a",
+                vec![],
+                "after the root element; the rest is ignored",
+            ),
+            (
+                urlset(r#" a="1" a="2""#, "", ""),
+                "https://e/a",
+                vec![],
+                "twice",
+            ),
+        ] {
+            let map = parse(xml.as_bytes(), MAX).unwrap_or_else(|e| panic!("{xml}: {e}"));
+            let locs: Vec<&str> = map.entries.iter().map(|e| e.loc.as_str()).collect();
+            assert_eq!(locs, [a, "https://e/b"], "{xml}");
+            assert_eq!(map.entries[0].alternates, alternates, "{xml}");
+            let repaired = map.repaired.unwrap_or_default();
+            assert!(repaired.contains(says), "{xml}: {repaired}");
+        }
+        // A sound one needs no repairs, with or without whitespace before
+        // its declaration.
+        let sound = format!("\n\n<?xml version='1.0'?>{}", urlset("", "", ""));
+        assert_eq!(parse(sound.as_bytes(), MAX).unwrap().repaired, None);
     }
 
     #[test]
