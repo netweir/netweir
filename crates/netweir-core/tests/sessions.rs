@@ -425,3 +425,55 @@ async fn deltafetch_knows_a_page_by_its_jar() {
     drop(c);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn a_request_answered_from_the_cache_still_puts_its_cookies_in_its_jar() {
+    let site = Site::start(site_pages()).await;
+    let dir = std::env::temp_dir().join(format!("netweir-cached-cookies-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cached = || CrawlSettings {
+        cache: Some(dir.join("cache.sqlite3")),
+        ..settings()
+    };
+    let c = crawler(cached());
+    one_by_one(
+        &c,
+        vec![
+            request(1, site.url("/tracked")),
+            in_jar(2, site.url("/tracked"), "ada"),
+        ],
+    )
+    .await;
+    c.close().unwrap();
+    drop(c);
+    let c = crawler(cached());
+    let mut own = request(3, site.url("/tracked"));
+    own.cookies.add = vec![cookie("sid", "1")];
+    let mut named = in_jar(4, site.url("/tracked"), "ada");
+    named.cookies.add = vec![cookie("sid", "ada")];
+    let mut alone = request(5, site.url("/tracked"));
+    alone.cookies.add = vec![cookie("stray", "1")];
+    alone.cookies.dont_merge = true;
+    one_by_one(
+        &c,
+        vec![
+            own,
+            named,
+            alone,
+            request(6, site.url("/me")),
+            in_jar(7, site.url("/me"), "ada"),
+        ],
+    )
+    .await;
+    assert_eq!(c.stats().cache_hits, 3);
+    // The crawl's jar has the request's own cookie, put in before the
+    // cached page's tracker as a fetch would; Ada's has hers; the request
+    // on its own leaves nothing.
+    assert_eq!(
+        carried(&site, "/me"),
+        ["sid=1; tracker=1", "sid=ada; tracker=1"]
+    );
+    c.close().unwrap();
+    drop(c);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

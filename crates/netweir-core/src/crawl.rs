@@ -2944,6 +2944,11 @@ async fn serve(shared: Arc<Shared>, q: Queued) {
     match read {
         Some((mut response, redirects)) => {
             state.stats.cache_hits += 1;
+            // The request's own cookies go into its jar as a fetch would
+            // have put them, before what the kept response set.
+            if let Some(keeper) = cookie_keeper(&shared, &state, &q.request, &q.request.url) {
+                add_request_cookies(keeper.jar(), &q.request);
+            }
             // What the fetch did along the way, done again: each hop's
             // cookies into the jar its host's requests use, and where each
             // led marked seen.
