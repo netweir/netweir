@@ -3905,6 +3905,16 @@ fn hand_back(
             None => {}
         }
     }
+    // And to the browser Chrome said it was: its language, and a phone's
+    // user agent and client hints.
+    for (name, value) in shared
+        .settings
+        .browser_launch
+        .environment
+        .request_headers(version)
+    {
+        options.profile.set_header(&name, &value);
+    }
     // The cookies are tied to the address Chrome went out from.
     options.proxy = state.chrome_proxy.clone();
     let pooled = state

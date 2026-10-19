@@ -186,6 +186,35 @@ impl std::fmt::Display for ProfileError {
 impl std::error::Error for ProfileError {}
 
 impl Profile {
+    /// Gives the header `name` (any case) `value` wherever the profile
+    /// sends it, keeping its place: for a browser saying something of its
+    /// own, such as another language. A header it doesn't send stays
+    /// unsent.
+    pub fn set_header(&mut self, name: &str, value: &str) {
+        let set = |headers: &mut Vec<(String, String)>| {
+            for (k, v) in headers.iter_mut() {
+                if k.eq_ignore_ascii_case(name) && !v.is_empty() {
+                    *v = value.to_string();
+                }
+            }
+        };
+        set(&mut self.headers);
+        set(&mut self.http2_headers);
+        for shape in [
+            &mut self.link,
+            &mut self.form,
+            &mut self.fetch,
+            &mut self.image,
+            &mut self.after_form_redirect,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            set(&mut shape.headers);
+            set(&mut shape.http2_headers);
+        }
+    }
+
     /// Every header name a request can carry, in the order the browser
     /// sends them: the profile's headers (or their after-redirect order),
     /// then the HTTP/2-only ones.

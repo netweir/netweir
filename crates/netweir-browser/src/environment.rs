@@ -447,6 +447,39 @@ impl Environment {
                 .is_some_and(|l| Some(l.as_str()) != launched)
     }
 
+    /// The request headers whose values this environment changes from what
+    /// a person's Chrome `version` (its product, such as
+    /// "Chrome/154.0.8037.92") sends on the system it runs on: its user
+    /// agent and client hints for a phone or another user agent, and its
+    /// `Accept-Language`. For an HTTP client that's to look like the same
+    /// Chrome, as a crawl's does when Chrome hands it a site's cookies.
+    pub fn request_headers(&self, version: &str) -> Vec<(String, String)> {
+        let full = version
+            .trim_start_matches("HeadlessChrome/")
+            .trim_start_matches("Chrome/");
+        let mut out = Vec::new();
+        if self.phone.is_some() || self.user_agent.is_some() {
+            let blank = json!({"platform": ""});
+            if let Ok(Some(o)) = self.user_agent_override(Some(("", &blank)), full, None) {
+                let m = &o["userAgentMetadata"];
+                let mobile = if m["mobile"] == true { "?1" } else { "?0" };
+                out.push((
+                    "User-Agent".to_string(),
+                    o["userAgent"].as_str().unwrap_or_default().to_string(),
+                ));
+                out.push(("sec-ch-ua-mobile".into(), mobile.into()));
+                out.push((
+                    "sec-ch-ua-platform".into(),
+                    format!("\"{}\"", m["platform"].as_str().unwrap_or_default()),
+                ));
+            }
+        }
+        if let Some(languages) = self.accept_language() {
+            out.push(("Accept-Language".into(), languages));
+        }
+        out
+    }
+
     /// `Network.setUserAgentOverride`'s parameters for this environment,
     /// on top of `base` (Chrome's own user agent, without Headless, and its
     /// client hints), for a Chrome whose full version is `full` (such as
@@ -835,6 +868,28 @@ mod tests {
                 ("X-B".to_string(), "1".to_string()),
                 ("x-a".into(), "2".into())
             ]
+        );
+    }
+
+    #[test]
+    fn an_http_client_can_say_what_the_page_said() {
+        let mut env = Environment::device("Galaxy S23").unwrap();
+        env.locale = Some("pt-BR".into());
+        let headers = env.request_headers("Chrome/154.0.8037.92");
+        let get = |n: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| v.as_str())
+        };
+        assert!(get("User-Agent").unwrap().contains("Android"));
+        assert_eq!(get("sec-ch-ua-mobile"), Some("?1"));
+        assert_eq!(get("sec-ch-ua-platform"), Some("\"Android\""));
+        assert_eq!(get("Accept-Language"), Some("pt-BR,pt;q=0.9"));
+        assert!(
+            Environment::default()
+                .request_headers("Chrome/154.0.8037.92")
+                .is_empty()
         );
     }
 

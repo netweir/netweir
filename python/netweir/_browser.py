@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import os
 from collections.abc import Generator, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from netweir._native import Browser, launch
+from netweir._native import Browser, _devices, launch
+
+if TYPE_CHECKING:
+    from netweir._native import Environment
+
+#: Every device preset by name, as the keyword arguments it stands for:
+#: ``browser.new_context(**netweir.devices["Galaxy S23"])``, or just
+#: ``device="Galaxy S23"``. Desktops keep the system Chrome runs on and
+#: change its screen; phones are Android phones, in every client hint.
+devices: dict[str, Environment] = _devices()
 
 
 class browser:
@@ -44,6 +53,12 @@ class browser:
     to the front waits as long before it's used, a time picked between
     the two each time. Shorter is faster, and a page that times how long
     ``confirm()`` kept it waiting can tell.
+
+    ``environment`` is every page's environment, with the keys
+    ``new_context()`` takes (``device``, ``viewport``, ``locale``,
+    ``timezone_id`` and the rest), unless a context or page says
+    otherwise. Given here, a screen, pixel ratio, user agent and language
+    are Chrome's own from the start, so even service workers agree.
     """
 
     def __init__(
@@ -57,6 +72,7 @@ class browser:
         connect: str | None = None,
         user_data_dir: str | os.PathLike[str] | None = None,
         dialog_pause: tuple[float, float] = (0.5, 1.5),
+        environment: Environment | None = None,
     ):
         self._options: dict[str, Any] = {
             "executable": None if executable is None else os.fspath(executable),
@@ -69,6 +85,7 @@ class browser:
                 None if user_data_dir is None else os.path.expanduser(os.fspath(user_data_dir))
             ),
             "dialog_pause": tuple(dialog_pause),
+            "environment": None if environment is None else dict(environment),
         }
         self._browser: Browser | None = None
 

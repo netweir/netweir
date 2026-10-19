@@ -2,7 +2,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Literal, TypedDict, TypeVar, overload
 
 from netweir._errors import FetchError
 from netweir._helpers import Article
@@ -439,6 +439,7 @@ class Crawler:
         max_redirects: int = 20,
         retry_http_codes: list[int] | None = None,
         http_auth: tuple[str, str, str] | None = None,
+        browser_environment: Environment | None = None,
     ) -> None: ...
     def add_rule(
         self,
@@ -682,8 +683,39 @@ def launch(
     connect: str | None = None,
     user_data_dir: str | os.PathLike[str] | None = None,
     dialog_pause: tuple[float, float] = (0.5, 1.5),
+    environment: Environment | None = None,
 ) -> Awaitable[Browser]: ...
 def find_chrome() -> str: ...
+
+class Size(TypedDict):
+    width: int
+    height: int
+
+class Geolocation(TypedDict, total=False):
+    latitude: float
+    longitude: float
+    accuracy: float
+
+class Environment(TypedDict, total=False):
+    device: str
+    viewport: Size
+    screen: Size
+    device_scale_factor: float
+    is_mobile: bool
+    has_touch: bool
+    locale: str
+    timezone_id: str
+    geolocation: Geolocation
+    permissions: list[str]
+    color_scheme: Literal["light", "dark", "no-preference"]
+    reduced_motion: Literal["reduce", "no-preference"]
+    extra_http_headers: dict[str, str]
+    offline: bool
+    user_agent: str
+    init_scripts: list[str]
+
+def _devices() -> dict[str, Environment]: ...
+def _check_environment(given: Environment) -> None: ...
 def install_chrome(
     headless_shell: bool = False, index: str = ..., home: str | os.PathLike[str] | None = None
 ) -> tuple[str, str, bool]: ...
@@ -693,9 +725,46 @@ class Browser:
     def version(self) -> str: ...
     @property
     def closed(self) -> bool: ...
-    def new_page(self) -> Awaitable[BrowserPage]: ...
+    def new_page(
+        self,
+        *,
+        device: str | None = None,
+        viewport: Size | None = None,
+        screen: Size | None = None,
+        device_scale_factor: float | None = None,
+        is_mobile: bool | None = None,
+        has_touch: bool | None = None,
+        locale: str | None = None,
+        timezone_id: str | None = None,
+        geolocation: Geolocation | None = None,
+        permissions: list[str] | None = None,
+        color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+        reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        extra_http_headers: dict[str, str] | None = None,
+        offline: bool | None = None,
+        user_agent: str | None = None,
+        init_scripts: list[str] | None = None,
+    ) -> Awaitable[BrowserPage]: ...
     def new_context(
-        self, storage_state: str | os.PathLike[str] | dict[str, Any] | None = None
+        self,
+        storage_state: str | os.PathLike[str] | dict[str, Any] | None = None,
+        *,
+        device: str | None = None,
+        viewport: Size | None = None,
+        screen: Size | None = None,
+        device_scale_factor: float | None = None,
+        is_mobile: bool | None = None,
+        has_touch: bool | None = None,
+        locale: str | None = None,
+        timezone_id: str | None = None,
+        geolocation: Geolocation | None = None,
+        permissions: list[str] | None = None,
+        color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+        reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        extra_http_headers: dict[str, str] | None = None,
+        offline: bool | None = None,
+        user_agent: str | None = None,
+        init_scripts: list[str] | None = None,
     ) -> Awaitable[BrowserContext]: ...
     def methods_sent(self) -> list[str]: ...
     def close(self) -> Awaitable[None]: ...
@@ -703,7 +772,36 @@ class Browser:
     def __aexit__(self, *exc: object) -> Awaitable[None]: ...
 
 class BrowserContext:
-    def new_page(self) -> Awaitable[BrowserPage]: ...
+    def new_page(
+        self,
+        *,
+        device: str | None = None,
+        viewport: Size | None = None,
+        screen: Size | None = None,
+        device_scale_factor: float | None = None,
+        is_mobile: bool | None = None,
+        has_touch: bool | None = None,
+        locale: str | None = None,
+        timezone_id: str | None = None,
+        geolocation: Geolocation | None = None,
+        permissions: list[str] | None = None,
+        color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+        reduced_motion: Literal["reduce", "no-preference"] | None = None,
+        extra_http_headers: dict[str, str] | None = None,
+        offline: bool | None = None,
+        user_agent: str | None = None,
+        init_scripts: list[str] | None = None,
+    ) -> Awaitable[BrowserPage]: ...
+    def grant_permissions(
+        self, permissions: list[str], origin: str | None = None
+    ) -> Awaitable[None]: ...
+    def clear_permissions(self) -> Awaitable[None]: ...
+    def set_geolocation(self, geolocation: Geolocation | None) -> Awaitable[None]: ...
+    def set_offline(self, offline: bool) -> Awaitable[None]: ...
+    def set_extra_http_headers(self, headers: dict[str, str]) -> Awaitable[None]: ...
+    def add_init_script(
+        self, script: str | None = None, *, path: str | os.PathLike[str] | None = None
+    ) -> Awaitable[None]: ...
     def route(
         self, pattern: str | re.Pattern[str] | Callable[[str], Any], handler: Callable[[Route], Any]
     ) -> Awaitable[None]: ...
@@ -726,6 +824,25 @@ class BrowserPage:
     def url(self) -> str: ...
     @property
     def closed(self) -> bool: ...
+    @property
+    def viewport_size(self) -> Size | None: ...
+    def set_viewport_size(self, viewport: Size) -> Awaitable[None]: ...
+    def set_extra_http_headers(self, headers: dict[str, str]) -> Awaitable[None]: ...
+    def emulate_media(
+        self,
+        *,
+        color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+        reduced_motion: Literal["reduce", "no-preference"] | None = None,
+    ) -> Awaitable[None]: ...
+    def add_init_script(
+        self, script: str | None = None, *, path: str | os.PathLike[str] | None = None
+    ) -> Awaitable[None]: ...
+    def set_geolocation(self, geolocation: Geolocation | None) -> Awaitable[None]: ...
+    def set_offline(self, offline: bool) -> Awaitable[None]: ...
+    def grant_permissions(
+        self, permissions: list[str], origin: str | None = None
+    ) -> Awaitable[None]: ...
+    def clear_permissions(self) -> Awaitable[None]: ...
     def goto(
         self, url: str, wait: str = "load", timeout: float | None = None
     ) -> Awaitable[BrowserResponse]: ...

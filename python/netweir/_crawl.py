@@ -38,6 +38,7 @@ from netweir._native import (
     StopFlag,
     TrackStore,
     _auth_domain,
+    _check_environment,
     _check_queue_url,
     _robots_sitemaps,
     fingerprint,
@@ -200,6 +201,13 @@ class Settings:
     #: ``("image", "font", "media")``: Chrome fails them before they leave
     #: it.
     browser_block: tuple[str, ...] = ()
+    #: What the crawl's Chrome pages are shown in and say about themselves,
+    #: with the keys ``Browser.new_context()`` takes: ``{"device": "Galaxy
+    #: S23"}``, ``{"locale": "de-DE", "timezone_id": "Europe/Berlin"}``
+    #: and so on. Chrome is started with it, so even its service workers
+    #: agree, and a site's cookies handed back to the HTTP client go with
+    #: the same language and user agent.
+    browser_environment: Mapping[str, Any] | None = None
     #: Seconds between progress lines in the log ("crawled 120 pages (at
     #: 60 pages/min), ..."); None for none.
     stats_interval: float | None = 60.0
@@ -305,6 +313,15 @@ class Settings:
                 f"browser_block is a tuple of resource types, such as ({self.browser_block!r},)"
             )
         object.__setattr__(self, "browser_block", tuple(self.browser_block))
+        if self.browser_environment is not None:
+            if not isinstance(self.browser_environment, Mapping):
+                raise ValueError(
+                    "browser_environment is a dict of new_context()'s keyword arguments, such as "
+                    '{"locale": "de-DE"}'
+                )
+            environment = dict(self.browser_environment)
+            _check_environment(environment)
+            object.__setattr__(self, "browser_environment", environment)
         for kind in self.browser_block:
             if kind == "document":
                 raise ValueError(
@@ -424,6 +441,7 @@ class Settings:
             browser=self.browser,
             browser_pages=self.browser_pages,
             browser_block=list(self.browser_block),
+            browser_environment=self.browser_environment,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None

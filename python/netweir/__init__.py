@@ -1,7 +1,7 @@
 """Fast web scraping with a Rust engine."""
 
 from netweir import export, loader, repair, signals
-from netweir._browser import browser
+from netweir._browser import browser, devices
 from netweir._crawl import Settings, Spider
 from netweir._errors import (
     Blocked,
@@ -92,6 +92,7 @@ __all__ = [
     "__version__",
     "browser",
     "css",
+    "devices",
     "export",
     "files",
     "get",

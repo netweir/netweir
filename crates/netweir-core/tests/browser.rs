@@ -1079,3 +1079,84 @@ async fn a_crawl_obeying_robots_txt_wont_use_chrome_headless_shell() {
         "{events:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawls_phone_hands_its_cookies_to_requests_that_say_the_same() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/guarded", challenge()), ("/also", challenge())]).await;
+    let mut environment = netweir_browser::Environment::device("Galaxy S23").unwrap();
+    environment.locale = Some("pt-BR".into());
+    let c = crawler(CrawlSettings {
+        browser_launch: LaunchOptions {
+            environment,
+            ..LaunchOptions::default()
+        },
+        ..settings(BrowserMode::OnBlock)
+    });
+    c.submit(request(1, site.url("/guarded"), false));
+    let events = drain(&c).await;
+    if events.iter().any(
+        |e| matches!(e, Event::Warning { message } if message.contains("no matching netweir profile")),
+    ) {
+        eprintln!("skipped: no profile for this Chrome");
+        return;
+    }
+    for e in &events {
+        if let Event::Fetched {
+            page: Some(page), ..
+        } = e
+        {
+            page.close().await;
+        }
+    }
+    assert_eq!(c.stats().browser_unblocked, 1, "{events:?}");
+    c.submit(request(2, site.url("/also"), false));
+    let events = drain(&c).await;
+    let Some(Event::Fetched { response, page, .. }) = main(&events) else {
+        panic!("{events:?}");
+    };
+    assert!(page.is_none(), "fetched over HTTP");
+    assert_eq!(response.status, 200);
+    let requests = site.requests.lock().unwrap().clone();
+    let headers_of = |path: &str, last: bool| {
+        let mut found = requests.iter().filter(|(p, _)| p == path);
+        let r = if last {
+            found.next_back()
+        } else {
+            found.next()
+        };
+        r.map(|(_, h)| h.clone()).unwrap_or_default()
+    };
+    let header = |headers: &[(String, String)], name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    // What Chrome sent for the page it got through, the HTTP client now
+    // sends with its cookies.
+    let in_chrome = headers_of("/guarded", true);
+    let over_http = headers_of("/also", true);
+    assert!(
+        header(&over_http, "cookie").contains("pass=1"),
+        "{over_http:?}"
+    );
+    for name in [
+        "user-agent",
+        "accept-language",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
+    ] {
+        assert_eq!(
+            header(&over_http, name),
+            header(&in_chrome, name),
+            "{name}: {in_chrome:?} vs {over_http:?}"
+        );
+    }
+    assert_eq!(header(&over_http, "accept-language"), "pt-BR,pt;q=0.9");
+    assert!(header(&over_http, "user-agent").contains("Android"));
+    assert_eq!(header(&over_http, "sec-ch-ua-mobile"), "?1");
+}

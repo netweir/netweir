@@ -21,7 +21,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use crate::Node;
 
 /// Raises the Python exception that matches `e`.
-fn raise(e: Error) -> PyErr {
+pub(crate) fn raise(e: Error) -> PyErr {
     // Called on Rust threads too, so counted for the atexit hook (aio.rs).
     crate::aio::attach(|py| {
         let made = (|| -> PyResult<PyErr> {
@@ -67,10 +67,10 @@ fn seconds(name: &str, value: Option<f64>) -> PyResult<Option<Duration>> {
 
 /// Starts Chrome. Resolves to a Browser.
 #[pyfunction]
-#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None, dialog_pause=(0.5, 1.5)))]
+#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None, dialog_pause=(0.5, 1.5), environment=None))]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn launch(
-    py: Python<'_>,
+pub(crate) fn launch<'py>(
+    py: Python<'py>,
     executable: Option<PathBuf>,
     headless: bool,
     args: Vec<String>,
@@ -79,7 +79,9 @@ pub(crate) fn launch(
     connect: Option<String>,
     user_data_dir: Option<PathBuf>,
     dialog_pause: (f64, f64),
-) -> PyResult<Bound<'_, PyAny>> {
+    environment: Option<Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let environment = crate::environment::environment_from(environment.as_ref())?;
     let (least, most) = dialog_pause;
     let dialog_pause = match (
         Duration::try_from_secs_f64(least),
@@ -121,6 +123,7 @@ pub(crate) fn launch(
         brands: Some(Arc::new(netweir_core::Profile::chrome_brands)),
         user_data_dir,
         dialog_pause,
+        environment,
     };
     crate::aio::future_into_py(py, async move {
         let inner = match connect {
@@ -152,30 +155,44 @@ impl Browser {
     }
 
     /// A page in a context of its own: it shares no cookies or storage.
-    fn new_page<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Keyword arguments give its environment, as `new_context` takes them.
+    #[pyo3(signature = (**environment))]
+    fn new_page<'py>(
+        &self,
+        py: Python<'py>,
+        environment: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let env = crate::environment::environment_from(environment)?;
         let browser = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let inner = browser.new_page().await.map_err(raise)?;
+            let inner = browser.new_page_with(env).await.map_err(raise)?;
             Ok(BrowserPage::new(inner, None))
         })
     }
 
     /// A context whose pages share cookies and storage. `storage_state` (a
     /// path to a file `storage_state()` or Playwright saved, or its dict)
-    /// starts it with those cookies and localStorage.
-    #[pyo3(signature = (storage_state=None))]
+    /// starts it with those cookies and localStorage. Keyword arguments
+    /// give its pages' environment: `device`, `viewport`, `screen`,
+    /// `device_scale_factor`, `is_mobile`, `has_touch`, `locale`,
+    /// `timezone_id`, `geolocation`, `permissions`, `color_scheme`,
+    /// `reduced_motion`, `extra_http_headers`, `offline`, `user_agent` and
+    /// `init_scripts`.
+    #[pyo3(signature = (storage_state=None, **environment))]
     fn new_context<'py>(
         &self,
         py: Python<'py>,
         storage_state: Option<Bound<'py, PyAny>>,
+        environment: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let env = crate::environment::environment_from(environment)?;
         let state = storage_state
             .filter(|s| !s.is_none())
             .map(|s| crate::cookies::storage_state_from(&s))
             .transpose()?;
         let browser = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let inner = browser.new_context().await.map_err(raise)?;
+            let inner = browser.new_context_with(env).await.map_err(raise)?;
             if let Some(state) = &state
                 && let Err(e) = inner.set_storage_state(state).await
             {
@@ -229,11 +246,19 @@ pub struct BrowserContext {
 
 #[pymethods]
 impl BrowserContext {
-    fn new_page<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+    /// A page of the context. Keyword arguments change its environment
+    /// from the context's, as `Browser.new_context` takes them, except
+    /// `timezone_id` and `locale`, which are the context's.
+    #[pyo3(signature = (**environment))]
+    fn new_page<'py>(
+        slf: Bound<'py, Self>,
+        environment: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let env = crate::environment::environment_from(environment)?;
         let context = slf.get().inner.clone();
         let me = slf.clone().unbind();
         crate::aio::future_into_py(slf.py(), async move {
-            match context.new_page().await {
+            match context.new_page_with(env).await {
                 Ok(inner) => Ok(BrowserPage::new(inner, Some(me))),
                 Err(e) => {
                     crate::aio::release(me);
@@ -325,6 +350,88 @@ impl BrowserContext {
         crate::aio::future_into_py(py, async move {
             let state = context.storage_state().await.map_err(raise)?;
             crate::aio::attach(|py| crate::cookies::storage_state_out(py, &state, path))
+        })
+    }
+
+    /// Grants permissions (such as "geolocation") to every page of the
+    /// context, for `origin` or for every origin.
+    #[pyo3(signature = (permissions, origin=None))]
+    fn grant_permissions<'py>(
+        &self,
+        py: Python<'py>,
+        permissions: Bound<'py, PyAny>,
+        origin: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let permissions = permission_names(&permissions)?;
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context
+                .grant_permissions(&permissions, origin.as_deref())
+                .await
+                .map_err(raise)
+        })
+    }
+
+    /// Takes back every permission granted in the context.
+    fn clear_permissions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context.clear_permissions().await.map_err(raise)
+        })
+    }
+
+    /// Where every page of the context is, as {"latitude", "longitude",
+    /// "accuracy"}; None for Chrome's own idea, which is nowhere.
+    fn set_geolocation<'py>(
+        &self,
+        py: Python<'py>,
+        geolocation: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let at = geolocation
+            .filter(|g| !g.is_none())
+            .map(|g| crate::environment::geolocation_from(&g))
+            .transpose()?;
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context.set_geolocation(at).await.map_err(raise)
+        })
+    }
+
+    /// Takes every page of the context off the network, or back on.
+    fn set_offline<'py>(&self, py: Python<'py>, offline: bool) -> PyResult<Bound<'py, PyAny>> {
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context.set_offline(offline).await.map_err(raise)
+        })
+    }
+
+    /// Headers every page of the context sends with every request, after
+    /// Chrome's own.
+    fn set_extra_http_headers<'py>(
+        &self,
+        py: Python<'py>,
+        headers: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let headers = crate::environment::headers_from(&headers)?;
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context.set_extra_headers(&headers).await.map_err(raise)
+        })
+    }
+
+    /// Runs a script (or the file at `path`) in every document of every
+    /// page of the context, before the document's own scripts.
+    #[pyo3(signature = (script=None, *, path=None))]
+    fn add_init_script<'py>(
+        &self,
+        py: Python<'py>,
+        script: Option<String>,
+        path: Option<PathBuf>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let script = init_script(script, path)?;
+        let context = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            context.add_init_script(&script).await.map_err(raise)
         })
     }
 
@@ -454,6 +561,140 @@ impl BrowserPage {
     #[getter]
     fn url(&self) -> String {
         self.inner.url()
+    }
+
+    /// The viewport as {"width", "height"}, if netweir sized the window.
+    #[getter]
+    fn viewport_size<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        self.inner
+            .viewport()
+            .map(|s| crate::environment::size_to(py, s))
+            .transpose()
+    }
+
+    /// Resizes the window so the viewport is {"width", "height"}.
+    fn set_viewport_size<'py>(
+        &self,
+        py: Python<'py>,
+        viewport: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let size = crate::environment::size_from("viewport", &viewport)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(
+            py,
+            async move { page.set_viewport(size).await.map_err(raise) },
+        )
+    }
+
+    /// Headers the page, its frames and its workers send with every
+    /// request, after Chrome's own, in place of those it had.
+    fn set_extra_http_headers<'py>(
+        &self,
+        py: Python<'py>,
+        headers: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let headers = crate::environment::headers_from(&headers)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.set_extra_headers(&headers).await.map_err(raise)
+        })
+    }
+
+    /// What prefers-color-scheme ("light", "dark", "no-preference") and
+    /// prefers-reduced-motion ("reduce", "no-preference") match; None
+    /// leaves one as it is.
+    #[pyo3(signature = (*, color_scheme=None, reduced_motion=None))]
+    fn emulate_media<'py>(
+        &self,
+        py: Python<'py>,
+        color_scheme: Option<String>,
+        reduced_motion: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let color_scheme = color_scheme
+            .map(|c| c.parse::<netweir_browser::ColorScheme>())
+            .transpose()
+            .map_err(raise)?;
+        let reduced_motion = reduced_motion
+            .map(|m| m.parse::<netweir_browser::ReducedMotion>())
+            .transpose()
+            .map_err(raise)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.emulate_media(color_scheme, reduced_motion)
+                .await
+                .map_err(raise)
+        })
+    }
+
+    /// Runs a script (or the file at `path`) in every document the page
+    /// and its frames load from now on, before the document's own.
+    #[pyo3(signature = (script=None, *, path=None))]
+    fn add_init_script<'py>(
+        &self,
+        py: Python<'py>,
+        script: Option<String>,
+        path: Option<PathBuf>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let script = init_script(script, path)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.add_init_script(&script).await.map_err(raise)
+        })
+    }
+
+    /// Where the page is, as {"latitude", "longitude", "accuracy"}; None
+    /// for Chrome's own idea, which is nowhere. The page's origin needs
+    /// the "geolocation" permission too.
+    fn set_geolocation<'py>(
+        &self,
+        py: Python<'py>,
+        geolocation: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let at = geolocation
+            .filter(|g| !g.is_none())
+            .map(|g| crate::environment::geolocation_from(&g))
+            .transpose()?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(
+            py,
+            async move { page.set_geolocation(at).await.map_err(raise) },
+        )
+    }
+
+    /// Takes the page off the network, or back on.
+    fn set_offline<'py>(&self, py: Python<'py>, offline: bool) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        crate::aio::future_into_py(
+            py,
+            async move { page.set_offline(offline).await.map_err(raise) },
+        )
+    }
+
+    /// Grants permissions in the page's context, for `origin` or for
+    /// every origin.
+    #[pyo3(signature = (permissions, origin=None))]
+    fn grant_permissions<'py>(
+        &self,
+        py: Python<'py>,
+        permissions: Bound<'py, PyAny>,
+        origin: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let permissions = permission_names(&permissions)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.grant_permissions(&permissions, origin.as_deref())
+                .await
+                .map_err(raise)
+        })
+    }
+
+    /// Takes back every permission granted in the page's context.
+    fn clear_permissions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let page = self.inner.clone();
+        crate::aio::future_into_py(
+            py,
+            async move { page.clear_permissions().await.map_err(raise) },
+        )
     }
 
     #[getter]
@@ -1931,6 +2172,34 @@ fn _glob_match(pattern: &str, url: &str) -> bool {
     netweir_browser::glob_match(pattern, url)
 }
 
+/// A list of permission names; a lone str is refused, since it would be
+/// taken letter by letter.
+fn permission_names(v: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    if v.is_instance_of::<pyo3::types::PyString>() {
+        return Err(PyTypeError::new_err(
+            "permissions is a list of names, such as [\"geolocation\"]",
+        ));
+    }
+    v.extract()
+}
+
+/// An init script given as itself or as a file.
+fn init_script(script: Option<String>, path: Option<PathBuf>) -> PyResult<String> {
+    match (script, path) {
+        (Some(s), None) => Ok(s),
+        (None, Some(p)) => std::fs::read_to_string(&p).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                PyFileNotFoundError::new_err(format!("{}: no such file", p.display()))
+            } else {
+                PyValueError::new_err(format!("can't read {}: {e}", p.display()))
+            }
+        }),
+        _ => Err(PyTypeError::new_err(
+            "add_init_script takes a script or a path, one of them",
+        )),
+    }
+}
+
 /// JSON as Python values.
 pub(crate) fn to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
     use serde_json::Value;
@@ -2034,6 +2303,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BrowserDownload>()?;
     m.add_class::<Routes>()?;
     m.add_function(wrap_pyfunction!(_glob_match, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::environment::_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::environment::_check_environment, m)?)?;
     m.add(
         "_RESOURCE_TYPES",
         netweir_browser::resource_types().collect::<Vec<_>>(),
