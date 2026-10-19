@@ -1,6 +1,7 @@
 """XMLFeedSpider and CSVFeedSpider, as Scrapy documents them."""
 
 import logging
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -451,12 +452,12 @@ def test_settings_xml_recover_reaches_feed_spiders(base):
     assert sorted(i["title"] for i in items) == ["a\xa0b", "c"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="peak memory is read with resource")
 def test_iternodes_never_builds_the_whole_feed(tmp_path):
     """The crawl parsed an XML page in full before its callback ran, so an
     iternodes spider held the whole tree after all. The tree is now built
     only when something reads it: never, for iternodes."""
     import subprocess
-    import sys
 
     script = tmp_path / "feed.py"
     script.write_text(

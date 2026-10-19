@@ -2,6 +2,7 @@
 read as, and the limits on hostile XML. Answers are checked against
 parsel's, which Scrapy's selectors are."""
 
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -545,11 +546,11 @@ def test_a_crawl_can_recover_its_xml(feeds, caplog):
     assert caplog.text.count("isn't declared; read as HTML's") == 2
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="peak memory is read with resource")
 def test_sitemaps_are_read_in_little_memory(tmp_path):
     """A 200,000-URL sitemap took 864 MB when it was parsed whole; read in
     one pass it's close to its own size."""
     import subprocess
-    import sys
 
     script = tmp_path / "rss.py"
     script.write_text(
