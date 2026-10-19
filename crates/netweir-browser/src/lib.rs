@@ -7,14 +7,19 @@
 
 mod browser;
 mod conn;
+mod environment;
 mod events;
 mod frame;
 mod launch;
 mod network;
 mod page;
 mod storage;
+mod window;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};
+pub use environment::{
+    ColorScheme, Environment, Geolocation, Phone, ReducedMotion, Size, device_names,
+};
 pub use events::{Dialog, Download, PageEvent};
 pub use frame::{Frame, Pick};
 pub use launch::{

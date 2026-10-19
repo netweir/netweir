@@ -509,6 +509,12 @@ impl Frame {
     /// Moves the mouse to the element's centre, once it's visible, still
     /// and not covered, so the page sees it come over the element.
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        if self.page.touches() {
+            return Err(Error::Invalid(format!(
+                "hover {selector}: the page is a phone's, which has no mouse to hover with; a \
+                 mouse moving over a phone's page is something no person's phone sends"
+            )));
+        }
         let checks = ["attached", "visible", "stable", "receives events"];
         let deadline = Instant::now() + self.page.timeout(timeout);
         self.page.to_front().await?;
@@ -530,6 +536,13 @@ impl Frame {
         checks: &[&str],
         deadline: Instant,
     ) -> Result<(f64, f64)> {
+        if self.page.touches() {
+            // A finger comes down where it taps, from nowhere: there's no
+            // pointer to bring over the element first.
+            return self
+                .actionable(action, selector, checks, true, left(deadline))
+                .await;
+        }
         let sel = Value::from(selector);
         let mut from_outside = false;
         loop {

@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 use crate::browser::{Inner, context_cookies, set_context_cookies, str_of};
 use crate::conn::{Connection, GONE, Handler};
+use crate::environment::{Environment, Geolocation, Kind, Size};
 use crate::events::{Dialog, Downloads, PageEvent};
 use crate::frame::Frame;
 use crate::network::{
@@ -158,8 +159,8 @@ pub struct Page {
 }
 
 pub(crate) struct PageInner {
-    browser: Arc<Inner>,
-    target: String,
+    pub(crate) browser: Arc<Inner>,
+    pub(crate) target: String,
     pub(crate) session: String,
     context: Option<String>,
     /// Whether closing the page disposes of its context.
@@ -185,6 +186,21 @@ pub(crate) struct PageInner {
     /// opens as a tab in front of its opener, which Chrome then counts
     /// as hidden, and shares this with it.
     front: Arc<Mutex<String>>,
+    /// Its environment, which its frames' and workers' sessions get too.
+    pub(crate) env: Arc<Mutex<PageEnv>>,
+    /// How much bigger its window is than its viewport, once measured.
+    pub(crate) insets: Mutex<Option<(i64, i64)>>,
+    /// The viewport netweir last gave its window.
+    pub(crate) shown: Mutex<Option<Size>>,
+}
+
+/// A page's environment, and the user agent override every session of it
+/// gets: Chrome's own user agent and client hints, changed only as the
+/// environment says.
+#[derive(Clone, Default)]
+pub(crate) struct PageEnv {
+    pub env: Environment,
+    pub user_agent: Option<Value>,
 }
 
 /// How a page comes to be: in which context, guarded by what, and opened
@@ -196,6 +212,7 @@ struct Opening {
     guard: Option<crate::browser::Guard>,
     shared_context: Option<Arc<ContextRules>>,
     opener: Option<Page>,
+    env: PageEnv,
 }
 
 /// Origins (`https://shop.example`) documents came from.
@@ -279,6 +296,8 @@ pub(crate) struct State {
     /// get the same Network and Fetch setup as its own. Unlike
     /// `children`, a frame stays here until its session detaches.
     sessions: Vec<String>,
+    /// Its workers' sessions, which get its environment as frames do.
+    workers: Vec<String>,
     gone: bool,
     /// The http(s) origins documents were loaded from, in any frame:
     /// those whose localStorage a storage state reads. Shared by a
@@ -434,7 +453,12 @@ impl Page {
         owns_context: bool,
         guard: Option<crate::browser::Guard>,
         shared_context: Option<Arc<ContextRules>>,
+        env: Environment,
     ) -> Result<Page> {
+        env.validate()?;
+        // Worked out before the page exists, so a page that can't have this
+        // environment is never made.
+        let user_agent = crate::browser::user_agent_for(&browser, &env).await?;
         let mut params = json!({"url": "about:blank"});
         if let Some(id) = &context {
             params["browserContextId"] = Value::from(id.as_str());
@@ -471,6 +495,7 @@ impl Page {
             guard,
             shared_context,
             opener: None,
+            env: PageEnv { env, user_agent },
         };
         Page::start(browser, target, session, opening).await
     }
@@ -487,6 +512,7 @@ impl Page {
             guard: o.decider.guard.clone(),
             shared_context: o.shared_context.clone(),
             opener: Some(opener.clone()),
+            env: lock_env(&o.env).clone(),
         };
         match Page::start(o.browser.clone(), target, session.clone(), opening).await {
             Ok(popup) => {
@@ -517,7 +543,9 @@ impl Page {
             guard,
             shared_context,
             opener,
+            env,
         } = opening;
+        let env = Arc::new(Mutex::new(env));
         let conn = &browser.conn;
         let shared = Arc::new(Shared {
             // A page's main frame has its target's id; known from the
@@ -577,9 +605,6 @@ impl Page {
             });
             tx
         });
-        let identity = browser.identity.as_ref().map(|identity| {
-            json!({"userAgent": identity.user_agent, "userAgentMetadata": identity.metadata})
-        });
         let watch = Arc::new(Watch {
             conn: conn.clone(),
             shared: shared.clone(),
@@ -595,7 +620,7 @@ impl Page {
                 frame: target.clone(),
                 decider: decider.clone(),
             },
-            identity: identity.clone(),
+            env: env.clone(),
         });
         let own = session.clone();
         let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
@@ -624,6 +649,9 @@ impl Page {
                 shared_context: shared_context.clone(),
                 popups: Mutex::default(),
                 front,
+                env: env.clone(),
+                insets: Mutex::default(),
+                shown: Mutex::default(),
             }),
         };
         {
@@ -653,8 +681,32 @@ impl Page {
                 // are reached through sessions of their own.
                 call("Target.setAutoAttach", auto_attach()),
             ];
-            if let Some(identity) = identity {
-                steps.push(call("Network.setUserAgentOverride", identity));
+            let PageEnv {
+                env: environment,
+                user_agent,
+            } = lock_env(&env).clone();
+            if let Some(user_agent) = user_agent {
+                steps.push(call("Network.setUserAgentOverride", user_agent));
+            }
+            for (method, params) in environment.commands(Kind::Page) {
+                steps.push(Box::pin(async move {
+                    me.call(method, params).await.map(drop).map_err(refused)
+                }));
+            }
+            if let Some(g) = environment.geolocation {
+                steps.push(call("Emulation.setGeolocationOverride", geolocation(g)));
+            }
+            if let Some(metrics) = crate::window::mobile_metrics(&environment, browser.screen_scale)
+            {
+                steps.push(call("Emulation.setDeviceMetricsOverride", metrics));
+            }
+            if !environment.permissions.is_empty() {
+                let permissions = environment.permissions.clone();
+                let context = me.inner.context.clone();
+                let browser = browser.clone();
+                steps.push(Box::pin(async move {
+                    grant(&browser, context.as_deref(), &permissions, None).await
+                }));
             }
             steps.push(Box::pin(async {
                 let tree = page.call("Page.getFrameTree", json!({})).await?;
@@ -690,6 +742,17 @@ impl Page {
                 Some(done) => done,
                 None => setup.await,
             }
+        };
+        // Its window on its screen. A popup runs by now: it's moved there
+        // as soon as it can be.
+        let setup = match setup {
+            Ok(_) => page.arrange(opener.is_none()).await.map_err(|e| match e {
+                Error::Protocol { method, message } if opener.is_none() => Error::Invalid(format!(
+                    "the page's window couldn't be arranged ({method}: {message})"
+                )),
+                e => e,
+            }),
+            Err(e) => Err(e),
         };
         if let Err(e) = setup {
             let _ = page.close().await;
@@ -759,7 +822,7 @@ impl Page {
     /// Sends `method` to the page and waits for Chrome's answer, for no
     /// longer than the browser's timeout: a renderer kept busy by the
     /// page's own script may never answer at all.
-    async fn call(&self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value> {
         self.call_on(&self.inner.session, method, params).await
     }
 
@@ -1323,8 +1386,26 @@ impl Page {
         Ok(())
     }
 
-    /// Clicks the left button at (x, y), where the mouse already is.
+    /// Clicks the left button at (x, y), where the mouse already is; on a
+    /// phone, taps there, as a finger does: down, a moment, and up.
     pub(crate) async fn mouse_press(&self, x: f64, y: f64) -> Result<()> {
+        if self.touches() {
+            let point =
+                json!([{"x": x, "y": y, "radiusX": 11.5, "radiusY": 11.5, "force": 1, "id": 0}]);
+            self.call(
+                "Input.dispatchTouchEvent",
+                json!({"type": "touchStart", "touchPoints": point}),
+            )
+            .await?;
+            let held = (Duration::from_millis(40), Duration::from_millis(110));
+            tokio::time::sleep(crate::events::pause(held)).await;
+            self.call(
+                "Input.dispatchTouchEvent",
+                json!({"type": "touchEnd", "touchPoints": []}),
+            )
+            .await?;
+            return Ok(());
+        }
         for kind in ["mousePressed", "mouseReleased"] {
             self.call(
                 "Input.dispatchMouseEvent",
@@ -1340,6 +1421,19 @@ impl Page {
     /// events no bigger than a mouse wheel's notch, as a person's wheel
     /// sends it, not as one leap no wheel makes.
     pub(crate) async fn mouse_wheel(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+        if self.touches() {
+            // A phone has no wheel: a finger drags the page the other way,
+            // and lifts without flinging it on, so it moves as far as asked.
+            self.call(
+                "Input.synthesizeScrollGesture",
+                json!({
+                    "x": x, "y": y, "xDistance": -dx, "yDistance": -dy,
+                    "preventFling": true, "gestureSourceType": "touch", "speed": 1200,
+                }),
+            )
+            .await?;
+            return Ok(());
+        }
         self.mouse_move(x, y).await?;
         let notches = (dx.abs().max(dy.abs()) / NOTCH).ceil().max(1.0);
         for _ in 0..notches as u64 {
@@ -1588,9 +1682,9 @@ struct Watch {
     conn: Connection,
     shared: Arc<Shared>,
     intercept: Intercept,
-    /// The user agent override the page's own session has, for the
-    /// others too.
-    identity: Option<Value>,
+    /// The page's environment and user agent override, which its own
+    /// session has, for the others too.
+    env: Arc<Mutex<PageEnv>>,
     /// Downloads under way, and their folders.
     downloads: Arc<Downloads>,
     /// The page's context; None for the default one.
@@ -1611,6 +1705,9 @@ impl Watch {
             }
             // Chrome tells the page's own session of a frame's dialog
             // too, and only that session has the Page domain.
+            // A frame whose session has the Page domain too (for its init
+            // scripts) would tell of the same dialog twice.
+            "Page.javascriptDialogOpening" if session != self.intercept.session => return,
             "Page.javascriptDialogOpening" => {
                 let decider = &self.intercept.decider;
                 let dialog = Dialog::opened(
@@ -1672,6 +1769,7 @@ impl Watch {
             let mut state = lock_state(&self.shared);
             state.children.retain(|(s, _)| *s != session);
             state.sessions.retain(|s| *s != session);
+            state.workers.retain(|s| *s != session);
             // Its requests will never finish now: a body waiting on one
             // asks, and hears it's gone.
             state.loading.retain(|(s, _), _| *s != session);
@@ -1686,6 +1784,28 @@ impl Watch {
         let frame = match info["type"].as_str() {
             Some("iframe") => true,
             Some("worker") => false,
+            // Chrome lets a service worker's session override its
+            // language, clock, headers and network, which a page's
+            // environment needs there too. Its commands are answered only
+            // once it runs, so they're sent and it's let go at once; and
+            // it's kept, since overrides go with the session (a worker
+            // left again speaks the browser's language). Kept, Chrome
+            // keeps it running until the page's session goes.
+            Some("service_worker") if lock_env(&self.env).env.reaches_service_workers() => {
+                let PageEnv { env, user_agent } = lock_env(&self.env).clone();
+                self.conn.send(&session, "Network.enable", json!({}));
+                if let Some(user_agent) = user_agent {
+                    self.conn
+                        .send(&session, "Network.setUserAgentOverride", user_agent);
+                }
+                for (method, params) in env.commands(Kind::Worker) {
+                    self.conn.send(&session, method, params);
+                }
+                lock_state(&self.shared).workers.push(session.clone());
+                self.conn
+                    .send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
+                return;
+            }
             _ => {
                 // Left only once it has been let go: a service worker
                 // left first stays held. Left at all, because Chrome keeps
@@ -1709,13 +1829,17 @@ impl Watch {
         let (watch, own) = (self.clone(), session.clone());
         let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
         self.conn.on(&session, handler);
-        if frame {
+        {
             let mut state = lock_state(&self.shared);
             if !state.gone {
-                state.sessions.push(session.clone());
-                state
-                    .children
-                    .push((session.clone(), str_of(info, "targetId")));
+                if frame {
+                    state.sessions.push(session.clone());
+                    state
+                        .children
+                        .push((session.clone(), str_of(info, "targetId")));
+                } else {
+                    state.workers.push(session.clone());
+                }
             }
         }
         let (watch, url) = (self.clone(), str_of(info, "url"));
@@ -1734,10 +1858,34 @@ impl Watch {
     async fn prepare(&self, session: String, frame: bool, url: String) {
         let decider = &self.intercept.decider;
         let call = |method: &'static str, params: Value| self.conn.call(&session, method, params);
+        let PageEnv { env, user_agent } = lock_env(&self.env).clone();
         let setup = async {
             call("Network.enable", json!({})).await?;
-            if let Some(identity) = &self.identity {
-                call("Network.setUserAgentOverride", identity.clone()).await?;
+            if let Some(user_agent) = &user_agent {
+                call("Network.setUserAgentOverride", user_agent.clone()).await?;
+            }
+            let kind = if frame { Kind::Page } else { Kind::Worker };
+            let commands = env.commands(kind);
+            if commands
+                .iter()
+                .any(|(m, _)| *m == "Page.addScriptToEvaluateOnNewDocument")
+            {
+                // Init scripts need the frame's Page domain.
+                call("Page.enable", json!({})).await?;
+            }
+            let sent = commands
+                .into_iter()
+                .map(|(method, params)| async move { (method, call(method, params).await) });
+            for (method, r) in futures_util::future::join_all(sent).await {
+                match r {
+                    Err(Error::Protocol { message, .. }) if shared_process(&message) => {}
+                    Err(e) if went_away(&e) => return Err(e),
+                    Err(e) => crate::warn(&format!(
+                        "{method} failed in a {} of the page, which may show it isn't the page's                          own: {e}",
+                        if frame { "frame" } else { "worker" }
+                    )),
+                    Ok(_) => {}
+                }
             }
             if frame {
                 // Worked out and sent while the lock is held, so that what
@@ -1800,6 +1948,254 @@ impl Watch {
 
 fn lock_state(shared: &Shared) -> std::sync::MutexGuard<'_, State> {
     shared.state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn lock_env(env: &Mutex<PageEnv>) -> std::sync::MutexGuard<'_, PageEnv> {
+    env.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether Chrome refused an override because another session of the
+/// same renderer process set it already: a worker shares its frame's
+/// process, and the locale is the process's. Or because that kind of
+/// session can't have it at all.
+fn shared_process(message: &str) -> bool {
+    message.contains("already in effect") || message.contains("only supported for pages")
+}
+
+/// A setting Chrome refused for a page, said as what was wrong with it.
+fn refused(e: Error) -> Error {
+    match e {
+        Error::Protocol { method, message } => {
+            let what = match method.as_str() {
+                "Emulation.setTimezoneOverride" => "timezone",
+                "Emulation.setLocaleOverride" => "locale",
+                "Network.setExtraHTTPHeaders" => "extra_headers",
+                "Page.addScriptToEvaluateOnNewDocument" => "init script",
+                _ => method.as_str(),
+            };
+            Error::Invalid(format!("Chrome wouldn't take the {what}: {message}"))
+        }
+        e => e,
+    }
+}
+
+fn geolocation(g: Geolocation) -> Value {
+    json!({"latitude": g.latitude, "longitude": g.longitude, "accuracy": g.accuracy})
+}
+
+/// Grants `permissions` in `context` (None for the default one), to
+/// `origin` or to every origin. Each is set on its own, with
+/// `Browser.setPermission`: `Browser.grantPermissions` denies every
+/// permission it isn't given, so a page asking about notifications would
+/// hear "denied" where a person's Chrome says "prompt".
+pub(crate) async fn grant(
+    browser: &Inner,
+    context: Option<&str>,
+    permissions: &[String],
+    origin: Option<&str>,
+) -> Result<()> {
+    for name in permissions {
+        let mut params = json!({
+            "permission": crate::environment::permission(name)?,
+            "setting": "granted",
+        });
+        if let Some(id) = context {
+            params["browserContextId"] = Value::from(id);
+        }
+        if let Some(origin) = origin {
+            params["origin"] = Value::from(origin);
+        }
+        browser
+            .call("", "Browser.setPermission", params)
+            .await
+            .map_err(|e| match e {
+                Error::Protocol { message, .. } => {
+                    Error::Invalid(format!("Chrome wouldn't grant {name:?}: {message}"))
+                }
+                e => e,
+            })?;
+    }
+    Ok(())
+}
+
+/// Takes back every permission granted in `context`, so each is as a new
+/// person's Chrome has it.
+pub(crate) async fn clear_permissions(browser: &Inner, context: Option<&str>) -> Result<()> {
+    let mut params = json!({});
+    if let Some(id) = context {
+        params["browserContextId"] = Value::from(id);
+    }
+    browser.call("", "Browser.resetPermissions", params).await?;
+    Ok(())
+}
+
+/// The page's environment as it changes after it opened: in its own
+/// session, and in those of its frames and workers, the same way they
+/// were set up.
+impl Page {
+    /// The page's environment, as made from its own, its context's and
+    /// its browser's.
+    pub fn environment(&self) -> Environment {
+        lock_env(&self.inner.env).env.clone()
+    }
+
+    /// Puts `env` in place, returning what it replaces.
+    pub(crate) fn replace_environment(&self, env: Environment) -> Environment {
+        std::mem::replace(&mut lock_env(&self.inner.env).env, env)
+    }
+
+    /// Sends `method` to the page's session, and to its frames' (for
+    /// `Kind::Page`) or to its frames' and workers' (for `Kind::Worker`,
+    /// what every kind of session takes). The page's own must take it;
+    /// the others are told as best they can be.
+    async fn everywhere(&self, kind: Kind, method: &str, params: Value) -> Result<()> {
+        self.call(method, params.clone()).await.map_err(refused)?;
+        let others = {
+            let state = self.state();
+            let mut others = state.sessions.clone();
+            if kind == Kind::Worker {
+                others.extend(state.workers.iter().cloned());
+            }
+            others
+        };
+        let calls = others
+            .iter()
+            .map(|session| self.call_on(session, method, params.clone()));
+        for r in futures_util::future::join_all(calls).await {
+            match r {
+                Err(Error::Protocol { message, .. }) if shared_process(&message) => {}
+                Err(e) if !went_away(&e) => {
+                    crate::warn(&format!("{method} failed in a frame or worker: {e}"))
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends every request with these headers too, after Chrome's own,
+    /// in place of those the page had: in the page, its frames and its
+    /// workers.
+    pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
+        let mut env = self.environment();
+        env.extra_headers = headers.to_vec();
+        env.validate()?;
+        let params = env.headers_param();
+        self.replace_environment(env);
+        self.everywhere(Kind::Worker, "Network.setExtraHTTPHeaders", params)
+            .await
+    }
+
+    /// What `prefers-color-scheme` and `prefers-reduced-motion` match, in
+    /// the page and its frames; None leaves one as it is.
+    pub async fn emulate_media(
+        &self,
+        color_scheme: Option<crate::ColorScheme>,
+        reduced_motion: Option<crate::ReducedMotion>,
+    ) -> Result<()> {
+        let mut env = self.environment();
+        env.color_scheme = color_scheme.or(env.color_scheme);
+        env.reduced_motion = reduced_motion.or(env.reduced_motion);
+        let Some((method, params)) = env
+            .commands(Kind::Page)
+            .into_iter()
+            .find(|(m, _)| *m == "Emulation.setEmulatedMedia")
+        else {
+            return Ok(());
+        };
+        self.replace_environment(env);
+        self.everywhere(Kind::Page, method, params).await
+    }
+
+    /// Runs `script` in every document the page and its frames load from
+    /// now on, before the document's own scripts. Not in workers: Chrome
+    /// has no way to run anything in one before its own script.
+    pub async fn add_init_script(&self, script: &str) -> Result<()> {
+        let params = json!({"source": script});
+        self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())
+            .await
+            .map_err(refused)?;
+        lock_env(&self.inner.env)
+            .env
+            .init_scripts
+            .push(script.to_string());
+        let sessions = self.state().sessions.clone();
+        for session in sessions {
+            let added = async {
+                self.call_on(&session, "Page.enable", json!({})).await?;
+                self.call_on(
+                    &session,
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    params.clone(),
+                )
+                .await
+            };
+            match added.await {
+                Err(e) if !went_away(&e) => crate::warn(&format!(
+                    "an init script couldn't be added to a frame of the page: {e}"
+                )),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Where `navigator.geolocation` says the page is; None as nowhere,
+    /// so asking fails as it does without a position. A page also needs
+    /// the "geolocation" permission for its origin to be told.
+    pub async fn set_geolocation(&self, at: Option<Geolocation>) -> Result<()> {
+        let mut env = self.environment();
+        env.geolocation = at;
+        env.validate()?;
+        self.replace_environment(env);
+        match at {
+            Some(g) => {
+                self.call("Emulation.setGeolocationOverride", geolocation(g))
+                    .await?
+            }
+            None => {
+                self.call("Emulation.clearGeolocationOverride", json!({}))
+                    .await?
+            }
+        };
+        Ok(())
+    }
+
+    /// Takes the page, its frames and its workers off the network, or
+    /// puts them back: requests fail, and `navigator.onLine` says so.
+    pub async fn set_offline(&self, offline: bool) -> Result<()> {
+        lock_env(&self.inner.env).env.offline = Some(offline);
+        for (method, params) in crate::environment::offline(offline) {
+            self.everywhere(Kind::Worker, method, params).await?;
+        }
+        Ok(())
+    }
+
+    /// Grants permissions in the page's context, to `origin` (such as
+    /// "https://example.com") or to every origin.
+    pub async fn grant_permissions(
+        &self,
+        permissions: &[String],
+        origin: Option<&str>,
+    ) -> Result<()> {
+        grant(
+            &self.inner.browser,
+            self.inner.context.as_deref(),
+            permissions,
+            origin,
+        )
+        .await
+    }
+
+    /// Takes back every permission granted in the page's context.
+    pub async fn clear_permissions(&self) -> Result<()> {
+        clear_permissions(&self.inner.browser, self.inner.context.as_deref()).await
+    }
+
+    /// Whether the page is touched rather than clicked: a phone's.
+    pub(crate) fn touches(&self) -> bool {
+        lock_env(&self.inner.env).env.touches()
+    }
 }
 
 struct Key {

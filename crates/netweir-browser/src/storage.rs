@@ -287,12 +287,14 @@ async fn at_origin(
             "localStorage is kept for http and https origins only, not {origin:?}"
         )));
     }
+    // Its requests never leave Chrome, so nobody sees its environment.
     let page = Page::open(
         browser.clone(),
         context.map(str::to_string),
         false,
         None,
         None,
+        crate::Environment::default(),
     )
     .await?;
     let origin = origin.trim_end_matches('/').to_string();

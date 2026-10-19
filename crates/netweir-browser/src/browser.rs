@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::conn::{Connection, GONE, Handler};
+use crate::environment::{Environment, Geolocation, Size};
 use crate::events::Downloads;
 use crate::network::Route;
 use crate::page::{ContextRules, Cookie, Page, PageInner, WaitUntil, cookies_from, cookies_to};
@@ -53,6 +54,11 @@ pub struct LaunchOptions {
     /// the two each time. Shorter is faster, and a page timing how long
     /// `confirm()` kept it waiting can tell.
     pub dialog_pause: (Duration, Duration),
+    /// Every page's environment, unless its context or the page itself
+    /// says otherwise. Given here, a screen, pixel ratio, user agent or
+    /// language is Chrome's own from the start, so even service workers,
+    /// which no override reaches, agree with it.
+    pub environment: Environment,
 }
 
 impl std::fmt::Debug for LaunchOptions {
@@ -66,6 +72,7 @@ impl std::fmt::Debug for LaunchOptions {
             .field("brands", &self.brands.as_ref().map(|_| "…"))
             .field("user_data_dir", &self.user_data_dir)
             .field("dialog_pause", &self.dialog_pause)
+            .field("environment", &self.environment)
             .finish()
     }
 }
@@ -81,6 +88,7 @@ impl Default for LaunchOptions {
             brands: None,
             user_data_dir: None,
             dialog_pause: (Duration::from_millis(500), Duration::from_millis(1500)),
+            environment: Environment::default(),
         }
     }
 }
@@ -133,11 +141,87 @@ pub(crate) struct Inner {
     pub attaching: Arc<Mutex<HashSet<String>>>,
     /// Downloads under way, and each context's folder for them.
     pub downloads: Arc<Downloads>,
+    /// Every page's environment, from [`LaunchOptions::environment`].
+    pub environment: Environment,
+    /// Whether netweir launched it headless, so its screens and windows
+    /// are netweir's to arrange, and nobody else's to see.
+    pub arranges: bool,
+    /// The screen pages are shown on unless they name another, and its
+    /// pixel ratio.
+    pub screen: Size,
+    pub screen_scale: f64,
+    /// The languages Chrome was launched with as its own, if netweir gave
+    /// it some (`--accept-lang`).
+    pub languages: Option<String>,
+    /// Held while a screen is looked for, and added if there's none, so
+    /// two pages wanting one don't add two.
+    pub screens: tokio::sync::Mutex<()>,
+    /// Chrome's own user agent and client hints, read the first time a
+    /// page needs them, for a browser with no `identity`.
+    own: tokio::sync::OnceCell<Option<Identity>>,
+}
+
+/// The fields of an [`Inner`] that only a launch fills in.
+fn bare(options: &LaunchOptions) -> (Environment, Size, f64) {
+    let env = options.environment.clone();
+    let screen = env.screen.unwrap_or(crate::window::DEFAULT_SCREEN);
+    let scale = env.device_scale_factor.unwrap_or(1.0);
+    (env, screen, scale)
+}
+
+/// The user agent override for a page with `env`, worked out from what
+/// Chrome says it is, and read from Chrome first if netweir doesn't know
+/// that yet. None leaves the page as Chrome makes it.
+/// Boxed, since reading what Chrome says opens a page, which comes here.
+pub(crate) fn user_agent_for<'a>(
+    browser: &'a Arc<Inner>,
+    env: &'a Environment,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
+    Box::pin(user_agent_of(browser, env))
+}
+
+async fn user_agent_of(browser: &Arc<Inner>, env: &Environment) -> Result<Option<Value>> {
+    let full = browser
+        .version
+        .trim_start_matches("HeadlessChrome/")
+        .trim_start_matches("Chrome/");
+    let identity =
+        |i: &Identity| json!({"userAgent": i.user_agent, "userAgentMetadata": i.metadata});
+    let wanted = env.changes_user_agent(browser.languages.as_deref());
+    let base = match (&browser.identity, wanted) {
+        (Some(i), _) => Some(i.clone()),
+        (None, false) => return Ok(None),
+        (None, true) => browser
+            .own
+            .get_or_try_init(|| async {
+                let me = Browser {
+                    inner: browser.clone(),
+                };
+                let metadata = me.own_metadata().await?;
+                let version = browser.call("", "Browser.getVersion", json!({})).await?;
+                // Hints emptied by someone's --user-agent switch would be
+                // sent as empty headers.
+                let emptied = metadata["architecture"] == "" && metadata["platformVersion"] == "";
+                Ok::<_, Error>((!emptied).then(|| Identity {
+                    user_agent: str_of(&version, "userAgent").replace("HeadlessChrome/", "Chrome/"),
+                    metadata,
+                }))
+            })
+            .await?
+            .clone(),
+    };
+    let overridden = env.user_agent_override(
+        base.as_ref().map(|i| (i.user_agent.as_str(), &i.metadata)),
+        full,
+        browser.languages.as_deref(),
+    )?;
+    Ok(overridden.or_else(|| base.as_ref().map(identity)))
 }
 
 impl Browser {
     pub async fn launch(mut options: LaunchOptions) -> Result<Browser> {
         options.args.extend(launch::env_switches());
+        options.environment.validate()?;
         let executable = match options.executable.clone() {
             Some(path) => path,
             None => launch::find_chrome()?,
@@ -202,6 +286,7 @@ impl Browser {
         args.extend(KEYRING.iter().chain(FOREGROUND).map(|a| a.to_string()));
         // Chrome's client hints, when they had to be read before launch.
         let mut hints = None;
+        let env = &options.environment;
         if options.headless {
             args.push("--headless".into());
             // Service workers take their user agent from this flag alone;
@@ -210,13 +295,41 @@ impl Browser {
             // back.
             if !options.args.iter().any(|a| a.starts_with("--user-agent=")) {
                 let (agent, metadata) = headless_identity(&executable, &options.args).await?;
-                args.push(format!(
-                    "--user-agent={}",
-                    agent.replace("HeadlessChrome/", "Chrome/")
-                ));
+                let agent = agent.replace("HeadlessChrome/", "Chrome/");
+                // The environment's own, where it has one, so a service
+                // worker says it too.
+                let full = agent
+                    .split("Chrome/")
+                    .nth(1)
+                    .and_then(|v| v.split(' ').next())
+                    .unwrap_or_default()
+                    .to_string();
+                let flag = env
+                    .user_agent_override(Some((&agent, &metadata)), &full, None)?
+                    .and_then(|o| o["userAgent"].as_str().map(str::to_string))
+                    .unwrap_or(agent);
+                args.push(format!("--user-agent={flag}"));
                 hints = Some(metadata);
             }
+            // A real screen for the pages: the environment's, or one the
+            // windows fit on.
+            args.extend(crate::window::launch_switches(env, &options.args));
+        } else if env.screen.is_some() || env.device_scale_factor.is_some() || env.is_mobile() {
+            return Err(Error::Launch(
+                "a screen, pixel ratio or phone needs a headless Chrome: a window on the real \
+                 screen can't be shown on another"
+                    .into(),
+            ));
         }
+        // The browser's own languages, so Chrome sends them as it would
+        // for a person whose languages they are.
+        let languages = match env.languages() {
+            Some(l) if !options.args.iter().any(|a| a.starts_with("--accept-lang")) => {
+                args.push(format!("--accept-lang={l}"));
+                Some(l)
+            }
+            _ => None,
+        };
         let mut proxy_login = None;
         if let Some(proxy) = &options.proxy {
             let (server, login) = split_proxy(proxy)?;
@@ -232,6 +345,7 @@ impl Browser {
         let started = launch::start(&executable, &args)?;
         let said = started.said.clone();
         let conn = Connection::new(started.replies, started.commands, Some(&started.child));
+        let (environment, screen, screen_scale) = bare(&options);
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
@@ -249,6 +363,13 @@ impl Browser {
             pages: Arc::default(),
             attaching: Arc::default(),
             downloads: Arc::default(),
+            environment,
+            arranges: options.headless,
+            screen,
+            screen_scale,
+            languages,
+            screens: tokio::sync::Mutex::new(()),
+            own: tokio::sync::OnceCell::new(),
         };
         Browser::finish(inner, &options, &executable.display().to_string(), hints)
             .await
@@ -264,6 +385,8 @@ impl Browser {
     /// launched. Closing it closes what netweir opened and leaves the
     /// browser running.
     pub async fn connect(url: &str, options: LaunchOptions) -> Result<Browser> {
+        options.environment.validate()?;
+        let (environment, screen, screen_scale) = bare(&options);
         let ws = if url.starts_with("http://") {
             devtools_url(url).await?
         } else {
@@ -304,6 +427,13 @@ impl Browser {
             pages: Arc::default(),
             attaching: Arc::default(),
             downloads: Arc::default(),
+            environment,
+            arranges: false,
+            screen,
+            screen_scale,
+            languages: None,
+            screens: tokio::sync::Mutex::new(()),
+            own: tokio::sync::OnceCell::new(),
         };
         Browser::finish(inner, &options, &ws, None).await
     }
@@ -450,7 +580,15 @@ impl Browser {
         const HINTS: &str = "navigator.userAgentData && navigator.userAgentData\
             .getHighEntropyValues(['architecture', 'bitness', 'formFactors', \
             'fullVersionList', 'model', 'platformVersion', 'wow64'])";
-        let page = Page::open(self.inner.clone(), None, false, None, None).await?;
+        let page = Page::open(
+            self.inner.clone(),
+            None,
+            false,
+            None,
+            None,
+            Environment::default(),
+        )
+        .await?;
         let read = async {
             if page
                 .goto("chrome://version", WaitUntil::Load, None)
@@ -530,12 +668,20 @@ impl Browser {
     /// [`LaunchOptions::user_data_dir`], it's a page of the profile's own
     /// context instead, so what it keeps is saved there.
     pub async fn new_page(&self) -> Result<Page> {
+        self.new_page_with(Environment::default()).await
+    }
+
+    /// [`Browser::new_page`], in `env` (over the browser's own
+    /// environment). Its permissions are granted in the page's context.
+    pub async fn new_page_with(&self, env: Environment) -> Result<Page> {
+        let env = env.over(&self.inner.environment);
+        added_screen(&env, &self.inner.environment)?;
         if self.inner.keep_profile {
             self.inner.allow_downloads(None).await?;
-            return Page::open(self.inner.clone(), None, false, None, None).await;
+            return Page::open(self.inner.clone(), None, false, None, None, env).await;
         }
         let context = self.create_context().await?;
-        Page::open(self.inner.clone(), Some(context), true, None, None).await
+        Page::open(self.inner.clone(), Some(context), true, None, None, env).await
     }
 
     /// A page in a context of its own, with a
@@ -543,7 +689,8 @@ impl Browser {
     /// profile, nor any other page.
     pub async fn new_page_apart(&self) -> Result<Page> {
         let context = self.create_context().await?;
-        Page::open(self.inner.clone(), Some(context), true, None, None).await
+        let env = self.inner.environment.clone();
+        Page::open(self.inner.clone(), Some(context), true, None, None, env).await
     }
 
     /// Like [`Browser::new_page`], but every document the page's main
@@ -552,16 +699,43 @@ impl Browser {
     /// fails with `ERR_BLOCKED_BY_CLIENT`.
     pub async fn new_guarded_page(&self, guard: Guard) -> Result<Page> {
         let context = self.create_context().await?;
-        Page::open(self.inner.clone(), Some(context), true, Some(guard), None).await
+        let env = self.inner.environment.clone();
+        Page::open(
+            self.inner.clone(),
+            Some(context),
+            true,
+            Some(guard),
+            None,
+            env,
+        )
+        .await
     }
 
     /// A context whose pages share cookies and storage with each other.
     pub async fn new_context(&self) -> Result<Context> {
-        Ok(Context {
+        self.new_context_with(Environment::default()).await
+    }
+
+    /// [`Browser::new_context`], whose pages have `env` (over the
+    /// browser's own environment) unless they say otherwise.
+    pub async fn new_context_with(&self, env: Environment) -> Result<Context> {
+        let env = env.over(&self.inner.environment);
+        env.validate()?;
+        added_screen(&env, &self.inner.environment)?;
+        let id = self.create_context().await?;
+        let context = Context {
             browser: self.inner.clone(),
-            id: self.create_context().await?,
+            id,
             rules: Arc::default(),
-        })
+            env: Arc::new(Mutex::new(env.clone())),
+        };
+        if let Err(e) =
+            crate::page::grant(&self.inner, Some(&context.id), &env.permissions, None).await
+        {
+            let _ = context.close().await;
+            return Err(e);
+        }
+        Ok(context)
     }
 
     async fn create_context(&self) -> Result<String> {
@@ -1059,6 +1233,13 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             pages: Arc::default(),
             attaching: Arc::default(),
             downloads: Arc::default(),
+            environment: Environment::default(),
+            arranges: false,
+            screen: crate::window::DEFAULT_SCREEN,
+            screen_scale: 1.0,
+            languages: None,
+            screens: tokio::sync::Mutex::new(()),
+            own: tokio::sync::OnceCell::new(),
         }),
     };
     let what = executable.display().to_string();
@@ -1303,18 +1484,107 @@ pub struct Context {
     id: String,
     /// What every page of the context routes.
     rules: Arc<ContextRules>,
+    /// Its pages' environment, over the browser's.
+    env: Arc<Mutex<Environment>>,
 }
 
 impl Context {
     pub async fn new_page(&self) -> Result<Page> {
+        self.new_page_with(Environment::default()).await
+    }
+
+    /// A page of the context, with `env` over the context's environment.
+    /// Its timezone and locale must be the context's: Chrome keeps one of
+    /// each per renderer process, and pages of a context can share one.
+    pub async fn new_page_with(&self, env: Environment) -> Result<Page> {
+        let context = self.environment();
+        for (what, own, theirs) in [
+            ("timezone", &env.timezone, &context.timezone),
+            ("locale", &env.locale, &context.locale),
+        ] {
+            if own.is_some() && own != theirs {
+                return Err(Error::Invalid(format!(
+                    "a page's {what} must be its context's: Chrome keeps one per renderer \
+                     process, and a context's pages of one site can share one. Give it to the \
+                     context, or open the page with Browser.new_page"
+                )));
+            }
+        }
+        let env = env.over(&context);
+        added_screen(&env, &self.browser.environment)?;
         Page::open(
             self.browser.clone(),
             Some(self.id.clone()),
             false,
             None,
             Some(self.rules.clone()),
+            env,
         )
         .await
+    }
+
+    /// The context's environment.
+    pub fn environment(&self) -> Environment {
+        self.env.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn update(&self, change: impl Fn(&mut Environment)) {
+        change(&mut self.env.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    /// Grants permissions to `origin` (such as "https://example.com"), or
+    /// to every origin, for every page of the context.
+    pub async fn grant_permissions(
+        &self,
+        permissions: &[String],
+        origin: Option<&str>,
+    ) -> Result<()> {
+        crate::page::grant(&self.browser, Some(&self.id), permissions, origin).await
+    }
+
+    /// Takes back every permission granted in the context.
+    pub async fn clear_permissions(&self) -> Result<()> {
+        crate::page::clear_permissions(&self.browser, Some(&self.id)).await
+    }
+
+    /// See [`Page::set_geolocation`]; for every page of the context, those
+    /// open now and those opened later.
+    pub async fn set_geolocation(&self, at: Option<Geolocation>) -> Result<()> {
+        self.update(|e| e.geolocation = at);
+        for page in self.rules.pages() {
+            gone_is_fine(page.set_geolocation(at).await)?;
+        }
+        Ok(())
+    }
+
+    /// See [`Page::set_offline`]; for every page of the context.
+    pub async fn set_offline(&self, offline: bool) -> Result<()> {
+        self.update(|e| e.offline = Some(offline));
+        for page in self.rules.pages() {
+            gone_is_fine(page.set_offline(offline).await)?;
+        }
+        Ok(())
+    }
+
+    /// See [`Page::set_extra_headers`]; for every page of the context.
+    pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
+        let mut env = self.environment();
+        env.extra_headers = headers.to_vec();
+        env.validate()?;
+        self.update(|e| e.extra_headers = headers.to_vec());
+        for page in self.rules.pages() {
+            gone_is_fine(page.set_extra_headers(headers).await)?;
+        }
+        Ok(())
+    }
+
+    /// See [`Page::add_init_script`]; for every page of the context.
+    pub async fn add_init_script(&self, script: &str) -> Result<()> {
+        self.update(|e| e.init_scripts.push(script.to_string()));
+        for page in self.rules.pages() {
+            gone_is_fine(page.add_init_script(script).await)?;
+        }
+        Ok(())
     }
 
     /// Like [`Page::route`], for every page of the context, those open
@@ -1396,6 +1666,22 @@ impl Context {
         }
         .inspect(|()| self.browser.downloads.remove(Some(&self.id)))
     }
+}
+
+/// A page that closed while it was told is no failure.
+fn gone_is_fine(r: Result<()>) -> Result<()> {
+    match r {
+        Err(Error::PageClosed) => Ok(()),
+        r => r,
+    }
+}
+
+/// Checks a screen that isn't the browser's own can be added.
+fn added_screen(env: &Environment, browser: &Environment) -> Result<()> {
+    if env.screen != browser.screen || env.device_scale_factor != browser.device_scale_factor {
+        env.validate_added_screen()?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn context_cookies(browser: &Inner, context: Option<&str>) -> Result<Vec<Cookie>> {
@@ -1557,6 +1843,13 @@ mod tests {
             pages: Arc::default(),
             attaching: Arc::default(),
             downloads: Arc::default(),
+            environment: Environment::default(),
+            arranges: false,
+            screen: crate::window::DEFAULT_SCREEN,
+            screen_scale: 1.0,
+            languages: None,
+            screens: tokio::sync::Mutex::new(()),
+            own: tokio::sync::OnceCell::new(),
         });
         // A target that closes between being made and being attached to.
         std::thread::spawn(move || {
@@ -1580,9 +1873,16 @@ mod tests {
             }
         });
         assert!(
-            Page::open(inner.clone(), None, false, None, None)
-                .await
-                .is_err()
+            Page::open(
+                inner.clone(),
+                None,
+                false,
+                None,
+                None,
+                Environment::default()
+            )
+            .await
+            .is_err()
         );
         assert!(inner.attaching.lock().unwrap().is_empty());
     }
