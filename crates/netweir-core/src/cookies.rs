@@ -554,9 +554,11 @@ impl Jar {
             .path()
             .filter(|p| p.starts_with('/'))
             .map_or_else(|| default_path(url), str::to_string);
-        // A Domain attribute naming the host itself still makes a
-        // __Host- cookie no host's own; `valid` checks the rest.
-        if name.to_ascii_lowercase().starts_with("__host-") && attribute.is_some() {
+        // __Host- needs Path=/ said, and no Domain attribute (Chrome's
+        // HasValidHostPrefixAttributes); `valid` checks the rest.
+        if name.to_ascii_lowercase().starts_with("__host-")
+            && (parsed.path() != Some("/") || attribute.is_some())
+        {
             return false;
         }
         let same_site = parsed
@@ -1067,6 +1069,8 @@ mod tests {
             "__Host-b=1; Secure; Domain=e.com; Path=/"
         ));
         assert!(!set(&jar, "https://e.com/x/y", "__Host-b=1; Secure"));
+        // Path=/ must be said, as in Chrome, even where it's the default.
+        assert!(!set(&jar, "https://e.com/", "__Host-b=1; Secure"));
         assert!(set(&jar, "https://e.com/", "__Host-b=1; Secure; Path=/"));
         assert!(!set(&jar, "https://e.com/", "c=1; SameSite=None"));
     }
