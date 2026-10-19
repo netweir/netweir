@@ -438,8 +438,8 @@ struct Live {
     /// Told when the page's slot frees, so a browser request waiting for
     /// one can start.
     shared: std::sync::Weak<Shared>,
-    /// The named jar the page's cookies go back to when it closes, and
-    /// the cookies the page started with.
+    /// The jar the page's cookies go back to when it closes, and the
+    /// cookies the page started with.
     jar: Option<(Arc<Jar>, Vec<Cookie>)>,
 }
 
@@ -545,21 +545,26 @@ impl Drop for Live {
 }
 
 /// The cookies a browser request's page starts with, and the jar they go
-/// back to when it closes: a named jar's, with the request's own added,
-/// or only the request's own, which go nowhere after.
-fn browser_cookies(shared: &Shared, request: &CrawlRequest) -> (Vec<Cookie>, Option<Arc<Jar>>) {
-    match (request.cookies.dont_merge, request.cookies.named()) {
-        (false, Some(name)) => {
-            let jar = shared.jar(Some(name));
-            add_request_cookies(&jar, request);
-            (jar.all(), Some(jar))
-        }
-        _ => {
-            let jar = Jar::new();
-            add_request_cookies(&jar, request);
-            (jar.all(), None)
-        }
+/// back to when it closes: its named jar's, or its host's session's (the
+/// crawl's own until a block gives the host one), with the request's own
+/// added; or, for a request that leaves the jar out, only the request's
+/// own, which go nowhere after.
+fn browser_cookies(
+    shared: &Shared,
+    state: &State,
+    request: &CrawlRequest,
+) -> (Vec<Cookie>, Option<Arc<Jar>>) {
+    if request.cookies.dont_merge {
+        let jar = Jar::new();
+        add_request_cookies(&jar, request);
+        return (jar.all(), None);
     }
+    let jar = match request.cookies.named() {
+        Some(name) => shared.jar(Some(name)),
+        None => session_for(shared, state, &request.url).jar().clone(),
+    };
+    add_request_cookies(&jar, request);
+    (jar.all(), Some(jar))
 }
 
 impl std::fmt::Debug for LivePage {
@@ -3070,7 +3075,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
         shared.clone(),
         q.request.url.clone(),
         q.blocked.is_some(),
-        browser_cookies(&shared, &q.request),
+        browser_cookies(&shared, &shared.lock(), &q.request),
         permit,
         refused.clone(),
         doing.clone(),

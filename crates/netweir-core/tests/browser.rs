@@ -299,6 +299,77 @@ async fn a_named_jar_gets_back_only_what_changed_in_chrome() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_browser_request_in_the_crawls_own_jar_takes_it_and_gives_it_back() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![
+        ("/", Page::html("<p>in</p>")),
+        ("/after", Page::html("after")),
+    ])
+    .await;
+    let c = crawler(settings(BrowserMode::Off));
+    let cookie = |name: &str, value: &str| netweir_core::cookies::Cookie {
+        name: name.into(),
+        value: value.into(),
+        domain: String::new(),
+        path: String::new(),
+        expires: -1.0,
+        http_only: false,
+        secure: false,
+        same_site: None,
+        partition_key: None,
+    };
+    c.jar(None)
+        .add(
+            &netweir_core::cookies::Cookie {
+                domain: "127.0.0.1".into(),
+                path: "/".into(),
+                ..cookie("crawl", "1")
+            },
+            None,
+        )
+        .unwrap();
+    c.submit(CrawlRequest {
+        cookies: netweir_core::RequestCookies {
+            add: vec![cookie("own", "2")],
+            ..Default::default()
+        },
+        ..request(1, site.url("/"), true)
+    });
+    let events = drain(&c).await;
+    let Some(Event::Fetched {
+        page: Some(page), ..
+    }) = main(&events)
+    else {
+        panic!("{events:?}");
+    };
+    page.page()
+        .evaluate("() => { document.cookie = 'chrome=3; path=/'; }")
+        .await
+        .unwrap();
+    page.close().await;
+    c.submit(request(2, site.url("/after"), false));
+    drain(&c).await;
+    let sent = |path: &str| {
+        site.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == path)
+            .map(|(_, h)| {
+                h.iter()
+                    .find(|(k, _)| k == "cookie")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sent("/"), ["crawl=1; own=2"]);
+    assert_eq!(sent("/after"), ["crawl=1; own=2; chrome=3"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cookie_that_expired_in_chrome_isnt_taken_from_the_jar_that_renewed_it() {
     let Some(_chrome) = chrome().await else {
         return;

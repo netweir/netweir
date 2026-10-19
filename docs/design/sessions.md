@@ -173,15 +173,16 @@ an address needs the jar's requests to name a proxy of their own
 
 ### Named jars in Chrome
 
-A browser request in a named jar opens its page with the jar's cookies,
-and when the page closes (after the callback, which may have logged in
+A browser request opens its page with its jar's cookies, the request's
+own added: a named jar's, or the crawl's own (the host's session's,
+once a block has given it one), and when the page closes (after the callback, which may have logged in
 through it), what changed in the page's context goes back into the jar:
 cookies Chrome set or changed, and the removal of the jar's cookies it
 deleted. A cookie Chrome left as it started isn't written back, so a
-value the jar took in over HTTP while the page was open stays. A browser request
-in the crawl's own jar keeps today's behaviour: a page of its own, with
-only the request's own `cookies`, and on a block passed to Chrome, the
-cookies Chrome earns go to the host's next session.
+value the jar took in over HTTP while the page was open stays. On a
+block passed to Chrome, the cookies Chrome earns also go to the host's
+next session. Only a request that leaves the jar out gets a page with
+its own `cookies` alone, which go nowhere after.
 
 ### Workers
 
