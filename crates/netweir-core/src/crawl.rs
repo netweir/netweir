@@ -774,14 +774,42 @@ fn host_key(host: &str) -> String {
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 struct Identity {
     profile: String,
-    proxy: Option<String>,
+    /// The proxy, never with its login: as `masked` writes it, for
+    /// messages, and the SHA-256 of its URL, which a resume finds it
+    /// among the crawl's proxies by.
+    proxy: Option<SavedProxy>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+struct SavedProxy {
+    masked: String,
+    sha256: String,
+}
+
+impl SavedProxy {
+    /// Unkeyed: a key would have to be kept in the same file, so it would
+    /// hide nothing from whoever can read the checkpoint.
+    fn hash(url: &str) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(url.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn of(url: &str) -> SavedProxy {
+        SavedProxy {
+            masked: masked(url),
+            sha256: SavedProxy::hash(url),
+        }
+    }
 }
 
 impl Identity {
     fn of(options: &FetchOptions) -> Identity {
         Identity {
             profile: options.profile.name.clone(),
-            proxy: options.proxy.clone(),
+            proxy: options.proxy.as_deref().map(SavedProxy::of),
         }
     }
 }
@@ -804,23 +832,27 @@ fn restore_session(
         options.profile = Profile::named(&identity.profile)
             .map_err(|_| format!("its profile {} isn't one this build has", identity.profile))?;
     }
-    let known = match identity.proxy.as_deref() {
-        None => shared.options.proxy.is_none(),
-        Some(p) => {
-            state.proxies.pooled(p)
-                || shared.options.proxy.as_deref() == Some(p)
-                || shared.settings.browser_launch.proxy.as_deref() == Some(p)
-        }
+    // The crawl's proxies now: its pool, its own and Chrome's.
+    let proxy = match &identity.proxy {
+        None if shared.options.proxy.is_none() => None,
+        None => return Err("it went out without a proxy, and the crawl now has one".into()),
+        Some(saved) => Some(
+            shared
+                .settings
+                .proxies
+                .iter()
+                .chain(&shared.options.proxy)
+                .chain(&shared.settings.browser_launch.proxy)
+                .find(|p| SavedProxy::hash(p) == saved.sha256)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("its proxy {} is no longer one the crawl uses", saved.masked)
+                })?,
+        ),
     };
-    if !known {
-        return Err(match &identity.proxy {
-            Some(p) => format!("its proxy {} is no longer one the crawl uses", masked(p)),
-            None => "it went out without a proxy, and the crawl now has one".into(),
-        });
-    }
-    options.proxy = identity.proxy.clone();
+    options.proxy = proxy.clone();
     let fetcher = Fetcher::new(options.clone()).map_err(|e| e.to_string())?;
-    let pooled = identity.proxy.clone().filter(|p| state.proxies.pooled(p));
+    let pooled = proxy.filter(|p| state.proxies.pooled(p));
     let h = state
         .hosts
         .entry(host.to_string())

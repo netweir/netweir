@@ -845,3 +845,47 @@ async fn a_resumed_sites_session_comes_back_as_the_same_visitor_or_not_at_all() 
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn a_sites_saved_session_keeps_no_proxy_password() {
+    let site = Site::start(vec![
+        (
+            "http://a.test/login",
+            Page::html("in").with_header("set-cookie", "cf_clearance=1; Path=/"),
+        ),
+        ("http://a.test/me", Page::html("me")),
+    ])
+    .await;
+    let dir = std::env::temp_dir().join(format!("netweir-identity-pw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("crawl.sqlite3");
+    let saving = || CrawlSettings {
+        checkpoint: Some(path.clone()),
+        proxies: vec![format!("http://ada:s3cret@127.0.0.1:{}", site.port)],
+        ..settings(ProxyRotation::PerHost, &[])
+    };
+    let crawl = crawler(saving());
+    crawl.submit(request(1, "http://a.test/login"));
+    drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    let identity: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT identity FROM jars WHERE kind = 'host'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(!identity.contains("s3cret"), "{identity}");
+    // Matched by its hash, it's the same proxy on resume.
+    let crawl = crawler(saving());
+    crawl.submit(request(2, "http://a.test/me"));
+    let events = drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    assert_eq!(
+        sent_with(&site, "http://a.test/me")[0].0,
+        "cf_clearance=1",
+        "{events:?}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

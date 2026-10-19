@@ -219,7 +219,11 @@ session back with exactly that profile and proxy, or not at all: if the
 proxy is no longer one the crawl uses (in its pool, its own proxy or
 Chrome's), or the profile isn't one this build has, the host starts as
 a new visitor without those cookies, and one warning names each such
-host and why. Old cookies never go out with a new identity.
+host and why. Old cookies never go out with a new identity. The proxy is
+kept as the SHA-256 of its URL and its URL without the login (for the
+warning), never with its password; a resume finds it among the crawl's
+proxies by the hash. The hash is unkeyed: a key would have to be kept
+in the same file, and so would hide nothing from whoever can read it.
 The format goes up by one (`jars` table), and older files are upgraded
 on open.
 
