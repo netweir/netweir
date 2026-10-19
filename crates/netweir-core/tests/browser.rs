@@ -299,6 +299,52 @@ async fn a_named_jar_gets_back_only_what_changed_in_chrome() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_cookie_that_expired_in_chrome_isnt_taken_from_the_jar_that_renewed_it() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<p>in</p>"))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    let jar = c.jar(Some("ada"));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let sid = |value: &str, expires: f64| netweir_core::cookies::Cookie {
+        name: "sid".into(),
+        value: value.into(),
+        domain: "127.0.0.1".into(),
+        path: "/".into(),
+        expires,
+        http_only: false,
+        secure: false,
+        same_site: None,
+        partition_key: None,
+    };
+    jar.add(&sid("short", now + 2.0), None).unwrap();
+    c.submit(CrawlRequest {
+        cookies: netweir_core::RequestCookies {
+            jar: Some("ada".into()),
+            ..Default::default()
+        },
+        ..request(1, site.url("/"), true)
+    });
+    let events = drain(&c).await;
+    let Some(Event::Fetched {
+        page: Some(page), ..
+    }) = main(&events)
+    else {
+        panic!("{events:?}");
+    };
+    // Chrome's copy runs out while, over HTTP, the site renews it.
+    jar.add(&sid("renewed", now + 3600.0), None).unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    page.close().await;
+    let left: Vec<String> = jar.all().into_iter().map(|c| c.value).collect();
+    assert_eq!(left, ["renewed"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrome() {
     let Some(_chrome) = chrome().await else {
         return;

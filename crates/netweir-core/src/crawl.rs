@@ -447,7 +447,8 @@ struct Live {
 /// into `jar`, as the page closes: the cookies Chrome set or changed, and
 /// the removal of those of `seed` it deleted (a logout). A cookie Chrome
 /// left as it was stays out, so one the jar took in over HTTP meanwhile
-/// isn't put back to the value the page started with.
+/// isn't put back to the value the page started with, nor is one the jar
+/// renewed taken out.
 async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &[Cookie]) {
     let Ok(now) = page.cookies().await else {
         return;
@@ -472,7 +473,21 @@ async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &[Cookie]) {
             let _ = jar.add(c, None);
         }
     }
-    for s in seed.iter().filter(|s| !now.iter().any(|c| same(s, c))) {
+    let closing = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64());
+    // Gone from Chrome, as Chrome deleted it, and only while the jar still
+    // has it as the page started: not one that ran out in Chrome, nor one
+    // the jar has since had a newer copy of.
+    let deleted = seed.iter().filter(|s| {
+        !now.iter().any(|c| same(s, c))
+            && !(s.expires >= 0.0 && s.expires <= closing)
+            && jar
+                .find(&s.name, Some(&s.domain), Some(&s.path))
+                .iter()
+                .any(|c| same(s, c) && c.value == s.value && (c.expires - s.expires).abs() < 1.0)
+    });
+    for s in deleted {
         // An expired cookie removes the one it matches.
         let _ = jar.add(
             &Cookie {
