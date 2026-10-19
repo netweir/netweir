@@ -394,7 +394,8 @@ impl Engine {
         };
         if done.ignored.is_none() {
             let text = response.text();
-            match Document::parse_within(&text, PARSE_BUDGET) {
+            let markup = crate::Markup::of(response.header("content-type"));
+            match crate::parse_markup(&text, markup, PARSE_BUDGET) {
                 Ok(doc) => {
                     let root = doc.root();
                     if done.tag.apply_rules {
@@ -434,10 +435,19 @@ impl Engine {
                         done.root = Some(Arc::new(doc));
                     }
                 }
-                Err(e) => {
-                    done.error = Some(e.to_string());
+                Err(e @ crate::ParseFailure::Timeout(_)) => {
+                    done.error = Some(e.message());
                     // Python would parse it again, without the budget.
                     done.tag.to_python = false;
+                }
+                Err(e @ crate::ParseFailure::Xml(_)) => {
+                    // A callback still gets the page, and reading its
+                    // document there raises the error, with what's wrong
+                    // and where; it can read the text instead. Rules
+                    // can't run on it, which is worth saying here.
+                    if done.tag.apply_rules || done.tag.rule.is_some() {
+                        done.error = Some(e.message());
+                    }
                 }
             }
         }

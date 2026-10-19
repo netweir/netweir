@@ -2,7 +2,7 @@
 //! getall, re) and the Beautiful Soup style one (find_all and navigation).
 
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use netweir_dom::extract::{TrackContext, Tracker, Tracking};
 use netweir_dom::{
@@ -24,7 +24,14 @@ use crate::{SelectorError, XPathError};
 pub(crate) struct Node {
     doc: Arc<Document>,
     id: NodeId,
+    /// The namespace prefixes XPath queries from this node know, as
+    /// parsel's `Selector.namespaces`: registered on it, or on the node or
+    /// selection it came from (before it came from there).
+    namespaces: Mutex<Namespaces>,
 }
+
+/// `(prefix, uri)` pairs; a later one for a prefix wins.
+type Namespaces = Arc<Vec<(String, String)>>;
 
 /// One result of a query: a node, or a string (an attribute's value or a
 /// computed XPath value).
@@ -47,12 +54,53 @@ pub(crate) struct Selection {
     /// relocated, the nearest candidate's score when nothing was similar
     /// enough, None when there was nothing to look for.
     score: Option<f64>,
+    /// The namespaces of the node it came from, which its nodes and their
+    /// queries inherit.
+    namespaces: Namespaces,
+}
+
+impl Selection {
+    fn of(doc: Arc<Document>, entries: Vec<Entry>, namespaces: Namespaces) -> Selection {
+        Selection {
+            doc,
+            entries,
+            relocated: false,
+            score: None,
+            namespaces,
+        }
+    }
 }
 
 impl Node {
     pub(crate) fn root_of(doc: Arc<Document>) -> Node {
         let id = doc.root().id();
-        Node { doc, id }
+        Node::with(doc, id, Namespaces::default())
+    }
+
+    /// The root element of `doc` (the document node if it has none).
+    pub(crate) fn top_element_of(doc: Arc<Document>) -> Node {
+        let id = doc
+            .root()
+            .children()
+            .find(|n| n.kind() == NodeKind::Element)
+            .unwrap_or(doc.root())
+            .id();
+        Node::with(doc, id, Namespaces::default())
+    }
+
+    fn with(doc: Arc<Document>, id: NodeId, namespaces: Namespaces) -> Node {
+        Node {
+            doc,
+            id,
+            namespaces: Mutex::new(namespaces),
+        }
+    }
+
+    fn namespaces(&self) -> Namespaces {
+        self.namespaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub(crate) fn document(&self) -> &Arc<Document> {
@@ -109,10 +157,7 @@ impl Node {
     }
 
     fn sibling(&self, id: NodeId) -> Node {
-        Node {
-            doc: self.doc.clone(),
-            id,
-        }
+        Node::with(self.doc.clone(), id, self.namespaces())
     }
 
     fn wrap(&self, node: Option<netweir_dom::Node<'_>>) -> Option<Node> {
@@ -251,12 +296,32 @@ fn xpath_vars(vars: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<(String, XValue)
     Ok(out)
 }
 
+/// The namespaces a query runs with: those inherited, then those passed to
+/// the query itself (a dict of prefix to URI), which win.
+fn query_namespaces(
+    inherited: &Namespaces,
+    given: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Namespaces> {
+    let Some(given) = given.filter(|g| !g.is_none()) else {
+        return Ok(inherited.clone());
+    };
+    let given = given.cast::<PyDict>().map_err(|_| {
+        PyTypeError::new_err("namespaces must be a dict of prefix to namespace URI")
+    })?;
+    let mut all = (**inherited).clone();
+    for (prefix, uri) in given.iter() {
+        all.push((prefix.extract()?, uri.extract()?));
+    }
+    Ok(Arc::new(all))
+}
+
 fn xpath_entries(
     py: Python<'_>,
     doc: &Arc<Document>,
     scopes: Vec<NodeId>,
     query: &str,
     vars: Option<&Bound<'_, PyDict>>,
+    namespaces: Namespaces,
 ) -> PyResult<Vec<Entry>> {
     let xpath = XPath::cached(query).map_err(|e| XPathError::new_err(e.to_string()))?;
     let vars = xpath_vars(vars)?;
@@ -267,7 +332,7 @@ fn xpath_entries(
         for id in scopes {
             // SAFETY: every scope id came from `doc`.
             let hits = xpath
-                .run_with(unsafe { doc.node(id) }, &vars)
+                .run_in(unsafe { doc.node(id) }, &vars, &namespaces)
                 .map_err(|e| e.to_string())?;
             out.extend(entries_of(hits));
         }
@@ -456,16 +521,7 @@ impl Node {
         }
         let me = slf.get();
         let entries = css_entries(py, &me.doc, vec![me.id], query)?;
-        Ok(Py::new(
-            py,
-            Selection {
-                doc: me.doc.clone(),
-                entries,
-                relocated: false,
-                score: None,
-            },
-        )?
-        .into_any())
+        Ok(Py::new(py, Selection::of(me.doc.clone(), entries, me.namespaces()))?.into_any())
     }
 
     /// The query's results, following the element as `name` on `site`
@@ -516,18 +572,22 @@ impl Node {
             entries,
             relocated,
             score,
+            namespaces: self.namespaces(),
         })
     }
 
     /// Runs an XPath 1.0 query with this node as the context. Keyword
-    /// arguments bind `$variables`; `track` follows the element through
+    /// arguments bind `$variables`; `namespaces` (a dict of prefix to
+    /// URI) binds prefixes for this query, besides those registered with
+    /// `register_namespace`; `track` follows the element through
     /// redesigns, as css(track=...) does.
-    #[pyo3(signature = (query, track=None, **vars))]
+    #[pyo3(signature = (query, track=None, namespaces=None, **vars))]
     fn xpath(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
         query: &str,
         track: Option<&str>,
+        namespaces: Option<&Bound<'_, PyAny>>,
         vars: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         if let Some(name) = track {
@@ -536,20 +596,50 @@ impl Node {
                     "track= can't be combined with $variables",
                 ));
             }
+            if namespaces.is_some_and(|n| !n.is_none()) {
+                return Err(PyTypeError::new_err(
+                    "track= can't be combined with namespaces=; register them with register_namespace()",
+                ));
+            }
             return tracked_through_python(py, slf, "xpath", query, name);
         }
         let me = slf.get();
-        let entries = xpath_entries(py, &me.doc, vec![me.id], query, vars)?;
-        Ok(Py::new(
-            py,
-            Selection {
-                doc: me.doc.clone(),
-                entries,
-                relocated: false,
-                score: None,
-            },
-        )?
-        .into_any())
+        let inherited = me.namespaces();
+        let all = query_namespaces(&inherited, namespaces)?;
+        let entries = xpath_entries(py, &me.doc, vec![me.id], query, vars, all)?;
+        Ok(Py::new(py, Selection::of(me.doc.clone(), entries, inherited))?.into_any())
+    }
+
+    /// Binds `prefix` to the namespace `uri` for XPath queries from this
+    /// node, and from the nodes and selections they give, as parsel's
+    /// `register_namespace` does.
+    fn register_namespace(&self, prefix: &str, uri: &str) -> PyResult<()> {
+        if !netweir_dom::xml::is_ncname(prefix) {
+            return Err(PyValueError::new_err(format!(
+                "{prefix:?} isn't a valid namespace prefix"
+            )));
+        }
+        let mut namespaces = self.namespaces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = (**namespaces).clone();
+        all.push((prefix.to_string(), uri.to_string()));
+        *namespaces = Arc::new(all);
+        Ok(())
+    }
+
+    /// Takes every element and attribute of the document out of its
+    /// namespace, so plain names match them: `//entry` rather than
+    /// `//atom:entry`. Changes the whole document, for every node of it,
+    /// as parsel's `remove_namespaces` does. Nothing happens to HTML.
+    fn remove_namespaces(&self, py: Python<'_>) -> PyResult<()> {
+        // SAFETY: no ids are involved; other threads read through `Held`.
+        self.edit(py, |doc| unsafe { doc.remove_namespaces() })
+    }
+
+    /// "xml" for a node of an XML document, "html" otherwise, as parsel's
+    /// `Selector.type`.
+    #[getter(r#type)]
+    fn doc_type(&self) -> &'static str {
+        if self.doc.is_xml() { "xml" } else { "html" }
     }
 
     // --- Beautiful Soup style search ----------------------------------
@@ -913,12 +1003,7 @@ impl Node {
             let found = unsafe { doc.node(id) }.similar(threshold);
             found.into_iter().map(|n| Entry::Node(n.id())).collect()
         });
-        Ok(Selection {
-            doc: self.doc.clone(),
-            entries,
-            relocated: false,
-            score: None,
-        })
+        Ok(Selection::of(self.doc.clone(), entries, self.namespaces()))
     }
 
     /// The node's text read as JSON (a `<script type="application/json">`,
@@ -1145,10 +1230,7 @@ impl Selection {
             // SAFETY: ids in a Selection all come from its `doc`.
             Entry::Node(id) if unsafe { self.doc.node(*id) }.kind() != NodeKind::Text => Py::new(
                 py,
-                Node {
-                    doc: self.doc.clone(),
-                    id: *id,
-                },
+                Node::with(self.doc.clone(), *id, self.namespaces.clone()),
             )?
             .into_any(),
             other => {
@@ -1200,29 +1282,30 @@ impl Selection {
     /// Runs `query` below every element in this selection.
     fn css(&self, py: Python<'_>, query: &str) -> PyResult<Selection> {
         let entries = css_entries(py, &self.doc, self.scopes("css")?, query)?;
-        Ok(Selection {
-            doc: self.doc.clone(),
+        Ok(Selection::of(
+            self.doc.clone(),
             entries,
-            relocated: false,
-            score: None,
-        })
+            self.namespaces.clone(),
+        ))
     }
 
-    /// Runs an XPath query from every element in this selection.
-    #[pyo3(signature = (query, **vars))]
+    /// Runs an XPath query from every element in this selection, with the
+    /// namespaces its nodes have and any given in `namespaces`.
+    #[pyo3(signature = (query, namespaces=None, **vars))]
     fn xpath(
         &self,
         py: Python<'_>,
         query: &str,
+        namespaces: Option<&Bound<'_, PyAny>>,
         vars: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Selection> {
-        let entries = xpath_entries(py, &self.doc, self.scopes("xpath")?, query, vars)?;
-        Ok(Selection {
-            doc: self.doc.clone(),
+        let all = query_namespaces(&self.namespaces, namespaces)?;
+        let entries = xpath_entries(py, &self.doc, self.scopes("xpath")?, query, vars, all)?;
+        Ok(Selection::of(
+            self.doc.clone(),
             entries,
-            relocated: false,
-            score: None,
-        })
+            self.namespaces.clone(),
+        ))
     }
 
     /// Every match of `pattern` in every result, as parsel does it: whole
@@ -1326,12 +1409,7 @@ impl Selection {
             }
             return Ok(Py::new(
                 py,
-                Selection {
-                    doc: self.doc.clone(),
-                    entries: picked,
-                    relocated: false,
-                    score: None,
-                },
+                Selection::of(self.doc.clone(), picked, self.namespaces.clone()),
             )?
             .into_any());
         }

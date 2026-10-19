@@ -165,7 +165,12 @@ impl Criteria {
             // A name function is given the element, not its name.
             Filter::Function(f) => f.bind(py).call1((as_python(node)?,))?.is_truthy()?,
             Filter::Present(want) => *want,
-            other => other.matches_value(py, node.tag())?,
+            // In XML, as in Beautiful Soup, `dc:creator` finds it too.
+            other => {
+                other.matches_value(py, node.tag())?
+                    || (node.qualified_name() != node.tag().unwrap_or_default()
+                        && other.matches_value(py, Some(node.qualified_name()))?)
+            }
         };
         if !name_ok {
             return Ok(false);

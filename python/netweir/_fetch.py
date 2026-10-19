@@ -13,7 +13,7 @@ from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
 from netweir._helpers import Article
-from netweir._native import BrowserPage, Fetcher, Node, Response, Selection
+from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _response
 from netweir._request import Request
 
 log = logging.getLogger("netweir")
@@ -168,6 +168,16 @@ def payload(
     return {"method": method, "kind": "fetch"}
 
 
+def _utf8(content_type: str) -> str:
+    """``content_type`` with its charset UTF-8."""
+    params = [
+        p for p in content_type.split(";")[1:] if p.split("=")[0].strip().lower() != "charset"
+    ]
+    return "; ".join(
+        [content_type.split(";")[0].strip(), *[p.strip() for p in params], "charset=utf-8"]
+    )
+
+
 def _from_form(form: Form) -> tuple[str, dict[str, Any]]:
     url, body, content_type = form.encoded()
     if body is None:
@@ -254,10 +264,44 @@ class Page:
 
     @property
     def root(self) -> Node:
-        """The parsed document. Parsed on first use."""
+        """The parsed document. Parsed on first use: as XML when the
+        Content-Type says it's XML (``text/xml``, ``application/xml``, RSS,
+        Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
+        ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
             self._root = self._response.parse()
         return self._root
+
+    def replace(
+        self,
+        *,
+        url: str | None = None,
+        status: int | None = None,
+        headers: Headers = None,
+        body: bytes | str | None = None,
+    ) -> Page:
+        """A copy of the page with some of its response changed, as
+        Scrapy's ``response.replace()``: for a feed spider's
+        ``adapt_response``, say. A ``str`` body is sent as UTF-8 and the
+        Content-Type's charset changed to match. The copy answers the
+        same request and is parsed afresh."""
+        r = self._response
+        pairs = r.headers if headers is None else [(k.lower(), v) for k, v in _pairs(headers)]
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+            pairs = [(k, _utf8(v) if k == "content-type" else v) for k, v in pairs]
+        copy = Page(
+            _response(
+                r.url if url is None else url,
+                r.status if status is None else status,
+                r.version,
+                pairs,
+                r.body if body is None else bytes(body),
+            ),
+            self.request,
+        )
+        copy.browser = self.browser
+        return copy
 
     def css(self, query: str, track: str | None = None) -> Selection:
         """A CSS query. ``track`` names the element so it's found again
@@ -269,17 +313,27 @@ class Page:
         return self.root.css(query)
 
     def xpath(
-        self, query: str, track: str | None = None, **variables: str | int | float | bool
+        self,
+        query: str,
+        track: str | None = None,
+        namespaces: Mapping[str, str] | None = None,
+        **variables: str | int | float | bool,
     ) -> Selection:
-        """An XPath 1.0 query; keyword arguments bind ``$variables``.
-        ``track`` works as in ``css``."""
+        """An XPath 1.0 query; keyword arguments bind ``$variables``, and
+        ``namespaces`` (prefix to URI) the prefixes it uses besides those
+        registered with ``register_namespace``. ``track`` works as in
+        ``css``."""
         if track is not None:
             if variables:
                 raise TypeError("track= can't be combined with $variables")
+            if namespaces is not None:
+                raise TypeError(
+                    "track= can't be combined with namespaces=; use register_namespace()"
+                )
             return _track.tracked(
                 self.root, "xpath", query, track, _track.site_of(self.url), self.url
             )
-        return self.root.xpath(query, **variables)
+        return self.root.xpath(query, namespaces=namespaces, **variables)
 
     @property
     def depth(self) -> int:

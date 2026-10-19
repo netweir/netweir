@@ -12,10 +12,10 @@ mod helpers;
 mod node;
 mod rules;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use netweir_dom::Document;
+use netweir_dom::{Document, ParseXmlError, XmlNodes};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
@@ -40,6 +40,112 @@ create_exception!(
     PyTimeoutError,
     "Parsing took longer than the timeout."
 );
+create_exception!(
+    netweir,
+    XMLError,
+    PyValueError,
+    "The document isn't well-formed XML. `line` and `column` (both from 1) say where, and `reason` what's wrong."
+);
+
+/// An XMLError, with where and why as attributes.
+pub(crate) fn xml_error(py: Python<'_>, e: &netweir_dom::XmlError) -> PyErr {
+    let err = XMLError::new_err(e.to_string());
+    let value = err.value(py);
+    let set = || -> PyResult<()> {
+        value.setattr("line", e.line)?;
+        value.setattr("column", e.column)?;
+        value.setattr("reason", &e.reason)
+    };
+    match set() {
+        Ok(()) => err,
+        Err(other) => other,
+    }
+}
+
+/// How to parse a body: as HTML or as XML.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Markup {
+    Html,
+    Xml,
+}
+
+impl Markup {
+    /// `type=` as parsel takes it: "html", "xml", or None for HTML.
+    pub(crate) fn named(name: Option<&str>) -> PyResult<Option<Markup>> {
+        match name {
+            None => Ok(None),
+            Some("html") => Ok(Some(Markup::Html)),
+            Some("xml") => Ok(Some(Markup::Xml)),
+            Some(other) => Err(PyValueError::new_err(format!(
+                "type must be \"html\" or \"xml\", not {other:?}"
+            ))),
+        }
+    }
+
+    /// What a response's Content-Type says it is. XML for the types
+    /// Scrapy gives an XmlResponse (text/xml, application/xml, and RSS,
+    /// Atom and RDF), and for any other `+xml` type (SOAP's, SVG) but
+    /// XHTML's, which is a web page and is parsed as one.
+    pub(crate) fn of(content_type: Option<&str>) -> Markup {
+        let Some(ct) = content_type else {
+            return Markup::Html;
+        };
+        let mime = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let xhtml = mime.ends_with("xhtml+xml");
+        if !xhtml && (mime == "text/xml" || mime == "application/xml" || mime.ends_with("+xml")) {
+            Markup::Xml
+        } else {
+            Markup::Html
+        }
+    }
+}
+
+/// Why parsing failed, before it's turned into a Python exception (which
+/// needs the GIL back).
+pub(crate) enum ParseFailure {
+    Timeout(String),
+    Xml(netweir_dom::XmlError),
+}
+
+impl ParseFailure {
+    pub(crate) fn into_py(self, py: Python<'_>) -> PyErr {
+        match self {
+            ParseFailure::Timeout(why) => ParseTimeout::new_err(why),
+            ParseFailure::Xml(e) => xml_error(py, &e),
+        }
+    }
+
+    /// A message for the log, where there is no exception to raise.
+    pub(crate) fn message(&self) -> String {
+        match self {
+            ParseFailure::Timeout(why) => why.clone(),
+            ParseFailure::Xml(e) => e.to_string(),
+        }
+    }
+}
+
+/// Parses `text` as `markup`, giving up after `budget`. Call without the
+/// GIL.
+pub(crate) fn parse_markup(
+    text: &str,
+    markup: Markup,
+    budget: Duration,
+) -> Result<Document, ParseFailure> {
+    match markup {
+        Markup::Html => {
+            Document::parse_within(text, budget).map_err(|e| ParseFailure::Timeout(e.to_string()))
+        }
+        Markup::Xml => Document::parse_xml_within(text, budget).map_err(|e| match e {
+            ParseXmlError::Malformed(e) => ParseFailure::Xml(e),
+            ParseXmlError::Timeout(t) => ParseFailure::Timeout(t.to_string()),
+        }),
+    }
+}
 
 /// Seconds from Python to a parse budget; `None` means no limit.
 pub(crate) fn budget(timeout: Option<f64>) -> PyResult<Duration> {
@@ -54,18 +160,53 @@ pub(crate) fn budget(timeout: Option<f64>) -> PyResult<Duration> {
     }
 }
 
-/// Parses an HTML document and returns its root node.
+/// Parses an HTML document, or with `type="xml"` an XML one, and returns
+/// its root node.
 ///
 /// With `timeout` (seconds), gives up and raises ParseTimeout on pages that
-/// take longer, such as deeply nested hostile markup.
+/// take longer, such as deeply nested hostile markup. XML that isn't
+/// well-formed raises XMLError.
 #[pyfunction]
-#[pyo3(signature = (html, timeout=None))]
-fn parse(py: Python<'_>, html: &str, timeout: Option<f64>) -> PyResult<Node> {
+#[pyo3(signature = (html, timeout=None, r#type=None))]
+fn parse(py: Python<'_>, html: &str, timeout: Option<f64>, r#type: Option<&str>) -> PyResult<Node> {
     let budget = budget(timeout)?;
+    let markup = Markup::named(r#type)?.unwrap_or(Markup::Html);
     let doc = py
-        .detach(|| Document::parse_within(html, budget))
-        .map_err(|e| ParseTimeout::new_err(e.to_string()))?;
+        .detach(|| parse_markup(html, markup, budget))
+        .map_err(|e| e.into_py(py))?;
     Ok(Node::root_of(Arc::new(doc)))
+}
+
+/// The elements of an XML document named `tag`, each read alone, as the
+/// document is read (XMLFeedSpider's `iternodes`).
+#[pyclass(frozen, module = "netweir")]
+struct XmlNodeIter {
+    nodes: Mutex<XmlNodes>,
+}
+
+#[pymethods]
+impl XmlNodeIter {
+    fn __iter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Node>> {
+        let next = py.detach(|| self.nodes.lock().unwrap_or_else(|e| e.into_inner()).next());
+        match next {
+            None => Ok(None),
+            Some(Err(e)) => Err(xml_error(py, &e)),
+            Some(Ok(doc)) => Ok(Some(Node::top_element_of(Arc::new(doc)))),
+        }
+    }
+}
+
+/// `tag` is `name` or `prefix:name` with the prefix in `namespaces`.
+#[pyfunction]
+fn _xml_nodes(text: String, tag: &str, namespaces: Vec<(String, String)>) -> PyResult<XmlNodeIter> {
+    let nodes = XmlNodes::new(text, tag, &namespaces).map_err(PyValueError::new_err)?;
+    Ok(XmlNodeIter {
+        nodes: Mutex::new(nodes),
+    })
 }
 
 /// The crawl's identity for a GET of `url`, as hex: equal for the same
@@ -163,6 +304,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_build_info, m)?)?;
     m.add_function(wrap_pyfunction!(fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(_sitemap, m)?)?;
+    m.add_function(wrap_pyfunction!(_xml_nodes, m)?)?;
+    m.add_class::<XmlNodeIter>()?;
     m.add_function(wrap_pyfunction!(_robots_sitemaps, m)?)?;
     m.add_function(wrap_pyfunction!(_offsite, m)?)?;
     m.add_class::<Node>()?;
@@ -170,6 +313,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SelectorError", m.py().get_type::<SelectorError>())?;
     m.add("XPathError", m.py().get_type::<XPathError>())?;
     m.add("ParseTimeout", m.py().get_type::<ParseTimeout>())?;
+    m.add("XMLError", m.py().get_type::<XMLError>())?;
     browser::register(m)?;
     fetch::register(m)?;
     crawl::register(m)?;

@@ -10,7 +10,6 @@ use netweir_core::{
     Auth, FetchError as CoreError, FetchErrorKind, FetchOptions, Fetcher as CoreFetcher, Policy,
     Profile,
 };
-use netweir_dom::Document;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -517,14 +516,28 @@ impl Response {
     }
 
     /// Decodes and parses the body; returns the document's root node.
-    #[pyo3(signature = (timeout=None))]
-    fn parse(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Node> {
+    /// XML (by its Content-Type, or with `type="xml"`) is parsed as XML,
+    /// anything else as HTML (or as XML with `type="xml"`).
+    #[pyo3(signature = (timeout=None, r#type=None))]
+    fn parse(&self, py: Python<'_>, timeout: Option<f64>, r#type: Option<&str>) -> PyResult<Node> {
         let r = self.inner.clone();
         let budget = crate::budget(timeout)?;
+        let markup = crate::Markup::named(r#type)?
+            .unwrap_or_else(|| crate::Markup::of(r.header("content-type")));
         let doc = py
-            .detach(move || Document::parse_within(&r.text(), budget))
-            .map_err(|e| crate::ParseTimeout::new_err(e.to_string()))?;
+            .detach(move || crate::parse_markup(&r.text(), markup, budget))
+            .map_err(|e| e.into_py(py))?;
         Ok(Node::root_of(Arc::new(doc)))
+    }
+
+    /// What `parse()` reads the body as by default: "xml" when the
+    /// Content-Type says it's XML, "html" otherwise.
+    #[getter]
+    fn markup(&self) -> &'static str {
+        match crate::Markup::of(self.inner.header("content-type")) {
+            crate::Markup::Xml => "xml",
+            crate::Markup::Html => "html",
+        }
     }
 }
 
