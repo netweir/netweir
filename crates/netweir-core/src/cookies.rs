@@ -259,6 +259,12 @@ fn key_of(domain: &str) -> &str {
     psl::domain_str(domain).unwrap_or(domain)
 }
 
+/// The site a host or a cookie's domain (a leading dot or not) belongs to,
+/// as the jar keeps cookies by it; None for something that isn't a host.
+pub fn site_key(host: &str) -> Option<String> {
+    canonical(host.trim_start_matches('.')).map(|h| key_of(&h).to_string())
+}
+
 /// Chrome's limits: a site keeps 180 cookies, and going over drops it to
 /// 150; the jar keeps 3300, and going over drops those unsent for a
 /// month until it holds 3000.
@@ -695,6 +701,26 @@ impl Jar {
         };
         valid(&stored)?;
         Ok(stored)
+    }
+
+    /// The cookies of `host`'s site (its registrable domain, subdomains
+    /// and all), oldest first: those a page there could be sent, without
+    /// looking through every other site's.
+    pub fn of_site(&self, host: &str) -> Vec<Cookie> {
+        let Some(key) = site_key(host) else {
+            return Vec::new();
+        };
+        let now = now();
+        let store = self.lock();
+        let mut found: Vec<&Stored> = store
+            .by_key
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|c| !c.expired(now))
+            .collect();
+        found.sort_by_key(|c| c.seq);
+        found.into_iter().map(Stored::exported).collect()
     }
 
     /// Every cookie, oldest first.

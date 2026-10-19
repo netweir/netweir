@@ -439,30 +439,53 @@ struct Live {
     /// one can start.
     shared: std::sync::Weak<Shared>,
     /// The jar the page's cookies go back to when it closes, and the
-    /// cookies the page started with.
-    jar: Option<(Arc<Jar>, Vec<Cookie>)>,
+    /// cookies the page started with: its request's site's.
+    jar: Option<(Arc<Jar>, Seed)>,
+}
+
+/// The cookies a page started with, and the site of the request it was
+/// opened for, which with the page's last URL's is all it gives back.
+#[derive(Clone)]
+struct Seed {
+    cookies: Vec<Cookie>,
+    site: Option<String>,
+}
+
+/// A cookie as Chrome and the jar both know it: its name, domain, path
+/// and partition.
+type CookieKey<'a> = (&'a str, &'a str, &'a str, Option<&'a str>);
+
+fn key(c: &Cookie) -> CookieKey<'_> {
+    (&c.name, &c.domain, &c.path, c.partition_key.as_deref())
 }
 
 /// Puts what changed in the page's context since it opened with `seed`
 /// into `jar`, as the page closes: the cookies Chrome set or changed, and
-/// the removal of those of `seed` it deleted (a logout). A cookie Chrome
+/// the removal of those of `seed` it deleted (a logout). Only those of
+/// the site the request was for, and of the page's last URL's: a cookie
+/// another site set in Chrome (an ad's, say) stays there. A cookie Chrome
 /// left as it was stays out, so one the jar took in over HTTP meanwhile
 /// isn't put back to the value the page started with, nor is one the jar
 /// renewed taken out.
-async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &[Cookie]) {
+async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &Seed) {
     let Ok(now) = page.cookies().await else {
         return;
     };
-    let same = |a: &Cookie, b: &Cookie| {
-        a.name == b.name
-            && a.domain == b.domain
-            && a.path == b.path
-            && a.partition_key == b.partition_key
-    };
-    for c in &now {
-        let unchanged = seed.iter().any(|s| {
-            same(s, c)
-                && s.value == c.value
+    let mut sites: Vec<String> = seed.site.iter().cloned().collect();
+    if let Some(last) = Url::parse(&page.url())
+        .ok()
+        .and_then(|u| crate::cookies::site_key(u.host_str()?))
+        && !sites.contains(&last)
+    {
+        sites.push(last);
+    }
+    let ours = |c: &Cookie| crate::cookies::site_key(&c.domain).is_some_and(|k| sites.contains(&k));
+    let started: HashMap<CookieKey<'_>, &Cookie> =
+        seed.cookies.iter().map(|c| (key(c), c)).collect();
+    let in_chrome: HashSet<CookieKey<'_>> = now.iter().map(key).collect();
+    for c in now.iter().filter(|c| ours(c)) {
+        let unchanged = started.get(&key(c)).is_some_and(|s| {
+            s.value == c.value
                 && s.secure == c.secure
                 && s.http_only == c.http_only
                 && s.same_site == c.same_site
@@ -476,16 +499,22 @@ async fn give_back(page: &netweir_browser::Page, jar: &Jar, seed: &[Cookie]) {
     let closing = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64());
+    // The jar's own copies now, of the sites the page started with.
+    let held: Vec<Cookie> = seed
+        .site
+        .iter()
+        .flat_map(|site| jar.of_site(site))
+        .collect();
+    let held: HashMap<CookieKey<'_>, &Cookie> = held.iter().map(|c| (key(c), c)).collect();
     // Gone from Chrome, as Chrome deleted it, and only while the jar still
     // has it as the page started: not one that ran out in Chrome, nor one
     // the jar has since had a newer copy of.
-    let deleted = seed.iter().filter(|s| {
-        !now.iter().any(|c| same(s, c))
+    let deleted = seed.cookies.iter().filter(|s| {
+        !in_chrome.contains(&key(s))
             && !(s.expires >= 0.0 && s.expires <= closing)
-            && jar
-                .find(&s.name, Some(&s.domain), Some(&s.path))
-                .iter()
-                .any(|c| same(s, c) && c.value == s.value && (c.expires - s.expires).abs() < 1.0)
+            && held
+                .get(&key(s))
+                .is_some_and(|c| c.value == s.value && (c.expires - s.expires).abs() < 1.0)
     });
     for s in deleted {
         // An expired cookie removes the one it matches.
@@ -548,23 +577,35 @@ impl Drop for Live {
 /// back to when it closes: its named jar's, or its host's session's (the
 /// crawl's own until a block gives the host one), with the request's own
 /// added; or, for a request that leaves the jar out, only the request's
-/// own, which go nowhere after.
-fn browser_cookies(
-    shared: &Shared,
-    state: &State,
-    request: &CrawlRequest,
-) -> (Vec<Cookie>, Option<Arc<Jar>>) {
-    if request.cookies.dont_merge {
-        let jar = Jar::new();
-        add_request_cookies(&jar, request);
-        return (jar.all(), None);
-    }
-    let jar = match request.cookies.named() {
-        Some(name) => shared.jar(Some(name)),
-        None => session_for(shared, state, &request.url).jar().clone(),
+/// own, which go nowhere after. Only the cookies of the request's site:
+/// a page has no use for the rest of a jar that may hold thousands.
+fn browser_cookies(shared: &Shared, request: &CrawlRequest) -> (Seed, Option<Arc<Jar>>) {
+    let site = Url::parse(&request.url)
+        .ok()
+        .and_then(|u| crate::cookies::site_key(u.host_str()?));
+    let host = Url::parse(&request.url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let jar = if request.cookies.dont_merge {
+        None
+    } else {
+        Some(match request.cookies.named() {
+            Some(name) => shared.jar(Some(name)),
+            // Taken under the crawl's lock; the cookies read after it.
+            None => session_for(shared, &shared.lock(), &request.url)
+                .jar()
+                .clone(),
+        })
     };
-    add_request_cookies(&jar, request);
-    (jar.all(), Some(jar))
+    let own = Jar::new();
+    let into = jar.as_deref().unwrap_or(&own);
+    add_request_cookies(into, request);
+    let seed = Seed {
+        cookies: into.of_site(&host),
+        site,
+    };
+    (seed, jar)
 }
 
 impl std::fmt::Debug for LivePage {
@@ -3264,7 +3305,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
         shared.clone(),
         q.request.url.clone(),
         q.blocked.is_some(),
-        browser_cookies(&shared, &shared.lock(), &q.request),
+        browser_cookies(&shared, &q.request),
         permit,
         refused.clone(),
         doing.clone(),
@@ -3463,7 +3504,7 @@ async fn render(
     shared: Arc<Shared>,
     url: String,
     cookies: bool,
-    (seed, jar): (Vec<Cookie>, Option<Arc<Jar>>),
+    (seed, jar): (Seed, Option<Arc<Jar>>),
     permit: OwnedSemaphorePermit,
     refused: Refusal,
     doing: Doing,
@@ -3525,7 +3566,7 @@ async fn render(
             })
         });
         browser.new_guarded_page(guard).await
-    } else if jar.is_some() || !seed.is_empty() {
+    } else if jar.is_some() || !seed.cookies.is_empty() {
         // A jar's cookies stay in a context of their own, never a kept
         // profile's, where other pages and the next run would see them.
         browser.new_page_apart().await
@@ -3542,8 +3583,8 @@ async fn render(
         }
     }
     // The page starts with the cookies of the request's jar, or its own.
-    if !seed.is_empty()
-        && let Err(e) = page.set_cookies(&seed).await
+    if !seed.cookies.is_empty()
+        && let Err(e) = page.set_cookies(&seed.cookies).await
     {
         let _ = page.close().await;
         return Err(browser_error(e));

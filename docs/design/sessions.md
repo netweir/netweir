@@ -175,12 +175,19 @@ an address needs the jar's requests to name a proxy of their own
 
 ### Named jars in Chrome
 
-A browser request opens its page with its jar's cookies, the request's
-own added: a named jar's, or the crawl's own (the host's session's,
-once a block has given it one), and when the page closes (after the callback, which may have logged in
-through it), what changed in the page's context goes back into the jar:
-cookies Chrome set or changed, and the removal of the jar's cookies it
-deleted. A cookie Chrome left as it started isn't written back, so a
+A browser request opens its page with its jar's cookies of the
+request's site (its registrable domain), the request's own added: a
+named jar's, or the crawl's own (the host's session's, once a block has
+given it one). Only that site's: a jar may hold tens of thousands, and
+seeding and comparing them all took a page from 0.18 s to 3.66 s with
+40,000 in the jar; a site's own is one lookup, as the jar keeps cookies
+by site, and the cost no longer grows with the rest. When the page
+closes (after the callback, which may have logged in through it), what
+changed in the page's context for that site, or the site the page ended
+on, goes back into the jar: cookies Chrome set or changed, and the
+removal of the jar's cookies it deleted, compared by a map of the seed.
+Other sites' cookies, which a page's ads and widgets set, stay in
+Chrome. A cookie Chrome left as it started isn't written back, so a
 value the jar took in over HTTP while the page was open stays. On a
 block passed to Chrome, the cookies Chrome earns also go to the host's
 next session. Only a request that leaves the jar out gets a page with

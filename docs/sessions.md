@@ -182,11 +182,13 @@ named one), and requests in a named jar go out through whatever proxy the
 rotation picks. If a site ties a login to an address, give the jar's
 requests a proxy of their own with `Request(proxy=...)`.
 
-A browser request opens its Chrome page with its jar's cookies, a named
-jar's or the crawl's own (or, after a block, the site's new session's),
-with the request's `cookies=` added, and when the page closes, after the callback, what changed in
-Chrome goes back into the jar: the cookies it set or changed, and the
-removal of those it deleted, so a logout in Chrome is a logout. A cookie
+A browser request opens its Chrome page with its jar's cookies for the
+request's site, a named jar's or the crawl's own (or, after a block, the
+site's new session's), with the request's `cookies=` added. When the
+page closes, after the callback, what changed in Chrome for that site,
+or the site the page ended on, goes back into the jar: the cookies it
+set or changed, and the removal of those it deleted, so a logout in
+Chrome is a logout. Other sites' cookies (an ad's, say) stay in Chrome. A cookie
 Chrome left alone isn't put back, so one the jar got over HTTP while the
 page was open keeps its newer value. Each such page has a context of its
 own, so one jar's cookies never reach another page. (A crawl's Chrome

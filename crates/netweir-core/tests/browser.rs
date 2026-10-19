@@ -432,6 +432,61 @@ async fn a_jars_page_stays_out_of_a_kept_profile() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_page_takes_and_gives_back_only_its_sites_cookies() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<p>in</p>"))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    let cookie = |name: String, domain: &str| netweir_core::cookies::Cookie {
+        name,
+        value: "1".into(),
+        domain: domain.into(),
+        path: "/".into(),
+        expires: -1.0,
+        http_only: false,
+        secure: false,
+        same_site: None,
+        partition_key: None,
+    };
+    let jar = c.jar(None);
+    // Thousands of cookies of other sites, which the page has no use for.
+    for i in 0..20_000 {
+        jar.add(
+            &cookie(format!("o{i}"), &format!("site{}.example", i / 100)),
+            None,
+        )
+        .unwrap();
+    }
+    jar.add(&cookie("own".into(), "127.0.0.1"), None).unwrap();
+    c.submit(request(1, site.url("/"), true));
+    let events = drain(&c).await;
+    let Some(Event::Fetched {
+        page: Some(page), ..
+    }) = main(&events)
+    else {
+        panic!("{events:?}");
+    };
+    let in_chrome = page.page().cookies().await.unwrap();
+    let names: Vec<&str> = in_chrome.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["own"]);
+    // A cookie Chrome got for another site stays in Chrome.
+    page.page()
+        .set_cookies(&[cookie("tracker".into(), ".ads.example")])
+        .await
+        .unwrap();
+    let closing = std::time::Instant::now();
+    page.close().await;
+    assert!(
+        closing.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        closing.elapsed()
+    );
+    assert!(jar.find("tracker", None, None).is_empty());
+    assert_eq!(jar.len(), 20_001);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cookie_that_expired_in_chrome_isnt_taken_from_the_jar_that_renewed_it() {
     let Some(_chrome) = chrome().await else {
         return;
