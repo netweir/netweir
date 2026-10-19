@@ -1,6 +1,10 @@
 //! XPath 1.0 over a parsed document, written from the W3C recommendation,
 //! with the extensions Scrapy users rely on: `has-class()` and the EXSLT
 //! regular-expression functions `re:test()` and `re:replace()`.
+//!
+//! Names with a prefix (`atom:entry`) take their namespace from the
+//! prefixes a query is run with ([`XPath::run_in`]), as lxml's do. In an
+//! HTML document nothing has a namespace, so they match nothing there.
 
 mod eval;
 mod lexer;
@@ -76,6 +80,18 @@ impl XPath {
         scope: Node<'a>,
         vars: &[(String, XValue)],
     ) -> Result<Vec<Hit<'a>>, XPathError> {
+        self.run_in(scope, vars, &[])
+    }
+
+    /// `run_with`, with `(prefix, uri)` pairs binding the namespace
+    /// prefixes the expression uses (a later pair for a prefix wins).
+    /// `re` and `set` are bound to the EXSLT namespaces unless given.
+    pub fn run_in<'a>(
+        &self,
+        scope: Node<'a>,
+        vars: &[(String, XValue)],
+        namespaces: &[(String, String)],
+    ) -> Result<Vec<Hit<'a>>, XPathError> {
         if let Some(missing) = self
             .variables
             .iter()
@@ -86,7 +102,7 @@ impl XPath {
                 reason: format!("no value given for ${missing}"),
             });
         }
-        eval::run(&self.expr, scope, vars).map_err(|reason| XPathError {
+        eval::run(&self.expr, scope, vars, namespaces).map_err(|reason| XPathError {
             query: self.src.clone(),
             reason,
         })

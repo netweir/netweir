@@ -39,6 +39,7 @@ pub type ChunkFn = extern "C" fn(data: *const c_char, len: usize, ctx: *mut c_vo
 pub const ELEMENT: c_int = 0x01;
 pub const TEXT: c_int = 0x03;
 pub const CDATA: c_int = 0x04;
+pub const PI: c_int = 0x07;
 pub const COMMENT: c_int = 0x08;
 pub const DOCUMENT: c_int = 0x09;
 pub const DOCTYPE: c_int = 0x0A;
@@ -98,6 +99,39 @@ unsafe extern "C" {
     pub fn nw_next_attr(a: *mut RawAttr) -> *mut RawAttr;
     pub fn nw_attr_name(a: *mut RawAttr, len: *mut usize) -> *const c_char;
     pub fn nw_attr_value(a: *mut RawAttr, len: *mut usize) -> *const c_char;
+
+    pub fn nw_xml_document() -> *mut RawDocument;
+    pub fn nw_xml_element(
+        doc: *mut RawDocument,
+        qname: *const c_char,
+        qlen: usize,
+        local_at: usize,
+    ) -> *mut RawNode;
+    pub fn nw_xml_attr(
+        n: *mut RawNode,
+        qname: *const c_char,
+        qlen: usize,
+        value: *const c_char,
+        vlen: usize,
+    ) -> *mut RawAttr;
+    pub fn nw_create_comment(
+        doc: *mut RawDocument,
+        data: *const c_char,
+        len: usize,
+    ) -> *mut RawNode;
+    pub fn nw_create_pi(
+        doc: *mut RawDocument,
+        target: *const c_char,
+        tlen: usize,
+        data: *const c_char,
+        dlen: usize,
+    ) -> *mut RawNode;
+    pub fn nw_pi_target(n: *mut RawNode, len: *mut usize) -> *const c_char;
+    pub fn nw_qname(n: *mut RawNode, len: *mut usize) -> *const c_char;
+    pub fn nw_attr_qname(a: *mut RawAttr, len: *mut usize) -> *const c_char;
+    pub fn nw_xml_rename(n: *mut RawNode, qname: *const c_char, qlen: usize) -> c_int;
+    pub fn nw_attr_remove(n: *mut RawNode, a: *mut RawAttr);
+    pub fn nw_xml_attr_rename(a: *mut RawAttr, qname: *const c_char, qlen: usize) -> c_int;
 
     pub fn nw_css_memory_new() -> *mut RawCssMemory;
     pub fn nw_css_memory_free(memory: *mut RawCssMemory);

@@ -53,8 +53,14 @@ impl Axis {
 pub(crate) enum NodeTest {
     /// `*`: any node of the axis's principal type.
     Any,
-    /// A name, matched against the principal node type.
+    /// A name without a prefix, matched against the principal node type.
+    /// In XML it names something in no namespace.
     Name(String),
+    /// `prefix:name`, the prefix bound by the namespaces a query is run
+    /// with.
+    Prefixed(String, String),
+    /// `prefix:*`: anything in that namespace.
+    AnyIn(String),
     Node,
     Text,
     Comment,
@@ -497,10 +503,12 @@ impl Parser<'_> {
         if name == "*" {
             return Ok(NodeTest::Any);
         }
-        if name.contains(':') {
-            return Err(self.error(&format!(
-                "namespace prefixes are not supported in name tests ({name}); HTML elements have no namespace"
-            )));
+        if let Some((prefix, local)) = name.split_once(':') {
+            return Ok(if local == "*" {
+                NodeTest::AnyIn(prefix.to_string())
+            } else {
+                NodeTest::Prefixed(prefix.to_string(), local.to_string())
+            });
         }
         Ok(NodeTest::Name(name))
     }

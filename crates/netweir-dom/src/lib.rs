@@ -1,7 +1,9 @@
-//! HTML parsing, CSS and XPath queries, and declarative extraction for
-//! netweir.
+//! HTML and XML parsing, CSS and XPath queries, and declarative extraction
+//! for netweir.
 //!
-//! Parsing is done by lexbor, a C implementation of the HTML5 parsing spec.
+//! HTML parsing is done by lexbor, a C implementation of the HTML5 parsing
+//! spec. XML is read with quick-xml and built into a lexbor tree too (see
+//! [`xml`]).
 //! The tree stays in lexbor's memory; [`Node`] is a borrowed handle into it.
 
 mod cache;
@@ -18,6 +20,7 @@ pub mod price;
 mod query;
 pub mod similar;
 pub mod track;
+pub mod xml;
 mod xpath;
 
 /// The version of lexbor compiled in.
@@ -26,4 +29,5 @@ pub const LEXBOR_VERSION: &str = env!("LEXBOR_VERSION");
 pub use cache::{QUERY_CACHE_SIZE, QUERY_CACHE_TEXT};
 pub use document::{Content, Document, EditError, Node, NodeId, NodeKind, ParseTimeout, Reading};
 pub use query::{Hit, OutOfMemory, Output, Query, QueryError};
+pub use xml::{ParseXmlError, XmlError, XmlNodes};
 pub use xpath::{XPath, XPathError, XValue};

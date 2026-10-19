@@ -170,6 +170,7 @@ fn kind_name(kind: NodeKind) -> &'static str {
         NodeKind::Element => "element",
         NodeKind::Text => "text",
         NodeKind::Comment => "comment",
+        NodeKind::ProcessingInstruction => "processing_instruction",
         NodeKind::Document => "document",
         NodeKind::Doctype => "doctype",
         NodeKind::Other => "other",

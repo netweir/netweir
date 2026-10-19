@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::ffi::{self, RawDocument, RawNode, str_at};
 use crate::index::Index;
+use crate::xml::{self, XmlNames};
 
 /// A parsed HTML document.
 ///
@@ -15,7 +16,10 @@ use crate::index::Index;
 /// browser would parse it: missing `<html>`, `<head>`, `<body>` and `<tbody>`
 /// elements are added, and misnested tags are repaired.
 pub struct Document {
-    raw: *mut RawDocument,
+    pub(crate) raw: *mut RawDocument,
+    /// For an XML document, its namespaces (which lexbor can't keep).
+    /// Only an edit changes them, as with the index.
+    xml: UnsafeCell<Option<Box<XmlNames>>>,
     /// A flat, document-order index of every node, built on first use and
     /// dropped by every edit (which has the document to itself).
     index: UnsafeCell<OnceLock<Index>>,
@@ -616,7 +620,8 @@ impl Document {
     }
 
     /// A new element, not yet in the tree: place it with
-    /// [`Document::insert`]. Names are lowercased.
+    /// [`Document::insert`]. In HTML names are lowercased; in XML they're
+    /// kept as given, and the element has no namespace.
     // Known limit: attributes are only ever set here, on an element nothing
     // has borrowed from yet. Changing one on an existing element would
     // rewrite memory a `&str` from `attr()` may still point at.
@@ -645,6 +650,9 @@ impl Document {
         if let Some((name, _)) = bad_attr {
             return invalid(format!("{name:?} isn't a valid attribute name"));
         }
+        if self.is_xml() {
+            return self.create_xml_element(tag, attrs);
+        }
         let tag = tag.to_ascii_lowercase();
         self.edit(|| {
             let n = unsafe { ffi::nw_create_element(self.raw, tag.as_ptr().cast(), tag.len()) };
@@ -661,6 +669,44 @@ impl Document {
                     )
                 };
                 assert_eq!(status, 0, "lexbor failed to allocate an attribute");
+            }
+            self.mark_detached(n);
+            Ok(NodeId(n as usize))
+        })
+    }
+
+    /// [`Document::create_element`] in an XML document.
+    fn create_xml_element(&self, tag: &str, attrs: &[(&str, &str)]) -> Result<NodeId, EditError> {
+        // A prefix would need a namespace to go with it.
+        if !xml::is_ncname(tag) {
+            return invalid(format!(
+                "{tag:?} isn't a valid XML element name (without a prefix)"
+            ));
+        }
+        for (i, (name, _)) in attrs.iter().enumerate() {
+            if !xml::is_ncname(name) {
+                return invalid(format!(
+                    "{name:?} isn't a valid XML attribute name (without a prefix)"
+                ));
+            }
+            if attrs[..i].iter().any(|(other, _)| other == name) {
+                return invalid(format!("the attribute {name} is given twice"));
+            }
+        }
+        self.edit(|| {
+            let n = unsafe { ffi::nw_xml_element(self.raw, tag.as_ptr().cast(), tag.len(), 0) };
+            assert!(!n.is_null(), "lexbor failed to allocate an element");
+            for (name, value) in attrs {
+                let a = unsafe {
+                    ffi::nw_xml_attr(
+                        n,
+                        name.as_ptr().cast(),
+                        name.len(),
+                        value.as_ptr().cast(),
+                        value.len(),
+                    )
+                };
+                assert!(!a.is_null(), "lexbor failed to allocate an attribute");
             }
             self.mark_detached(n);
             Ok(NodeId(n as usize))
@@ -762,6 +808,120 @@ impl Document {
     }
 }
 
+impl Document {
+    /// Takes ownership of a document lexbor made.
+    fn wrap(raw: *mut RawDocument, xml: Option<Box<XmlNames>>) -> Document {
+        // lexbor only fails when it cannot allocate. Rust aborts on allocation
+        // failure, so netweir treats lexbor's the same way.
+        assert!(!raw.is_null(), "lexbor failed to allocate a document");
+        Document {
+            raw,
+            xml: UnsafeCell::new(xml),
+            index: UnsafeCell::new(OnceLock::new()),
+            detached: Mutex::new(Vec::new()),
+            access: AtomicU32::new(0),
+            readers: std::array::from_fn(|_| Slot(AtomicU32::new(0))),
+            queue: AtomicU64::new(0),
+            turn_left: AtomicU32::new(0),
+            #[cfg(test)]
+            turn_entries: AtomicU32::new(0),
+            #[cfg(test)]
+            most_turn_entries: AtomicU32::new(0),
+            #[cfg(test)]
+            wakes: AtomicU32::new(0),
+            gate: Mutex::new(()),
+            woken: Condvar::new(),
+        }
+    }
+
+    /// An empty XML document, for the XML parser to fill.
+    pub(crate) fn new_xml() -> Document {
+        Document::wrap(unsafe { ffi::nw_xml_document() }, Some(Box::default()))
+    }
+
+    /// Whether this is an XML document (see [`Document::parse_xml`]) rather
+    /// than an HTML one.
+    pub fn is_xml(&self) -> bool {
+        self.xml_names().is_some()
+    }
+
+    pub(crate) fn xml_names(&self) -> Option<&XmlNames> {
+        // SAFETY: as for the index, only an edit changes it.
+        unsafe { &*self.xml.get() }.as_deref()
+    }
+
+    pub(crate) fn xml_names_mut(&mut self) -> &mut XmlNames {
+        self.xml
+            .get_mut()
+            .as_deref_mut()
+            .expect("only an XML document has XML names")
+    }
+
+    /// Takes every element and attribute out of its namespace, and drops
+    /// the namespace declarations, so that queries can use plain names:
+    /// `//entry` rather than `//atom:entry`. Prefixes go too (`dc:title`
+    /// becomes `title`); where that leaves an element two attributes of
+    /// one name, the one that had the prefix wins. Scrapy's (parsel's)
+    /// `remove_namespaces()`. Does nothing to an HTML document.
+    ///
+    /// # Safety
+    /// As for [`Document::remove`].
+    pub unsafe fn remove_namespaces(&self) -> Result<(), EditError> {
+        if !self.is_xml() {
+            return Ok(());
+        }
+        self.edit(|| {
+            for root in self.roots() {
+                let top = Node {
+                    doc: self,
+                    raw: root,
+                };
+                for n in std::iter::once(top).chain(top.descendants()) {
+                    if n.kind() == NodeKind::Element {
+                        unsafe { strip_prefixes(n) };
+                    }
+                }
+            }
+            // SAFETY: this edit has the document to itself.
+            if let Some(names) = unsafe { &mut *self.xml.get() } {
+                names.clear();
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Renames an element and its attributes without their prefixes. Only an
+/// edit may call it.
+unsafe fn strip_prefixes(n: Node<'_>) {
+    let qname = n.qualified_name();
+    if let Some((_, local)) = qname.split_once(':') {
+        let status = unsafe { ffi::nw_xml_rename(n.raw, local.as_ptr().cast(), local.len()) };
+        assert_eq!(status, 0, "lexbor failed to allocate a name");
+    }
+    let mut a = unsafe { ffi::nw_first_attr(n.raw) };
+    while !a.is_null() {
+        let mut len = 0;
+        let name = unsafe { str_at(ffi::nw_attr_qname(a, &mut len), len) };
+        if let Some((_, local)) = name.split_once(':') {
+            // An attribute already called that loses to this one.
+            let mut b = unsafe { ffi::nw_first_attr(n.raw) };
+            while !b.is_null() {
+                let after = unsafe { ffi::nw_next_attr(b) };
+                let mut bl = 0;
+                if b != a && unsafe { str_at(ffi::nw_attr_qname(b, &mut bl), bl) } == local {
+                    unsafe { ffi::nw_attr_remove(n.raw, b) };
+                }
+                b = after;
+            }
+            let status = unsafe { ffi::nw_xml_attr_rename(a, local.as_ptr().cast(), local.len()) };
+            assert_eq!(status, 0, "lexbor failed to allocate a name");
+        }
+        // After the removals, which may have taken the one that was next.
+        a = unsafe { ffi::nw_next_attr(a) };
+    }
+}
+
 impl Drop for Document {
     fn drop(&mut self) {
         unsafe { ffi::nw_destroy(self.raw) }
@@ -777,26 +937,7 @@ impl fmt::Debug for Document {
 fn parse_in_chunks(html: &str, budget: Duration, chunk: usize) -> Result<Document, ParseTimeout> {
     let start = Instant::now();
     let raw = unsafe { ffi::nw_chunk_begin() };
-    // lexbor only fails when it cannot allocate. Rust aborts on allocation
-    // failure, so netweir treats lexbor's the same way.
-    assert!(!raw.is_null(), "lexbor failed to allocate a document");
-    let doc = Document {
-        raw,
-        index: UnsafeCell::new(OnceLock::new()),
-        detached: Mutex::new(Vec::new()),
-        access: AtomicU32::new(0),
-        readers: std::array::from_fn(|_| Slot(AtomicU32::new(0))),
-        queue: AtomicU64::new(0),
-        turn_left: AtomicU32::new(0),
-        #[cfg(test)]
-        turn_entries: AtomicU32::new(0),
-        #[cfg(test)]
-        most_turn_entries: AtomicU32::new(0),
-        #[cfg(test)]
-        wakes: AtomicU32::new(0),
-        gate: Mutex::new(()),
-        woken: Condvar::new(),
-    };
+    let doc = Document::wrap(raw, None);
     let mut rest = html;
     while !rest.is_empty() {
         if start.elapsed() > budget {
@@ -875,6 +1016,9 @@ pub enum NodeKind {
     Element,
     Text,
     Comment,
+    /// `<?target data?>`, in XML documents (HTML parsing makes them
+    /// comments).
+    ProcessingInstruction,
     Other,
 }
 
@@ -902,40 +1046,123 @@ impl<'a> Node<'a> {
             ffi::ELEMENT => NodeKind::Element,
             ffi::TEXT | ffi::CDATA => NodeKind::Text,
             ffi::COMMENT => NodeKind::Comment,
+            ffi::PI => NodeKind::ProcessingInstruction,
             ffi::DOCUMENT => NodeKind::Document,
             ffi::DOCTYPE => NodeKind::Doctype,
             _ => NodeKind::Other,
         }
     }
 
-    /// The lowercase tag name, for elements.
+    /// The tag name, for elements: lowercase in HTML, and in XML as
+    /// written, without its prefix.
     pub fn tag(&self) -> Option<&'a str> {
         if self.kind() != NodeKind::Element {
             return None;
         }
+        if self.doc.is_xml() {
+            let q = self.qualified_name();
+            return Some(q.split_once(':').map_or(q, |(_, local)| local));
+        }
         let mut len = 0;
         Some(unsafe { str_at(ffi::nw_tag(self.raw, &mut len), len) })
+    }
+
+    /// An element's name with its prefix, as written (`atom:entry`); the
+    /// same as [`Node::tag`] in HTML.
+    pub fn qualified_name(&self) -> &'a str {
+        if self.kind() != NodeKind::Element {
+            return "";
+        }
+        if !self.doc.is_xml() {
+            return self.tag().unwrap_or("");
+        }
+        let mut len = 0;
+        unsafe { str_at(ffi::nw_qname(self.raw, &mut len), len) }
+    }
+
+    /// The namespace URI of an element in an XML document; None outside
+    /// any namespace, and always for HTML.
+    pub fn namespace(&self) -> Option<&'a str> {
+        let names = self.doc.xml_names()?;
+        match names.ns_of(self.raw as usize) {
+            0 => None,
+            id => Some(names.uri(id)),
+        }
+    }
+
+    /// The namespace id of an element (0 for none, and in HTML), for
+    /// comparing with [`XmlNames::id_of`].
+    pub(crate) fn ns_id(&self) -> u32 {
+        self.doc
+            .xml_names()
+            .map_or(0, |names| names.ns_of(self.raw as usize))
+    }
+
+    /// The target of a processing instruction (`xml-stylesheet`).
+    pub fn pi_target(&self) -> Option<&'a str> {
+        if self.kind() != NodeKind::ProcessingInstruction {
+            return None;
+        }
+        let mut len = 0;
+        Some(unsafe { str_at(ffi::nw_pi_target(self.raw, &mut len), len) })
+    }
+
+    /// An element's attributes with what XPath needs of them: the name as
+    /// written, its namespace id (0 for none, and in HTML) and the value.
+    pub(crate) fn xml_attrs(&self) -> Vec<(&'a str, u32, &'a str)> {
+        let mut out = Vec::new();
+        if self.kind() != NodeKind::Element {
+            return out;
+        }
+        let names = self.doc.xml_names();
+        let mut a = unsafe { ffi::nw_first_attr(self.raw) };
+        while !a.is_null() {
+            let (mut nl, mut vl) = (0, 0);
+            let name = match names {
+                Some(_) => unsafe { str_at(ffi::nw_attr_qname(a, &mut nl), nl) },
+                None => unsafe { str_at(ffi::nw_attr_name(a, &mut nl), nl) },
+            };
+            let value = unsafe { str_at(ffi::nw_attr_value(a, &mut vl), vl) };
+            let ns = names.map_or(0, |n| n.ns_of(a as usize));
+            out.push((name, ns, value));
+            a = unsafe { ffi::nw_next_attr(a) };
+        }
+        out
     }
 
     pub fn attr(&self, name: &str) -> Option<&'a str> {
         if self.kind() != NodeKind::Element {
             return None;
         }
+        if self.doc.is_xml() {
+            // lexbor's lookup would also take `x:name` for `name`.
+            return self
+                .attrs()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v);
+        }
         let mut len = 0;
         let ptr = unsafe { ffi::nw_get_attr(self.raw, name.as_ptr().cast(), name.len(), &mut len) };
         (!ptr.is_null()).then(|| unsafe { str_at(ptr, len) })
     }
 
-    /// Every attribute as `(name, value)`, in source order.
+    /// Every attribute as `(name, value)`, in source order. In XML a name
+    /// keeps its prefix as written (`xml:lang`).
     pub fn attrs(&self) -> Vec<(&'a str, &'a str)> {
         let mut out = Vec::new();
         if self.kind() != NodeKind::Element {
             return out;
         }
+        let xml = self.doc.is_xml();
         let mut a = unsafe { ffi::nw_first_attr(self.raw) };
         while !a.is_null() {
             let (mut nl, mut vl) = (0, 0);
-            let name = unsafe { str_at(ffi::nw_attr_name(a, &mut nl), nl) };
+            let name = if xml {
+                unsafe { str_at(ffi::nw_attr_qname(a, &mut nl), nl) }
+            } else {
+                unsafe { str_at(ffi::nw_attr_name(a, &mut nl), nl) }
+            };
             let value = unsafe { str_at(ffi::nw_attr_value(a, &mut vl), vl) };
             out.push((name, value));
             a = unsafe { ffi::nw_next_attr(a) };
@@ -943,10 +1170,11 @@ impl<'a> Node<'a> {
         out
     }
 
-    /// The node's own text, for text and comment nodes.
+    /// The node's own text, for text and comment nodes, and a processing
+    /// instruction's data.
     pub fn data(&self) -> Option<&'a str> {
         match self.kind() {
-            NodeKind::Text | NodeKind::Comment => {
+            NodeKind::Text | NodeKind::Comment | NodeKind::ProcessingInstruction => {
                 let mut len = 0;
                 Some(unsafe { str_at(ffi::nw_char_data(self.raw, &mut len), len) })
             }
@@ -1015,9 +1243,13 @@ impl<'a> Node<'a> {
         self.doc.order_of(self.raw)
     }
 
-    /// The node as HTML: an element with its attributes and everything in
-    /// it, a text node escaped, a comment as `<!--...-->`.
+    /// The node as HTML (as XML, in an XML document): an element with its
+    /// attributes and everything in it, a text node escaped, a comment as
+    /// `<!--...-->`.
     pub fn html(&self) -> String {
+        if let Some(names) = self.doc.xml_names() {
+            return xml::serialize(*self, names);
+        }
         extern "C" fn push(data: *const c_char, len: usize, ctx: *mut c_void) {
             // SAFETY: lexbor passes `len` valid bytes; ctx is the Vec below.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
@@ -1049,6 +1281,9 @@ impl<'a> Node<'a> {
     /// `<pre>`, `<textarea>`, `<script>` and `<style>`, which are written
     /// as they are.
     pub fn pretty(&self) -> String {
+        if let Some(names) = self.doc.xml_names() {
+            return xml::pretty(*self, names);
+        }
         let mut out = String::new();
         self.pretty_into(0, &mut out);
         out
@@ -1146,6 +1381,10 @@ impl<'a> Node<'a> {
     /// script or style element itself, gives its own text.
     pub fn readable_text_pieces(&self) -> Vec<&'a str> {
         const CODE: [&str; 3] = ["script", "style", "template"];
+        // In XML no element is code.
+        if self.doc.is_xml() {
+            return self.text_pieces();
+        }
         if self.tag().is_some_and(|t| CODE.contains(&t)) || self.kind() == NodeKind::Text {
             return self.text_pieces();
         }

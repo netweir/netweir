@@ -24,7 +24,10 @@ enum Item<'a> {
     Attr {
         owner: Node<'a>,
         index: u32,
+        /// As written, with any prefix.
         name: &'a str,
+        /// The namespace id (see `XmlNames`); 0 for none.
+        ns: u32,
         value: &'a str,
     },
 }
@@ -42,17 +45,44 @@ impl<'a> Item<'a> {
     fn string_value(&self) -> Cow<'a, str> {
         match self {
             Item::Node(n) => match n.kind() {
-                NodeKind::Text | NodeKind::Comment => Cow::Borrowed(n.data().unwrap_or_default()),
+                NodeKind::Text | NodeKind::Comment | NodeKind::ProcessingInstruction => {
+                    Cow::Borrowed(n.data().unwrap_or_default())
+                }
                 _ => Cow::Owned(n.text()),
             },
             Item::Attr { value, .. } => Cow::Borrowed(value),
         }
     }
 
+    /// The name with its prefix, as `name()` gives it.
     fn name(&self) -> &'a str {
         match self {
-            Item::Node(n) => n.tag().unwrap_or(""),
+            Item::Node(n) => match n.kind() {
+                NodeKind::ProcessingInstruction => n.pi_target().unwrap_or(""),
+                _ => n.qualified_name(),
+            },
             Item::Attr { name, .. } => name,
+        }
+    }
+
+    /// The name without its prefix, as `local-name()` gives it.
+    fn local_name(&self) -> &'a str {
+        let name = self.name();
+        let doc = match self {
+            Item::Node(n) => n.doc,
+            Item::Attr { owner, .. } => owner.doc,
+        };
+        // In HTML a colon is just part of a name (`fb:like`), as in lxml.
+        match name.split_once(':') {
+            Some((_, local)) if doc.is_xml() => local,
+            _ => name,
+        }
+    }
+
+    fn namespace_uri(&self) -> &'a str {
+        match self {
+            Item::Node(n) => n.namespace().unwrap_or(""),
+            Item::Attr { owner, ns, .. } => owner.doc.xml_names().map_or("", |x| x.uri(*ns)),
         }
     }
 }
@@ -75,6 +105,7 @@ struct Context<'a, 'v> {
     size: usize,
     root: Node<'a>,
     vars: &'v [(String, XValue)],
+    namespaces: &'v [(String, String)],
     kept: &'v RefCell<Kept>,
 }
 
@@ -95,6 +126,7 @@ pub(super) fn run<'a>(
     expr: &Expr,
     scope: Node<'a>,
     vars: &[(String, XValue)],
+    namespaces: &[(String, String)],
 ) -> Result<Vec<Hit<'a>>> {
     // `/` is the top of the scope's tree: the document, or for a node
     // removed from it, the top of what was removed (as lxml has it).
@@ -109,6 +141,7 @@ pub(super) fn run<'a>(
         size: 1,
         root,
         vars,
+        namespaces,
         kept: &kept,
     };
     Ok(into_hits(eval(expr, &ctx)?))
@@ -263,7 +296,7 @@ fn walk<'a>(
             i += 1;
             continue;
         }
-        let test = Test::resolve(&step.test, step.axis, ctx.root);
+        let test = Test::resolve(&step.test, step.axis, ctx)?;
         // A leading `[k]` with k a whole number from 1 up.
         let nth = match step.predicates.first() {
             Some(Expr::Number(k)) if *k >= 1.0 && k.fract() == 0.0 && *k < usize::MAX as f64 => {
@@ -299,7 +332,13 @@ fn walk<'a>(
                             &mut scanned,
                         ),
                     }
-                    candidates.extend(scanned.iter().copied().map(Item::Node));
+                    candidates.extend(
+                        scanned
+                            .iter()
+                            .copied()
+                            .map(Item::Node)
+                            .filter(|i| !test.exact() || test.matches(i)),
+                    );
                 }
                 _ => {
                     let mut on_axis = axis(*item, step.axis).filter(|c| test.matches(c));
@@ -340,7 +379,10 @@ fn descendants_by_parent<'a>(
     step: &Step,
     ctx: &Context<'a, '_>,
 ) -> Option<Result<Vec<Item<'a>>>> {
-    let test = Test::resolve(&step.test, step.axis, ctx.root);
+    let test = match Test::resolve(&step.test, step.axis, ctx) {
+        Ok(test) => test,
+        Err(e) => return Some(Err(e)),
+    };
     if !test.indexable() {
         return None;
     }
@@ -359,6 +401,9 @@ fn descendants_by_parent<'a>(
         }
         covered_to = index.end_of(at);
         index.descendants(n.doc, at, false, |k, t| test.keeps(k, t), &mut found);
+    }
+    if test.exact() {
+        found.retain(|&n| test.matches(&Item::Node(n)));
     }
     // Group by parent, keeping each group in document order.
     let mut groups: Vec<(u32, Vec<Item<'a>>)> = Vec::new();
@@ -442,6 +487,7 @@ fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Resul
             size,
             root: ctx.root,
             vars: ctx.vars,
+            namespaces: ctx.namespaces,
             kept: ctx.kept,
         };
         let keep = match eval(pred, &inner)? {
@@ -455,12 +501,39 @@ fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Resul
     Ok(kept)
 }
 
+/// The EXSLT namespaces parsel binds by default.
+const DEFAULT_NAMESPACES: [(&str, &str); 2] = [
+    ("re", "http://exslt.org/regular-expressions"),
+    ("set", "http://exslt.org/sets"),
+];
+
+/// The URI `prefix` is bound to for this run.
+fn namespace<'c>(prefix: &str, ctx: &'c Context<'_, '_>) -> Result<&'c str> {
+    if let Some((_, uri)) = ctx.namespaces.iter().rev().find(|(p, _)| p == prefix) {
+        return Ok(uri);
+    }
+    if prefix == "xml" {
+        return Ok(crate::xml::XML_NS);
+    }
+    DEFAULT_NAMESPACES
+        .iter()
+        .find(|(p, _)| *p == prefix)
+        .map(|(_, uri)| *uri)
+        .ok_or_else(|| {
+            format!(
+                "undefined namespace prefix {prefix:?}: register it with register_namespace(), or pass it in namespaces="
+            )
+        })
+}
+
 /// A node test made ready for one document: names become lexbor tag ids,
 /// so matching an element is one integer comparison.
 enum Test<'t> {
     Node,
     Text,
     Comment,
+    /// `processing-instruction()`, with the target if one is given.
+    Pi(Option<&'t str>),
     Never,
     /// `*` on the axis's principal node type.
     AnyElement,
@@ -470,19 +543,71 @@ enum Test<'t> {
     /// them), but SVG and MathML elements can, so compare the text.
     ElementName(&'t str),
     AttributeName(&'t str),
+    /// An XML element by namespace and local name. `id` is lexbor's id
+    /// for the lowercased name, which the index can check first; the case
+    /// and namespace are checked after.
+    XmlElement {
+        id: usize,
+        local: &'t str,
+        ns: u32,
+    },
+    /// Any XML element in a namespace.
+    XmlElementIn(u32),
+    XmlAttribute {
+        local: &'t str,
+        ns: u32,
+    },
+    XmlAttributeIn(u32),
 }
 
 impl<'t> Test<'t> {
-    fn resolve(test: &'t NodeTest, axis: Axis, root: Node<'_>) -> Test<'t> {
+    fn resolve(test: &'t NodeTest, axis: Axis, ctx: &Context<'_, '_>) -> Result<Test<'t>> {
         let attr = axis == Axis::Attribute;
+        let root = ctx.root;
+        if let Some(names) = root.doc.xml_names() {
+            // The namespace id a prefix stands for here; None if nothing in
+            // the document is in it.
+            let ns =
+                |prefix: &str| -> Result<Option<u32>> { Ok(names.id_of(namespace(prefix, ctx)?)) };
+            return Ok(match test {
+                NodeTest::Name(local) if attr => Test::XmlAttribute { local, ns: 0 },
+                NodeTest::Prefixed(p, local) if attr => match ns(p)? {
+                    Some(ns) => Test::XmlAttribute { local, ns },
+                    None => Test::Never,
+                },
+                NodeTest::AnyIn(p) if attr => ns(p)?.map_or(Test::Never, Test::XmlAttributeIn),
+                NodeTest::Name(local) => match root.tag_id_named(local) {
+                    Some(id) => Test::XmlElement { id, local, ns: 0 },
+                    None => Test::Never,
+                },
+                NodeTest::Prefixed(p, local) => match (ns(p)?, root.tag_id_named(local)) {
+                    (Some(ns), Some(id)) => Test::XmlElement { id, local, ns },
+                    _ => Test::Never,
+                },
+                NodeTest::AnyIn(p) => ns(p)?.map_or(Test::Never, Test::XmlElementIn),
+                other => Test::resolve_html(other, attr, root),
+            });
+        }
+        if let NodeTest::Prefixed(p, _) | NodeTest::AnyIn(p) = test {
+            // Checked, so a typo is still an error; but HTML has no
+            // namespaces, so nothing matches.
+            namespace(p, ctx)?;
+            return Ok(Test::Never);
+        }
+        Ok(Test::resolve_html(test, attr, root))
+    }
+
+    fn resolve_html(test: &'t NodeTest, attr: bool, root: Node<'_>) -> Test<'t> {
         match test {
             NodeTest::Node => Test::Node,
             NodeTest::Text if attr => Test::Never,
             NodeTest::Text => Test::Text,
             NodeTest::Comment if attr => Test::Never,
             NodeTest::Comment => Test::Comment,
-            // HTML5 parsing turns processing instructions into comments.
-            NodeTest::ProcessingInstruction(_) => Test::Never,
+            // HTML5 parsing turns processing instructions into comments;
+            // XML keeps them.
+            NodeTest::ProcessingInstruction(_) if attr => Test::Never,
+            NodeTest::ProcessingInstruction(target) => Test::Pi(target.as_deref()),
             NodeTest::Any if attr => Test::AnyAttribute,
             NodeTest::Any => Test::AnyElement,
             NodeTest::Name(name) if attr => Test::AttributeName(name),
@@ -490,20 +615,29 @@ impl<'t> Test<'t> {
                 Test::ElementName(name)
             }
             NodeTest::Name(name) => root.tag_id_named(name).map_or(Test::Never, Test::ElementId),
+            NodeTest::Prefixed(..) | NodeTest::AnyIn(_) => Test::Never,
         }
     }
 
-    /// Whether `keeps` can decide this test from the index alone.
+    /// Whether `keeps` can decide this test from the index alone, or (for
+    /// an `exact` one) narrow it down.
     fn indexable(&self) -> bool {
         matches!(
             self,
             Test::Node
                 | Test::Text
                 | Test::Comment
+                | Test::Pi(None)
                 | Test::AnyElement
                 | Test::ElementId(_)
+                | Test::XmlElement { .. }
                 | Test::Never
         )
+    }
+
+    /// Whether what `keeps` lets through still needs `matches`.
+    fn exact(&self) -> bool {
+        matches!(self, Test::XmlElement { .. })
     }
 
     /// The test, from a node's lexbor type and tag id.
@@ -511,13 +645,15 @@ impl<'t> Test<'t> {
         const ELEMENT: u8 = 0x01;
         const TEXT: u8 = 0x03;
         const CDATA: u8 = 0x04;
+        const PI: u8 = 0x07;
         const COMMENT: u8 = 0x08;
         match self {
             Test::Node => true,
             Test::Text => kind == TEXT || kind == CDATA,
             Test::Comment => kind == COMMENT,
+            Test::Pi(None) => kind == PI,
             Test::AnyElement => kind == ELEMENT,
-            Test::ElementId(id) => kind == ELEMENT && tag == *id,
+            Test::ElementId(id) | Test::XmlElement { id, .. } => kind == ELEMENT && tag == *id,
             _ => false,
         }
     }
@@ -533,21 +669,36 @@ impl<'t> Test<'t> {
             (Test::AnyElement, Item::Node(n)) => n.kind() == NodeKind::Element,
             (Test::Text, Item::Node(n)) => n.kind() == NodeKind::Text,
             (Test::Comment, Item::Node(n)) => n.kind() == NodeKind::Comment,
+            (Test::Pi(target), Item::Node(n)) => {
+                n.kind() == NodeKind::ProcessingInstruction
+                    && target.is_none_or(|t| n.pi_target() == Some(t))
+            }
             (Test::AnyAttribute, Item::Attr { .. }) => true,
             (Test::AttributeName(name), Item::Attr { name: a, .. }) => a == name,
+            (Test::XmlElement { local, ns, .. }, Item::Node(n)) => {
+                n.kind() == NodeKind::Element && n.tag() == Some(local) && n.ns_id() == *ns
+            }
+            (Test::XmlElementIn(ns), Item::Node(n)) => {
+                n.kind() == NodeKind::Element && n.ns_id() == *ns
+            }
+            (Test::XmlAttribute { local, ns }, i @ Item::Attr { ns: a, .. }) => {
+                a == ns && i.local_name() == *local
+            }
+            (Test::XmlAttributeIn(ns), Item::Attr { ns: a, .. }) => a == ns,
             _ => false,
         }
     }
 }
 
 fn attributes(n: Node<'_>) -> Vec<Item<'_>> {
-    n.attrs()
+    n.xml_attrs()
         .into_iter()
         .enumerate()
-        .map(|(i, (name, value))| Item::Attr {
+        .map(|(i, (name, ns, value))| Item::Attr {
             owner: n,
             index: i as u32,
             name,
+            ns,
             value,
         })
         .collect()
@@ -838,19 +989,19 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
                 .collect();
             Value::Nodes(in_document_order(found))
         }
-        "local-name" | "name" => {
+        "local-name" | "name" | "namespace-uri" => {
             arity(0, 1)?;
+            let first = in_document_order(context_or(0)?).into_iter().next();
             text(
-                in_document_order(context_or(0)?)
-                    .first()
-                    .map(|i| i.name().to_string())
-                    .unwrap_or_default(),
+                first
+                    .map(|i| match name {
+                        "name" => i.name(),
+                        "local-name" => i.local_name(),
+                        _ => i.namespace_uri(),
+                    })
+                    .unwrap_or_default()
+                    .to_string(),
             )
-        }
-        "namespace-uri" => {
-            arity(0, 1)?;
-            context_or(0)?;
-            text(String::new())
         }
         "string" => {
             arity(0, 1)?;

@@ -8,6 +8,7 @@
 #include <lexbor/dom/dom.h>
 #include <lexbor/html/html.h>
 #include <lexbor/selectors/selectors.h>
+#include <string.h>
 
 /* ---- documents ---------------------------------------------------------- */
 
@@ -224,6 +225,165 @@ lxb_dom_node_t *nw_create_text(lxb_html_document_t *doc, const char *data, size_
     lxb_dom_text_t *t = lxb_dom_document_create_text_node(
         lxb_dom_interface_document(doc), (const lxb_char_t *) data, len);
     return t == NULL ? NULL : lxb_dom_interface_node(t);
+}
+
+/* ---- XML ---------------------------------------------------------------- */
+
+/*
+ * An XML document is built node by node from the Rust side (xml.rs), which
+ * does the parsing. It is an ordinary lexbor document marked as XML, so
+ * lexbor compares attribute names as written rather than lowercased.
+ *
+ * Names keep their case in each node's qualified name. The local name, the
+ * tag id the index and CSS match on, is lowercased as lexbor does it, so CSS
+ * type selectors on XML ignore case. Namespaces are kept on the Rust side:
+ * lexbor lowercases namespace URIs, which XML compares as written.
+ */
+lxb_html_document_t *nw_xml_document(void) {
+    lxb_html_document_t *doc = lxb_html_document_create();
+    if (doc != NULL) {
+        doc->dom_document.type = LXB_DOM_DOCUMENT_DTYPE_XML;
+    }
+    return doc;
+}
+
+/* Defined in lexbor (tag.c, attr.c) without being in its headers. */
+const lxb_tag_data_t *lxb_tag_append(lexbor_hash_t *hash, lxb_tag_id_t tag_id,
+                                     const lxb_char_t *name, size_t length);
+const lxb_tag_data_t *lxb_tag_append_lower(lexbor_hash_t *hash, const lxb_char_t *name,
+                                           size_t length);
+lxb_dom_attr_data_t *lxb_dom_attr_local_name_append(lexbor_hash_t *hash, const lxb_char_t *name,
+                                                    size_t length);
+lxb_dom_attr_data_t *lxb_dom_attr_qualified_name_append(lexbor_hash_t *hash,
+                                                        const lxb_char_t *name, size_t length);
+
+/* A new element with no parent, named `qname` (`prefix:local` or `local`,
+ * the local part starting at `local_at`), or NULL when lexbor cannot
+ * allocate. */
+lxb_dom_node_t *nw_xml_element(lxb_html_document_t *doc, const char *qname, size_t qlen,
+                               size_t local_at) {
+    lxb_dom_document_t *d = lxb_dom_interface_document(doc);
+    const lxb_tag_data_t *tag =
+        lxb_tag_append_lower(d->tags, (const lxb_char_t *) qname + local_at, qlen - local_at);
+    if (tag == NULL) {
+        return NULL;
+    }
+    lxb_dom_element_t *el = lxb_dom_element_interface_create(d);
+    if (el == NULL) {
+        return NULL;
+    }
+    el->node.local_name = tag->tag_id;
+    el->node.ns = LXB_NS__UNDEF;
+    const lxb_tag_data_t *q = lxb_tag_append(d->tags, tag->tag_id, (const lxb_char_t *) qname, qlen);
+    if (q == NULL) {
+        return NULL;
+    }
+    el->qualified_name = (lxb_tag_id_t) q;
+    return lxb_dom_interface_node(el);
+}
+
+/* Adds an attribute named `qname`, exactly as written, to element `n`.
+ * Returns the attribute, or NULL when lexbor cannot allocate. The caller
+ * makes sure no two attributes of an element share a name. */
+lxb_dom_attr_t *nw_xml_attr(lxb_dom_node_t *n, const char *qname, size_t qlen, const char *value,
+                            size_t vlen) {
+    lxb_dom_document_t *d = n->owner_document;
+    lxb_dom_attr_t *attr = lxb_dom_attr_interface_create(d);
+    if (attr == NULL) {
+        return NULL;
+    }
+    lxb_dom_attr_data_t *q =
+        lxb_dom_attr_qualified_name_append(d->attrs, (const lxb_char_t *) qname, qlen);
+    if (q == NULL) {
+        return NULL;
+    }
+    attr->qualified_name = q->attr_id;
+    /* Only `id` and `class` exactly take lexbor's own ids, which its CSS
+     * matching of #id and .class looks for. Any other name keeps its
+     * written form as its id too: lexbor keeps one `id` attribute per
+     * element, dropping another with the same lowercased name, and XML
+     * may have `id` and `ID`, or `id` and `xml:id`, side by side. */
+    if ((qlen == 2 && memcmp(qname, "id", 2) == 0) || (qlen == 5 && memcmp(qname, "class", 5) == 0)) {
+        lxb_dom_attr_data_t *local =
+            lxb_dom_attr_local_name_append(d->attrs, (const lxb_char_t *) qname, qlen);
+        if (local == NULL) {
+            return NULL;
+        }
+        attr->node.local_name = local->attr_id;
+    } else {
+        attr->node.local_name = q->attr_id;
+    }
+    if (lxb_dom_attr_set_value(attr, (const lxb_char_t *) value, vlen) != LXB_STATUS_OK) {
+        return NULL;
+    }
+    lxb_dom_element_attr_append(lxb_dom_interface_element(n), attr);
+    return attr;
+}
+
+/* A new comment or processing instruction with no parent, or NULL when
+ * lexbor cannot allocate. */
+lxb_dom_node_t *nw_create_comment(lxb_html_document_t *doc, const char *data, size_t len) {
+    lxb_dom_comment_t *c = lxb_dom_document_create_comment(
+        lxb_dom_interface_document(doc), (const lxb_char_t *) data, len);
+    return c == NULL ? NULL : lxb_dom_interface_node(c);
+}
+
+lxb_dom_node_t *nw_create_pi(lxb_html_document_t *doc, const char *target, size_t tlen,
+                             const char *data, size_t dlen) {
+    lxb_dom_processing_instruction_t *pi = lxb_dom_document_create_processing_instruction(
+        lxb_dom_interface_document(doc), (const lxb_char_t *) target, tlen,
+        (const lxb_char_t *) data, dlen);
+    return pi == NULL ? NULL : lxb_dom_interface_node(pi);
+}
+
+const char *nw_pi_target(lxb_dom_node_t *n, size_t *len) {
+    lxb_dom_processing_instruction_t *pi = lxb_dom_interface_processing_instruction(n);
+    *len = pi->target.length;
+    return (const char *) pi->target.data;
+}
+
+/* An element's name as written, with its prefix. */
+const char *nw_qname(lxb_dom_node_t *n, size_t *len) {
+    return (const char *) lxb_dom_element_qualified_name(lxb_dom_interface_element(n), len);
+}
+
+const char *nw_attr_qname(lxb_dom_attr_t *a, size_t *len) {
+    return (const char *) lxb_dom_attr_qualified_name(a, len);
+}
+
+/* Gives an element a new qualified name with the same local part (taking
+ * its prefix off). Returns 0 on success. */
+int nw_xml_rename(lxb_dom_node_t *n, const char *qname, size_t qlen) {
+    lxb_dom_element_t *el = lxb_dom_interface_element(n);
+    const lxb_tag_data_t *q =
+        lxb_tag_append(n->owner_document->tags, n->local_name, (const lxb_char_t *) qname, qlen);
+    if (q == NULL) {
+        return -1;
+    }
+    el->qualified_name = (lxb_tag_id_t) q;
+    return 0;
+}
+
+/* Takes an attribute off its element, leaving it allocated: a string
+ * borrowed from it stays valid until the document goes. */
+void nw_attr_remove(lxb_dom_node_t *n, lxb_dom_attr_t *a) {
+    lxb_dom_element_attr_remove(lxb_dom_interface_element(n), a);
+}
+
+/* The same for an attribute, whose new name must not be another of its
+ * element's. Returns 0 on success. */
+int nw_xml_attr_rename(lxb_dom_attr_t *a, const char *qname, size_t qlen) {
+    lxb_dom_document_t *d = a->node.owner_document;
+    lxb_dom_attr_data_t *q =
+        lxb_dom_attr_qualified_name_append(d->attrs, (const lxb_char_t *) qname, qlen);
+    if (q == NULL) {
+        return -1;
+    }
+    a->qualified_name = q->attr_id;
+    if (a->node.local_name != LXB_DOM_ATTR_ID && a->node.local_name != LXB_DOM_ATTR_CLASS) {
+        a->node.local_name = q->attr_id;
+    }
+    return 0;
 }
 
 /* ---- serialising ------------------------------------------------------- */

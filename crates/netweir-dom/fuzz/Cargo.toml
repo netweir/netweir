@@ -62,5 +62,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "xml"
+path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+bench = false
+
 # Built with cargo-fuzz on nightly, outside the workspace.
 [workspace]
