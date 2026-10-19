@@ -2551,54 +2551,69 @@ class _Run:
             if isinstance(item, dict):
                 item.setdefault("_id", item_id)
         self.validating = self.invalid = False
-        for stage in self.pipelines:
-            if isinstance(stage, _monitor.validate):
+        # An item an exporter has written is counted whatever cuts it off
+        # after that (a second Ctrl-C, a cancel), so the stats agree with
+        # the file. Known limit: an interrupt between the write and
+        # written += 1 is a bytecode wide.
+        counted, wrote = self.counts["items"], _written(self.pipelines)
+        try:
+            for stage in self.pipelines:
+                if isinstance(stage, _monitor.validate):
+                    given = item
+                    item = self.validated(stage, item)
+                    if item is None:
+                        # Counted as items_invalid, not items_dropped; listeners
+                        # hear of it as of any other drop.
+                        await self.signal(
+                            "item_dropped",
+                            item=given,
+                            response=self.page,
+                            exception=None,
+                            spider=self.spider,
+                        )
+                        return
+                    continue
                 given = item
-                item = self.validated(stage, item)
+                process = getattr(stage, "process_item", None)
+                dropped = None
+                try:
+                    item = await _result(process(item, self.spider) if process else stage(item))
+                except Exception as e:
+                    # Netweir's DropItem, or Scrapy's, from a pipeline written
+                    # for Scrapy (subclasses too): a drop, not an error.
+                    if not _named(e, "DropItem"):
+                        self.item_failure = e
+                        await self.signal(
+                            "item_error",
+                            item=given,
+                            response=self.page,
+                            spider=self.spider,
+                            failure=_hooks.Failure(e),
+                            exception=e,
+                        )
+                        raise
+                    log.debug("item dropped by %r: %s", stage, e)
+                    item, dropped = None, e
                 if item is None:
-                    # Counted as items_invalid, not items_dropped; listeners
-                    # hear of it as of any other drop.
+                    self.counts["items_dropped"] += 1
                     await self.signal(
                         "item_dropped",
                         item=given,
                         response=self.page,
-                        exception=None,
+                        exception=dropped,
                         spider=self.spider,
                     )
                     return
-                continue
-            given = item
-            process = getattr(stage, "process_item", None)
-            dropped = None
-            try:
-                item = await _result(process(item, self.spider) if process else stage(item))
-            except Exception as e:
-                # Netweir's DropItem, or Scrapy's, from a pipeline written
-                # for Scrapy (subclasses too): a drop, not an error.
-                if not _named(e, "DropItem"):
-                    self.item_failure = e
-                    await self.signal(
-                        "item_error",
-                        item=given,
-                        response=self.page,
-                        spider=self.spider,
-                        failure=_hooks.Failure(e),
-                        exception=e,
-                    )
-                    raise
-                log.debug("item dropped by %r: %s", stage, e)
-                item, dropped = None, e
-            if item is None:
-                self.counts["items_dropped"] += 1
-                await self.signal(
-                    "item_dropped",
-                    item=given,
-                    response=self.page,
-                    exception=dropped,
-                    spider=self.spider,
-                )
-                return
-        self.counts["items"] += 1
+            self.counts["items"] += 1
+        except BaseException as e:
+            if (
+                not isinstance(e, Exception)
+                and item is not None
+                and self.counts["items"] == counted
+                and _written(self.pipelines) > wrote
+            ):
+                self.counts["items"] += 1
+            raise
         self.page_gave_item()
         self.cover(item)
         await self.signal("item_scraped", item=item, response=self.page, spider=self.spider)
@@ -2815,6 +2830,13 @@ _SIGNAL_ARGUMENTS = frozenset(
 
 def _methods(objects: list[Any], name: str) -> list[Callable[..., Any]]:
     return [getattr(o, name) for o in objects if callable(getattr(o, name, None))]
+
+
+def _written(pipelines: list[Any]) -> int:
+    """Items the exporters among ``pipelines`` have written."""
+    from netweir import export
+
+    return sum(s.written for s in pipelines if isinstance(s, export._Exporter))
 
 
 async def _result(value: Any) -> Any:

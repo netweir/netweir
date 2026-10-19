@@ -114,6 +114,9 @@ class _Exporter:
         #: Batches begun so far, and items in the one being written.
         self._number = 0
         self._count = 0
+        #: Items written since it was made: the crawl counts one an
+        #: interrupt cut off after it was written.
+        self.written = 0
         #: Where the file being written ends up, and where it's written.
         self._target = ""
         self._file = ""
@@ -176,6 +179,7 @@ class _Exporter:
         if self._writer is None:
             self._writer = self._begin()
         result = self._writer.write(item)
+        self.written += 1
         self._count += 1
         if self.batch is not None and self._count >= self.batch:
             # Full: finished now, so files appear as the crawl goes.

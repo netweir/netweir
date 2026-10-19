@@ -837,7 +837,8 @@ def test_ctrl_c_lets_every_task_wind_up_before_it_is_raised():
 
 
 # Stops the crawl just as the third item has been written to the output
-# file, before the crawl counts it.
+# file, before the crawl counts it: once, or twice, as a second Ctrl-C
+# that raises at once.
 INTERRUPTED_AS_AN_ITEM_IS_WRITTEN = """
 import signal, sys
 from netweir import _cli, export
@@ -847,7 +848,8 @@ write = export._Exporter._write
 def writing(self, item):
     result = write(self, item)
     if item.get("n") == "3":
-        signal.raise_signal(SIGNAL)
+        for _ in range(TIMES):
+            signal.raise_signal(SIGNAL)
     return result
 
 export._Exporter._write = writing
@@ -867,7 +869,8 @@ sys.exit(_cli.main(sys.argv[1:]))
     ],
 )
 @pytest.mark.parametrize("workers", ["1", "2"], ids=["alone", "workers"])
-def test_an_interrupt_as_an_item_is_written_still_counts_it(base, tmp_path, stop, workers):
+@pytest.mark.parametrize("times", [1, 2], ids=["once", "twice"])
+def test_an_interrupt_as_an_item_is_written_still_counts_it(base, tmp_path, stop, workers, times):
     script = tmp_path / "slow.py"
     script.write_text(
         "import netweir\n"
@@ -878,8 +881,9 @@ def test_an_interrupt_as_an_item_is_written_still_counts_it(base, tmp_path, stop
         "        yield page.follow(page.css('a::attr(href)').get())\n"
     )
     out, stats = tmp_path / "out.jsonl", tmp_path / "stats.json"
+    runner = INTERRUPTED_AS_AN_ITEM_IS_WRITTEN.replace("SIGNAL", f"signal.{stop}")
     done = subprocess.run(
-        [sys.executable, "-c", INTERRUPTED_AS_AN_ITEM_IS_WRITTEN.replace("SIGNAL", f"signal.{stop}"),
+        [sys.executable, "-c", runner.replace("TIMES", str(times)),
          "crawl", str(script), "-o", str(out), "--stats", str(stats),
          "-s", "throttle=false", "-s", "start_delay=0", "-s", f"workers={workers}"],
         capture_output=True, text=True, timeout=30,
