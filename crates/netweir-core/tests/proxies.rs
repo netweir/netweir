@@ -729,3 +729,102 @@ async fn per_host_fetches_robots_txt_through_the_proxy_a_sites_requests_name() {
     );
     assert_eq!(stats_of(&crawl, &dead).requests, 0);
 }
+
+/// The Cookie and User-Agent headers `site` was sent for `path`, in order.
+fn sent_with(site: &Site, path: &str) -> Vec<(String, String)> {
+    site.requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == path)
+        .map(|(_, h)| {
+            let header = |name: &str| {
+                h.iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            (header("cookie"), header("user-agent"))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_resumed_sites_session_comes_back_as_the_same_visitor_or_not_at_all() {
+    let pages = || {
+        vec![
+            (
+                "http://a.test/login",
+                Page::html("in").with_header("set-cookie", "cf_clearance=1; Path=/"),
+            ),
+            ("http://a.test/me", Page::html("me")),
+        ]
+    };
+    let (one, two) = (Site::start(pages()).await, Site::start(pages()).await);
+    let dir = std::env::temp_dir().join(format!("netweir-identity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("crawl.sqlite3");
+    let saving = |proxies: &[&Site]| CrawlSettings {
+        checkpoint: Some(path.clone()),
+        ..settings(ProxyRotation::PerHost, proxies)
+    };
+    // Chrome's profile, through the first proxy.
+    let crawl = crawler(saving(&[&one]));
+    crawl.submit(request(1, "http://a.test/login"));
+    drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    // Resumed looking like Firefox, the second proxy first in the list:
+    // the site's session still goes out as it did, cookie and all.
+    let crawl = Crawler::new(
+        FetchOptions::new(Profile::named("firefox").unwrap()),
+        saving(&[&two, &one]),
+    )
+    .unwrap();
+    crawl.submit(request(2, "http://a.test/me"));
+    drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    let me = sent_with(&one, "http://a.test/me");
+    assert_eq!(me.len(), 1, "{me:?}");
+    assert_eq!(me[0].0, "cf_clearance=1");
+    assert!(me[0].1.contains("Chrome/"), "{}", me[0].1);
+    assert!(sent_with(&two, "http://a.test/me").is_empty());
+    // Without the first proxy, the site starts afresh, cookie and all.
+    let crawl = crawler(saving(&[&two]));
+    crawl.submit(request(3, "http://a.test/me"));
+    let events = drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    assert_eq!(sent_with(&two, "http://a.test/me")[0].0, "");
+    let warned: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Warning { message } if message.contains("new visitor") => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warned.len(), 1, "{events:?}");
+    assert!(warned[0].contains("a.test"), "{}", warned[0]);
+    // Nor with a profile this build doesn't have.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE jars SET identity = json_set(identity, '$.profile', 'chrome-1-nowhere')
+             WHERE kind = 'host'",
+            [],
+        )
+        .unwrap();
+    let crawl = crawler(saving(&[&two]));
+    crawl.submit(request(4, "http://a.test/me"));
+    let events = drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    assert_eq!(sent_with(&two, "http://a.test/me")[1].0, "");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Warning { message } if message.contains("chrome-1-nowhere"))
+        )
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

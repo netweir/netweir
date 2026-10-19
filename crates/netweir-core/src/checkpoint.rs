@@ -96,8 +96,10 @@ pub struct Saved {
     /// Each cookie jar the crawl kept, by name ("" for its own), as
     /// `Jar::snapshot` wrote it.
     pub jars: Vec<(String, String)>,
-    /// The jar of each host's own session (one a block gave it), by host.
-    pub host_jars: Vec<(String, String)>,
+    /// The jar of each host's own session (one a block gave it): its
+    /// host, its snapshot, and the identity the session had (JSON: its
+    /// profile and proxy), which its cookies are only good with.
+    pub host_jars: Vec<(String, String, Option<String>)>,
     /// The next free row number.
     pub next_row: i64,
 }
@@ -112,8 +114,9 @@ enum Op {
     Counters(String),
     /// Items and counters that must land in the same commit.
     Settle(Vec<String>, String),
-    /// A cookie jar's snapshot, by kind ("jar" or "host") and name.
-    Jar(&'static str, String, String),
+    /// A cookie jar's snapshot, by kind ("jar" or "host") and name, and
+    /// for a host's, its session's identity.
+    Jar(&'static str, String, String, Option<String>),
     /// Commit what's queued and reply.
     Flush(Sender<Result<(), String>>),
 }
@@ -169,7 +172,7 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS seen (fingerprint BLOB PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS jars (kind TEXT NOT NULL, name TEXT NOT NULL,
-        cookies TEXT NOT NULL, PRIMARY KEY (kind, name)) WITHOUT ROWID;
+        cookies TEXT NOT NULL, identity TEXT, PRIMARY KEY (kind, name)) WITHOUT ROWID;
 ";
 
 impl Checkpoint {
@@ -312,13 +315,14 @@ impl Checkpoint {
 
     /// Saves a cookie jar's snapshot under `name`, replacing the last.
     pub fn jar(&self, name: String, snapshot: String) {
-        self.send(Op::Jar("jar", name, snapshot));
+        self.send(Op::Jar("jar", name, snapshot, None));
     }
 
-    /// Saves the snapshot of `host`'s own session's jar, replacing the
-    /// last. Kept apart from the named jars, so no name can clash.
-    pub fn host_jar(&self, host: String, snapshot: String) {
-        self.send(Op::Jar("host", host, snapshot));
+    /// Saves the snapshot of `host`'s own session's jar, and the identity
+    /// the session goes out with (JSON), replacing the last. Kept apart
+    /// from the named jars, so no name can clash.
+    pub fn host_jar(&self, host: String, snapshot: String, identity: String) {
+        self.send(Op::Jar("host", host, snapshot, Some(identity)));
     }
 
     /// Commits what's queued and closes the file. Writes after this are
@@ -498,18 +502,19 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
     for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
         saved.items.insert(id?);
     }
-    let mut stmt = conn.prepare("SELECT kind, name, cookies FROM jars")?;
+    let mut stmt = conn.prepare("SELECT kind, name, cookies, identity FROM jars")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
         ))
     })?;
     for row in rows {
-        let (kind, name, cookies) = row?;
+        let (kind, name, cookies, identity) = row?;
         match kind.as_str() {
-            "host" => saved.host_jars.push((name, cookies)),
+            "host" => saved.host_jars.push((name, cookies, identity)),
             _ => saved.jars.push((name, cookies)),
         }
     }
@@ -584,8 +589,9 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
         let mut done = tx.prepare_cached("UPDATE requests SET done = 1 WHERE row = ?1")?;
         let mut item = tx.prepare_cached("INSERT OR IGNORE INTO items (id) VALUES (?1)")?;
         let mut jar = tx.prepare_cached(
-            "INSERT INTO jars (kind, name, cookies) VALUES (?1, ?2, ?3)
-             ON CONFLICT (kind, name) DO UPDATE SET cookies = excluded.cookies",
+            "INSERT INTO jars (kind, name, cookies, identity) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (kind, name)
+             DO UPDATE SET cookies = excluded.cookies, identity = excluded.identity",
         )?;
         let mut counters = tx.prepare_cached(
             "INSERT INTO meta (key, value) VALUES ('counters', ?1)
@@ -635,8 +641,8 @@ fn commit(conn: &mut Connection, batch: Vec<Op>) -> rusqlite::Result<()> {
                     }
                     counters.execute(params![json])?;
                 }
-                Op::Jar(kind, name, snapshot) => {
-                    jar.execute(params![kind, name, snapshot])?;
+                Op::Jar(kind, name, snapshot, identity) => {
+                    jar.execute(params![kind, name, snapshot, identity])?;
                 }
                 Op::Flush(_) => {}
             }

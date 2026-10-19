@@ -210,10 +210,16 @@ when the crawl settles a round, if they changed since the last save, and
 restored on resume: a resumed crawl is still logged in. So is each
 host's own session's jar (the one a block, a hand-back from Chrome or
 `per_host` gave it), kept apart from the named jars (`kind` "host"
-beside "jar"), so no jar name can clash with a host. On resume the host
-gets its session back with those cookies, through a proxy picked as for
-a new session, and with the crawl's own profile: a session a hand-back
-gave a Chrome profile of its own looks like the crawl's after a resume.
+beside "jar"), so no jar name can clash with a host, and with it the
+identity the session went out with: its profile's name (a matching
+Chrome profile a hand-back picked among them) and its proxy. A site's
+clearance cookies (`cf_clearance`, `datadome`) are bound to the address,
+the user agent and the TLS fingerprint, so on resume the host gets its
+session back with exactly that profile and proxy, or not at all: if the
+proxy is no longer one the crawl uses (in its pool, its own proxy or
+Chrome's), or the profile isn't one this build has, the host starts as
+a new visitor without those cookies, and one warning names each such
+host and why. Old cookies never go out with a new identity.
 The format goes up by one (`jars` table), and older files are upgraded
 on open.
 

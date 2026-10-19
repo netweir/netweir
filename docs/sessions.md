@@ -223,7 +223,11 @@ use a named jar, which keeps all three apart.
 ### Resuming, workers and several machines
 
 - A crawl with a checkpoint saves its jars as it goes, the sessions a
-  block gave a site among them, and a resumed crawl is still logged in. Requests still waiting keep their own cookies. The
+  block gave a site among them, and a resumed crawl is still logged in.
+  A site's session comes back with the profile and proxy it went out
+  with, which clearance cookies are bound to; if that proxy is gone from
+  the crawl's list, or the profile from this version of Netweir, the
+  site starts as a new visitor instead, and a warning says so. Requests still waiting keep their own cookies. The
   checkpoint file is made readable by you alone, as it holds the cookies,
   and so is the cache's, which holds the pages they logged in to (on
   Windows each takes its folder's permissions).

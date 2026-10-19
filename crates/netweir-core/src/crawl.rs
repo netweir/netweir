@@ -719,17 +719,22 @@ impl Shared {
             }
         }
         // And each host's own session's, kept apart from the named ones.
-        let hosts: Vec<(String, Arc<Jar>)> = self
+        // With the identity each goes out with, its cookies' other half.
+        let hosts: Vec<(String, Arc<Jar>, String)> = self
             .lock()
             .hosts
             .iter()
-            .filter_map(|(host, h)| Some((host.clone(), h.session.as_ref()?.jar().clone())))
+            .filter_map(|(host, h)| {
+                let options = h.options.as_ref().unwrap_or(&self.options);
+                let identity = serde_json::to_string(&Identity::of(options)).ok()?;
+                Some((host.clone(), h.session.as_ref()?.jar().clone(), identity))
+            })
             .collect();
-        for (host, jar) in hosts {
-            let (key, changes) = (host_key(&host), jar.changes());
-            if saved.get(&key) != Some(&changes) {
-                cp.host_jar(host, jar.snapshot());
-                saved.insert(key, changes);
+        for (host, jar, identity) in hosts {
+            let (key, now) = (host_key(&host), host_saved(&jar, &identity));
+            if saved.get(&key) != Some(&now) {
+                cp.host_jar(host, jar.snapshot(), identity);
+                saved.insert(key, now);
             }
         }
     }
@@ -763,30 +768,79 @@ fn host_key(host: &str) -> String {
     format!("\0host {host}")
 }
 
-/// Gives `host` back the session a block had given it before the crawl
-/// stopped, with the cookies it had: through a proxy picked as a new one
-/// would be, with the crawl's own profile. Whether it did; never with
+/// The identity a host's session goes out with, as the checkpoint keeps
+/// it beside the session's jar: its profile's name and its proxy. A
+/// site's clearance cookies are bound to both.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+struct Identity {
+    profile: String,
+    proxy: Option<String>,
+}
+
+impl Identity {
+    fn of(options: &FetchOptions) -> Identity {
+        Identity {
+            profile: options.profile.name.clone(),
+            proxy: options.proxy.clone(),
+        }
+    }
+}
+
+/// Gives `host` back the session it had before the crawl stopped, with
+/// its cookies, as the same visitor: the same profile and proxy, or none
+/// at all. Why not, if it can't: the profile isn't one this build knows,
+/// or the proxy is no longer one the crawl goes through. Never with
 /// `per_request`, whose hosts have no sessions of their own.
-fn restore_session(shared: &Shared, state: &mut State, host: &str, jar: Arc<Jar>) -> bool {
+fn restore_session(
+    shared: &Shared,
+    state: &mut State,
+    host: &str,
+    jar: Arc<Jar>,
+    identity: &Identity,
+) -> Result<(), String> {
     if shared.settings.proxy_rotation == ProxyRotation::PerRequest {
-        return false;
+        return Err("per_request rotation keeps no sessions".into());
     }
-    let proxy = pick(shared, state, None);
     let mut options = shared.options.clone();
-    if proxy.is_some() {
-        options.proxy = proxy.clone();
+    if identity.profile != options.profile.name {
+        options.profile = Profile::named(&identity.profile)
+            .map_err(|_| format!("its profile {} isn't one this build has", identity.profile))?;
     }
-    let Ok(fetcher) = Fetcher::new(options.clone()) else {
-        return false;
+    let known = match identity.proxy.as_deref() {
+        None => shared.options.proxy.is_none(),
+        Some(p) => {
+            state.proxies.pooled(p)
+                || shared.options.proxy.as_deref() == Some(p)
+                || shared.settings.browser_launch.proxy.as_deref() == Some(p)
+        }
     };
+    if !known {
+        return Err(match &identity.proxy {
+            Some(p) => format!("its proxy {} is no longer one the crawl uses", masked(p)),
+            None => "it went out without a proxy, and the crawl now has one".into(),
+        });
+    }
+    options.proxy = identity.proxy.clone();
+    let fetcher = Fetcher::new(options.clone()).map_err(|e| e.to_string())?;
+    let pooled = identity.proxy.clone().filter(|p| state.proxies.pooled(p));
     let h = state
         .hosts
         .entry(host.to_string())
         .or_insert_with(|| Host::new(&shared.settings));
     h.session = Some(fetcher.with_jar(jar));
-    h.proxy = proxy;
+    h.proxy = pooled;
     h.options = Some(options);
-    true
+    Ok(())
+}
+
+/// What the saved-changes map holds for a host's session: a hash of its
+/// jar (which session), the jar's changes and its identity, so a new
+/// session or identity is saved even with the count unchanged.
+fn host_saved(jar: &Arc<Jar>, identity: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (Arc::as_ptr(jar) as usize, jar.changes(), identity).hash(&mut h);
+    h.finish()
 }
 
 /// Puts `request`'s own cookies in `jar`, as if the URL it was submitted
@@ -1274,21 +1328,45 @@ impl Crawler {
             .as_ref()
             .map(|s| s.host_jars.clone())
             .unwrap_or_default();
-        for (host, snapshot) in host_jars {
+        // Old cookies never go with a new identity: a host whose profile
+        // or proxy can't come back starts afresh, and one warning says so.
+        let mut fresh = Vec::new();
+        for (host, snapshot, identity) in host_jars {
             let jar = Arc::new(Jar::new());
-            if jar.restore(&snapshot).is_ok() {
-                let changes = jar.changes();
-                let mut state = shared.lock();
-                if restore_session(&shared, &mut state, &host, jar) {
+            if jar.restore(&snapshot).is_err() {
+                continue;
+            }
+            let identity: Option<Identity> = identity
+                .as_deref()
+                .and_then(|j| serde_json::from_str(j).ok());
+            let Some(identity) = identity else {
+                fresh.push(format!("{host} (its identity wasn't saved)"));
+                continue;
+            };
+            let mut state = shared.lock();
+            match restore_session(&shared, &mut state, &host, jar.clone(), &identity) {
+                Ok(()) => {
                     drop(state);
+                    let identity = serde_json::to_string(&identity).unwrap_or_default();
                     shared
                         .jars_saved
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .0
-                        .insert(host_key(&host), changes);
+                        .insert(host_key(&host), host_saved(&jar, &identity));
                 }
+                Err(why) => fresh.push(format!("{host} ({why})")),
             }
+        }
+        if !fresh.is_empty() {
+            let message = format!(
+                "{} site(s) start as a new visitor, without the cookies their session had: \
+                 they only work as the same visitor, and that can't come back: {}",
+                fresh.len(),
+                fresh.join(", ")
+            );
+            let mut state = shared.lock();
+            shared.push_event(&mut state, Event::Warning { message });
         }
         tokio::spawn(schedule_loop(shared.clone()));
         if let Some(inbox) = inbox {
