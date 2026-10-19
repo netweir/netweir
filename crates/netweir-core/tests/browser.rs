@@ -66,6 +66,18 @@ fn request(id: u64, url: String, browser: bool) -> CrawlRequest {
     }
 }
 
+/// Waits, up to five seconds, until the page's cookies are as `ready`
+/// wants: one a script sets reaches Chrome's cookie store a moment later.
+async fn settled(page: &netweir_browser::Page, ready: impl Fn(&[netweir_browser::Cookie]) -> bool) {
+    for _ in 0..100 {
+        if page.cookies().await.is_ok_and(|c| ready(&c)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the page's cookies never settled");
+}
+
 /// Longer than the crawl gives a Chrome fetch (twice the timeout, plus
 /// the wait for a challenge), so a slow page fails with the crawl's own
 /// error, which says what went wrong, rather than here.
@@ -286,6 +298,8 @@ async fn a_named_jar_gets_back_only_what_changed_in_chrome() {
         )
         .await
         .unwrap();
+    // A script's cookie reaches Chrome's store a moment after it's set.
+    settled(page.page(), |c| c.iter().any(|c| c.name == "fresh")).await;
     jar.add(&cookie("sid", "2"), None).unwrap();
     page.close().await;
     let mut left: Vec<(String, String)> =
@@ -348,6 +362,7 @@ async fn a_browser_request_in_the_crawls_own_jar_takes_it_and_gives_it_back() {
         .evaluate("() => { document.cookie = 'chrome=3; path=/'; }")
         .await
         .unwrap();
+    settled(page.page(), |c| c.iter().any(|c| c.name == "chrome")).await;
     page.close().await;
     c.submit(request(2, site.url("/after"), false));
     drain(&c).await;
