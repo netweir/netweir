@@ -826,5 +826,22 @@ async fn a_resumed_sites_session_comes_back_as_the_same_visitor_or_not_at_all() 
             |e| matches!(e, Event::Warning { message } if message.contains("chrome-1-nowhere"))
         )
     );
+    // Nor with cookies that won't read.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE jars SET cookies = 'not a jar' WHERE kind = 'host'",
+            [],
+        )
+        .unwrap();
+    let crawl = crawler(saving(&[&two]));
+    let events = drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::Warning { message } if message.contains("a.test (its cookies couldn't be read)"))),
+        "{events:?}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

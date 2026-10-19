@@ -1334,6 +1334,7 @@ impl Crawler {
         for (host, snapshot, identity) in host_jars {
             let jar = Arc::new(Jar::new());
             if jar.restore(&snapshot).is_err() {
+                fresh.push(format!("{host} (its cookies couldn't be read)"));
                 continue;
             }
             let identity: Option<Identity> = identity
