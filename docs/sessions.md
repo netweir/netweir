@@ -61,7 +61,8 @@ takes its folder's permissions instead, so keep it in a folder only you
 can open.
 
 A cookie Chrome would refuse is refused everywhere: a `__Host-` or
-`__Secure-` name on a cookie that isn't secure, `SameSite=None` or a
+`__Secure-` name on a cookie that isn't secure, an `__Http-` or
+`__Host-Http-` one that isn't secure and `http_only`, `SameSite=None` or a
 partition key without `secure`, a tab or other control character in a
 name or value, a cookie without a name whose value has an `=` in it.
 Chrome turns down a whole batch of cookies for one of those, so letting

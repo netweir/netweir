@@ -903,15 +903,28 @@ fn valid(c: &Stored) -> Result<(), String> {
         if c.value.contains('=') {
             return Err("a cookie without a name can't have '=' in its value".into());
         }
-        if lower.starts_with("__secure-") || lower.starts_with("__host-") {
+        if ["__secure-", "__host-", "__http-"]
+            .iter()
+            .any(|p| lower.starts_with(p))
+        {
             return Err(
-                "a cookie without a name can't have a value starting __Secure- or __Host-".into(),
+                "a cookie without a name can't have a value starting __Secure-, \
+                        __Host- or __Http-"
+                    .into(),
             );
         }
     }
     let lower = name.to_ascii_lowercase();
     if lower.starts_with("__secure-") && !c.secure {
         return refuse("needs to be secure, as its name starts __Secure-");
+    }
+    // __Http- and __Host-Http- (Chrome 155 holds to them too) also need
+    // HttpOnly: no page's script may have set them.
+    let http = lower.starts_with("__http-") || lower.starts_with("__host-http-");
+    if http && (!c.secure || !c.http_only) {
+        return refuse(
+            "needs to be secure and HttpOnly, as its name starts __Http- or __Host-Http-",
+        );
     }
     if lower.starts_with("__host-") && (!c.secure || !c.host_only || c.path != "/") {
         return refuse(
@@ -1646,5 +1659,35 @@ mod tests {
         };
         jar.add(&given, None).unwrap();
         assert_eq!(jar.find("f", None, None)[0].domain, "127.0.0.1");
+    }
+
+    #[test]
+    fn http_prefixed_names_need_http_only_as_in_chrome_155() {
+        let jar = Jar::new();
+        // Each as Chrome 155.0.8059 took or refused it.
+        for (line, kept) in [
+            ("__Http-a=1; Secure", false),
+            ("__Http-b=1; Secure; HttpOnly", true),
+            ("__http-e=1; Secure; HttpOnly", true),
+            ("__Host-Http-c=1; Secure; Path=/", false),
+            ("__Host-Http-d=1; Secure; HttpOnly; Path=/", true),
+            ("__Host-Http-f=1; Secure; HttpOnly", false),
+            ("__Http-g; Path=/", false),
+            ("h1=__Http-x; Secure", true),
+        ] {
+            assert_eq!(set(&jar, "https://e.com/", line), kept, "{line}");
+        }
+        let given = Cookie {
+            name: "__Http-z".into(),
+            value: "1".into(),
+            domain: "e.com".into(),
+            path: "/".into(),
+            expires: -1.0,
+            http_only: false,
+            secure: true,
+            same_site: None,
+            partition_key: None,
+        };
+        assert!(jar.add(&given, None).unwrap_err().contains("__Http-"));
     }
 }

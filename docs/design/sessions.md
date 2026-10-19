@@ -61,7 +61,9 @@ and what Chrome does where the draft leaves room:
   `Secure` cookie only from https (or localhost and loopback addresses,
   which Chrome counts as secure), and an http response can't replace
   one. `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no Domain and
-  Path=/. `SameSite=None` needs `Secure`. A Set-Cookie without a name
+  Path=/ said; `__Http-` needs `Secure` and `HttpOnly`, and
+  `__Host-Http-` all of those (Chrome 155 holds to both, with no flag).
+  `SameSite=None` needs `Secure`. A Set-Cookie without a name
   (`token`, or `=token`) is a cookie with an empty name, as in Chrome,
   sent as its value alone, unless the value starts like a prefixed name
   or has an `=` in it. A cookie given whole (`cookies.add`, a request's
