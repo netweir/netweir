@@ -297,6 +297,44 @@ class {cls}(netweir.Spider):
         """
         yield {{"title": page.css("title::text").get(), "url": page.url}}
 ''',
+    "xmlfeed": '''\
+{imports}
+
+class {cls}(netweir.XMLFeedSpider):
+    name = {name}
+    allowed_domains = [{host}]
+    start_urls = [{xml_feed}]
+    # "iternodes" reads one node at a time; "xml" parses the whole feed
+    # first, and "html" reads markup too broken to be XML.
+    iterator = "iternodes"
+    # The elements to read: <item> in RSS. An Atom feed's are in its
+    # namespace: namespaces = [("atom", "http://www.w3.org/2005/Atom")]
+    # and itertag = "atom:entry".
+    itertag = "item"
+{settings}
+    def parse_node(self, page, node):
+        """What to take from each node of the feed."""
+        yield {{
+            "title": node.xpath("title/text()").get(),
+            "link": node.xpath("link/text()").get(),
+        }}
+''',
+    "csvfeed": '''\
+{imports}
+
+class {cls}(netweir.CSVFeedSpider):
+    name = {name}
+    allowed_domains = [{host}]
+    start_urls = [{csv_feed}]
+    delimiter = ","
+    quotechar = '"'
+    # The column names; without them, the first row names the columns.
+    # headers = ["id", "name", "description"]
+{settings}
+    def parse_row(self, page, row):
+        """What to take from each row: a dict keyed by the headers."""
+        yield row
+''',
 }
 
 
@@ -304,6 +342,8 @@ DESCRIPTIONS = {
     "basic": "a parse callback (the default)",
     "crawl": "Follow rules, with an Item extracted in Rust",
     "sitemap": "the pages the site's sitemaps list",
+    "xmlfeed": "an XML feed (RSS, Atom), node by node",
+    "csvfeed": "a CSV feed, row by row",
 }
 
 
@@ -380,6 +420,9 @@ def genspider(args) -> int:
         url=json.dumps(url),
         raw_url=url,
         robots=json.dumps(origin + "/robots.txt"),
+        # A URL given is the feed; a domain's feed is guessed at.
+        xml_feed=json.dumps(url if "://" in args.domain else origin + "/feed.xml"),
+        csv_feed=json.dumps(url if "://" in args.domain else origin + "/feed.csv"),
         settings="    settings = SETTINGS\n" if folder is not None else "",
     )
     _create(path, text, overwrite=args.force)

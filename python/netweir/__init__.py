@@ -15,6 +15,7 @@ from netweir._errors import (
     NotConfigured,
     QueueError,
 )
+from netweir._feeds import CSVFeedSpider, XMLFeedSpider
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._files import files, images
 from netweir._form import File, Form
@@ -59,6 +60,7 @@ __all__ = [
     "BrowserRequest",
     "BrowserResponse",
     "BrowserTimeout",
+    "CSVFeedSpider",
     "Checks",
     "Client",
     "CloseSpider",
@@ -85,6 +87,7 @@ __all__ = [
     "Selection",
     "SelectorError",
     "XMLError",
+    "XMLFeedSpider",
     "XPathError",
     "__version__",
     "browser",

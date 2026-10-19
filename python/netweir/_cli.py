@@ -386,7 +386,9 @@ def _project_commands(commands) -> None:
     gen = commands.add_parser("genspider", help="write a new spider from a template")
     gen.add_argument("name", nargs="?", help="the spider's name, and its file's")
     gen.add_argument("domain", nargs="?", help="the site's domain, or a URL to start from")
-    gen.add_argument("-t", "--template", default="basic", help="basic, crawl or sitemap")
+    gen.add_argument(
+        "-t", "--template", default="basic", help="basic, crawl, sitemap, xmlfeed or csvfeed"
+    )
     gen.add_argument("-l", "--list", action="store_true", help="list the templates")
     gen.add_argument("--force", action="store_true", help="write over a file that's there")
     commands.add_parser("list", help="the spiders in this project")

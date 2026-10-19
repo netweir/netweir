@@ -138,7 +138,7 @@ def test_genspider_refuses_names_of_modules(tmp_path, monkeypatch, capsys):
     assert "module" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("template", ["basic", "crawl", "sitemap"])
+@pytest.mark.parametrize("template", ["basic", "crawl", "sitemap", "xmlfeed", "csvfeed"])
 def test_genspider_templates_pass_ruff_and_load(template, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert _cli.main(["startproject", "shop"]) == 0
@@ -160,6 +160,9 @@ def test_genspider_templates_pass_ruff_and_load(template, tmp_path, monkeypatch,
     }
     if template == "sitemap":
         assert urls == {"sitemap_urls": ["https://books.example.com/robots.txt"]}
+    elif template.endswith("feed"):
+        suffix = template.removesuffix("feed")
+        assert urls == {"start_urls": [f"https://books.example.com/feed.{suffix}"]}
     else:
         assert urls == {"start_urls": ["https://books.example.com/"]}
 
@@ -181,13 +184,19 @@ def test_genspider_outside_a_project_takes_a_url(tmp_path, monkeypatch, capsys):
     assert _cli.main(["genspider", "--force", "quotes", "example.com"]) == 0
     assert '"example.com"' in (tmp_path / "quotes.py").read_text(encoding="utf-8")
 
-    assert _cli.main(["genspider", "-t", "xmlfeed", "x", "example.com"]) == 2
+    assert _cli.main(["genspider", "-t", "jsonfeed", "x", "example.com"]) == 2
     assert _cli.main(["genspider", "bad-name!", "example.com"]) == 2
     assert _cli.main(["genspider", "x", "not a domain"]) == 2
     capsys.readouterr()
     assert _cli.main(["genspider", "-l"]) == 0
     listed = capsys.readouterr().out.splitlines()
-    assert [line.split()[0] for line in listed] == ["basic", "crawl", "sitemap"]
+    assert [line.split()[0] for line in listed] == [
+        "basic",
+        "crawl",
+        "sitemap",
+        "xmlfeed",
+        "csvfeed",
+    ]
     assert all(len(line.split()) > 2 for line in listed)
 
 
