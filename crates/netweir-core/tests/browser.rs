@@ -478,6 +478,54 @@ async fn a_cookie_that_expired_in_chrome_isnt_taken_from_the_jar_that_renewed_it
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_session_chrome_handed_back_comes_back_on_resume_with_per_request() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    // per_request needs proxies: one, answering for a site of its own.
+    let proxy = Site::start(vec![
+        ("http://shop.test/guarded", challenge()),
+        ("http://shop.test/also", challenge()),
+    ])
+    .await;
+    let dir = std::env::temp_dir().join(format!("netweir-handed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let saving = || CrawlSettings {
+        checkpoint: Some(dir.join("crawl.sqlite3")),
+        proxy_rotation: netweir_core::ProxyRotation::PerRequest,
+        proxies: vec![format!("http://127.0.0.1:{}", proxy.port)],
+        ..settings(BrowserMode::OnBlock)
+    };
+    let c = crawler(saving());
+    c.submit(request(1, "http://shop.test/guarded".into(), false));
+    drain_closing(&c).await;
+    assert_eq!(c.stats().browser_unblocked, 1);
+    c.close().unwrap();
+    drop(c);
+    // Resumed, the site's session is Chrome's again: no challenge, no
+    // Chrome, no warning.
+    let c = crawler(saving());
+    c.submit(request(2, "http://shop.test/also".into(), false));
+    let events = drain_closing(&c).await;
+    let events: Vec<Event> = events.into_iter().map(|(e, _)| e).collect();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::Warning { message } if message.contains("new visitor"))),
+        "{events:?}"
+    );
+    let Some(Event::Fetched { response, page, .. }) = main(&events) else {
+        panic!("{events:?}");
+    };
+    assert!(page.is_none(), "fetched over HTTP");
+    assert_eq!(response.status, 200);
+    assert_eq!(c.stats().browser_fetches, 0);
+    c.close().unwrap();
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrome() {
     let Some(_chrome) = chrome().await else {
         return;

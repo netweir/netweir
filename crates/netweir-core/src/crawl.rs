@@ -789,8 +789,9 @@ impl Identity {
 /// Gives `host` back the session it had before the crawl stopped, with
 /// its cookies, as the same visitor: the same profile and proxy, or none
 /// at all. Why not, if it can't: the profile isn't one this build knows,
-/// or the proxy is no longer one the crawl goes through. Never with
-/// `per_request`, whose hosts have no sessions of their own.
+/// or the proxy is no longer one the crawl goes through. With
+/// `per_request` too: a session Chrome handed back is the host's own
+/// there, as in the run that saved it.
 fn restore_session(
     shared: &Shared,
     state: &mut State,
@@ -798,9 +799,6 @@ fn restore_session(
     jar: Arc<Jar>,
     identity: &Identity,
 ) -> Result<(), String> {
-    if shared.settings.proxy_rotation == ProxyRotation::PerRequest {
-        return Err("per_request rotation keeps no sessions".into());
-    }
     let mut options = shared.options.clone();
     if identity.profile != options.profile.name {
         options.profile = Profile::named(&identity.profile)
