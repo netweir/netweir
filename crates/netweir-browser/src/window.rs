@@ -25,29 +25,137 @@ pub(crate) const DEFAULT_VIEWPORT: Size = Size {
     height: 720,
 };
 
-/// Screens a person might have, smallest first, for a viewport too big
-/// for the default one.
-const BIGGER: [Size; 2] = [
-    Size {
-        width: 2560,
-        height: 1440,
-    },
-    Size {
-        width: 3840,
-        height: 2160,
-    },
+/// How a screen shows itself beyond its size: what the system takes of it
+/// (in CSS pixels, top and bottom), its colour depth, whether it's the
+/// machine's own, and its name, as `getScreenDetails()` gives it.
+#[derive(Debug, Clone, PartialEq)]
+struct Look {
+    top: u32,
+    bottom: u32,
+    depth: u32,
+    internal: bool,
+    label: &'static str,
+}
+
+/// A Mac's own screens, by the size they show at a ratio of 2, and
+/// whether there's a notch, which makes the menu bar taller.
+const MAC_BUILT_IN: [(u32, u32, bool); 7] = [
+    (1512, 982, true),
+    (1728, 1117, true),
+    (1470, 956, true),
+    (1710, 1112, true),
+    (1440, 900, false),
+    (1280, 800, false),
+    (1536, 960, false),
 ];
 
-/// What the system takes of a desktop screen, in CSS pixels, top and
-/// bottom: the menu bar on a Mac, the taskbar on Windows.
-fn work_area_insets() -> (u32, u32) {
-    if cfg!(target_os = "macos") {
-        (25, 0)
-    } else if cfg!(windows) {
-        (0, 48)
-    } else {
-        (0, 0)
+/// What a screen a person might have is called: a common monitor's name
+/// for its size, as its EDID gives it.
+fn monitor(size: Size) -> &'static str {
+    match (size.width, size.height) {
+        (2560, 1440) => "DELL S2721DGF",
+        (3840, 2160) => "LG HDR 4K",
+        (1366, 768) => "Generic PnP Monitor",
+        (1440, 900) | (1680, 1050) => "DELL P2217",
+        _ => "DELL P2422H",
     }
+}
+
+/// How the screen of `size` at `scale` looks on this system, the first
+/// (`primary`) or one beside it, or a phone's.
+///
+/// - macOS, measured on 26 with Google Chrome 155: a built-in screen is
+///   "Built-in Retina Display", internal and 30 bits deep, its menu bar
+///   33 beside a notch and the Dock 60 below; an external one's bar is 30,
+///   its depth 24. The Dock is on the first screen only. Before macOS 26
+///   the bar was 24 points and a line (25), 37 beside a notch (not
+///   measured here).
+/// - Windows: the taskbar, 48 on Windows 11 and 40 on 10, on every
+///   screen, as Windows shows it by default (not measured here).
+/// - Linux: the whole screen. Its desktops differ (a top bar, a dock, a
+///   panel at any edge, or none on a server), so no one shape is more
+///   like a person's than another.
+fn look(size: Size, scale: f64, primary: bool, phone: bool) -> Look {
+    let external = Look {
+        top: 0,
+        bottom: 0,
+        depth: 24,
+        internal: false,
+        label: monitor(size),
+    };
+    if phone {
+        return Look {
+            internal: true,
+            label: "",
+            ..external
+        };
+    }
+    if cfg!(target_os = "macos") {
+        let built_in = MAC_BUILT_IN
+            .iter()
+            .find(|(w, h, _)| *w == size.width && *h == size.height && scale == 2.0);
+        let new = os_major() >= 26;
+        let notch = built_in.is_some_and(|b| b.2);
+        let top = match (new, notch) {
+            (true, true) => 33,
+            (true, false) => 30,
+            (false, true) => 37,
+            (false, false) => 25,
+        };
+        let bottom = if primary { 60 } else { 0 };
+        return match built_in {
+            Some(_) => Look {
+                top,
+                bottom,
+                depth: 30,
+                internal: true,
+                label: "Built-in Retina Display",
+            },
+            None => Look {
+                top,
+                bottom,
+                ..external
+            },
+        };
+    }
+    if cfg!(windows) {
+        let bottom = if os_major() >= 22000 { 48 } else { 40 };
+        return Look { bottom, ..external };
+    }
+    external
+}
+
+/// The system's version, as far as the screen's shape goes: macOS's major
+/// version, or Windows' build number (22000 and up is Windows 11). Zero
+/// if it can't be read.
+fn os_major() -> u32 {
+    static MAJOR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MAJOR.get_or_init(|| {
+        if cfg!(target_os = "macos") {
+            let plist = std::fs::read_to_string("/System/Library/CoreServices/SystemVersion.plist")
+                .unwrap_or_default();
+            plist
+                .split("<key>ProductVersion</key>")
+                .nth(1)
+                .and_then(|rest| rest.split("<string>").nth(1))
+                .and_then(|v| v.split('.').next())
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0)
+        } else if cfg!(windows) {
+            // "Microsoft Windows [Version 10.0.22631.4602]"
+            std::process::Command::new("cmd")
+                .args(["/c", "ver"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let said = String::from_utf8_lossy(&o.stdout).to_string();
+                    said.split('.').nth(2).and_then(|b| b.trim().parse().ok())
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    })
 }
 
 /// The switches that give a launched headless Chrome its screen: the
@@ -59,13 +167,17 @@ pub(crate) fn launch_switches(env: &Environment, args: &[String]) -> Vec<String>
     }
     let size = screen_of(env);
     let scale = env.device_scale_factor.unwrap_or(1.0);
-    let (top, bottom) = if env.is_mobile() {
-        (0, 0)
-    } else {
-        work_area_insets()
-    };
+    let look = look(size, scale, true, env.is_mobile());
+    let (top, bottom) = (look.top, look.bottom);
     let px = |css: u32| (css as f64 * scale).round() as u64;
     let mut info = format!("{{{}x{}", px(size.width), px(size.height));
+    if !look.label.is_empty() {
+        info.push_str(&format!(" label='{}'", look.label));
+    }
+    info.push_str(&format!(" colorDepth={}", look.depth));
+    if look.internal {
+        info.push_str(" isInternal=true");
+    }
     let mut out = Vec::new();
     if scale.fract() == 0.0 {
         info.push_str(&format!(" devicePixelRatio={scale}"));
@@ -201,27 +313,24 @@ impl Page {
         let fits = |s: &Screen, v: Size| {
             v.width as i64 + frame.0 <= s.avail.2 && v.height as i64 + frame.1 <= s.avail.3
         };
-        let mut screen = self.screen(size, scale, mobile).await?;
-        if let Some(v) = env.viewport
-            && !fits(&screen, v)
-            && env.screen.is_none()
-            && !mobile
-        {
-            // A person with a window that big has a screen that big.
-            let bigger = BIGGER.iter().find(|s| {
-                v.width as i64 + frame.0 <= s.width as i64
-                    && v.height as i64 + frame.1 <= s.height as i64
-            });
-            if let Some(b) = bigger {
-                screen = self.screen(*b, scale, false).await?;
-            }
-        }
-        let viewport = match env.viewport {
+        let screen = self.screen(size, scale, mobile).await?;
+        // Chrome sized from a --window-size switch, unless the
+        // environment names a viewport.
+        // A window bigger than the work area is made to fit it, as Chrome
+        // makes a window of its own.
+        let switched = browser.window_size.map(|(w, h)| Size {
+            width: (w as i64).min(screen.avail.2).saturating_sub(frame.0).max(1) as u32,
+            height: (h as i64).min(screen.avail.3).saturating_sub(frame.1).max(1) as u32,
+        });
+        let viewport = match env.viewport.or(switched) {
             Some(v) if fits(&screen, v) => v,
             Some(v) => {
+                // Not moved to a bigger screen: that would put a second one
+                // beside it, and screen.isExtended with it.
                 return Err(Error::Invalid(format!(
                     "a {}x{} viewport, in a window {} by {} pixels bigger, doesn't fit the {}x{} \
-                     the screen leaves it: give a smaller viewport or a bigger screen",
+                     the screen's work area leaves it: give a smaller viewport, or a screen \
+                     that fits it",
                     v.width, v.height, frame.0, frame.1, screen.avail.2, screen.avail.3
                 )));
             }
@@ -327,16 +436,19 @@ impl Page {
             .max()
             .unwrap_or(0);
         let px = |css: u32| (css as f64 * scale).round() as i64;
+        let look = look(size, scale, false, phone);
         let mut params = json!({
             "left": left,
             "top": 0,
             "width": px(size.width),
             "height": px(size.height),
             "devicePixelRatio": scale,
+            "colorDepth": look.depth,
+            "isInternal": look.internal,
+            "label": look.label,
         });
-        if !phone {
-            let (top, bottom) = work_area_insets();
-            params["workAreaInsets"] = json!({"top": px(top), "bottom": px(bottom)});
+        if look.top > 0 || look.bottom > 0 {
+            params["workAreaInsets"] = json!({"top": px(look.top), "bottom": px(look.bottom)});
         }
         let added = self.call("Emulation.addScreen", params).await?;
         Ok(Screen::from(&added["screenInfo"]))

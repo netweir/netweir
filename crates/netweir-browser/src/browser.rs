@@ -150,6 +150,9 @@ pub(crate) struct Inner {
     /// pixel ratio.
     pub screen: Size,
     pub screen_scale: f64,
+    /// A window size given as a --window-size switch: every page's
+    /// window, unless its environment names a viewport.
+    pub window_size: Option<(u32, u32)>,
     /// The user agent Chrome was launched with (`--user-agent`), if
     /// netweir knows it.
     pub agent: Option<String>,
@@ -441,6 +444,13 @@ impl Browser {
             arranges: options.headless,
             screen,
             screen_scale,
+            window_size: options
+                .args
+                .iter()
+                .rev()
+                .find_map(|a| a.strip_prefix("--window-size="))
+                .and_then(|v| v.split_once(','))
+                .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?))),
             agent,
             own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
@@ -506,6 +516,7 @@ impl Browser {
             arranges: false,
             screen,
             screen_scale,
+            window_size: None,
             agent: None,
             own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
@@ -1397,6 +1408,7 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
+            window_size: None,
             agent: None,
             own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
@@ -2047,6 +2059,7 @@ mod tests {
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
+            window_size: None,
             agent: None,
             own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),

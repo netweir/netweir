@@ -1231,3 +1231,150 @@ async fn a_browser_launched_as_a_phone_hides_more_than_one_pages_phone() {
     assert_eq!(found, want, "{s:#}");
     browser.close().await.unwrap();
 }
+
+/// The macOS major version this runs on, if it's a Mac.
+fn macos_major() -> Option<u32> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// What a page reads of its screen, and what getScreenDetails says of
+/// each screen, once the page may ask.
+async fn screens(page: &netweir_browser::Page, origin: &str) -> Value {
+    page.grant_permissions(&["window-management".into()], Some(origin))
+        .await
+        .unwrap();
+    page.evaluate(
+        "(async () => ({ screen: [screen.width, screen.height, screen.availWidth, screen.availHeight, \
+         screen.availTop, screen.colorDepth, screen.pixelDepth], details: (await getScreenDetails()) \
+         .screens.map((s) => [s.label, s.isInternal, s.isPrimary, s.colorDepth, s.availTop, \
+         s.availHeight]) }))()",
+    )
+    .await
+    .unwrap()
+}
+
+/// Measured on a MacBook Pro 14 with macOS 26 and Google Chrome 155: its
+/// built-in screen is labelled, internal and 30 bits deep, with a 33-pixel
+/// menu bar beside the notch and the Dock (60) below; an external
+/// screen's bar is 30, its depth 24, and the Dock isn't on it.
+#[tokio::test]
+async fn screens_look_like_a_macs() {
+    let Some(major) = macos_major() else {
+        return;
+    };
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    options.environment = Environment::device("Desktop 1512x982 HiDPI").unwrap();
+    let browser = common::launch(options).await;
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let (notch, bar) = if major >= 26 { (33, 30) } else { (37, 25) };
+    let built_in = screens(&page, &server.url).await;
+    assert_eq!(
+        built_in["screen"],
+        json!([1512, 982, 1512, 982 - notch - 60, notch, 30, 30])
+    );
+    assert_eq!(
+        built_in["details"],
+        json!([[
+            "Built-in Retina Display",
+            true,
+            true,
+            30,
+            notch,
+            982 - notch - 60
+        ]])
+    );
+    // An external monitor beside it: no Dock, no notch.
+    let other = browser
+        .new_page_with(Environment::device("Desktop 1920x1080").unwrap())
+        .await
+        .unwrap();
+    other
+        .goto(&server.url, WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let external = screens(&other, &server.url).await;
+    assert_eq!(
+        external["screen"],
+        json!([1920, 1080, 1920, 1080 - bar, bar, 24, 24])
+    );
+    let labels: Vec<Value> = external["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d[0].clone())
+        .collect();
+    assert!(labels.iter().all(|l| l != ""), "{external}");
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_window_size_given_as_a_switch_is_the_default_viewport_and_frame() {
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    options.args.push("--window-size=1600,900".into());
+    let browser = common::launch(options).await;
+    for _ in 0..2 {
+        let page = browser.new_page().await.unwrap();
+        page.goto("about:blank", WaitUntil::Load, None)
+            .await
+            .unwrap();
+        let sizes = page
+            .evaluate("[outerWidth, outerHeight, innerWidth, innerHeight]")
+            .await
+            .unwrap();
+        assert_eq!(&sizes.as_array().unwrap()[..2], [1600, 900], "{sizes}");
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_viewport_too_big_for_its_screen_is_refused_not_moved() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let big = Size {
+        width: 2200,
+        height: 1300,
+    };
+    let err = browser
+        .new_page_with(Environment {
+            viewport: Some(big),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("screen"), "{err}");
+    let page = browser.new_page().await.unwrap();
+    page.goto("about:blank", WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let err = page.set_viewport(big).await.unwrap_err();
+    assert!(err.to_string().contains("screen"), "{err}");
+    // Nothing moved: the page is where it was, on the one screen.
+    assert_eq!(
+        page.evaluate("[innerWidth, innerHeight, screen.width]")
+            .await
+            .unwrap(),
+        json!([1280, 720, 1920])
+    );
+    browser.close().await.unwrap();
+}
