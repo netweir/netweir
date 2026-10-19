@@ -330,6 +330,12 @@ impl Shared {
 /// pipe's end would. A read only blocks once the pipe is empty, and a dead
 /// Chrome writes nothing more, so nothing Chrome sent is lost. Elsewhere
 /// Chrome's end is never inherited, and the pipe's end is enough.
+///
+/// Ended means its exit code is set. Its handle is signalled only once
+/// Windows has torn the whole process down, which on a busy machine came
+/// up to five and a half seconds after its exit code was set and later
+/// than an unheld pipe's end: so the code is looked at every 20 ms, and
+/// the handle is the backstop for a Chrome whose code is STILL_ACTIVE's.
 #[cfg(windows)]
 fn closes_with(
     chrome: &std::process::Child,
@@ -337,8 +343,9 @@ fn closes_with(
     shared: &Arc<Shared>,
 ) {
     use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{STILL_ACTIVE, WAIT_TIMEOUT};
     use windows_sys::Win32::System::IO::CancelSynchronousIo;
-    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
     let (Ok(chrome), Ok(reader)) = (
         chrome.as_handle().try_clone_to_owned(),
@@ -350,8 +357,20 @@ fn closes_with(
     let _ = std::thread::Builder::new()
         .name("netweir-chrome-exit".into())
         .spawn(move || {
-            // SAFETY: both handles are open, owned by this thread.
-            unsafe { WaitForSingleObject(chrome.as_raw_handle() as _, INFINITE) };
+            // SAFETY: both handles are open, owned by this thread, and the
+            // code is written to a u32 of its own.
+            let running = || unsafe {
+                let mut code = 0;
+                WaitForSingleObject(chrome.as_raw_handle() as _, 20) == WAIT_TIMEOUT
+                    && (GetExitCodeProcess(chrome.as_raw_handle() as _, &mut code) == 0
+                        || code == STILL_ACTIVE as u32)
+            };
+            // A reader that ended by itself needs nothing more.
+            while running() {
+                if shared.lock().closed {
+                    return;
+                }
+            }
             // Between reads the cancel misses, so it's tried until the
             // reader has ended.
             while !shared.lock().closed {

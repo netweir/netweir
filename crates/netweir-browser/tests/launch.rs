@@ -107,12 +107,16 @@ async fn chromes_launched_at_once_are_each_seen_to_die() {
 
 /// A Chrome is seen to die even when the program started other processes
 /// of its own, outside netweir, while Chrome was launching: on Windows any
-/// of them could inherit Chrome's end of its pipe and hold it open.
+/// of them could inherit Chrome's end of its pipe and hold it open. Seen
+/// soon, too: Windows signals a killed Chrome's handle only once it has
+/// torn the process down, on a busy runner over two seconds later in a
+/// fifth of kills and over five in some, so two seconds tells a death
+/// read from the handle from one read from the exit code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chrome_is_seen_to_die_while_other_processes_hold_its_pipe() {
     let Some(executable) = chrome() else { return };
     let _turns = common::all_turns();
-    // A process lasting well past the five seconds below, started over and
+    // A process lasting well past the two seconds below, started over and
     // over by another thread while each Chrome launches.
     fn lasting() -> std::process::Command {
         let mut command = if cfg!(windows) {
@@ -151,7 +155,7 @@ async fn a_chrome_is_seen_to_die_while_other_processes_hold_its_pipe() {
         let mut started = starter.join().unwrap();
         let browser = browser.unwrap();
         kill(browser.pid().unwrap());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !browser.is_closed() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
