@@ -303,6 +303,11 @@ impl Response {
     pub fn text(&self) -> String {
         decode(&self.body, self.header("content-type"))
     }
+
+    /// The encoding `text` decodes the body with, by name.
+    pub fn encoding(&self) -> &'static str {
+        crate::decode::encoding_name(&self.body, self.header("content-type"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,13 +5,83 @@
 use encoding_rs::{Encoding, UTF_8};
 
 pub fn decode(body: &[u8], content_type: Option<&str>) -> String {
-    let encoding = Encoding::for_bom(body)
-        .map(|(e, _)| e)
-        .or_else(|| content_type.and_then(charset_param))
-        .or_else(|| meta_charset(body))
-        .unwrap_or_else(|| guess(body));
-    // `decode` strips a BOM and replaces malformed sequences with U+FFFD.
-    encoding.decode(body).0.into_owned()
+    match encoding_of(body, content_type) {
+        Found::Utf32 { big_endian } => utf32(body, big_endian),
+        // `decode` strips a BOM and replaces malformed sequences with U+FFFD.
+        Found::Encoding(encoding) => encoding.decode(body).0.into_owned(),
+    }
+}
+
+/// The name of the encoding `decode` reads `body` with, as Python's
+/// codecs know most of them: "UTF-8", "windows-1252", "utf-32-le".
+pub fn encoding_name(body: &[u8], content_type: Option<&str>) -> &'static str {
+    match encoding_of(body, content_type) {
+        Found::Utf32 { big_endian: true } => "utf-32-be",
+        Found::Utf32 { big_endian: false } => "utf-32-le",
+        Found::Encoding(e) => e.name(),
+    }
+}
+
+enum Found {
+    Encoding(&'static Encoding),
+    /// encoding_rs has no UTF-32, which XML allows.
+    Utf32 {
+        big_endian: bool,
+    },
+}
+
+fn encoding_of(body: &[u8], content_type: Option<&str>) -> Found {
+    // UTF-32 first: its little-endian BOM starts like UTF-16's.
+    if let Some(big_endian) = utf32_marks(body) {
+        return Found::Utf32 { big_endian };
+    }
+    Found::Encoding(
+        Encoding::for_bom(body)
+            .map(|(e, _)| e)
+            .or_else(|| utf16_marks(body))
+            .or_else(|| content_type.and_then(charset_param))
+            .or_else(|| meta_charset(body))
+            .unwrap_or_else(|| guess(body)),
+    )
+}
+
+/// UTF-32 by its byte order mark, or by `<` as the first character, as
+/// appendix F of the XML spec detects it.
+fn utf32_marks(body: &[u8]) -> Option<bool> {
+    match body.get(..4)? {
+        [0, 0, 0xFE, 0xFF] | [0, 0, 0, b'<'] => Some(true),
+        [0xFF, 0xFE, 0, 0] | [b'<', 0, 0, 0] => Some(false),
+        _ => None,
+    }
+}
+
+/// UTF-16 without a byte order mark, by `<?` as appendix F of the XML
+/// spec detects it: an XML declaration, in the only bytes it can start
+/// with in UTF-16.
+fn utf16_marks(body: &[u8]) -> Option<&'static Encoding> {
+    match body.get(..4)? {
+        [b'<', 0, b'?', 0] => Some(encoding_rs::UTF_16LE),
+        [0, b'<', 0, b'?'] => Some(encoding_rs::UTF_16BE),
+        _ => None,
+    }
+}
+
+fn utf32(body: &[u8], big_endian: bool) -> String {
+    let mut out = String::with_capacity(body.len() / 4);
+    let mut chunks = body.chunks(4);
+    // A byte order mark isn't text.
+    if matches!(body.get(..4), Some([0, 0, 0xFE, 0xFF] | [0xFF, 0xFE, 0, 0])) {
+        chunks.next();
+    }
+    for c in chunks {
+        let n = match (c, big_endian) {
+            (&[a, b, c, d], true) => u32::from_be_bytes([a, b, c, d]),
+            (&[a, b, c, d], false) => u32::from_le_bytes([a, b, c, d]),
+            _ => 0xFFFD,
+        };
+        out.push(char::from_u32(n).unwrap_or('\u{FFFD}'));
+    }
+    out
 }
 
 fn charset_param(content_type: &str) -> Option<&'static Encoding> {
@@ -161,6 +231,30 @@ fn guess(body: &[u8]) -> &'static Encoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf16_and_utf32_without_a_byte_order_mark_are_found_by_the_declaration() {
+        let text = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><r>Zoë €</r>";
+        let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(decode(&le, Some("application/xml")), text);
+        assert_eq!(decode(&be, None), text);
+        assert_eq!(encoding_name(&le, None), "UTF-16LE");
+        let le32: Vec<u8> = text
+            .chars()
+            .flat_map(|c| (c as u32).to_le_bytes())
+            .collect();
+        let be32: Vec<u8> = text
+            .chars()
+            .flat_map(|c| (c as u32).to_be_bytes())
+            .collect();
+        assert_eq!(decode(&le32, None), text);
+        assert_eq!(decode(&be32, None), text);
+        assert_eq!(encoding_name(&be32, None), "utf-32-be");
+        let mut bom = vec![0xFF, 0xFE, 0, 0];
+        bom.extend_from_slice(&le32);
+        assert_eq!(decode(&bom, None), text);
+    }
 
     #[test]
     fn utf8_by_default() {
