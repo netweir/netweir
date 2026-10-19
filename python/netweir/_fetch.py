@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import codecs
-import contextvars
 import json as _json
 import logging
 import os
@@ -199,11 +198,6 @@ def _utf8(content_type: str) -> str:
     )
 
 
-#: Whether pages read their XML in recover mode: set for its callbacks by
-#: a crawl with ``Settings(xml_recover=True)``.
-_xml_recover: contextvars.ContextVar[bool] = contextvars.ContextVar("xml_recover", default=False)
-
-
 def _from_form(form: Form) -> tuple[str, dict[str, Any]]:
     url, body, content_type = form.encoded()
     if body is None:
@@ -214,12 +208,21 @@ def _from_form(form: Form) -> tuple[str, dict[str, Any]]:
 class Page:
     """A fetched page: the response, and the document parsed from it."""
 
-    __slots__ = ("_base", "_outcome", "_response", "_root", "browser", "request")
+    __slots__ = ("_base", "_outcome", "_parse", "_response", "_root", "browser", "request")
 
     def __init__(
-        self, response: Response, request: Request | None = None, root: Node | None = None
+        self,
+        response: Response,
+        request: Request | None = None,
+        root: Node | None = None,
+        parse: tuple[float | None, bool] = (None, False),
     ):
         self._response = response
+        #: How the document is parsed when first read: a time budget in
+        #: seconds (None for none) and whether XML is read in recover mode.
+        #: A crawl gives its pages Settings.parse_timeout and xml_recover;
+        #: a page made by hand has no budget.
+        self._parse = parse
         #: Parsed on first use, unless the crawl engine already parsed it.
         self._root: Node | None = root
         self._base: str | None = None
@@ -295,7 +298,8 @@ class Page:
         Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
         ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
-            self._root = self._response.parse(recover=_xml_recover.get())
+            timeout, recover = self._parse
+            self._root = self._response.parse(timeout=timeout, recover=recover)
         return self._root
 
     @property
@@ -333,6 +337,7 @@ class Page:
                 r.body if body is None else bytes(body),
             ),
             self.request,
+            parse=self._parse,
         )
         copy.browser = self.browser
         return copy

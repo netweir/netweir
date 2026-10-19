@@ -12,7 +12,7 @@ from typing import Any
 
 from netweir._crawl import Spider
 from netweir._errors import NotConfigured
-from netweir._fetch import Page, _xml_recover
+from netweir._fetch import Page
 from netweir._hooks import _NOT_MANY
 from netweir._native import Selection, _xml_nodes
 
@@ -146,10 +146,11 @@ class XMLFeedSpider(Spider):
         # the namespaces go on these nodes and not on page.root.
         parsed = page._root
         kind = parsed.type if parsed is not None else page._response.markup
-        if kind == self.iterator and (parsed is not None or recover == _xml_recover.get()):
+        timeout, page_recover = page._parse
+        if kind == self.iterator and (parsed is not None or recover == page_recover):
             root = page.root
         else:
-            root = page._response.parse(type=self.iterator, recover=recover)
+            root = page._response.parse(type=self.iterator, recover=recover, timeout=timeout)
         top = root.xpath("/")[0]
         for prefix, uri in namespaces:
             top.register_namespace(prefix, uri)

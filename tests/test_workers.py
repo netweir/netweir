@@ -50,11 +50,13 @@ class Handler(BaseHTTPRequestHandler):
             body = f'<div><p class="{cls}">£51.77</p></div>'
         elif self.path == "/feed":
             body = "<rss><item><title>a&nbsp;b</title></item></rss>"
+        elif self.path == "/slow":
+            body = "<rss>" + "<a/>" * 200_000 + "</rss>"
         else:
             body = "<p>x</p>"
         data = body.encode()
         self.send_response(200)
-        kind = "application/rss+xml" if self.path == "/feed" else "text/html"
+        kind = "application/rss+xml" if self.path in ("/feed", "/slow") else "text/html"
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -421,3 +423,10 @@ def test_xml_recover_reaches_the_workers(base):
     assert items == [] and stats["callback_errors"] == 1
     items, _ = crawl(worker_spiders.Feed, base + "/feed", workers=2, xml_recover=True)
     assert items == [{"title": "a\xa0b"}]
+
+
+def test_a_page_parsed_in_a_worker_keeps_the_crawls_budget(base, caplog):
+    with caplog.at_level(logging.ERROR, logger="netweir"):
+        items, stats = crawl(worker_spiders.Feed, base + "/slow", workers=2, parse_timeout=0.001)
+    assert items == [] and stats["callback_errors"] == 1
+    assert "parsing took longer than" in caplog.text

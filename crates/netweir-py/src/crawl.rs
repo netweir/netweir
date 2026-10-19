@@ -89,10 +89,6 @@ fn not_a_page(r: &netweir_core::Response) -> Option<String> {
     }
 }
 
-/// How long one rule page may take to parse before it is given up on.
-// Known limit: fixed budget; make it a setting if real pages need longer.
-const PARSE_BUDGET: Duration = Duration::from_secs(10);
-
 /// What to do with a request's page besides returning it.
 #[derive(Clone)]
 struct Tag {
@@ -297,6 +293,8 @@ struct Engine {
     base: Query,
     /// Whether the pages it parses as XML are read in recover mode.
     xml_recover: bool,
+    /// How long parsing one page may take (Settings.parse_timeout).
+    parse_budget: Duration,
 }
 
 impl Engine {
@@ -408,7 +406,7 @@ impl Engine {
         let parse_here = markup == crate::Markup::Html || rules_need;
         if done.ignored.is_none() && parse_here {
             let text = sniffed.unwrap_or_else(|| response.text());
-            match crate::parse_markup(&text, markup, PARSE_BUDGET, self.xml_recover) {
+            match crate::parse_markup(&text, markup, self.parse_budget, self.xml_recover) {
                 Ok((doc, repairs)) => {
                     if !repairs.is_empty() {
                         done.repaired = Some(format!("{}: {}", response.url, repairs.summary()));
@@ -882,7 +880,7 @@ impl Crawler {
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None,
-        xml_recover=false,
+        xml_recover=false, parse_timeout=10.0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -934,6 +932,7 @@ impl Crawler {
         retry_http_codes: Option<Vec<u16>>,
         http_auth: Option<AuthPy>,
         xml_recover: bool,
+        parse_timeout: f64,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         if http_auth.as_ref().is_some_and(|(_, _, d)| d.is_none()) {
@@ -1075,6 +1074,7 @@ impl Crawler {
                 next_id: AtomicU64::new(RULE_IDS),
                 base: Query::new("base[href]::attr(href)").expect("a valid selector"),
                 xml_recover,
+                parse_budget: crate::budget(Some(parse_timeout))?,
             }),
         })
     }

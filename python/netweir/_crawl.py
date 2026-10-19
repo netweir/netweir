@@ -29,7 +29,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 from urllib.parse import urlsplit
 
-from netweir import _fetch, _files, _hooks, _memory, _monitor, _stats, _track
+from netweir import _files, _hooks, _memory, _monitor, _stats, _track
 from netweir._errors import QueueError
 from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_limit, seconds
 from netweir._native import (
@@ -62,6 +62,10 @@ class Settings:
     #: Read pages parsed as XML in recover mode: what can be repaired is,
     #: with a warning saying what, instead of raising XMLError.
     xml_recover: bool = False
+    #: Seconds one page may take to parse, wherever it's parsed: in the
+    #: engine, or when a callback first reads it. A defence against
+    #: markup made to be slow; ParseTimeout past it.
+    parse_timeout: float = 10.0
     #: Requests in flight across all sites, and to one host.
     concurrency: int = 64
     per_domain: int = 8
@@ -214,6 +218,8 @@ class Settings:
         if self.concurrency < 1 or self.per_domain < 1:
             raise ValueError("concurrency and per_domain must be at least 1")
         seconds(self.timeout)
+        if not self.parse_timeout >= 0:
+            raise ValueError("parse_timeout must be 0 seconds or more")
         if not 0 <= self.min_delay <= self.max_delay or self.start_delay < 0:
             raise ValueError("delays must be non-negative, with min_delay <= max_delay")
         if self.target_concurrency <= 0:
@@ -430,6 +436,7 @@ class Settings:
             queue_lease=self.queue_lease,
             queue_idle=self.queue_idle,
             xml_recover=self.xml_recover,
+            parse_timeout=self.parse_timeout,
         )
 
     def _checkpoint_file(self) -> str | None:
@@ -621,8 +628,6 @@ class Spider:
         #: it also sees an exception the caller is handling).
         raising = False
         stats: dict[str, int] | None = None
-        # For the callbacks: they run in tasks this one starts, which see it.
-        recovering = _fetch._xml_recover.set(self.settings.xml_recover)
         try:
             # Before anything is opened: a metrics port that's taken stops
             # the crawl here.
@@ -694,7 +699,6 @@ class Spider:
             raising = True
             raise
         finally:
-            _fetch._xml_recover.reset(recovering)
             try:
                 run.monitor.stop()
             except Exception:  # noqa: BLE001 - the crawl still winds up
@@ -1103,6 +1107,13 @@ class _Run:
         for stage in pipelines:
             if isinstance(stage, _files._Media):
                 stage._attach(self)
+
+    def crawl_page(self, response: Any, request: Request, root: Any = None) -> Page:
+        """A page of this crawl: parsed, if it's parsed when first read,
+        within the crawl's budget and with its recover setting."""
+        settings = self.spider.settings
+        parse = (settings.parse_timeout, settings.xml_recover)
+        return Page(response, request, root, parse=parse)
 
     def build(self, components: list[Any]) -> list[Any]:
         """The objects a list of components stands for: a class is made with
@@ -1947,7 +1958,7 @@ class _Run:
             _, rule, url, response, root, depth = event[:6]
             callback = self.rules[rule].callback
             request = Request(url, callback=callback, depth=depth)
-            page = event[6] if len(event) > 6 else Page(response, request, root)
+            page = event[6] if len(event) > 6 else self.crawl_page(response, request, root)
             if job is not None:
                 await self.collect(job, callback, request, page)
                 return
@@ -1973,7 +1984,7 @@ class _Run:
                 request = self.waiting.pop(rid)
             else:
                 request = Request(url, callback=self.rules[rule].callback)
-            page = Page(response, request)
+            page = self.crawl_page(response, request)
             if rule is None:
                 await self.left_downloader(request, page)
             await self.run_callback(self.spider.on_block, None, (request, page), url)
@@ -2017,14 +2028,14 @@ class _Run:
             _, rid, detail, *rest = event
             request = self.waiting.pop(rid)
             if kind == "fetched" and job is not None:
-                page = rest[2] if len(rest) > 2 else Page(detail, request)
+                page = rest[2] if len(rest) > 2 else self.crawl_page(detail, request)
                 _warn_if_priced(page)
                 await self.collect(job, request.callback or "parse", request, page)
             elif kind == "fetched":
                 if len(rest) > 2:
                     page = rest[2]  # as the middlewares returned it
                 else:
-                    page = Page(detail, request, rest[0])
+                    page = self.crawl_page(detail, request, rest[0])
                     page.browser = rest[1]
                 _warn_if_priced(page)
                 try:
@@ -2280,7 +2291,7 @@ class _Run:
                 return
         # The crawl's request, so depth and meta carry on; a copy, so a page
         # a middleware hands out twice keeps its own.
-        mine = Page(page._response, request, page._root)
+        mine = self.crawl_page(page._response, request, page._root)
         mine.browser = page.browser
         self.ready.append(functools.partial(self.answered, request, mine))
 
@@ -2361,7 +2372,7 @@ class _Run:
             request = Request(url, callback=self.rules[rule].callback, depth=depth)
             live, default = None, None
         if page is None:
-            page = Page(response, request, root)
+            page = self.crawl_page(response, request, root)
             page.browser = live
             await self.left_downloader(request, page)
         for process in self.on_response:
@@ -2376,7 +2387,7 @@ class _Run:
                     # are the request's, so max_depth still counts from here.
                     # A copy, so a page a middleware hands out twice keeps
                     # its own request.
-                    replacement = Page(result._response, request, result._root)
+                    replacement = self.crawl_page(result._response, request, result._root)
                     replacement.browser = result.browser
                     result = replacement
                 page = result

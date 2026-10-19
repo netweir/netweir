@@ -310,6 +310,7 @@ def feeds():
         "/broken": (b"<rss><channel></rss>", "application/xml"),
         "/nbsp": (b"<rss><item><title>a&nbsp;b</title></item></rss>", "text/xml"),
         "/nbsp-rss": (b"<rss><item><title>a&nbsp;b</title></item></rss>", "application/rss+xml"),
+        "/slow": (b"<r>" + b"<a/>" * 200_000 + b"</r>", "application/rss+xml"),
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield base
@@ -556,7 +557,7 @@ def test_sitemaps_are_read_in_little_memory(tmp_path):
         "from netweir._native import _sitemap\n"
         "rows = ''.join(f'<url><loc>https://www.example.com/products/item-{i}-with-a-long-slug</loc>'\n"
         '  f\'<lastmod>2026-01-01</lastmod><xhtml:link rel="alternate" hreflang="de" \'\n'
-        "  f'href=\"https://www.example.com/de/item-{i}\"/></url>' for i in range(200_000))\n"
+        "  f'href=\"https://www.example.com/de/item-{i}\"/></url>' for i in range(100_000))\n"
         "body = ('<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" '\n"
         "  'xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">' + rows + '</urlset>').encode()\n"
         "gz = gzip.compress(body); size = len(body); del rows, body\n"
@@ -570,10 +571,11 @@ def test_sitemaps_are_read_in_little_memory(tmp_path):
         [sys.executable, str(script)], capture_output=True, text=True, check=True
     ).stdout.split()
     entries, grew, size = map(int, out)
-    assert entries == 200_000
-    # The unzipped text, its decoding and the entries themselves; a tree
-    # would be several times the size.
-    assert grew < 6 * size, (grew, size)
+    # Half that here, well inside a debug build's 10-second budget.
+    assert entries == 100_000
+    # The unzipped text, its decoding and the entries (as Python dicts,
+    # most of it); the tree was over 15 times the size.
+    assert grew < 10 * size, (grew, size)
 
 
 @pytest.mark.parametrize(
@@ -601,3 +603,38 @@ def test_recover_mode_against_lxmls(broken, ours):
     assert got == (theirs if ours is None else ours)
     if ours is not None:
         assert got != theirs
+
+
+def test_a_page_parsed_when_read_keeps_its_crawls_budget(feeds, caplog):
+    """An XML page is parsed when the callback first reads it, and that
+    parse has the crawl's budget, as the engine's own has: a defence
+    against markup made to be slow."""
+    counts = []
+
+    class Reader(netweir.Spider):
+        start_urls = [f"{feeds}/slow"]
+
+        def parse(self, page):
+            assert page._root is None
+            counts.append(page.xpath("count(//a)").get())
+
+    Reader.settings = netweir.Settings(
+        throttle=False, start_delay=0, obey_tdmrep=False, parse_timeout=0.001
+    )
+    with caplog.at_level("ERROR", logger="netweir"):
+        stats = Reader().run()
+    assert counts == [] and stats["callback_errors"] == 1
+    assert "ParseTimeout" in caplog.text and "parsing took longer than" in caplog.text
+    Reader.settings = FAST
+    Reader().run()
+    assert counts == ["200000.0"]
+    # A page made by hand has no budget, as before.
+    page = netweir.Page(
+        _response("https://x/", 200, "HTTP/1.1", [("content-type", "text/xml")], b"<r/>")
+    )
+    assert page._parse == (None, False)
+
+
+def test_parse_timeout_must_not_be_negative():
+    with pytest.raises(ValueError, match="parse_timeout"):
+        netweir.Settings(parse_timeout=-1)

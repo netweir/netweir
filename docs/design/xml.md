@@ -196,7 +196,10 @@ anyway, and thrown away: a 33 MB feed peaked at 592 MB. A page read as
 XML is now parsed in the engine only when its rules need the tree (to
 follow links or extract an Item); otherwise the callback gets the page
 unparsed, and `page.root` builds the tree the first time something reads
-it. The same feed now peaks at 184 MB. HTML pages are still parsed in
+it. The same feed now peaks at 184 MB. That parse keeps the crawl's
+budget (`Settings.parse_timeout`) and recover setting, which every page
+a crawl makes carries with it, into worker processes too: being parsed
+later is no way round the limit. HTML pages are still parsed in
 the engine: that's where their parse is cheapest, and where a
 pathological page's 10-second budget is enforced, and a callback reads
 almost every HTML page anyway.

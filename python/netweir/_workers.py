@@ -149,15 +149,17 @@ def run(name: str, response: Any, request: Request) -> tuple:
     stats = getattr(_spider, "stats", None)
     if isinstance(stats, _stats.Stats):
         stats._ops = ops
-    from netweir import _fetch
-
     settings = getattr(_spider, "settings", None)
-    _fetch._xml_recover.set(bool(getattr(settings, "xml_recover", False)))
+    # As the main process parses its pages: within the crawl's budget.
+    parse = (
+        getattr(settings, "parse_timeout", 10.0),
+        bool(getattr(settings, "xml_recover", False)),
+    )
     told = _track._report_sink.set(reports.append)
     asking = _track._repairs.set(ask if _repairing else None)
     error = None
     try:
-        result = getattr(_spider, name)(Page(response, request))
+        result = getattr(_spider, name)(Page(response, request, parse=parse))
         if inspect.isasyncgen(result):
             asyncio.run(_drain(result, outputs))
         else:
