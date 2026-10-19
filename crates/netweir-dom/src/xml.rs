@@ -410,9 +410,11 @@ pub struct XmlOptions {
     /// kept as text if not; a bare `&` is kept as text; an undeclared
     /// prefix puts its element or attribute in no namespace; anything
     /// after the root element is ignored; characters XML doesn't allow are
-    /// dropped; of two attributes with one name the first is kept; and
-    /// elements still open at the end are closed. Anything else that isn't
-    /// well-formed is still an error.
+    /// dropped; of two attributes with one name the first is kept; an end
+    /// tag for an element further out closes what's inside it, and one
+    /// that closes nothing is ignored; a `<` that starts no markup is
+    /// text; and elements still open at the end are closed. Anything else
+    /// that isn't well-formed is still an error.
     pub recover: bool,
     /// How long parsing may take. In [`XmlNodes`], how long each node may
     /// take to read.
@@ -481,6 +483,9 @@ pub trait XmlVisitor {
 enum Stop {
     Bad(String),
     Late,
+    /// In recover mode: the `<` the event started with starts no markup,
+    /// and is text; reading goes on after it.
+    LessThan,
 }
 
 impl From<String> for Stop {
@@ -496,6 +501,8 @@ impl From<&str> for Stop {
 }
 
 type Step<T = ()> = Result<T, Stop>;
+
+const LESS_THAN: &str = "a `<` that starts no markup";
 
 /// An element that has started and not ended.
 struct Open {
@@ -963,7 +970,12 @@ impl<'v> Builder<'v> {
                 Event::Decl(_) | Event::DocType(_) => {
                     return Err("an entity can't contain a declaration".into());
                 }
-                ev => self.event(ev)?,
+                ev => match self.event(ev) {
+                    Err(Stop::LessThan) => {
+                        return Err(LESS_THAN.into());
+                    }
+                    other => other?,
+                },
             }
         }
     }
@@ -1102,11 +1114,15 @@ impl<'v> Builder<'v> {
     }
 
     fn start(&mut self, e: &BytesStart<'_>, empty: bool) -> Step {
-        self.flush();
         let qname = e.name().as_ref().to_string();
         if !is_qname(&qname) {
+            // `1 < 2`, `a<=b`: no name follows the `<`, so it's no tag.
+            if self.recover && !qname.chars().next().is_some_and(name_start) {
+                return Err(Stop::LessThan);
+            }
             return Err(format!("<{qname}> isn't a valid element name").into());
         }
+        self.flush();
         if self.open.is_empty() {
             if self.root_done {
                 return self.outside(format!("<{qname}>"));
@@ -1295,15 +1311,40 @@ impl<'v> Builder<'v> {
     fn end(&mut self, name: &str) -> Step {
         self.flush();
         let Some(top) = self.open.last() else {
-            return Err(format!("</{name}> closes an element that never started").into());
+            return self.repair(
+                format!("</{name}> closes an element that never started"),
+                "ignored",
+            );
         };
         if self.open.len() <= self.floor {
             return Err(format!("</{name}> would close an element the entity didn't start").into());
         }
-        if top.qname != name {
-            return Err(format!("</{name}> doesn't close <{}>", top.qname).into());
+        if top.qname == name {
+            return self.close();
         }
-        self.close()
+        let problem = format!("</{name}> doesn't close <{}>", top.qname);
+        // As lxml's recover mode does: an end tag for an element further
+        // out closes everything inside it; one for no open element is
+        // ignored.
+        let ancestor = self.open[self.floor..]
+            .iter()
+            .rposition(|o| o.qname == name)
+            .map(|i| i + self.floor);
+        match ancestor {
+            Some(at) => {
+                let inside: Vec<&str> = self.open[at + 1..]
+                    .iter()
+                    .map(|o| o.qname.as_str())
+                    .collect();
+                let fix = format!("<{}> closed with it", inside.join("><"));
+                self.repair(problem, &fix)?;
+                while self.open.len() > at {
+                    self.close()?;
+                }
+                Ok(())
+            }
+            None => self.repair(problem, "ignored, as it closes nothing open"),
+        }
     }
 
     /// Ends the innermost open element.
@@ -1333,6 +1374,7 @@ impl<'v> Builder<'v> {
     /// a node is ready. Returns where it stopped, or why and where it
     /// failed.
     fn pump(&mut self, src: &str, start: usize) -> Result<usize, (Stop, usize)> {
+        let mut start = start;
         let mut reader = reader(&src[start..], self.recover);
         loop {
             let before = start + reader.buffer_position() as usize;
@@ -1347,7 +1389,19 @@ impl<'v> Builder<'v> {
             if matches!(ev, Event::Eof) {
                 return Ok(src.len());
             }
-            self.event(ev).map_err(|s| (s, before))?;
+            match self.event(ev) {
+                Ok(()) => {}
+                Err(Stop::LessThan) => {
+                    // The `<` is text, and reading starts again after it.
+                    self.repair(LESS_THAN, "kept as text")
+                        .and_then(|()| self.text("<"))
+                        .map_err(|s| (s, before))?;
+                    start = before + 1;
+                    reader = self::reader(&src[start..], self.recover);
+                    continue;
+                }
+                Err(stop) => return Err((stop, before)),
+            }
             if self.stopped {
                 return Ok(src.len());
             }
@@ -1424,6 +1478,7 @@ fn error_at(src: &str, at: usize, reason: String) -> XmlError {
 fn run(b: &mut Builder<'_>, src: &str, budget: Duration) -> Result<(), ParseXmlError> {
     let fail = |stop: Stop, at: usize| match stop {
         Stop::Bad(why) => ParseXmlError::Malformed(error_at(src, at, why)),
+        Stop::LessThan => ParseXmlError::Malformed(error_at(src, at, LESS_THAN.into())),
         Stop::Late => ParseXmlError::Timeout(ParseTimeout { budget, parsed: at }),
     };
     b.pump(src, 0).map_err(|(stop, at)| fail(stop, at))?;
@@ -1563,6 +1618,7 @@ impl XmlNodes {
         let fail = |src: &str, stop: Stop, at: usize| {
             let why = match stop {
                 Stop::Bad(why) => why,
+                Stop::LessThan => LESS_THAN.into(),
                 Stop::Late => format!("reading one node took longer than {:?}", self.budget),
             };
             error_at(src, at, why)

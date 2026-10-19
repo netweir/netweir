@@ -973,8 +973,69 @@ fn recover_mode_closes_what_a_cut_off_document_left_open() {
 }
 
 #[test]
+fn recover_mode_closes_up_to_an_end_tag_for_an_element_further_out() {
+    let (doc, repairs) = recovered("<r><a><b><c>x</a>y</r>");
+    assert_eq!(doc.root().html(), "<r><a><b><c>x</c></b></a>y</r>");
+    assert_eq!(repairs.count, 1);
+    assert!(
+        repairs.first[0]
+            .reason
+            .contains("</a> doesn't close <c>; <b><c> closed with it"),
+        "{repairs:?}"
+    );
+    // A cut-off feed's last item, as lxml reads it.
+    let (doc, _) =
+        recovered("<rss><channel><item><title>A</title></item><item><title>B</channel></rss>");
+    assert_eq!(
+        doc.root().html(),
+        "<rss><channel><item><title>A</title></item><item><title>B</title></item></channel></rss>"
+    );
+}
+
+#[test]
+fn recover_mode_ignores_an_end_tag_that_closes_nothing() {
+    // lxml's recover mode ends the document there, losing <i>b</i>.
+    let (doc, repairs) = recovered("<r><i>a</i></x><i>b</i></r>");
+    assert_eq!(doc.root().html(), "<r><i>a</i><i>b</i></r>");
+    assert!(
+        repairs.first[0]
+            .reason
+            .contains("</x> doesn't close <r>; ignored")
+    );
+    let (doc, repairs) = recovered("</x><r/>");
+    assert_eq!(doc.root().html(), "<r/>");
+    assert!(repairs.first[0].reason.contains("never started; ignored"));
+}
+
+#[test]
+fn recover_mode_keeps_a_lone_less_than_as_text() {
+    for (xml, text) in [
+        ("<r>1 < 2</r>", "1 < 2"),
+        ("<r>a<=b and c<3</r>", "a<=b and c<3"),
+        ("<r>x <</r>", "x <"),
+        ("<r>< b>c</r>", "< b>c"),
+    ] {
+        let (doc, repairs) = recovered(xml);
+        assert_eq!(xpath(&doc, "/r/text()"), [text], "{xml}");
+        assert!(
+            repairs
+                .first
+                .iter()
+                .all(|r| r.reason.contains("`<` that starts no markup; kept as text")),
+            "{repairs:?}"
+        );
+        assert!(
+            bad(xml).reason.contains("isn't a valid element name"),
+            "{xml}"
+        );
+    }
+    let (_, repairs) = recovered("<r>a<=b and c<3</r>");
+    assert_eq!(repairs.count, 2);
+}
+
+#[test]
 fn recover_mode_still_refuses_what_it_cant_repair() {
-    for xml in ["<a><b></a>", "<a>1 < 2</a>"] {
+    for xml in ["<a><b c</a>", "<a><!-- never ends</a>"] {
         assert!(Document::parse_xml_with(xml, recover()).is_err(), "{xml}");
     }
     // And the limits on hostile XML hold.

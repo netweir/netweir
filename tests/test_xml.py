@@ -540,8 +540,7 @@ def test_a_crawl_can_recover_its_xml(feeds, caplog):
     with caplog.at_level("WARNING", logger="netweir"):
         Lenient().run()
     assert seen == ["a\xa0b", "a\xa0b"]
-    # One warning each: from the engine's parse (text/xml), and from
-    # Python's (application/rss+xml, which the engine leaves alone).
+    # One warning each, from the parse page.xpath() asks for.
     assert caplog.text.count("isn't declared; read as HTML's") == 2
 
 
@@ -575,3 +574,30 @@ def test_sitemaps_are_read_in_little_memory(tmp_path):
     # The unzipped text, its decoding and the entries themselves; a tree
     # would be several times the size.
     assert grew < 6 * size, (grew, size)
+
+
+@pytest.mark.parametrize(
+    "broken, ours",
+    [
+        # Where lxml's recover mode and Netweir's agree.
+        ("<r><a><b><c>x</a></r>", None),
+        ("<rss><channel><item><title>A</title></item><item><title>B</channel></rss>", None),
+        # Where they part: lxml ends the document at an end tag that
+        # closes nothing, losing the rest; Netweir ignores the tag.
+        ("<r><i>a</i></x><i>b</i></r>", "<r><i>a</i><i>b</i></r>"),
+        # lxml drops a `<` that starts no markup; Netweir keeps it.
+        ("<r>1 < 2</r>", "<r>1 &lt; 2</r>"),
+        # lxml lets </a> close only <b>, and keeps y in <a>; Netweir
+        # closes up to <a>, as its name says.
+        ("<r><a><b>x</a>y</r>", "<r><a><b>x</b></a>y</r>"),
+    ],
+)
+def test_recover_mode_against_lxmls(broken, ours):
+    etree = pytest.importorskip("lxml.etree")
+    theirs = etree.tostring(
+        etree.fromstring(broken.encode(), etree.XMLParser(recover=True))
+    ).decode()
+    got = netweir.parse(broken, type="xml", recover=True).html
+    assert got == (theirs if ours is None else ours)
+    if ours is not None:
+        assert got != theirs
