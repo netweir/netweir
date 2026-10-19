@@ -376,7 +376,9 @@ async fn longest_stall(rules: bool) -> Duration {
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
     let mut events = page.listen();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    page.evaluate("gaps.length = 0").await.unwrap();
+    page.evaluate("(gaps.length = 0, last = performance.now())")
+        .await
+        .unwrap();
     page.click("#b", None).await.unwrap();
     let popped = popup(&mut events).await;
     popped.wait_for_load(WaitUntil::Load, None).await.unwrap();
