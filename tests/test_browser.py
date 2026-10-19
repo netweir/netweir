@@ -617,8 +617,13 @@ async def test_a_dialog_nobody_answers_is_dismissed_after_a_human_pause(browser,
 async def test_the_pause_before_a_dialog_is_answered_can_be_set(base):
     with pytest.raises(ValueError, match="dialog_pause"):
         await netweir.browser(dialog_pause=(1.0, 0.5))
+    # Longer than the default's longest (1.5 s), so only the pause set
+    # here can keep the page waiting this long. A bound the other way
+    # would be the machine's to keep: on a busy Windows runner the round
+    # trips around a 50 ms pause alone took over 500 ms.
+    pause = 2.0
     try:
-        browser = await netweir.browser(dialog_pause=(0.05, 0.06))
+        browser = await netweir.browser(dialog_pause=(pause, pause + 0.01))
     except netweir.BrowserError as e:
         if "no Chrome found" in str(e) and not os.environ.get("NETWEIR_REQUIRE_CHROME"):
             pytest.skip(str(e))
@@ -627,8 +632,8 @@ async def test_the_pause_before_a_dialog_is_answered_can_be_set(base):
         page = await browser.new_page()
         await page.goto(base + "/asks")
         started = asyncio.get_running_loop().time()
-        assert await page.evaluate("confirm('quick?')") is False
-        assert 0.05 <= asyncio.get_running_loop().time() - started < 0.45
+        assert await page.evaluate("confirm('slow?')") is False
+        assert asyncio.get_running_loop().time() - started >= pause
 
 
 async def test_a_dialog_listener_plain_or_async_answers_it(browser, base):
