@@ -228,6 +228,14 @@ These are rules of the driver, not options, and tests enforce them:
   (reading the metadata from `chrome://version`, the one page that can
   see it before any override). In a service worker, the high-entropy
   hints stay empty: no override reaches it.
+- Chrome for Testing is started with `--disable-infobars` and
+  `--disable-field-trial-config`, as Google Chrome is shipped: its
+  infobar made every window 143 pixels taller than its page (Google
+  Chrome's is 87), and its field trial config showed page script one
+  language and sent a document's Accept-Language early. A worker's
+  script request, whose User-Agent the override moves, is paused and
+  sent on without the headers Chrome adds back in their place.
+  [environment.md](environment.md) has both, measured.
 - Headless Chrome's own screen is 800 by 600, and the windows it opens
   for new contexts are 1280 by 600: `outerWidth` bigger than
   `screen.width`. It's launched with a 1920 by 1080 screen

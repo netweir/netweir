@@ -41,25 +41,31 @@ things Chrome won't let anyone change.
 | Setting | Does |
 |---|---|
 | `device` | a preset, below: a desktop's screen, or a phone's screen, viewport, touch and identity. The other settings change it |
-| `viewport` | `{"width", "height"}`: `innerWidth` and `innerHeight`. The window around it is a real one, so `outerWidth` and `outerHeight` are what a window that size has |
+| `viewport` | `{"width", "height"}`: `innerWidth` and `innerHeight`. The window around it is a real one, so `outerWidth` and `outerHeight` are what a window that size has. `None`, as Playwright's `no_viewport`, leaves the window as Chrome opens it. One too big for its screen raises `ValueError` |
 | `screen` | `{"width", "height"}`: `screen.width` and `screen.height`, and what media queries say about the device |
 | `device_scale_factor` | `devicePixelRatio`. A whole number, except for a whole browser (see [Where to set it](#where-to-set-it)) |
 | `is_mobile` | a phone's layout, with the viewport meta tag honoured. Needs a phone's `device` or `user_agent` |
-| `has_touch` | a touch screen: touch events, `navigator.maxTouchPoints` and `(pointer: coarse)` |
+| `has_touch` | a touch screen: touch events, `navigator.maxTouchPoints` and `(pointer: coarse)`. Only for a phone: Chrome makes a touch device touch-only, which no laptop is, so a desktop with it raises `ValueError`, as a phone without it does |
 | `locale` | such as `"de-DE"`: `Intl`, dates and numbers, `navigator.language` and `Accept-Language` |
 | `timezone_id` | such as `"Europe/Berlin"`: `Intl`, `Date` and `getTimezoneOffset()` |
 | `geolocation` | `{"latitude", "longitude", "accuracy"}`, for `navigator.geolocation` once the page may use it |
 | `permissions` | permissions granted to every origin, such as `["geolocation"]` |
 | `color_scheme` | `"light"`, `"dark"` or `"no-preference"`, for `prefers-color-scheme` |
 | `reduced_motion` | `"reduce"` or `"no-preference"`, for `prefers-reduced-motion` |
+| `forced_colors` | `"active"` or `"none"`, for `forced-colors` |
+| `contrast` | `"more"` or `"no-preference"`, for `prefers-contrast` |
 | `extra_http_headers` | a dict of headers sent with every request, after Chrome's own |
 | `offline` | `True` takes the page off the network: requests fail and `navigator.onLine` is false |
 | `user_agent` | the running Chrome's user agent, perhaps for another system; the client hints change with it |
 | `init_scripts` | scripts run in every document, before its own scripts |
 
 Unset settings are Chrome's own. A page with no `viewport` shows 1280 by
-720, or fills the screen's work area if that's smaller; a headless Chrome
-Netweir starts has a 1920 by 1080 screen, which every window fits on.
+720, or fills the screen's work area if that's smaller, or takes the size
+a `--window-size` switch gives; a headless Chrome Netweir starts has a
+1920 by 1080 screen, which every window fits on. Screens look like a
+person's: on a Mac, the menu bar and the Dock are taken from the work
+area, and a MacBook's own screen (the HiDPI presets) is the "Built-in
+Retina Display", 30 bits deep; on Windows the taskbar is.
 
 ## Devices
 
@@ -85,9 +91,18 @@ say so whatever its user agent claimed.
 A phone is an Android phone running Chrome, in every client hint and
 every header: `Sec-CH-UA-Mobile: ?1`, the platform `"Android"`, its model
 (`SM-S911B` for the S23), a phone's user agent and `navigator.platform`,
-eight cores, five touch points. Clicks become taps and scrolling becomes
-a finger dragging the page, since a phone has no mouse; `hover()` on a
-phone raises `ValueError`, as there's nothing to hover with.
+eight cores, five touch points. Clicks become taps, scrolling becomes a
+finger dragging the page, and a key pressed is what an on-screen
+keyboard sends (an "Unidentified" key, then the text), since a phone has
+no mouse and no keys; `hover()` on a phone raises `ValueError`, as
+there's nothing to hover with. A page that says `is_mobile=False`, in a
+phone's context, takes nothing of the phone.
+
+A phone is most a phone when it's the whole browser's,
+`netweir.browser(environment={"device": "Galaxy S23"})`: then it has no
+PDF viewer (no plugins, as a phone's Chrome has none), one screen, and
+service and shared workers that say they're the phone too. A phone given
+to one page or context can't have those, and Netweir says so once.
 
 There's no Pixel and no iPhone. A Pixel's pixel ratio is 2.625 or 2.75,
 and headless Chrome can only make screens with whole ratios, so a frame
@@ -107,9 +122,13 @@ engine, which nothing about a Chrome page can pass for.
 - **Every page of a browser**: `netweir.browser(environment={...})`,
   with the same keys. Set here, the screen and pixel ratio are Chrome's
   own from the start, the language is Chrome's own (so it sends it
-  exactly as a person's Chrome would), and the user agent reaches service
-  workers, which nothing set later does. A pixel ratio that isn't a whole
-  number, such as Windows' 1.25, can only be set here.
+  exactly as a person's Chrome would, every header in its place), and
+  the user agent reaches service and shared workers, which nothing set
+  later does. A pixel ratio that isn't a whole number, such as Windows'
+  1.25, can only be set here. Chrome's own list for a context it makes
+  can add its own language: `de-DE` shows as `de-DE,de,en-US,en`,
+  everywhere alike, as it would for a German speaker whose Chrome is in
+  English.
 
 A screen, a pixel ratio or a phone needs a headless Chrome Netweir
 started. A real screen can't be changed, so with `headless=False`, or a
@@ -121,6 +140,7 @@ the real window.
 ```python
 await page.set_viewport_size({"width": 1024, "height": 768})
 await page.emulate_media(color_scheme="dark", reduced_motion="reduce")
+await page.emulate_media(media="print", color_scheme="null")
 await page.set_extra_http_headers({"X-Team": "data"})
 await page.add_init_script("window.started = Date.now()")
 await page.add_init_script(path="setup.js")
@@ -128,6 +148,9 @@ await page.set_geolocation({"latitude": 51.5, "longitude": -0.12})
 await page.set_offline(True)
 ```
 
+`emulate_media` takes `media`, `color_scheme`, `reduced_motion`,
+`forced_colors` and `contrast` as Playwright's does: one left out stays
+as it is, and `"null"` takes its emulation away.
 `page.viewport_size` is the viewport Netweir last gave the window. A
 context has `set_geolocation`, `set_offline`, `set_extra_http_headers`
 and `add_init_script` too, for the pages it has and the ones it opens
@@ -186,14 +209,28 @@ Chrome lets DevTools change a great deal, but not everything:
   window's size (`outerWidth`), where the page reads the phone's.
 - **What the hardware says.** A phone preset still renders with the
   machine's graphics card, which WebGL names, and with its fonts. Desktop
-  APIs a phone doesn't have (`navigator.serial`, `getScreenDetails`) are
-  still there.
-- **Service workers' user agent** follows the browser's. Set the device
-  or `user_agent` for the whole browser where service workers matter.
-  Their language, clock, headers and network do follow the page.
+  APIs a phone's Chrome hasn't are still there (`navigator.hid`,
+  `navigator.serial`, `navigator.keyboard`, `showOpenFilePicker`,
+  `getScreenDetails`, `screen.isExtended`), and `navigator.connection`
+  has no `type`, which a phone's has.
+- **One page's phone** besides: its screen sits beside the browser's (so
+  `screen.isExtended` is true), it keeps the browser's PDF viewer and
+  plugins, and its service and shared workers keep the browser's user
+  agent (their client hints agree with it). Their language, clock,
+  headers and network do follow the page.
+- **One page's or context's own language** is sent through DevTools'
+  override, which puts `Accept-Language` early among every request's
+  headers, where Chrome puts its own last; and a service worker's own
+  script is fetched with Chrome's language, outside every page. Give the
+  language to the whole browser where that matters.
 - **More than one screen.** Pages with different screens in one browser
   put Chrome's windows on screens side by side, as on a desk with two
   monitors, so `screen.isExtended` is true. One screen for the whole
   browser, set at launch, leaves it false.
+- **A service worker kept** for a page's language, clock, headers or
+  phone stays running while the page is open, where Chrome would stop an
+  idle one after about 30 seconds.
+- **Windows' invisible window border**: a headless window has none, so
+  `outerWidth` is `innerWidth` there too.
 - **A permission prompt** is turned down at once, where a person would
   take a moment.

@@ -819,6 +819,12 @@ Netweir avoids these giveaways:
 - A viewport, a screen, a phone, a language or a time zone is set where
   Chrome sets it for itself, so the page, its workers and frames from
   other sites all say the same; see [A page's environment](environment.md).
+- Chrome for Testing is started as Google Chrome ships: without the
+  infobar that took 56 pixels from every page's window, and without the
+  field trial config that showed page script one language and moved
+  Accept-Language among a document's headers.
+- A worker's script asks for itself with its headers in Google Chrome's
+  order, which DevTools' user agent override would otherwise change.
 
 A test in the repository loads a page that checks the first two from page
 script and the server checks the request headers; the test also fails if
