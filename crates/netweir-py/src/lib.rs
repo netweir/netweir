@@ -355,19 +355,23 @@ fn fingerprint(url: &str) -> Option<String> {
 /// loc, lastmod, changefreq, priority and alternates, and what reading a
 /// broken one repaired (None if nothing). Gzip is unzipped, to at most
 /// `max` bytes. ValueError if it isn't a sitemap.
+/// With `stop`, reading gives up soon after it's set.
 #[pyfunction]
+#[pyo3(signature = (body, max, stop=None))]
 #[allow(clippy::type_complexity)]
 fn _sitemap<'py>(
     py: Python<'py>,
     body: &[u8],
     max: usize,
+    stop: Option<&StopFlag>,
 ) -> PyResult<(
     &'static str,
     Vec<Bound<'py, pyo3::types::PyDict>>,
     Option<String>,
 )> {
+    let stop = stop.map_or_else(Default::default, |s| s.0.clone());
     let map = py
-        .detach(|| netweir_core::sitemap::parse(body, max))
+        .detach(|| netweir_core::sitemap::parse_until(body, max, &stop))
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let kind = match map.kind {
         netweir_core::sitemap::Kind::Urlset => "urlset",
@@ -384,6 +388,24 @@ fn _sitemap<'py>(
         entries.push(d);
     }
     Ok((kind, entries, map.repaired))
+}
+
+/// A flag a reader on another thread checks as it goes, to give up once
+/// whoever wanted its answer has gone.
+#[pyclass(frozen, module = "netweir")]
+#[derive(Default)]
+struct StopFlag(Arc<std::sync::atomic::AtomicBool>);
+
+#[pymethods]
+impl StopFlag {
+    #[new]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn set(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Whether `url` is outside `allowed`, as `allowed_domains` judges it.
@@ -447,6 +469,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_xml_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(_encode, m)?)?;
     m.add_class::<XmlNodeIter>()?;
+    m.add_class::<StopFlag>()?;
     m.add_function(wrap_pyfunction!(_robots_sitemaps, m)?)?;
     m.add_function(wrap_pyfunction!(_offsite, m)?)?;
     m.add_class::<Node>()?;

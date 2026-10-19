@@ -478,6 +478,12 @@ pub trait XmlVisitor {
     fn start(&mut self, qname: &str, attrs: &[(String, String)]);
     fn text(&mut self, text: &str);
     fn end(&mut self, qname: &str);
+    /// Asked as often as the clock is: true ends the reading there, as
+    /// running out of time does, with [`ParseXmlError::Timeout`]. For a
+    /// reader whose caller has gone. Never, by default.
+    fn stopped(&self) -> bool {
+        false
+    }
 }
 
 enum Stop {
@@ -644,7 +650,9 @@ impl<'v> Builder<'v> {
         self.work += units;
         if self.work >= self.next_check {
             self.next_check = self.work + WORK_BETWEEN_CHECKS;
-            if self.deadline.is_some_and(|d| Instant::now() > d) {
+            if self.deadline.is_some_and(|d| Instant::now() > d)
+                || self.visitor.as_ref().is_some_and(|v| v.stopped())
+            {
                 return Err(Stop::Late);
             }
         }

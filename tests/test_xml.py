@@ -807,6 +807,80 @@ def test_a_logging_filter_may_read_the_page_whose_repairs_it_logs():
     assert seen == ["1 < 2"]
 
 
+def test_a_cancelled_feed_reads_no_more_nodes():
+    """A cancelled iternodes crawl read on through the rest of its batch,
+    32 nodes of up to 10 seconds each, and the crawl waited for it to
+    finish. Now the batch stops at the node it's on. (A callback that
+    stops reading leaves no batch running: one is read only when asked.)"""
+    import asyncio
+    import time
+
+    items = "".join(f"<item><t>{'<' * 300_000}{i}</t></item>" for i in range(40))
+    page = page_of(f"<rss><channel>{items}</channel></rss>".encode(), "application/rss+xml")
+
+    class Feed(netweir.XMLFeedSpider):
+        recover = True
+
+    spider = Feed()
+
+    async def read(n):
+        got = 0
+        async for _ in spider._nodes(page):
+            got += 1
+            if got == n:
+                break
+        return got
+
+    started = time.perf_counter()
+    assert asyncio.run(read(32)) == 32
+    batch = time.perf_counter() - started
+
+    async def cancelled():
+        task = asyncio.create_task(read(10_000))
+        await asyncio.sleep(batch / 16)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.perf_counter()
+
+    # asyncio.run waits for the batch's thread before it returns.
+    done = asyncio.run(cancelled())
+    waited = time.perf_counter() - done
+    # Before, the rest of the batch: most of `batch`. Now a node or so.
+    assert waited < batch / 4, (waited, batch)
+
+
+def test_a_cancelled_sitemap_is_read_no_further():
+    """Cancelled, the crawl stopped waiting for a sitemap, but the reader
+    read on to its end, up to 10 seconds, and the crawl's shutdown waited
+    for it. Now it gives up within a few lines."""
+    import asyncio
+    import time
+
+    rows = "".join(f"<url><loc>https://e/{i}{'<' * 200}</loc></url>" for i in range(40_000))
+    page = page_of(f"<urlset>{rows}</urlset>".encode(), "application/xml")
+    spider = netweir.Spider()
+
+    async def read():
+        return [r async for r in spider._sitemap(page)]
+
+    started = time.perf_counter()
+    assert len(asyncio.run(read())) == 40_000
+    whole = time.perf_counter() - started
+
+    async def cancelled():
+        task = asyncio.create_task(read())
+        await asyncio.sleep(whole / 16)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.perf_counter()
+
+    done = asyncio.run(cancelled())
+    waited = time.perf_counter() - done
+    assert waited < whole / 4, (waited, whole)
+
+
 def test_an_id_a_prefix_came_off_is_the_element_s_id():
     # remove_namespaces makes a:id the element's id, as if written so: #p
     # finds it, and [id] reads it rather than the ID beside it.

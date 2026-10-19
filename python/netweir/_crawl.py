@@ -35,6 +35,7 @@ from netweir._fetch import Page, _pairs, certificates, checked_auth, redirect_li
 from netweir._native import (
     _RESOURCE_TYPES,
     Crawler,
+    StopFlag,
     TrackStore,
     _auth_domain,
     _check_queue_url,
@@ -556,11 +557,18 @@ class Spider:
                 yield Request(page.urljoin(url), callback="_sitemap")
             return
         limit = self.settings.max_response_size or 1 << 30
+        # Cancelled, the crawl stops waiting at once, and the reader gives
+        # up soon after rather than reading on for no one.
+        stop = StopFlag()
         try:
-            kind, entries, repaired = await asyncio.to_thread(_parse_sitemap, page.body, limit)
+            kind, entries, repaired = await asyncio.to_thread(
+                _parse_sitemap, page.body, limit, stop
+            )
         except ValueError as e:
             log.warning("%s: not read as a sitemap: %s", page.url, e)
             return
+        finally:
+            stop.set()
         if repaired:
             log.warning("%s: sitemap read, broken: %s", page.url, repaired)
         entries = self.sitemap_filter(entries)

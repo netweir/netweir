@@ -9,6 +9,7 @@ import inspect
 import io
 import itertools
 import logging
+import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
 from typing import Any
 
@@ -143,6 +144,11 @@ class XMLFeedSpider(Spider):
                     place=page.url,
                 )
 
+            # Set once nothing waits for the nodes (the crawl was cancelled,
+            # or the callback stopped reading): a batch still being read
+            # stops at the node it's on.
+            stop = threading.Event()
+
             def batch(nodes: Any) -> tuple[list[Selection], BaseException | None]:
                 # The nodes before a break in the feed, and then the break.
                 out = []
@@ -151,19 +157,24 @@ class XMLFeedSpider(Spider):
                         for prefix, uri in namespaces:
                             node.register_namespace(prefix, uri)
                         out.append(node.xpath("."))
+                        if stop.is_set():
+                            break
                 except Exception as e:  # noqa: BLE001 - raised once they're given
                     return out, e
                 return out, None
 
-            nodes = await asyncio.to_thread(start)
-            while True:
-                selections, error = await asyncio.to_thread(batch, nodes)
-                for selection in selections:
-                    yield selection
-                if error is not None:
-                    raise error
-                if len(selections) < _BATCH:
-                    return
+            try:
+                nodes = await asyncio.to_thread(start)
+                while True:
+                    selections, error = await asyncio.to_thread(batch, nodes)
+                    for selection in selections:
+                        yield selection
+                    if error is not None:
+                        raise error
+                    if len(selections) < _BATCH:
+                        return
+            finally:
+                stop.set()
         if self.iterator not in ("xml", "html"):
             raise ValueError(
                 f"unknown iterator {self.iterator!r}: use 'iternodes', 'xml' or 'html'"

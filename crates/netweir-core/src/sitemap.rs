@@ -2,6 +2,7 @@
 //! sitemaps.org, gzipped or not, and plain-text sitemaps of one URL per
 //! line.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use netweir_dom::xml::{XmlOptions, XmlVisitor, walk_xml};
@@ -42,6 +43,12 @@ pub struct Sitemap {
 /// "billion laughs" sitemap is refused rather than filling memory), and
 /// reading takes at most [`BUDGET`].
 pub fn parse(body: &[u8], max: usize) -> Result<Sitemap, String> {
+    parse_until(body, max, &AtomicBool::new(false))
+}
+
+/// [`parse`], giving up as soon as it can once `stop` is set: for a
+/// caller that no longer wants the answer.
+pub fn parse_until(body: &[u8], max: usize, stop: &AtomicBool) -> Result<Sitemap, String> {
     let data = if body.starts_with(&[0x1f, 0x8b]) {
         gunzip(body, max)?
     } else if body.len() > max {
@@ -54,7 +61,7 @@ pub fn parse(body: &[u8], max: usize) -> Result<Sitemap, String> {
     let text = String::from_utf8_lossy(&data);
     let text = text.trim_start_matches('\u{feff}').trim_start();
     if text.starts_with('<') {
-        xml(text)
+        xml(text, stop)
     } else {
         plain(text)
     }
@@ -105,14 +112,22 @@ pub const BUDGET: Duration = Duration::from_secs(10);
 /// read in recover mode: what recovery repaired is in `Sitemap::repaired`.
 /// Names are matched by their local part, in any case and any namespace,
 /// as sitemaps vary in both.
-fn xml(text: &str) -> Result<Sitemap, String> {
+fn xml(text: &str, stop: &AtomicBool) -> Result<Sitemap, String> {
     let options = XmlOptions {
         recover: true,
         budget: BUDGET,
     };
-    let mut walk = Walk::default();
-    let repairs = walk_xml(text, options, &mut walk)
-        .map_err(|e| format!("the sitemap isn't valid XML: {e}"))?;
+    let mut walk = Walk {
+        stop: Some(stop),
+        ..Walk::default()
+    };
+    let repairs = walk_xml(text, options, &mut walk).map_err(|e| {
+        if stop.load(Ordering::Relaxed) {
+            "the sitemap was given up on".to_string()
+        } else {
+            format!("the sitemap isn't valid XML: {e}")
+        }
+    })?;
     let kind = walk
         .kind
         .ok_or("not a sitemap: no <urlset> or <sitemapindex>")?;
@@ -125,7 +140,9 @@ fn xml(text: &str) -> Result<Sitemap, String> {
 
 /// What a sitemap's events add up to.
 #[derive(Default)]
-struct Walk {
+struct Walk<'a> {
+    /// Set when the caller has gone.
+    stop: Option<&'a AtomicBool>,
     /// Elements open, the root counting 1.
     depth: usize,
     /// The root's kind; None until it's read, and for any other root.
@@ -144,7 +161,11 @@ fn local(qname: &str) -> String {
         .to_ascii_lowercase()
 }
 
-impl XmlVisitor for Walk {
+impl XmlVisitor for Walk<'_> {
+    fn stopped(&self) -> bool {
+        self.stop.is_some_and(|s| s.load(Ordering::Relaxed))
+    }
+
     fn start(&mut self, qname: &str, attrs: &[(String, String)]) {
         let name = local(qname);
         match self.depth {
@@ -217,6 +238,32 @@ mod tests {
     use super::*;
 
     const MAX: usize = 1 << 20;
+
+    #[test]
+    fn a_sitemap_no_one_waits_for_is_given_up_on() {
+        let rows: String = (0..200_000)
+            .map(|i| format!("<url><loc>https://e/{i}</loc></url>"))
+            .collect();
+        let xml = format!("<urlset>{rows}</urlset>");
+        let stop = AtomicBool::new(false);
+        assert_eq!(
+            parse_until(xml.as_bytes(), 1 << 30, &stop)
+                .unwrap()
+                .entries
+                .len(),
+            200_000
+        );
+        // Once it is set, reading stops within a few lines.
+        stop.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        let err = parse_until(xml.as_bytes(), 1 << 30, &stop).unwrap_err();
+        assert_eq!(err, "the sitemap was given up on");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn a_urlset_gives_each_page_with_what_it_says_about_it() {

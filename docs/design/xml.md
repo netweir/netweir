@@ -167,7 +167,10 @@ attribute value is read only as far as a reference could go, and whether
 an end tag closes anything open is a lookup, not a search of every open
 element. The tests hold all three to linear time on a megabyte of each.
 Sitemaps and iternodes are read on threads of their own, so a crawl's
-event loop goes on while they are.
+event loop goes on while they are. Cancelled, the reading stops soon
+after: iternodes at the node it's on, and a sitemap within a few lines,
+through `XmlVisitor::stopped`, which the reader asks each time it looks
+at the clock; otherwise the crawl's shutdown would wait for it.
 
 Recover mode also repairs end tags: one for an element further out
 closes what's inside it, and one that closes nothing open is ignored. A
