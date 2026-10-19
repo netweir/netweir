@@ -344,3 +344,77 @@ async fn a_connected_browsers_own_tabs_are_left_alone() {
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_connected_browser_takes_a_language_but_not_a_screen() {
+    let Some(chrome) = running() else {
+        return;
+    };
+    let browser = Browser::connect(&chrome.ws, LaunchOptions::default())
+        .await
+        .unwrap();
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let page = browser
+        .new_page_with(netweir_browser::Environment {
+            locale: Some("nl-NL".into()),
+            timezone: Some("Europe/Amsterdam".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    assert_eq!(
+        page.evaluate("[navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone]")
+            .await
+            .unwrap(),
+        json!(["nl-NL", "Europe/Amsterdam"])
+    );
+    let sent = server.headers_for("/");
+    assert!(
+        sent.iter()
+            .any(|(k, v)| k == "accept-language" && v == "nl-NL,nl;q=0.9"),
+        "{sent:?}"
+    );
+    // Its screen is a real one netweir can't change; nor will it emulate
+    // one that frames from other sites wouldn't share.
+    let err = browser
+        .new_page_with(netweir_browser::Environment {
+            screen: Some(netweir_browser::Size {
+                width: 1440,
+                height: 900,
+            }),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string().contains("headless Chrome netweir launched"),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_connected_chrome_whose_hints_a_flag_emptied_wont_take_a_language() {
+    let Some(chrome) = running_with(&[
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    ]) else {
+        return;
+    };
+    let browser = Browser::connect(&chrome.ws, LaunchOptions::default())
+        .await
+        .unwrap();
+    // A language goes with the user agent override, which would send the
+    // emptied hints as empty headers: refused, saying why.
+    let err = browser
+        .new_page_with(netweir_browser::Environment {
+            locale: Some("nl-NL".into()),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("client hints"), "{err}");
+    browser.close().await.unwrap();
+}
