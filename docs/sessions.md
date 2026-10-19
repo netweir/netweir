@@ -208,6 +208,14 @@ of the jar's cookies go with it, and nothing its response sets is kept.
 Unlike Scrapy, which then ignores `cookies=`, Netweir sends the request's
 own `cookies` and nothing else.
 
+A request's own cookies aren't part of what makes it a duplicate, nor of
+its cache key or its deltafetch key, as in Scrapy. So a request that
+leaves the jar out and brings another user's cookies is, to those, the
+same request as the crawl's own for that page: it's dropped as a
+duplicate of it, skipped by deltafetch for it, and with the cache on,
+may be answered with the page the crawl's jar fetched. For another user,
+use a named jar, which keeps all three apart.
+
 ### Resuming, workers and several machines
 
 - A crawl with a checkpoint saves its jars as it goes, and a resumed crawl
