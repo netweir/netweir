@@ -836,6 +836,62 @@ def test_ctrl_c_lets_every_task_wind_up_before_it_is_raised():
     assert "never retrieved" not in done.stderr and "destroyed" not in done.stderr
 
 
+# Stops the crawl just as the third item has been written to the output
+# file, before the crawl counts it.
+INTERRUPTED_AS_AN_ITEM_IS_WRITTEN = """
+import signal, sys
+from netweir import _cli, export
+
+write = export._Exporter._write
+
+def writing(self, item):
+    result = write(self, item)
+    if item.get("n") == "3":
+        signal.raise_signal(SIGNAL)
+    return result
+
+export._Exporter._write = writing
+sys.exit(_cli.main(sys.argv[1:]))
+"""
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        "SIGINT",
+        "SIGTERM",
+        pytest.param(
+            "SIGBREAK",
+            marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows' Ctrl-Break"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("workers", ["1", "2"], ids=["alone", "workers"])
+def test_an_interrupt_as_an_item_is_written_still_counts_it(base, tmp_path, stop, workers):
+    script = tmp_path / "slow.py"
+    script.write_text(
+        "import netweir\n"
+        "class Slow(netweir.Spider):\n"
+        f"    start_urls = ['{base}/slow/1']\n"
+        "    def parse(self, page):\n"
+        "        yield {'n': page.css('h1::text').get()}\n"
+        "        yield page.follow(page.css('a::attr(href)').get())\n"
+    )
+    out, stats = tmp_path / "out.jsonl", tmp_path / "stats.json"
+    done = subprocess.run(
+        [sys.executable, "-c", INTERRUPTED_AS_AN_ITEM_IS_WRITTEN.replace("SIGNAL", f"signal.{stop}"),
+         "crawl", str(script), "-o", str(out), "--stats", str(stats),
+         "-s", "throttle=false", "-s", "start_delay=0", "-s", f"workers={workers}"],
+        capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    assert done.returncode == 130, done.stderr
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [row["n"] for row in rows] == ["1", "2", "3"]
+    saved = json.loads(stats.read_text(encoding="utf-8"))
+    assert saved["finish_reason"] == "interrupted"
+    assert saved["items"] == len(rows)
+
+
 def test_stats_are_kept_when_a_crawl_raises(base):
     class Raises(netweir.Spider):
         settings = netweir.Settings(throttle=False, start_delay=0, fail_fast=True)
