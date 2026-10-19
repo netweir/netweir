@@ -934,17 +934,19 @@ async fn times_is_the_limit_even_past_the_browsers_timeout() {
     };
     let browser = common::launch(LaunchOptions {
         executable: Some(executable),
-        timeout: Duration::from_secs(3),
+        timeout: Duration::from_secs(6),
         ..LaunchOptions::default()
     })
     .await;
-    // Each page of the feed takes a second and a half to come.
+    // Each page of the feed takes 3 s to come, so three of them run
+    // past the browser's 6 s. The browser gets 6 s, not 3, as a loaded
+    // Windows runner has taken over 3 s to answer one turn of the wheel.
     let slow = |n: usize| {
         let names: Vec<String> = (0..10)
             .map(|i| format!("\"item {}\"", n * 10 + i))
             .collect();
         let mut reply = json_reply(&format!("[{}]", names.join(",")));
-        reply.headers.push(("X-Delay-Ms", "1500".into()));
+        reply.headers.push(("X-Delay-Ms", "3000".into()));
         reply
     };
     let server = serve(vec![
@@ -960,7 +962,7 @@ async fn times_is_the_limit_even_past_the_browsers_timeout() {
         ("/items?page=4", slow(3)),
     ]);
     let page = browser.new_page().await.unwrap();
-    // The browser's 3 s is for scroll, the step under test: the page
+    // The browser's 6 s is for scroll, the step under test: the page
     // loading first gets a limit of its own, as a cold Chrome on a loaded
     // Windows runner has taken longer than 3 s to load it.
     let setup = Some(Duration::from_secs(30));
@@ -970,12 +972,12 @@ async fn times_is_the_limit_even_past_the_browsers_timeout() {
     page.wait_for("li", "visible", setup).await.unwrap();
     let started = std::time::Instant::now();
     let grew = page
-        .scroll(None, 0.0, None, Some(3), Duration::from_secs(4), None)
+        .scroll(None, 0.0, None, Some(3), Duration::from_secs(6), None)
         .await
         .unwrap();
     assert_eq!(grew, 3);
     assert!(
-        started.elapsed() > Duration::from_secs(3),
+        started.elapsed() > Duration::from_secs(6),
         "{:?}",
         started.elapsed()
     );
