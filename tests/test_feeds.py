@@ -449,3 +449,53 @@ def test_settings_xml_recover_reaches_feed_spiders(base):
 
     Collect().run()
     assert sorted(i["title"] for i in items) == ["a\xa0b", "c"]
+
+
+def test_iternodes_never_builds_the_whole_feed(tmp_path):
+    """The crawl parsed an XML page in full before its callback ran, so an
+    iternodes spider held the whole tree after all. The tree is now built
+    only when something reads it: never, for iternodes."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "feed.py"
+    script.write_text(
+        "import resource, sys, threading\n"
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+        "import netweir\n"
+        "items = ''.join(f'<item><id>{i}</id><title>Title {i} with some words</title>'\n"
+        "  f'<link>https://example.com/p/{i}</link></item>' for i in range(200_000))\n"
+        "body = ('<?xml version=\"1.0\"?><feed>' + items + '</feed>').encode()\n"
+        "del items\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "    def log_message(self, *a): pass\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200 if self.path == '/f' else 404)\n"
+        "        data = body if self.path == '/f' else b''\n"
+        "        self.send_header('Content-Type', 'text/xml')\n"
+        "        self.send_header('Content-Length', str(len(data))); self.end_headers()\n"
+        "        self.wfile.write(data)\n"
+        "server = ThreadingHTTPServer(('127.0.0.1', 0), H)\n"
+        "threading.Thread(target=server.serve_forever, daemon=True).start()\n"
+        "seen = []\n"
+        "class Feed(netweir.XMLFeedSpider):\n"
+        "    start_urls = [f'http://127.0.0.1:{server.server_port}/f']\n"
+        "    settings = netweir.Settings(throttle=False, start_delay=0, obey_tdmrep=False)\n"
+        "    def parse_node(self, page, node):\n"
+        "        if not seen: seen.append(page._root is None)\n"
+        "        seen.append(1)\n"
+        "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "Feed().run()\n"
+        "grew = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before\n"
+        "scale = 1 if sys.platform == 'darwin' else 1024\n"
+        "print(seen[0], len(seen) - 1, grew * scale, len(body))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, check=True
+    ).stdout.split()
+    unparsed, nodes, grew, size = out[0] == "True", int(out[1]), int(out[2]), int(out[3])
+    assert unparsed, "the page's document was built before parse_node ran"
+    assert nodes == 200_000
+    # The body, its text and the iterator's copy; the whole tree is more
+    # than 15 times the feed's size.
+    assert grew < 8 * size, (grew, size)

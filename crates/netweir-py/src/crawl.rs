@@ -397,9 +397,17 @@ impl Engine {
             ignored: not_a_page(&response),
             repaired: None,
         };
-        if done.ignored.is_none() {
-            let text = response.text();
-            let markup = crate::Markup::of(response.header("content-type"), &text);
+        // XML is parsed here only when the rules need it. Otherwise the tree
+        // is built when the callback first reads it (page.root, a query),
+        // and a feed read node by node is never built whole.
+        let ct = response.header("content-type");
+        let sniffed = ct.is_none().then(|| response.text());
+        let markup = crate::Markup::of(ct, sniffed.as_deref().unwrap_or(""));
+        let rules_need =
+            done.tag.apply_rules || done.tag.rule.is_some_and(|r| rules[r].item.is_some());
+        let parse_here = markup == crate::Markup::Html || rules_need;
+        if done.ignored.is_none() && parse_here {
+            let text = sniffed.unwrap_or_else(|| response.text());
             match crate::parse_markup(&text, markup, PARSE_BUDGET, self.xml_recover) {
                 Ok((doc, repairs)) => {
                     if !repairs.is_empty() {
