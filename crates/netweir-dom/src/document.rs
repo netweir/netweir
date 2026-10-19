@@ -899,26 +899,31 @@ unsafe fn strip_prefixes(n: Node<'_>) {
         let status = unsafe { ffi::nw_xml_rename(n.raw, local.as_ptr().cast(), local.len()) };
         assert_eq!(status, 0, "lexbor failed to allocate a name");
     }
+    let mut attrs = Vec::new();
     let mut a = unsafe { ffi::nw_first_attr(n.raw) };
     while !a.is_null() {
         let mut len = 0;
         let name = unsafe { str_at(ffi::nw_attr_qname(a, &mut len), len) };
-        if let Some((_, local)) = name.split_once(':') {
-            // An attribute already called that loses to this one.
-            let mut b = unsafe { ffi::nw_first_attr(n.raw) };
-            while !b.is_null() {
-                let after = unsafe { ffi::nw_next_attr(b) };
-                let mut bl = 0;
-                if b != a && unsafe { str_at(ffi::nw_attr_qname(b, &mut bl), bl) } == local {
-                    unsafe { ffi::nw_attr_remove(n.raw, b) };
-                }
-                b = after;
-            }
-            let status = unsafe { ffi::nw_xml_attr_rename(a, local.as_ptr().cast(), local.len()) };
-            assert_eq!(status, 0, "lexbor failed to allocate a name");
-        }
-        // After the removals, which may have taken the one that was next.
+        attrs.push((a, name));
         a = unsafe { ffi::nw_next_attr(a) };
+    }
+    // Each name's attribute once the prefixes are gone: the plain ones
+    // first, then the prefixed in order, each taking the place of any
+    // attribute already of that name.
+    let mut by_name: std::collections::HashMap<&str, *mut ffi::RawAttr> = attrs
+        .iter()
+        .filter(|(_, name)| !name.contains(':'))
+        .map(|&(a, name)| (name, a))
+        .collect();
+    for &(a, name) in &attrs {
+        let Some((_, local)) = name.split_once(':') else {
+            continue;
+        };
+        if let Some(old) = by_name.insert(local, a) {
+            unsafe { ffi::nw_attr_remove(n.raw, old) };
+        }
+        let status = unsafe { ffi::nw_xml_attr_rename(a, local.as_ptr().cast(), local.len()) };
+        assert_eq!(status, 0, "lexbor failed to allocate a name");
     }
 }
 

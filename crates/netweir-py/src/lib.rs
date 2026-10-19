@@ -203,7 +203,8 @@ impl XmlNodeIter {
 /// `tag` is `name` or `prefix:name` with the prefix in `namespaces`.
 #[pyfunction]
 fn _xml_nodes(text: String, tag: &str, namespaces: Vec<(String, String)>) -> PyResult<XmlNodeIter> {
-    let nodes = XmlNodes::new(text, tag, &namespaces).map_err(PyValueError::new_err)?;
+    let nodes = XmlNodes::new(text, tag, &namespaces, Default::default())
+        .map_err(PyValueError::new_err)?;
     Ok(XmlNodeIter {
         nodes: Mutex::new(nodes),
     })

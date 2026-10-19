@@ -28,7 +28,7 @@ jobs:
       - run: cargo install cargo-fuzz --locked
       - name: Fuzz for five minutes
         working-directory: crates/netweir-dom
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -max_len=4096
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -max_len=4096 ${{ matrix.target == 'xml' && '-dict=fuzz/xml.dict' || '' }}
       - name: Keep what it found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

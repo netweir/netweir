@@ -8,6 +8,9 @@
 #include <lexbor/dom/dom.h>
 #include <lexbor/html/html.h>
 #include <lexbor/selectors/selectors.h>
+#include <lexbor/core/sbst.h>
+#include <lexbor/html/tokenizer/res.h>
+#include <lexbor/tag/res.h>
 #include <string.h>
 
 /* ---- documents ---------------------------------------------------------- */
@@ -282,6 +285,29 @@ lxb_dom_node_t *nw_xml_element(lxb_html_document_t *doc, const char *qname, size
     return lxb_dom_interface_node(el);
 }
 
+/* An XML attribute's local name id: the lowercased name's, as lexbor's
+ * HTML attributes have, which its CSS attribute selectors look up (so they
+ * ignore case on XML too). Not where that would be lexbor's `id` or `class`
+ * for a name written otherwise (`ID`, `Class`): lexbor keeps one of each per
+ * element, dropping another, and XML may have `id` and `ID` side by side.
+ * Those keep their written form's id. Returns 0 on success. */
+static int nw_xml_attr_set_local(lxb_dom_document_t *d, lxb_dom_attr_t *attr, const char *qname,
+                                 size_t qlen) {
+    lxb_dom_attr_data_t *local =
+        lxb_dom_attr_local_name_append(d->attrs, (const lxb_char_t *) qname, qlen);
+    if (local == NULL) {
+        return -1;
+    }
+    if ((local->attr_id == LXB_DOM_ATTR_ID && !(qlen == 2 && memcmp(qname, "id", 2) == 0))
+        || (local->attr_id == LXB_DOM_ATTR_CLASS
+            && !(qlen == 5 && memcmp(qname, "class", 5) == 0))) {
+        attr->node.local_name = attr->qualified_name;
+    } else {
+        attr->node.local_name = local->attr_id;
+    }
+    return 0;
+}
+
 /* Adds an attribute named `qname`, exactly as written, to element `n`.
  * Returns the attribute, or NULL when lexbor cannot allocate. The caller
  * makes sure no two attributes of an element share a name. */
@@ -298,20 +324,8 @@ lxb_dom_attr_t *nw_xml_attr(lxb_dom_node_t *n, const char *qname, size_t qlen, c
         return NULL;
     }
     attr->qualified_name = q->attr_id;
-    /* Only `id` and `class` exactly take lexbor's own ids, which its CSS
-     * matching of #id and .class looks for. Any other name keeps its
-     * written form as its id too: lexbor keeps one `id` attribute per
-     * element, dropping another with the same lowercased name, and XML
-     * may have `id` and `ID`, or `id` and `xml:id`, side by side. */
-    if ((qlen == 2 && memcmp(qname, "id", 2) == 0) || (qlen == 5 && memcmp(qname, "class", 5) == 0)) {
-        lxb_dom_attr_data_t *local =
-            lxb_dom_attr_local_name_append(d->attrs, (const lxb_char_t *) qname, qlen);
-        if (local == NULL) {
-            return NULL;
-        }
-        attr->node.local_name = local->attr_id;
-    } else {
-        attr->node.local_name = q->attr_id;
+    if (nw_xml_attr_set_local(d, attr, qname, qlen) != 0) {
+        return NULL;
     }
     if (lxb_dom_attr_set_value(attr, (const lxb_char_t *) value, vlen) != LXB_STATUS_OK) {
         return NULL;
@@ -328,12 +342,24 @@ lxb_dom_node_t *nw_create_comment(lxb_html_document_t *doc, const char *data, si
     return c == NULL ? NULL : lxb_dom_interface_node(c);
 }
 
+/* lexbor's lxb_dom_document_create_processing_instruction refuses data
+ * with `?>` in it, which the parser never gives but recover mode can make
+ * by dropping a character from between `?` and `>`; this makes the node
+ * the same way, without refusing. */
 lxb_dom_node_t *nw_create_pi(lxb_html_document_t *doc, const char *target, size_t tlen,
                              const char *data, size_t dlen) {
-    lxb_dom_processing_instruction_t *pi = lxb_dom_document_create_processing_instruction(
-        lxb_dom_interface_document(doc), (const lxb_char_t *) target, tlen,
-        (const lxb_char_t *) data, dlen);
-    return pi == NULL ? NULL : lxb_dom_interface_node(pi);
+    lxb_dom_document_t *d = lxb_dom_interface_document(doc);
+    lxb_dom_processing_instruction_t *pi = lxb_dom_processing_instruction_interface_create(d);
+    if (pi == NULL) {
+        return NULL;
+    }
+    if (lexbor_str_init(&pi->char_data.data, d->text, dlen) == NULL
+        || lexbor_str_init(&pi->target, d->text, tlen) == NULL) {
+        return NULL;
+    }
+    lexbor_str_append(&pi->char_data.data, d->text, (const lxb_char_t *) data, dlen);
+    lexbor_str_append(&pi->target, d->text, (const lxb_char_t *) target, tlen);
+    return lxb_dom_interface_node(pi);
 }
 
 const char *nw_pi_target(lxb_dom_node_t *n, size_t *len) {
@@ -380,10 +406,41 @@ int nw_xml_attr_rename(lxb_dom_attr_t *a, const char *qname, size_t qlen) {
         return -1;
     }
     a->qualified_name = q->attr_id;
-    if (a->node.local_name != LXB_DOM_ATTR_ID && a->node.local_name != LXB_DOM_ATTR_CLASS) {
-        a->node.local_name = q->attr_id;
+    /* An `id` or `class` attribute keeps its place in its element: never
+     * renamed onto, since only a prefixed name is renamed. */
+    if (a->node.local_name == LXB_DOM_ATTR_ID || a->node.local_name == LXB_DOM_ATTR_CLASS) {
+        return 0;
     }
-    return 0;
+    return nw_xml_attr_set_local(d, a, qname, qlen);
+}
+
+/* HTML's named character `name` (given with its `;`), as UTF-8, or NULL
+ * if there's none of that name. */
+const char *nw_html_entity(const char *name, size_t len, size_t *out_len) {
+    const lexbor_sbst_entry_static_t *strt = lxb_html_tokenizer_res_entities_sbst;
+    const lexbor_sbst_entry_static_t *entry = &strt[1];
+    for (size_t i = 0; i < len; i++) {
+        entry = lexbor_sbst_entry_static_find(strt, entry, (lxb_char_t) name[i]);
+        if (entry == NULL) {
+            return NULL;
+        }
+        if (i + 1 == len) {
+            break;
+        }
+        entry = &strt[entry->next];
+    }
+    if (len == 0 || entry->value == NULL) {
+        return NULL;
+    }
+    *out_len = entry->value_len;
+    return (const char *) entry->value;
+}
+
+/* Whether `name` is an element HTML knows, by lexbor's tag table. */
+int nw_is_html_tag(const char *name, size_t len) {
+    const lexbor_shs_entry_t *entry =
+        lexbor_shs_entry_get_lower_static(lxb_tag_res_shs_data_default, (const lxb_char_t *) name, len);
+    return entry != NULL;
 }
 
 /* ---- serialising ------------------------------------------------------- */

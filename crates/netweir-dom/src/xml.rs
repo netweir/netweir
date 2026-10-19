@@ -11,12 +11,17 @@
 //!   more than [`MAX_ENTITY_DEPTH`] deep, and to no more than a few times
 //!   the document's own size in all: a "billion laughs" document is
 //!   refused before it can fill memory.
-//! - Elements nest at most [`MAX_DEPTH`] deep.
+//! - Elements nest at most [`MAX_DEPTH`] deep, and a parse has a time
+//!   budget the clock is checked against as the work is done, attributes
+//!   and expanded entities included.
 //! - Anything that isn't well-formed is an [`XmlError`] saying what is
-//!   wrong and where, by line and column. Unlike lxml in Scrapy's
-//!   `recover` mode, a broken document is never quietly cut short.
+//!   wrong and where, by line and column. Recover mode
+//!   ([`XmlOptions::recover`]) repairs the faults feeds commonly have
+//!   instead, and says what it repaired ([`Repairs`]); it's never the
+//!   default, so a broken document is never quietly read as if it weren't.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -222,6 +227,19 @@ fn is_blank(s: &str) -> bool {
     s.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
 }
 
+/// HTML's named character `name` (`nbsp` gives U+00A0), if there is one.
+pub fn html_entity(name: &str) -> Option<String> {
+    let key = format!("{name};");
+    let mut len = 0;
+    let ptr = unsafe { ffi::nw_html_entity(key.as_ptr().cast(), key.len(), &mut len) };
+    (!ptr.is_null()).then(|| unsafe { ffi::str_at(ptr, len) }.to_string())
+}
+
+/// Whether `name` is an element HTML has (`div`, `title`; not `rss`).
+pub fn is_html_tag(name: &str) -> bool {
+    unsafe { ffi::nw_is_html_tag(name.as_ptr().cast(), name.len()) != 0 }
+}
+
 fn predefined(name: &str) -> Option<char> {
     Some(match name {
         "amp" => '&',
@@ -383,6 +401,83 @@ fn entity_value(raw: &str, v11: bool) -> Result<String, String> {
 
 // --- building ---------------------------------------------------------------
 
+/// How to read a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XmlOptions {
+    /// Repair what can be repaired instead of failing, as lxml's recover
+    /// mode does, and say what was repaired (see [`Repairs`]). Undeclared
+    /// entities are read as HTML's named characters if they are one, and
+    /// kept as text if not; a bare `&` is kept as text; an undeclared
+    /// prefix puts its element or attribute in no namespace; anything
+    /// after the root element is ignored; characters XML doesn't allow are
+    /// dropped; of two attributes with one name the first is kept; and
+    /// elements still open at the end are closed. Anything else that isn't
+    /// well-formed is still an error.
+    pub recover: bool,
+    /// How long parsing may take. In [`XmlNodes`], how long each node may
+    /// take to read.
+    pub budget: Duration,
+}
+
+impl Default for XmlOptions {
+    fn default() -> XmlOptions {
+        XmlOptions {
+            recover: false,
+            budget: Duration::MAX,
+        }
+    }
+}
+
+/// What recover mode repaired: how many problems, and the first few of
+/// them, each with where it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Repairs {
+    pub count: usize,
+    pub first: Vec<XmlError>,
+}
+
+/// How many repairs [`Repairs`] keeps the details of.
+pub const REPAIRS_KEPT: usize = 10;
+
+impl Repairs {
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// One line for a log: how many, and the first few with their place.
+    pub fn summary(&self) -> String {
+        let shown: Vec<String> = self
+            .first
+            .iter()
+            .map(|e| format!("line {}, column {}: {}", e.line, e.column, e.reason))
+            .collect();
+        let more = self.count - self.first.len();
+        let tail = if more > 0 {
+            format!("; and {more} more")
+        } else {
+            String::new()
+        };
+        let what = if self.count == 1 {
+            "problem"
+        } else {
+            "problems"
+        };
+        format!(
+            "repaired {} {what} in the XML: {}{tail}",
+            self.count,
+            shown.join("; ")
+        )
+    }
+}
+
+/// What [`walk_xml`] tells as it reads: each element inside the root, its
+/// text, and its end. Names are as written, prefix included.
+pub trait XmlVisitor {
+    fn start(&mut self, qname: &str, attrs: &[(String, String)]);
+    fn text(&mut self, text: &str);
+    fn end(&mut self, qname: &str);
+}
+
 enum Stop {
     Bad(String),
     Late,
@@ -411,11 +506,18 @@ struct Open {
     node: *mut RawNode,
 }
 
-/// Which elements become documents: all of it, or each element with this
-/// namespace and local name, alone.
+/// What reading gives: the whole document, each element with this
+/// namespace and local name alone, or only events for a visitor.
 enum Want {
     Whole,
-    Nodes { ns: String, local: String },
+    Nodes {
+        /// The namespace asked for; None to take the prefix's meaning from
+        /// the document, where it's declared.
+        ns: Option<String>,
+        prefix: String,
+        local: String,
+    },
+    Walk,
 }
 
 /// The document being built, and how deep in the source it starts.
@@ -424,13 +526,24 @@ struct Out {
     depth: usize,
 }
 
-struct Builder {
+/// A node read alone, and the prefix of its name with the namespace the
+/// document bound it to, when that came from the document.
+pub type Ready = (Document, Option<(String, String)>);
+
+/// Work between looks at the clock: events, attributes, and 64-byte
+/// pieces of expanded entities.
+const WORK_BETWEEN_CHECKS: u64 = 1024;
+
+struct Builder<'v> {
     want: Want,
+    recover: bool,
     out: Option<Out>,
-    /// A finished document, in Nodes mode.
-    ready: Option<Document>,
-    /// Namespace bindings in scope: prefix ("" for the default) and URI.
+    ready: VecDeque<Ready>,
+    visitor: Option<&'v mut dyn XmlVisitor>,
+    /// Namespace bindings in scope: prefix ("" for the default) and URI,
+    /// with where each prefix's bindings are, innermost last.
     bindings: Vec<(String, String)>,
+    by_prefix: HashMap<String, Vec<usize>>,
     open: Vec<Open>,
     entities: HashMap<String, Entity>,
     /// Entities being expanded, outermost first.
@@ -443,27 +556,46 @@ struct Builder {
     /// Text not yet put in a node, so text, CDATA and references next to
     /// each other become one text node, as in lxml.
     pending: String,
+    /// Whether `pending` has a CDATA section in it, so even an empty one
+    /// makes a text node, as in lxml.
+    pending_cdata: bool,
     root_seen: bool,
     root_done: bool,
     doctype_seen: bool,
-    /// Whether an XML declaration may come next: only at the very start.
+    /// Whether an XML declaration may come next: before anything but
+    /// whitespace.
     decl_allowed: bool,
+    /// In recover mode, set once something comes after the root: the rest
+    /// is ignored.
+    stopped: bool,
     v11: bool,
-    events: u64,
+    work: u64,
+    next_check: u64,
     deadline: Option<Instant>,
+    /// Where in the source the event being read starts.
+    at: usize,
+    /// For the node being read (Nodes mode): its prefix and namespace,
+    /// when the document bound the prefix.
+    binding: Option<(String, String)>,
+    /// Repairs made: where, and what.
+    repairs: Vec<(usize, String)>,
+    repair_count: usize,
 }
 
-impl Builder {
-    fn new(want: Want, size: usize, deadline: Option<Instant>) -> Builder {
+impl<'v> Builder<'v> {
+    fn new(want: Want, size: usize, options: XmlOptions) -> Builder<'v> {
         let out = matches!(want, Want::Whole).then(|| Out {
             doc: Document::new_xml(),
             depth: 0,
         });
         Builder {
             want,
+            recover: options.recover,
             out,
-            ready: None,
+            ready: VecDeque::new(),
+            visitor: None,
             bindings: Vec::new(),
+            by_prefix: HashMap::new(),
             open: Vec::new(),
             entities: HashMap::new(),
             expanding: Vec::new(),
@@ -471,13 +603,20 @@ impl Builder {
             expanded: 0,
             allowance: ENTITY_ALLOWANCE.saturating_add(size.saturating_mul(ENTITY_FACTOR)),
             pending: String::new(),
+            pending_cdata: false,
             root_seen: false,
             root_done: false,
             doctype_seen: false,
             decl_allowed: true,
+            stopped: false,
             v11: false,
-            events: 0,
-            deadline,
+            work: 0,
+            next_check: WORK_BETWEEN_CHECKS,
+            deadline: Instant::now().checked_add(options.budget),
+            at: 0,
+            binding: None,
+            repairs: Vec::new(),
+            repair_count: 0,
         }
     }
 
@@ -486,6 +625,57 @@ impl Builder {
             XmlVersion::Explicit1_1
         } else {
             XmlVersion::Explicit1_0
+        }
+    }
+
+    /// Counts work, and looks at the clock now and then.
+    fn tick(&mut self, units: u64) -> Step {
+        self.work += units;
+        if self.work >= self.next_check {
+            self.next_check = self.work + WORK_BETWEEN_CHECKS;
+            if self.deadline.is_some_and(|d| Instant::now() > d) {
+                return Err(Stop::Late);
+            }
+        }
+        Ok(())
+    }
+
+    /// In recover mode, notes that `problem` was repaired by `fix` and
+    /// carries on; otherwise `problem` is the error.
+    fn repair(&mut self, problem: impl Into<String>, fix: &str) -> Step {
+        let problem = problem.into();
+        if !self.recover {
+            return Err(Stop::Bad(problem));
+        }
+        self.repair_count += 1;
+        if self.repairs.len() < REPAIRS_KEPT {
+            self.repairs.push((self.at, format!("{problem}; {fix}")));
+        }
+        Ok(())
+    }
+
+    fn repairs(&self, src: &str) -> Repairs {
+        Repairs {
+            count: self.repair_count,
+            first: self
+                .repairs
+                .iter()
+                .map(|(at, why)| error_at(src, *at, why.clone()))
+                .collect(),
+        }
+    }
+
+    /// Text as written, with the characters XML doesn't allow dropped in
+    /// recover mode.
+    fn clean<'t>(&mut self, text: &'t str) -> Result<Cow<'t, str>, Stop> {
+        match check_chars(text) {
+            Ok(()) => Ok(Cow::Borrowed(text)),
+            Err(why) => {
+                self.repair(why, "dropped")?;
+                Ok(Cow::Owned(
+                    text.chars().filter(|&c| legal(c, false)).collect(),
+                ))
+            }
         }
     }
 
@@ -509,23 +699,44 @@ impl Builder {
     }
 
     fn flush(&mut self) {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && !self.pending_cdata {
             return;
         }
-        if let (Some(_), Some(out)) = (self.parent(), self.out.as_ref()) {
+        if let Some(visitor) = self.visitor.as_deref_mut() {
+            visitor.text(&self.pending);
+        } else if let (Some(_), Some(out)) = (self.parent(), self.out.as_ref()) {
             let t = &self.pending;
             let n = unsafe { ffi::nw_create_text(out.doc.raw, t.as_ptr().cast(), t.len()) };
             self.append(n);
         }
         self.pending.clear();
+        self.pending_cdata = false;
+    }
+
+    /// Something other than whitespace outside the root element. Before
+    /// the root it's an error (dropped, in recover mode); after it, recover
+    /// mode stops reading there.
+    fn outside(&mut self, what: String) -> Step {
+        if self.root_done && self.recover {
+            self.repair(
+                format!("{what} after the root element"),
+                "the rest is ignored",
+            )?;
+            self.stopped = true;
+            return Ok(());
+        }
+        if self.root_done {
+            return Err(format!("{what} after the root element; a document has one root").into());
+        }
+        self.repair(format!("{what} outside the root element"), "dropped")
     }
 
     fn event(&mut self, ev: Event<'_>) -> Step {
-        self.events += 1;
-        if self.events.is_multiple_of(1024) && self.deadline.is_some_and(|d| Instant::now() > d) {
-            return Err(Stop::Late);
+        self.tick(1)?;
+        let decl_allowed = self.decl_allowed;
+        if !matches!(ev, Event::Text(_)) {
+            self.decl_allowed = false;
         }
-        let decl_allowed = std::mem::replace(&mut self.decl_allowed, false);
         match ev {
             Event::Decl(d) => {
                 if !decl_allowed {
@@ -539,7 +750,7 @@ impl Builder {
             }
             Event::DocType(t) => {
                 if self.root_seen {
-                    return Err("a DOCTYPE can only come before the root element".into());
+                    return self.outside("a DOCTYPE".into());
                 }
                 if self.doctype_seen {
                     return Err("a document can only have one DOCTYPE".into());
@@ -558,7 +769,7 @@ impl Builder {
                     );
                 }
                 let data = p.content().trim_start_matches([' ', '\t', '\r', '\n']);
-                check_chars(data)?;
+                let data = self.clean(data)?.into_owned();
                 self.flush();
                 if let Some(out) = self.parent().and(self.out.as_ref()) {
                     let n = unsafe {
@@ -575,7 +786,7 @@ impl Builder {
             }
             Event::Comment(c) => {
                 let text = c.xml_content(self.version());
-                check_chars(&text)?;
+                let text = self.clean(&text)?.into_owned();
                 self.flush();
                 if let Some(out) = self.parent().and(self.out.as_ref()) {
                     let n = unsafe {
@@ -589,26 +800,46 @@ impl Builder {
             Event::End(e) => self.end(e.name().as_ref())?,
             Event::Text(t) => {
                 let text = t.xml_content(self.version());
+                if !is_blank(&text) {
+                    self.decl_allowed = false;
+                }
                 if text.contains("]]>") {
                     return Err("`]]>` can't appear in text (write ]]&gt;)".into());
+                }
+                // References come as events of their own, so an `&` here
+                // is one that starts none (allowed only in recover mode).
+                if text.contains('&') {
+                    self.repair("a `&` starts no reference", "kept as text")?;
                 }
                 self.text(&text)?;
             }
             Event::CData(c) => {
                 if self.open.is_empty() {
-                    return Err("CDATA can only come inside the root element".into());
+                    return self.outside("CDATA".into());
                 }
                 let text = c.xml_content(self.version());
                 self.text(&text)?;
+                // As lxml has it: an empty section is an empty text node in
+                // a document parsed whole, and nothing in one read node by
+                // node (Scrapy's iternodes gives <x/>).
+                if self.capturing() && !matches!(self.want, Want::Nodes { .. }) {
+                    self.pending_cdata = true;
+                }
             }
             Event::GeneralRef(r) => {
                 if self.open.is_empty() {
-                    return Err("an entity reference can only come inside the root element".into());
+                    return self.outside("an entity reference".into());
                 }
                 let body = r.into_inner();
                 if body.starts_with('#') {
-                    let c = char_ref(&body, self.v11)?;
-                    if self.capturing() {
+                    let c = match char_ref(&body, self.v11) {
+                        Ok(c) => Some(c),
+                        Err(why) => {
+                            self.repair(why, "dropped")?;
+                            None
+                        }
+                    };
+                    if let (Some(c), true) = (c, self.capturing()) {
                         self.pending.push(c);
                     }
                 } else if let Some(c) = predefined(&body) {
@@ -624,8 +855,11 @@ impl Builder {
         Ok(())
     }
 
-    /// Whether text read now ends up in the tree.
+    /// Whether text read now is wanted.
     fn capturing(&self) -> bool {
+        if matches!(self.want, Want::Walk) {
+            return !self.open.is_empty();
+        }
         self.out
             .as_ref()
             .is_some_and(|out| self.open.len() > out.depth)
@@ -635,13 +869,13 @@ impl Builder {
         if self.open.is_empty() {
             if !is_blank(text) {
                 let shown: String = text.trim().chars().take(30).collect();
-                return Err(format!("text outside the root element: {shown:?}").into());
+                return self.outside(format!("text ({shown:?})"));
             }
             return Ok(());
         }
-        check_chars(text)?;
+        let text = self.clean(text)?;
         if self.capturing() {
-            self.pending.push_str(text);
+            self.pending.push_str(&text);
         }
         Ok(())
     }
@@ -665,23 +899,47 @@ impl Builder {
             )
             .into());
         }
+        self.tick(size as u64 / 64 + 1)?;
         self.expanding.push(name.to_string());
         Ok(())
     }
 
-    fn entity(&self, name: &str) -> Result<Rc<str>, String> {
+    /// An undeclared entity in recover mode: HTML's named character of
+    /// that name if there is one, else the reference as written.
+    fn undeclared(&mut self, name: &str) -> Result<String, Stop> {
+        let html = html_entity(name);
+        let how = if html.is_some() {
+            "read as HTML's"
+        } else {
+            "kept as text"
+        };
+        self.repair(format!("the entity &{name}; isn't declared"), how)?;
+        Ok(html.unwrap_or_else(|| format!("&{name};")))
+    }
+
+    /// The replacement text of a declared entity; None (after a repair)
+    /// for one that isn't declared.
+    fn entity(&mut self, name: &str) -> Result<Option<Rc<str>>, Stop> {
         match self.entities.get(name) {
-            Some(Entity::Internal(v)) => Ok(v.clone()),
+            Some(Entity::Internal(v)) => Ok(Some(v.clone())),
             Some(Entity::External) => Err(format!(
                 "&{name}; is an external entity, and external entities are never fetched"
-            )),
-            None => Err(format!("the entity &{name}; isn't declared")),
+            )
+            .into()),
+            None if self.recover => Ok(None),
+            None => Err(format!("the entity &{name}; isn't declared").into()),
         }
     }
 
     /// Reads a declared entity's replacement text where it's referred to.
     fn expand(&mut self, name: &str) -> Step {
-        let value = self.entity(name)?;
+        let Some(value) = self.entity(name)? else {
+            let text = self.undeclared(name)?;
+            if self.capturing() {
+                self.pending.push_str(&text);
+            }
+            return Ok(());
+        };
         self.enter(name, value.len())?;
         let floor = std::mem::replace(&mut self.floor, self.open.len());
         let mut result = self.read_entity(&value);
@@ -698,7 +956,7 @@ impl Builder {
     }
 
     fn read_entity(&mut self, value: &str) -> Step {
-        let mut reader = reader(value);
+        let mut reader = reader(value, self.recover);
         loop {
             match reader.read_event().map_err(|e| e.to_string())? {
                 Event::Eof => return Ok(()),
@@ -715,9 +973,8 @@ impl Builder {
     fn attr_value(&mut self, raw: &str, out: &mut String) -> Step {
         let mut rest = raw;
         while let Some(at) = rest.find(['&', '<', '\r', '\n', '\t']) {
-            let head = &rest[..at];
-            check_chars(head)?;
-            out.push_str(head);
+            let head = self.clean(&rest[..at])?;
+            out.push_str(&head);
             let c = rest.as_bytes()[at];
             rest = &rest[at + 1..];
             match c {
@@ -728,17 +985,33 @@ impl Builder {
                 }
                 b'\n' | b'\t' => out.push(' '),
                 _ => {
+                    // A reference is a name (or #digits) and a `;`.
                     let end = rest
                         .find(';')
-                        .ok_or("`&` in an attribute value starts no reference (write &amp;)")?;
+                        .filter(|&e| e > 0 && (rest[..e].starts_with('#') || is_name(&rest[..e])));
+                    let Some(end) = end else {
+                        self.repair(
+                            "`&` in an attribute value starts no reference (write &amp;)",
+                            "kept as text",
+                        )?;
+                        out.push('&');
+                        continue;
+                    };
                     let body = &rest[..end];
                     rest = &rest[end + 1..];
                     if body.starts_with('#') {
-                        out.push(char_ref(body, self.v11)?);
+                        match char_ref(body, self.v11) {
+                            Ok(c) => out.push(c),
+                            Err(why) => self.repair(why, "dropped")?,
+                        }
                     } else if let Some(c) = predefined(body) {
                         out.push(c);
                     } else {
-                        let value = self.entity(body)?;
+                        let Some(value) = self.entity(body)? else {
+                            let text = self.undeclared(body)?;
+                            out.push_str(&text);
+                            continue;
+                        };
                         if value.contains('<') {
                             return Err(format!(
                                 "the entity &{body}; contains `<`, so it can't be used in an attribute value"
@@ -753,8 +1026,8 @@ impl Builder {
                 }
             }
         }
-        check_chars(rest)?;
-        out.push_str(rest);
+        let tail = self.clean(rest)?;
+        out.push_str(&tail);
         Ok(())
     }
 
@@ -763,12 +1036,8 @@ impl Builder {
         if prefix == "xml" {
             return Some(XML_NS);
         }
-        self.bindings
-            .iter()
-            .rev()
-            .find(|(p, _)| p == prefix)
-            .map(|(_, u)| u.as_str())
-            .filter(|u| !u.is_empty())
+        let at = *self.by_prefix.get(prefix)?.last()?;
+        Some(self.bindings[at].1.as_str()).filter(|u| !u.is_empty())
     }
 
     fn bind(&mut self, prefix: &str, uri: String) -> Step {
@@ -790,8 +1059,46 @@ impl Builder {
         if !prefix.is_empty() && !is_ncname(prefix) {
             return Err(format!("{prefix:?} isn't a valid namespace prefix").into());
         }
+        self.by_prefix
+            .entry(prefix.to_string())
+            .or_default()
+            .push(self.bindings.len());
         self.bindings.push((prefix.to_string(), uri));
         Ok(())
+    }
+
+    /// Drops the bindings from `mark` on.
+    fn unbind_to(&mut self, mark: usize) {
+        while self.bindings.len() > mark {
+            let (prefix, _) = self.bindings.pop().expect("longer than mark");
+            if let Some(at) = self.by_prefix.get_mut(&prefix) {
+                at.pop();
+            }
+        }
+    }
+
+    /// The URI of `qname`'s prefix ("" for none). An undeclared prefix is
+    /// an error, or in recover mode no namespace.
+    fn namespace_of(&mut self, qname: &str, what: &str) -> Result<String, Stop> {
+        match qname.split_once(':') {
+            None if what == "element" => Ok(self.resolve("").unwrap_or("").to_string()),
+            None => Ok(String::new()),
+            Some((p, _)) => match self.resolve(p) {
+                Some(u) => Ok(u.to_string()),
+                None => {
+                    let named = if what == "element" {
+                        format!("<{qname}>")
+                    } else {
+                        format!("the attribute {qname}")
+                    };
+                    self.repair(
+                        format!("the namespace prefix {p} of {named} isn't declared"),
+                        "it's in no namespace",
+                    )?;
+                    Ok(String::new())
+                }
+            },
+        }
     }
 
     fn start(&mut self, e: &BytesStart<'_>, empty: bool) -> Step {
@@ -802,10 +1109,7 @@ impl Builder {
         }
         if self.open.is_empty() {
             if self.root_done {
-                return Err(format!(
-                    "<{qname}> comes after the root element has ended; a document has one root"
-                )
-                .into());
+                return self.outside(format!("<{qname}>"));
             }
             self.root_seen = true;
         }
@@ -814,9 +1118,28 @@ impl Builder {
         }
         let mark = self.bindings.len();
         let mut attrs: Vec<(String, String)> = Vec::new();
-        for a in e.attributes() {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut declared: HashSet<String> = HashSet::new();
+        // Checked here, in linear time: quick-xml's own check compares
+        // every attribute with every other.
+        let mut all = e.attributes();
+        all.with_checks(false);
+        for a in all {
+            self.tick(1)?;
             let a = a.map_err(|e| format!("in <{qname}>: {e}"))?;
             let key = a.key.as_ref();
+            let first = if key == "xmlns" || key.starts_with("xmlns:") {
+                declared.insert(key.to_string())
+            } else {
+                seen.insert(key.to_string())
+            };
+            if !first {
+                self.repair(
+                    format!("<{qname}> has the attribute {key} twice"),
+                    "the first is kept",
+                )?;
+                continue;
+            }
             let mut value = String::new();
             self.attr_value(&a.value, &mut value)?;
             if key == "xmlns" {
@@ -832,52 +1155,59 @@ impl Builder {
                 attrs.push((key.to_string(), value));
             }
         }
-        let (prefix, local) = qname.split_once(':').unwrap_or(("", &qname));
-        let ns = match self.resolve(prefix) {
-            Some(u) => u.to_string(),
-            None if prefix.is_empty() => String::new(),
-            None => {
-                return Err(
-                    format!("the namespace prefix {prefix} of <{qname}> isn't declared").into(),
-                );
-            }
-        };
+        let local = qname.split_once(':').map_or(qname.as_str(), |(_, l)| l);
+        let ns = self.namespace_of(&qname, "element")?;
         let mut attr_ns: Vec<String> = Vec::with_capacity(attrs.len());
-        for (key, _) in &attrs {
-            let uri = match key.split_once(':') {
-                Some((p, _)) => self
-                    .resolve(p)
-                    .ok_or_else(|| {
-                        format!("the namespace prefix {p} of the attribute {key} isn't declared")
-                    })?
-                    .to_string(),
-                None => String::new(),
-            };
-            attr_ns.push(uri);
-        }
         // Two prefixes for one namespace still name one attribute.
-        for i in 0..attrs.len() {
-            for j in 0..i {
-                let local = |k: &str| k.split_once(':').map_or(k, |(_, l)| l).to_string();
-                if !attr_ns[i].is_empty()
-                    && attr_ns[i] == attr_ns[j]
-                    && local(&attrs[i].0) == local(&attrs[j].0)
-                {
-                    return Err(format!(
-                        "<{qname}> has {} and {}, the same attribute twice",
-                        attrs[j].0, attrs[i].0
-                    )
-                    .into());
+        let mut expanded: HashSet<(String, String)> = HashSet::new();
+        let mut keep = vec![true; attrs.len()];
+        for (i, (key, _)) in attrs.iter().enumerate() {
+            let uri = self.namespace_of(key, "attribute")?;
+            if !uri.is_empty() {
+                let local = key.split_once(':').map_or(key.as_str(), |(_, l)| l);
+                if !expanded.insert((uri.clone(), local.to_string())) {
+                    self.repair(
+                        format!(
+                            "<{qname}> has {key} and another name for it, the same attribute twice"
+                        ),
+                        "the first is kept",
+                    )?;
+                    keep[i] = false;
                 }
             }
+            attr_ns.push(uri);
         }
+        let mut doc_binding = None;
         let wanted = match &self.want {
-            Want::Whole => false,
+            Want::Whole | Want::Walk => false,
             Want::Nodes {
                 ns: want_ns,
+                prefix,
                 local: want_local,
-            } => *want_ns == ns && want_local == local,
+            } => {
+                want_local == local
+                    && match want_ns {
+                        Some(u) => *u == ns,
+                        None if prefix.is_empty() => ns.is_empty(),
+                        None => {
+                            let found = self.resolve(prefix).is_some_and(|u| u == ns);
+                            if found {
+                                doc_binding = Some((prefix.clone(), ns.clone()));
+                            }
+                            found
+                        }
+                    }
+            }
         };
+        if let Some(visitor) = self.visitor.as_deref_mut() {
+            let kept: Vec<(String, String)> = attrs
+                .iter()
+                .zip(&keep)
+                .filter(|(_, k)| **k)
+                .map(|(a, _)| a.clone())
+                .collect();
+            visitor.start(&qname, &kept);
+        }
         if self.out.is_none() && wanted {
             self.out = Some(Out {
                 doc: Document::new_xml(),
@@ -905,7 +1235,9 @@ impl Builder {
                 let id = names.intern(&ns);
                 names.ns.insert(node as usize, id);
             }
-            for ((key, value), uri) in attrs.iter().zip(&attr_ns) {
+            for (((key, value), uri), _) in
+                attrs.iter().zip(&attr_ns).zip(&keep).filter(|(_, k)| **k)
+            {
                 let a = unsafe {
                     ffi::nw_xml_attr(
                         node,
@@ -950,14 +1282,12 @@ impl Builder {
                 unsafe { ffi::nw_append(parent, node) };
             }
         }
+        if top {
+            self.binding = doc_binding;
+        }
         self.open.push(Open { qname, mark, node });
         if empty {
-            let name = self
-                .open
-                .last()
-                .map(|o| o.qname.clone())
-                .unwrap_or_default();
-            self.end(&name)?;
+            self.close()?;
         }
         Ok(())
     }
@@ -973,18 +1303,28 @@ impl Builder {
         if top.qname != name {
             return Err(format!("</{name}> doesn't close <{}>", top.qname).into());
         }
-        let top = self.open.pop().expect("checked above");
-        self.bindings.truncate(top.mark);
+        self.close()
+    }
+
+    /// Ends the innermost open element.
+    fn close(&mut self) -> Step {
+        self.flush();
+        let top = self.open.pop().expect("an element is open");
+        self.unbind_to(top.mark);
+        if let Some(visitor) = self.visitor.as_deref_mut() {
+            visitor.end(&top.qname);
+        }
         if self.open.is_empty() {
             self.root_done = true;
         }
-        if !matches!(self.want, Want::Whole)
+        if matches!(self.want, Want::Nodes { .. })
             && self
                 .out
                 .as_ref()
                 .is_some_and(|o| o.depth == self.open.len())
         {
-            self.ready = self.out.take().map(|o| o.doc);
+            let doc = self.out.take().map(|o| o.doc).expect("checked above");
+            self.ready.push_back((doc, self.binding.take()));
         }
         Ok(())
     }
@@ -993,9 +1333,10 @@ impl Builder {
     /// a node is ready. Returns where it stopped, or why and where it
     /// failed.
     fn pump(&mut self, src: &str, start: usize) -> Result<usize, (Stop, usize)> {
-        let mut reader = reader(&src[start..]);
+        let mut reader = reader(&src[start..], self.recover);
         loop {
             let before = start + reader.buffer_position() as usize;
+            self.at = before;
             let ev = match reader.read_event() {
                 Ok(ev) => ev,
                 Err(e) => {
@@ -1006,31 +1347,44 @@ impl Builder {
             if matches!(ev, Event::Eof) {
                 return Ok(src.len());
             }
-            if before != 0 {
-                self.decl_allowed = false;
-            }
             self.event(ev).map_err(|s| (s, before))?;
-            if self.ready.is_some() {
+            if self.stopped {
+                return Ok(src.len());
+            }
+            if !self.ready.is_empty() {
                 return Ok(start + reader.buffer_position() as usize);
             }
         }
     }
 
-    /// The checks at the end of the document.
-    fn finish(&mut self, src: &str) -> Result<(), String> {
+    /// The checks at the end of the document. In recover mode, elements
+    /// still open are closed.
+    fn finish(&mut self, src: &str) -> Step {
+        self.at = src.len();
         self.flush();
         if !self.open.is_empty() {
             let names: Vec<&str> = self.open.iter().map(|o| o.qname.as_str()).collect();
-            return Err(format!("the document ends inside <{}>", names.join("><")));
+            let why = format!("the document ends inside <{}>", names.join("><"));
+            self.repair(why, "closed")?;
+            self.floor = 0;
+            while !self.open.is_empty() {
+                self.close()?;
+            }
         }
-        if !self.root_seen && !is_blank(src) {
-            return Err("the document has no root element".into());
+        if is_blank(src) {
+            if self.recover {
+                return Ok(());
+            }
+            return Err("Document is empty".into());
+        }
+        if !self.root_seen {
+            self.repair("the document has no root element", "it's read as empty")?;
         }
         Ok(())
     }
 }
 
-fn reader(src: &str) -> Reader<&[u8]> {
+fn reader(src: &str, recover: bool) -> Reader<&[u8]> {
     let mut reader = Reader::from_str(src);
     let config = reader.config_mut();
     // Ends are checked here, against elements opened in other readers too
@@ -1038,7 +1392,7 @@ fn reader(src: &str) -> Reader<&[u8]> {
     config.check_end_names = false;
     config.allow_unmatched_ends = true;
     config.check_comments = true;
-    config.allow_dangling_amp = false;
+    config.allow_dangling_amp = recover;
     config.expand_empty_elements = false;
     config.trim_text(false);
     reader
@@ -1066,6 +1420,16 @@ fn error_at(src: &str, at: usize, reason: String) -> XmlError {
     }
 }
 
+/// Reads all of `src`, then the checks at the end.
+fn run(b: &mut Builder<'_>, src: &str, budget: Duration) -> Result<(), ParseXmlError> {
+    let fail = |stop: Stop, at: usize| match stop {
+        Stop::Bad(why) => ParseXmlError::Malformed(error_at(src, at, why)),
+        Stop::Late => ParseXmlError::Timeout(ParseTimeout { budget, parsed: at }),
+    };
+    b.pump(src, 0).map_err(|(stop, at)| fail(stop, at))?;
+    b.finish(src).map_err(|stop| fail(stop, src.len()))
+}
+
 impl Document {
     /// Parses well-formed XML (see the module's documentation for what
     /// that means here, and what is refused).
@@ -1078,25 +1442,48 @@ impl Document {
 
     /// Like [`Document::parse_xml`], but gives up once `budget` has passed.
     pub fn parse_xml_within(text: &str, budget: Duration) -> Result<Document, ParseXmlError> {
-        let src = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let deadline = Instant::now().checked_add(budget);
-        let mut b = Builder::new(Want::Whole, src.len(), deadline);
-        let malformed = |at: usize, why: String| ParseXmlError::Malformed(error_at(src, at, why));
-        match b.pump(src, 0) {
-            Ok(_) => {}
-            Err((Stop::Bad(why), at)) => return Err(malformed(at, why)),
-            Err((Stop::Late, at)) => {
-                return Err(ParseXmlError::Timeout(ParseTimeout { budget, parsed: at }));
-            }
-        }
-        b.finish(src).map_err(|why| malformed(src.len(), why))?;
-        Ok(b.out.take().expect("a whole document is always built").doc)
+        let options = XmlOptions {
+            recover: false,
+            budget,
+        };
+        Document::parse_xml_with(text, options).map(|(doc, _)| doc)
     }
+
+    /// Parses XML as `options` say, and says what recover mode repaired.
+    pub fn parse_xml_with(
+        text: &str,
+        options: XmlOptions,
+    ) -> Result<(Document, Repairs), ParseXmlError> {
+        let src = text.strip_prefix('\u{feff}').unwrap_or(text);
+        let mut b = Builder::new(Want::Whole, src.len(), options);
+        run(&mut b, src, options.budget)?;
+        let repairs = b.repairs(src);
+        Ok((
+            b.out.take().expect("a whole document is always built").doc,
+            repairs,
+        ))
+    }
+}
+
+/// Reads `text` without building a tree, telling `visitor` what's in it:
+/// for reading a large document in one pass and little memory. The checks
+/// and limits are a parse's.
+pub fn walk_xml(
+    text: &str,
+    options: XmlOptions,
+    visitor: &mut dyn XmlVisitor,
+) -> Result<Repairs, ParseXmlError> {
+    let src = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut b = Builder::new(Want::Walk, src.len(), options);
+    b.visitor = Some(visitor);
+    run(&mut b, src, options.budget)?;
+    Ok(b.repairs(src))
 }
 
 /// The elements of an XML document with one name, each read on its own
 /// as a document of its own, as the document is read: the whole document
-/// is never in memory, which suits a large feed. Scrapy's `iternodes`.
+/// is never a tree in memory, which suits a large feed. Scrapy's
+/// `iternodes`.
 ///
 /// Elements inside a matching one are part of it, not matches of their
 /// own. The document is still checked from start to end: a node is only
@@ -1104,61 +1491,104 @@ impl Document {
 pub struct XmlNodes {
     src: String,
     at: usize,
-    builder: Builder,
+    builder: Builder<'static>,
+    budget: Duration,
     done: bool,
 }
 
 // SAFETY: the raw pointers inside are to nodes of the document being
-// built, which the builder owns and nothing else can reach until it is
-// handed out; moving the lot to another thread moves them together.
+// built, and the Rcs to entity values the builder has read; the builder
+// owns both, and none of them is shared with anything outside it (no
+// node is reachable, and no Rc cloned out, until a document is handed
+// out, which takes no Rc with it). Moving the lot to another thread moves
+// every pointer and every Rc together.
 unsafe impl Send for XmlNodes {}
 
 impl XmlNodes {
-    /// The elements named `tag` (`local`, or `prefix:local` with the
-    /// prefix bound in `namespaces`) in `text`. A name without a prefix
-    /// means one in no namespace, as in XPath.
+    /// The elements named `tag` in `text`: `local`, or `prefix:local`.
+    /// The prefix is the one bound in `namespaces`, or failing that the
+    /// one the document itself declares where the element is. A name
+    /// without a prefix means one in no namespace, as in XPath.
+    /// `options.budget` is for each node.
     pub fn new(
         text: String,
         tag: &str,
         namespaces: &[(String, String)],
+        options: XmlOptions,
     ) -> Result<XmlNodes, String> {
-        let (ns, local) = match tag.split_once(':') {
+        let (ns, prefix, local) = match tag.split_once(':') {
             Some((prefix, local)) => {
                 let uri = namespaces
                     .iter()
                     .rev()
                     .find(|(p, _)| p == prefix)
                     .map(|(_, u)| u.clone())
-                    .or_else(|| (prefix == "xml").then(|| XML_NS.to_string()))
-                    .ok_or_else(|| format!("the namespace prefix {prefix:?} of {tag:?} isn't in the namespaces given"))?;
-                (uri, local)
+                    .or_else(|| (prefix == "xml").then(|| XML_NS.to_string()));
+                (uri, prefix.to_string(), local)
             }
-            None => (String::new(), tag),
+            None => (Some(String::new()), String::new(), tag),
         };
-        if !is_ncname(local) {
+        if !is_ncname(local) || (!prefix.is_empty() && !is_ncname(&prefix)) {
             return Err(format!("{tag:?} isn't a valid element name"));
         }
-        Ok(XmlNodes::reading(
-            text,
-            Want::Nodes {
-                ns,
-                local: local.to_string(),
-            },
-        ))
-    }
-
-    fn reading(text: String, want: Want) -> XmlNodes {
         let src = match text.strip_prefix('\u{feff}') {
             Some(rest) => rest.to_string(),
             None => text,
         };
+        let want = Want::Nodes {
+            ns,
+            prefix,
+            local: local.to_string(),
+        };
         let size = src.len();
-        XmlNodes {
+        Ok(XmlNodes {
             src,
             at: 0,
-            builder: Builder::new(want, size, None),
+            builder: Builder::new(want, size, options),
+            budget: options.budget,
             done: false,
+        })
+    }
+
+    /// The next node, with the prefix of its name and the namespace the
+    /// document bound it to when the document is where that came from.
+    pub fn next_node(&mut self) -> Option<Result<Ready, XmlError>> {
+        if let Some(ready) = self.builder.ready.pop_front() {
+            return Some(Ok(ready));
         }
+        if self.done {
+            return None;
+        }
+        self.builder.deadline = Instant::now().checked_add(self.budget);
+        let fail = |src: &str, stop: Stop, at: usize| {
+            let why = match stop {
+                Stop::Bad(why) => why,
+                Stop::Late => format!("reading one node took longer than {:?}", self.budget),
+            };
+            error_at(src, at, why)
+        };
+        match self.builder.pump(&self.src, self.at) {
+            Ok(at) => {
+                self.at = at;
+                if let Some(ready) = self.builder.ready.pop_front() {
+                    return Some(Ok(ready));
+                }
+                self.done = true;
+                if let Err(stop) = self.builder.finish(&self.src) {
+                    return Some(Err(fail(&self.src, stop, self.src.len())));
+                }
+                self.builder.ready.pop_front().map(Ok)
+            }
+            Err((stop, at)) => {
+                self.done = true;
+                Some(Err(fail(&self.src, stop, at)))
+            }
+        }
+    }
+
+    /// What recover mode has repaired so far.
+    pub fn repairs(&self) -> Repairs {
+        self.builder.repairs(&self.src)
     }
 }
 
@@ -1166,30 +1596,7 @@ impl Iterator for XmlNodes {
     type Item = Result<Document, XmlError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        match self.builder.pump(&self.src, self.at) {
-            Ok(at) => {
-                self.at = at;
-                if let Some(doc) = self.builder.ready.take() {
-                    return Some(Ok(doc));
-                }
-                self.done = true;
-                match self.builder.finish(&self.src) {
-                    Ok(()) => None,
-                    Err(why) => Some(Err(error_at(&self.src, self.src.len(), why))),
-                }
-            }
-            Err((stop, at)) => {
-                self.done = true;
-                let why = match stop {
-                    Stop::Bad(why) => why,
-                    Stop::Late => "ran out of time".to_string(),
-                };
-                Some(Err(error_at(&self.src, at, why)))
-            }
-        }
+        self.next_node().map(|r| r.map(|(doc, _)| doc))
     }
 }
 
@@ -1259,8 +1666,9 @@ fn start_tag(node: Node<'_>, names: &XmlNames, top: bool, out: &mut String) {
         }
         decls.extend(names.outer.iter().map(|(p, u)| (&**p, *u)));
     }
-    for (i, &(prefix, uri)) in decls.iter().enumerate() {
-        if decls[..i].iter().any(|(p, _)| *p == prefix) {
+    let mut written: HashSet<&str> = HashSet::new();
+    for &(prefix, uri) in &decls {
+        if !written.insert(prefix) {
             continue;
         }
         if prefix.is_empty() {

@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use netweir_dom::xml::{XmlOptions, html_entity};
 use netweir_dom::{Document, Hit, NodeKind, ParseXmlError, Query, XPath, XmlError, XmlNodes};
 
 const RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -73,6 +74,13 @@ fn xpath_in(doc: &Document, query: &str, namespaces: &[(&str, &str)]) -> Vec<Str
 
 fn xpath(doc: &Document, query: &str) -> Vec<String> {
     xpath_in(doc, query, &[])
+}
+
+fn recover() -> XmlOptions {
+    XmlOptions {
+        recover: true,
+        budget: Duration::MAX,
+    }
 }
 
 fn bad(xml: &str) -> XmlError {
@@ -289,9 +297,11 @@ fn the_document_writes_its_top_level_nodes_a_line_each() {
 }
 
 #[test]
-fn an_empty_document_has_no_nodes() {
+fn an_empty_document_is_an_error_except_when_recovering() {
     for empty in ["", "  \n", "\u{feff}"] {
-        let doc = Document::parse_xml(empty).unwrap();
+        assert_eq!(bad(empty).reason, "Document is empty");
+        let (doc, repairs) = Document::parse_xml_with(empty, recover()).unwrap();
+        assert!(repairs.is_empty());
         assert!(doc.root().first_child().is_none());
         assert!(xpath(&doc, "//*").is_empty());
     }
@@ -420,8 +430,8 @@ fn malformed_documents_say_what_and_where() {
         ("<a>", "ends inside <a>"),
         ("<a><b>", "ends inside <a><b>"),
         ("<a/><b/>", "a document has one root"),
-        ("<a/>text", "text outside the root element"),
-        ("text<a/>", "text outside the root element"),
+        ("<a/>text", "after the root element"),
+        ("text<a/>", "outside the root element"),
         ("</a>", "never started"),
         ("<x:a/>", "prefix x of <x:a> isn't declared"),
         (
@@ -445,9 +455,15 @@ fn malformed_documents_say_what_and_where() {
         ("<a><!-- a -- b --></a>", ""),
         ("<?xml version='2.0'?><a/>", "isn't 1.0 or 1.1"),
         ("<a/><?xml version='1.0'?>", "only come at the very start"),
-        (" <?xml version='1.0'?><a/>", "only come at the very start"),
+        ("<a/> <?xml version='1.0'?>", "only come at the very start"),
+        (
+            "<!-- c --><?xml version='1.0'?><a/>",
+            "only come at the very start",
+        ),
         ("<!-- only a comment -->", "no root element"),
-        ("<a/><!DOCTYPE a>", "before the root element"),
+        ("<a/><!DOCTYPE a>", "after the root element"),
+        ("", "Document is empty"),
+        (" \n\t", "Document is empty"),
         ("<a>]]></a>", ""),
     ] {
         let e = bad(xml);
@@ -602,10 +618,15 @@ const SM: &str = "http://www.sitemaps.org/schemas/sitemap/0.9";
 
 #[test]
 fn nodes_are_read_one_at_a_time() {
-    let nodes: Vec<Document> = XmlNodes::new(SITEMAP.into(), "n:url", &ns(&[("n", SM)]))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
+    let nodes: Vec<Document> = XmlNodes::new(
+        SITEMAP.into(),
+        "n:url",
+        &ns(&[("n", SM)]),
+        XmlOptions::default(),
+    )
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap();
     assert_eq!(nodes.len(), 2);
     let n = [("n", SM)];
     assert_eq!(
@@ -633,9 +654,11 @@ fn nodes_are_read_one_at_a_time() {
 
 #[test]
 fn a_node_name_without_a_prefix_is_in_no_namespace() {
-    let none: Vec<_> = XmlNodes::new(SITEMAP.into(), "url", &[]).unwrap().collect();
+    let none: Vec<_> = XmlNodes::new(SITEMAP.into(), "url", &[], XmlOptions::default())
+        .unwrap()
+        .collect();
     assert!(none.is_empty());
-    let rss: Vec<Document> = XmlNodes::new(RSS.into(), "item", &[])
+    let rss: Vec<Document> = XmlNodes::new(RSS.into(), "item", &[], XmlOptions::default())
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -652,23 +675,34 @@ fn a_node_name_without_a_prefix_is_in_no_namespace() {
 
 #[test]
 fn nested_matches_belong_to_the_outer_one() {
-    let docs: Vec<Document> = XmlNodes::new("<r><x>1<x>2</x></x><x>3</x></r>".into(), "x", &[])
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
+    let docs: Vec<Document> = XmlNodes::new(
+        "<r><x>1<x>2</x></x><x>3</x></r>".into(),
+        "x",
+        &[],
+        XmlOptions::default(),
+    )
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap();
     let texts: Vec<String> = docs.iter().map(|d| d.root().text()).collect();
     assert_eq!(texts, ["12", "3"]);
 }
 
 #[test]
 fn a_broken_document_ends_the_nodes_with_an_error() {
-    let mut nodes = XmlNodes::new("<r><x>1</x><x>2</y></r>".into(), "x", &[]).unwrap();
+    let mut nodes = XmlNodes::new(
+        "<r><x>1</x><x>2</y></r>".into(),
+        "x",
+        &[],
+        XmlOptions::default(),
+    )
+    .unwrap();
     assert!(nodes.next().unwrap().is_ok());
     let e = nodes.next().unwrap().unwrap_err();
     assert!(e.reason.contains("</y> doesn't close <x>"), "{e}");
     assert!(nodes.next().is_none());
     // Cut short after the last node is still an error.
-    let mut nodes = XmlNodes::new("<r><x>1</x>".into(), "x", &[]).unwrap();
+    let mut nodes = XmlNodes::new("<r><x>1</x>".into(), "x", &[], XmlOptions::default()).unwrap();
     assert!(nodes.next().unwrap().is_ok());
     assert!(
         nodes
@@ -681,22 +715,325 @@ fn a_broken_document_ends_the_nodes_with_an_error() {
 }
 
 #[test]
-fn a_node_tag_with_an_unknown_prefix_is_refused() {
-    let err = XmlNodes::new(SITEMAP.into(), "n:url", &[]).err().unwrap();
-    assert!(err.contains("\"n\""), "{err}");
-    assert!(XmlNodes::new(SITEMAP.into(), "1x", &[]).is_err());
+fn a_node_tag_prefix_not_given_is_the_documents() {
+    // As Scrapy's xmliter_lxml: a prefix the spider doesn't bind means
+    // what the document binds it to where the element is.
+    let mut nodes =
+        XmlNodes::new(SITEMAP.into(), "image:image", &[], XmlOptions::default()).unwrap();
+    let (doc, binding) = nodes.next_node().unwrap().unwrap();
+    assert_eq!(
+        binding,
+        Some((
+            "image".to_string(),
+            "http://www.google.com/schemas/sitemap-image/1.1".to_string()
+        ))
+    );
+    assert!(doc.root().html().starts_with("<image:image"));
+    assert!(nodes.next().is_none());
+    // A prefix neither gives matches nothing.
+    let none: Vec<_> = XmlNodes::new(SITEMAP.into(), "n:url", &[], XmlOptions::default())
+        .unwrap()
+        .collect();
+    assert!(none.is_empty());
+    assert!(XmlNodes::new(SITEMAP.into(), "1x", &[], XmlOptions::default()).is_err());
 }
 
 #[test]
 fn entities_work_one_node_at_a_time_too() {
     let xml = r#"<!DOCTYPE r [<!ENTITY e "<b>x</b>">]><r><i>&e;</i><i>&e;&e;</i></r>"#;
-    let docs: Vec<Document> = XmlNodes::new(xml.into(), "i", &[])
+    let docs: Vec<Document> = XmlNodes::new(xml.into(), "i", &[], XmlOptions::default())
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
     assert_eq!(docs[1].root().html(), "<i><b>x</b><b>x</b></i>");
     let laughs = r#"<!DOCTYPE r [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;"><!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;"><!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;"><!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;"><!ENTITY f "&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;"><!ENTITY g "&f;&f;&f;&f;&f;&f;&f;&f;&f;&f;">]><r><i>&g;</i></r>"#;
     let result: Result<Vec<Document>, XmlError> =
-        XmlNodes::new(laughs.into(), "i", &[]).unwrap().collect();
+        XmlNodes::new(laughs.into(), "i", &[], XmlOptions::default())
+            .unwrap()
+            .collect();
     assert!(result.unwrap_err().reason.contains("billion laughs"));
+}
+
+// --- found in review ----------------------------------------------------------------
+
+fn ns_attrs(n: usize) -> String {
+    let attrs: Vec<String> = (0..n).map(|i| format!("p:a{i}=\"1\"")).collect();
+    format!("<a xmlns:p=\"u\" {}/>", attrs.join(" "))
+}
+
+#[test]
+fn many_attributes_take_linear_time() {
+    // 30,000 attributes took 26 seconds when every one was compared with
+    // every other.
+    let xml = ns_attrs(30_000);
+    let start = std::time::Instant::now();
+    let doc = Document::parse_xml_within(&xml, Duration::from_secs(20)).unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(xpath(&doc, "count(/a/@*)"), ["30000.0"]);
+    // Duplicates are still found among them.
+    let twice = xml.replace("p:a29999=", "p:a0=");
+    assert!(bad(&twice).reason.contains("p:a0 twice"));
+}
+
+#[test]
+fn the_budget_runs_out_inside_one_start_tag() {
+    let xml = ns_attrs(200_000);
+    let start = std::time::Instant::now();
+    match Document::parse_xml_within(&xml, Duration::from_millis(1)) {
+        Err(ParseXmlError::Timeout(_)) => {}
+        other => panic!("{:?}", other.map(|d| d.root().html().len())),
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn the_budget_runs_out_inside_entity_expansion() {
+    // Few events, much text: the clock is read by bytes expanded too.
+    let big = "x".repeat(50_000);
+    let xml = format!(
+        "<!DOCTYPE r [<!ENTITY big \"{big}\">]><r>{}</r>",
+        "&big;".repeat(20)
+    );
+    assert!(Document::parse_xml(&xml).is_ok());
+    assert!(matches!(
+        Document::parse_xml_within(&xml, Duration::ZERO),
+        Err(ParseXmlError::Timeout(_))
+    ));
+}
+
+#[test]
+fn reading_one_node_has_a_budget() {
+    let xml = format!("<r><x>1</x>{}</r>", ns_attrs(200_000));
+    let options = XmlOptions {
+        recover: false,
+        budget: Duration::from_millis(1),
+    };
+    let mut nodes = XmlNodes::new(xml, "x", &[], options).unwrap();
+    assert!(nodes.next().unwrap().is_ok());
+    let e = nodes.next().unwrap().unwrap_err();
+    assert!(e.reason.contains("took longer than"), "{e}");
+}
+
+#[test]
+fn css_attribute_selectors_work_on_xml_names_html_also_has() {
+    // XHTML served as application/xml, and feeds' href, type and title.
+    let doc = Document::parse_xml(concat!(
+        r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>"#,
+        r#"<a href="/p/1" title="One" type="text/html">One</a><img src="/i.png" alt="x"/>"#,
+        r#"<link HREF="/upper"/><b ID="caps" id="low">b</b></body></html>"#
+    ))
+    .unwrap();
+    let css = |q: &str| Query::new(q).unwrap().strings(doc.root());
+    assert_eq!(css("a[href]::attr(href)"), ["/p/1"]);
+    assert_eq!(css("a[href*='/p/']::text"), ["One"]);
+    assert_eq!(css("img[src]::attr(alt)"), ["x"]);
+    assert_eq!(css("[title=One]::text"), ["One"]);
+    assert_eq!(css("[type]::text"), ["One"]);
+    // CSS attribute names ignore case, as in HTML.
+    assert_eq!(css("[href='/upper']::attr(HREF)"), ["/upper"]);
+    // Both of id and ID are kept, and XPath tells them apart.
+    assert_eq!(xpath(&doc, "//*[local-name()='b']/@ID"), ["caps"]);
+    assert_eq!(xpath(&doc, "//*[local-name()='b']/@id"), ["low"]);
+    assert_eq!(css("#low::text"), ["b"]);
+}
+
+#[test]
+fn nodes_completed_inside_one_entity_are_all_given() {
+    let xml = r#"<!DOCTYPE r [<!ENTITY two "<i>1</i><i>2</i>">]><r>&two;<i>3</i></r>"#;
+    let texts: Vec<String> = XmlNodes::new(xml.into(), "i", &[], XmlOptions::default())
+        .unwrap()
+        .map(|d| d.unwrap().root().text())
+        .collect();
+    assert_eq!(texts, ["1", "2", "3"]);
+}
+
+#[test]
+fn an_empty_cdata_section_is_an_empty_text_node() {
+    // As lxml: '' from text(), and an end tag rather than <d/>.
+    let doc = Document::parse_xml("<r><d><![CDATA[]]></d><e></e></r>").unwrap();
+    assert_eq!(xpath(&doc, "/r/d/text()"), [""]);
+    assert_eq!(xpath(&doc, "/r/d"), ["<d></d>"]);
+    assert_eq!(xpath(&doc, "/r/e"), ["<e/>"]);
+    // Read node by node it's nothing, as in Scrapy's iternodes.
+    let mut nodes = XmlNodes::new(
+        "<r><d><![CDATA[]]></d></r>".into(),
+        "d",
+        &[],
+        XmlOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(nodes.next().unwrap().unwrap().root().html(), "<d/>");
+}
+
+#[test]
+fn whitespace_may_come_before_the_xml_declaration() {
+    let doc = Document::parse_xml("\n\n  <?xml version=\"1.0\"?>\n<r>x</r>").unwrap();
+    assert_eq!(xpath(&doc, "/r/text()"), ["x"]);
+}
+
+#[test]
+fn html_entities_are_looked_up_by_name() {
+    assert_eq!(html_entity("nbsp").as_deref(), Some("\u{a0}"));
+    assert_eq!(html_entity("eacute").as_deref(), Some("é"));
+    assert_eq!(html_entity("notanentity"), None);
+    assert_eq!(html_entity(""), None);
+}
+
+// --- recover mode ------------------------------------------------------------------
+
+fn recovered(xml: &str) -> (Document, netweir_dom::xml::Repairs) {
+    Document::parse_xml_with(xml, recover()).unwrap_or_else(|e| panic!("{xml:?}: {e}"))
+}
+
+#[test]
+fn recover_mode_repairs_what_feeds_get_wrong_and_says_so() {
+    let item = |t: &str| format!("<rss><channel><item><title>{t}</title></item></channel></rss>");
+    for (xml, want, says) in [
+        (
+            item("a&nbsp;b"),
+            "a\u{a0}b",
+            "&nbsp; isn't declared; read as HTML's",
+        ),
+        (item("caf&eacute;"), "café", "read as HTML's"),
+        (
+            item("x&madeup;y"),
+            "x&madeup;y",
+            "&madeup; isn't declared; kept as text",
+        ),
+        (item("Tom & Jerry"), "Tom & Jerry", "kept as text"),
+        (
+            item("vt\u{b}here"),
+            "vthere",
+            "U+000B isn't allowed in XML; dropped",
+        ),
+        (item("bad&#0;ref"), "badref", "dropped"),
+        (
+            format!("{}\n<b>Warning</b>: PHP", item("A")),
+            "A",
+            "after the root element; the rest is ignored",
+        ),
+        (
+            format!("junk {}", item("A")),
+            "A",
+            "outside the root element; dropped",
+        ),
+    ] {
+        assert!(Document::parse_xml(&xml).is_err(), "{xml:?} is broken");
+        let (doc, repairs) = recovered(&xml);
+        assert_eq!(xpath(&doc, "//title/text()"), [want], "{xml:?}");
+        assert!(repairs.count >= 1);
+        assert!(
+            repairs.first[0].reason.contains(says),
+            "{xml:?}: {repairs:?}"
+        );
+        assert!(repairs.summary().contains(says));
+    }
+}
+
+#[test]
+fn recover_mode_repairs_names_and_attributes() {
+    let (doc, repairs) = recovered(r#"<r a="1" a="2" b="x&y"><media:content url="u"/></r>"#);
+    assert_eq!(xpath(&doc, "/r/@a"), ["1"]);
+    assert_eq!(xpath(&doc, "/r/@b"), ["x&y"]);
+    // An undeclared prefix leaves the element in no namespace, named as
+    // written, as lxml's recover mode does.
+    assert_eq!(xpath(&doc, "name(/r/*)"), ["media:content"]);
+    assert_eq!(xpath(&doc, "namespace-uri(/r/*)"), [""]);
+    assert_eq!(repairs.count, 3);
+    let reasons: Vec<&str> = repairs.first.iter().map(|e| e.reason.as_str()).collect();
+    assert!(
+        reasons[0].contains("the attribute a twice; the first is kept"),
+        "{reasons:?}"
+    );
+    assert!(reasons[1].contains("starts no reference"), "{reasons:?}");
+    assert!(
+        reasons[2].contains("prefix media of <media:content> isn't declared"),
+        "{reasons:?}"
+    );
+    assert_eq!((repairs.first[0].line, repairs.first[0].column), (1, 1));
+}
+
+#[test]
+fn recover_mode_closes_what_a_cut_off_document_left_open() {
+    let (doc, repairs) = recovered("<rss><item><title>A</title></item><item><title>B");
+    assert_eq!(xpath(&doc, "//title/text()"), ["A", "B"]);
+    assert!(
+        repairs.first[0]
+            .reason
+            .contains("ends inside <rss><item><title>; closed")
+    );
+}
+
+#[test]
+fn recover_mode_still_refuses_what_it_cant_repair() {
+    for xml in ["<a><b></a>", "<a>1 < 2</a>"] {
+        assert!(Document::parse_xml_with(xml, recover()).is_err(), "{xml}");
+    }
+    // And the limits on hostile XML hold.
+    let xxe = r#"<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>"#;
+    assert!(Document::parse_xml_with(xxe, recover()).is_err());
+}
+
+#[test]
+fn repairs_keep_the_first_few_and_count_them_all() {
+    let xml = format!("<r>{}</r>", "&nbsp;".repeat(50));
+    let (_, repairs) = recovered(&xml);
+    assert_eq!(repairs.count, 50);
+    assert_eq!(repairs.first.len(), netweir_dom::xml::REPAIRS_KEPT);
+    assert!(repairs.summary().contains("and 40 more"));
+}
+
+#[test]
+fn recover_mode_reads_nodes_one_at_a_time_too() {
+    let xml = "<r><i>a&nbsp;</i><i>b</i></r> trailing".to_string();
+    let mut nodes = XmlNodes::new(xml, "i", &[], recover()).unwrap();
+    let texts: Vec<String> = nodes.by_ref().map(|d| d.unwrap().root().text()).collect();
+    assert_eq!(texts, ["a\u{a0}", "b"]);
+    assert_eq!(nodes.repairs().count, 2);
+}
+
+#[test]
+fn many_declarations_and_prefixed_attributes_stay_linear() {
+    let n = 20_000;
+    let decls: Vec<String> = (0..n).map(|i| format!("xmlns:p{i}=\"u{i}\"")).collect();
+    let attrs: Vec<String> = (0..n)
+        .map(|i| format!("p{i}:a{i}=\"1\" p{i}:same=\"{i}\""))
+        .collect();
+    let xml = format!("<a {} {}><b/></a>", decls.join(" "), attrs.join(" "));
+    let start = std::time::Instant::now();
+    let doc = Document::parse_xml_within(&xml, Duration::from_secs(30)).unwrap();
+    // <b> declares everything it inherits when written alone.
+    let b = &xpath(&doc, "/a/b")[0];
+    assert_eq!(b.matches("xmlns:").count(), n);
+    unsafe { doc.remove_namespaces() }.unwrap();
+    // Every p{i}:same became one `same`, the last one's.
+    assert_eq!(xpath(&doc, "/a/@same"), [format!("{}", n - 1)]);
+    assert_eq!(xpath(&doc, "count(/a/@*)"), [format!("{}.0", n + 1)]);
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn recover_mode_keeps_a_processing_instruction_its_repair_changed() {
+    // Found by fuzzing: dropping the NUL leaves `?>` inside the data,
+    // which lexbor's own constructor refused, and that was a panic.
+    let (doc, repairs) = recovered("<?p a?\u{0}>?><r/>");
+    assert_eq!(repairs.count, 1);
+    assert_eq!(xpath(&doc, "count(/processing-instruction())"), ["1.0"]);
+    let crash: &[u8] = &[
+        0x3c, 0x3f, 0xdf, 0x09, 0x3e, 0x3f, 0x3e, 0x3c, 0x3f, 0xdf, 0x09, 0x3e, 0x3f, 0x3c, 0x3f,
+        0x00, 0x3e, 0x0d, 0x3f, 0x3e,
+    ];
+    let _ = Document::parse_xml_with(&String::from_utf8_lossy(crash), recover());
 }

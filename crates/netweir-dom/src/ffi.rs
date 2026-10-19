@@ -131,6 +131,8 @@ unsafe extern "C" {
     pub fn nw_attr_qname(a: *mut RawAttr, len: *mut usize) -> *const c_char;
     pub fn nw_xml_rename(n: *mut RawNode, qname: *const c_char, qlen: usize) -> c_int;
     pub fn nw_attr_remove(n: *mut RawNode, a: *mut RawAttr);
+    pub fn nw_html_entity(name: *const c_char, len: usize, out_len: *mut usize) -> *const c_char;
+    pub fn nw_is_html_tag(name: *const c_char, len: usize) -> c_int;
     pub fn nw_xml_attr_rename(a: *mut RawAttr, qname: *const c_char, qlen: usize) -> c_int;
 
     pub fn nw_css_memory_new() -> *mut RawCssMemory;
