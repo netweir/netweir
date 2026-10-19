@@ -313,6 +313,12 @@ class Response:
         type: Literal["html", "xml"] | None = None,
         recover: bool = False,
     ) -> Node: ...
+    def _parse_quietly(
+        self,
+        timeout: float | None = None,
+        type: Literal["html", "xml"] | None = None,
+        recover: bool = False,
+    ) -> tuple[Node, str | None]: ...
     @property
     def markup(self) -> Literal["html", "xml"]: ...
     @property

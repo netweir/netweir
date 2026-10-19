@@ -528,6 +528,26 @@ impl Response {
         r#type: Option<&str>,
         recover: bool,
     ) -> PyResult<Node> {
+        let (node, message) = self._parse_quietly(py, timeout, r#type, recover)?;
+        if let Some(message) = message {
+            py.import("logging")?
+                .call_method1("getLogger", ("netweir",))?
+                .call_method1("warning", ("%s", message))?;
+        }
+        Ok(node)
+    }
+
+    /// `parse()`, giving back what its warning would say (None if
+    /// nothing was repaired) for the caller to log, rather than logging
+    /// it: Page.root logs it once its lock is let go.
+    #[pyo3(signature = (timeout=None, r#type=None, recover=false))]
+    fn _parse_quietly(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+        r#type: Option<&str>,
+        recover: bool,
+    ) -> PyResult<(Node, Option<String>)> {
         let r = self.inner.clone();
         let budget = crate::budget(timeout)?;
         let named = crate::Markup::named(r#type)?;
@@ -539,8 +559,8 @@ impl Response {
                 crate::parse_markup(&text, markup, budget, recover)
             })
             .map_err(|e| e.into_py(py))?;
-        crate::warn_repairs(py, Some(&self.inner.url), &repairs)?;
-        Ok(Node::root_of(Arc::new(doc)))
+        let message = crate::repair_message(Some(&self.inner.url), &repairs);
+        Ok((Node::root_of(Arc::new(doc)), message))
     }
 
     /// What `parse()` reads the body as by default: "xml" or "html".

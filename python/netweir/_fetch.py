@@ -309,10 +309,16 @@ class Page:
         Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
         ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
+            repaired = None
             with self._lock:
                 if self._root is None:
                     timeout, recover = self._parse
-                    self._root = self._response.parse(timeout=timeout, recover=recover)
+                    self._root, repaired = self._response._parse_quietly(
+                        timeout=timeout, recover=recover
+                    )
+            # Logged with the lock let go: a logging filter may read the page.
+            if repaired is not None:
+                logging.getLogger("netweir").warning("%s", repaired)
         return self._root
 
     @property

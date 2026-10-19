@@ -195,17 +195,24 @@ pub(crate) fn parse_markup(
 /// Logs what recovering from broken XML repaired, once, on the "netweir"
 /// logger, naming `place` (a URL) if there is one.
 pub(crate) fn warn_repairs(py: Python<'_>, place: Option<&str>, repairs: &Repairs) -> PyResult<()> {
-    if repairs.is_empty() {
+    let Some(message) = repair_message(place, repairs) else {
         return Ok(());
-    }
-    let message = match place {
-        Some(place) => format!("{place}: {}", repairs.summary()),
-        None => repairs.summary(),
     };
     py.import("logging")?
         .call_method1("getLogger", ("netweir",))?
         .call_method1("warning", ("%s", message))?;
     Ok(())
+}
+
+/// What warn_repairs logs; None when nothing was repaired.
+pub(crate) fn repair_message(place: Option<&str>, repairs: &Repairs) -> Option<String> {
+    if repairs.is_empty() {
+        return None;
+    }
+    Some(match place {
+        Some(place) => format!("{place}: {}", repairs.summary()),
+        None => repairs.summary(),
+    })
 }
 
 /// Seconds from Python to a parse budget; `None` means no limit.

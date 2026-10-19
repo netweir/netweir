@@ -773,6 +773,40 @@ def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds):
     assert worst < max(0.25, took / 4), (took, worst)
 
 
+def test_a_logging_filter_may_read_the_page_whose_repairs_it_logs():
+    """Page.root logged what recovery repaired while it held the page's
+    lock, so a filter that read the page waited on itself for ever."""
+    import logging
+
+    page = netweir.Page(
+        _response(
+            "https://example.com/f",
+            200,
+            "HTTP/1.1",
+            [("content-type", "text/xml")],
+            b"<r>1 < 2</r>",
+        ),
+        parse=(None, True),
+    )
+    seen = []
+
+    class Peek(logging.Filter):
+        def filter(self, record):
+            seen.append(page.xpath("string(/r)").get())
+            return True
+
+    peek = Peek()
+    logging.getLogger("netweir").addFilter(peek)
+    try:
+        reader = threading.Thread(target=lambda: page.root, daemon=True)
+        reader.start()
+        reader.join(10)
+        assert not reader.is_alive(), "Page.root deadlocked on its own lock"
+    finally:
+        logging.getLogger("netweir").removeFilter(peek)
+    assert seen == ["1 < 2"]
+
+
 def test_an_id_a_prefix_came_off_is_the_element_s_id():
     # remove_namespaces makes a:id the element's id, as if written so: #p
     # finds it, and [id] reads it rather than the ID beside it.
