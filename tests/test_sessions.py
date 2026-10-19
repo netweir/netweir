@@ -243,9 +243,12 @@ def test_deltafetch_skips_a_page_only_for_the_jar_it_gave_items_in(base, tmp_pat
     assert carried("/echo") == ["user=bob"]
 
 
-def test_an_items_files_download_in_the_jar_of_the_page_it_came_from(base, tmp_path):
+@pytest.mark.parametrize("per_jar", [False, True])
+def test_an_items_files_download_in_the_jar_of_the_page_it_came_from(base, tmp_path, per_jar):
+    import hashlib
+
     class Spider(netweir.Spider):
-        pipelines = [netweir.files(tmp_path)]
+        pipelines = [netweir.files(tmp_path, per_jar=per_jar)]
 
         async def start(self):
             for user in ("ada", "bob"):
@@ -259,11 +262,21 @@ def test_an_items_files_download_in_the_jar_of_the_page_it_came_from(base, tmp_p
                 )
 
         def item(self, page):
-            # Both users' items name the same file: each fetches its own.
+            # Both users' items name the same file.
             yield {"file_urls": [f"{base}/file.txt"]}
 
     run(Spider)
-    assert sorted(carried("/file.txt")) == ["user=ada", "user=bob"]
+    url = f"{base}/file.txt"
+    sha1 = lambda key: hashlib.sha1(key.encode()).hexdigest()  # noqa: E731
+    stored = sorted(p.name for p in (tmp_path / "full").iterdir())
+    if per_jar:
+        # Each user's own, stored apart.
+        assert sorted(carried("/file.txt")) == ["user=ada", "user=bob"]
+        assert stored == sorted(sha1(j + "\0" + url) + ".txt" for j in ('"ada"', '"bob"'))
+    else:
+        # Once, as Scrapy stores it, in the jar of the first item to name it.
+        assert carried("/file.txt") in (["user=ada"], ["user=bob"])
+        assert stored == [f"{sha1(url)}.txt"]
 
 
 def test_jar_names_are_told_apart_by_type_as_in_scrapy(base):

@@ -262,6 +262,7 @@ class _Media:
         urls_field: str,
         result_field: str,
         expires: float | datetime.timedelta | None,
+        per_jar: bool = False,
     ):
         if isinstance(expires, datetime.timedelta):
             expires = expires.total_seconds()
@@ -271,9 +272,11 @@ class _Media:
         self.urls_field = urls_field
         self.result_field = result_field
         self.expires = expires
+        self.per_jar = per_jar
         self._run: Any = None
-        #: Each URL's download in this crawl, by URL: one for every item
-        #: that names it, made the first time one does.
+        #: Each URL's download in this crawl, by URL (and with per_jar, the
+        #: item's jar): one for every item that names it, made the first
+        #: time one does.
         self._tasks: dict[tuple[str, str | None], asyncio.Future] = {}
 
     def __repr__(self) -> str:
@@ -298,14 +301,16 @@ class _Media:
             urls = [urls]
         referer = self._referer()
         # In the jar of the request the item's page came from, so a file
-        # behind a login comes with the login; once per URL and jar.
+        # behind a login comes with the login. Once per URL, as Scrapy
+        # stores it; with per_jar, once per URL and jar, each kept apart.
         jar = self._run.page_jar
+        key = jar if self.per_jar else None
         tasks = []
         for url in urls:
-            task = self._tasks.get((url, jar))
+            task = self._tasks.get((url, key))
             if task is None:
                 task = asyncio.ensure_future(self._get(url, referer, jar))
-                self._tasks[(url, jar)] = task
+                self._tasks[(url, key)] = task
             tasks.append(task)
         results = await asyncio.gather(*tasks)
         # Copies: a later stage changing one item's entry leaves another's.
@@ -342,9 +347,9 @@ class _Media:
     async def _fetch(
         self, url: str, referer: str | None, jar: str | None = None
     ) -> dict[str, Any] | None:
-        # A named jar's file is kept apart: behind a login, each user's may
-        # differ. The crawl's own keeps Scrapy's name, the URL's SHA-1.
-        key = url if jar is None else f"{jar}\0{url}"
+        # Scrapy's name, the URL's SHA-1; with per_jar, a named jar's file
+        # is kept apart, as behind a login each user's may differ.
+        key = url if jar is None or not self.per_jar else f"{jar}\0{url}"
         name = hashlib.sha1(key.encode()).hexdigest()
         stored = await asyncio.to_thread(self._fresh, name, url)
         if stored is not None:
@@ -429,7 +434,10 @@ class files(_Media):  # noqa: N801 - reads as a function in a pipeline list
     to a list of ``{"url", "path", "checksum", "status"}``, one for each
     file it has. A file stored less than ``expires`` ago (seconds, or a
     timedelta; None for never) isn't fetched again. A download that fails
-    is logged and left out; the item goes on either way."""
+    is logged and left out; the item goes on either way. Each file is
+    fetched in the cookie jar of the request whose page gave the item;
+    with ``per_jar``, a named jar's copy is fetched and stored apart, at
+    ``full/<sha1 of the jar's name, a NUL and the URL>.<ext>``."""
 
     def __init__(
         self,
@@ -438,8 +446,9 @@ class files(_Media):  # noqa: N801 - reads as a function in a pipeline list
         urls_field: str = "file_urls",
         result_field: str = "files",
         expires: float | datetime.timedelta | None = datetime.timedelta(days=90),
+        per_jar: bool = False,
     ):
-        super().__init__(store, urls_field, result_field, expires)
+        super().__init__(store, urls_field, result_field, expires, per_jar)
 
 
 class images(_Media):  # noqa: N801
@@ -448,8 +457,8 @@ class images(_Media):  # noqa: N801
     for each of ``thumbs`` (name to the (width, height) it fits in, aspect
     ratio kept). An image narrower or shorter than ``min_size``
     ((width, height)) is skipped, and one of more than ``max_pixels``
-    fails rather than be decoded. Two are converted at once. Needs Pillow:
-    pip install netweir[images]."""
+    fails rather than be decoded. Two are converted at once. ``per_jar``
+    is as for ``files``. Needs Pillow: pip install netweir[images]."""
 
     kind = "image"
     counters = (*_Media.counters, "images_too_small")
@@ -466,6 +475,7 @@ class images(_Media):  # noqa: N801
         min_size: tuple[int, int] | None = None,
         max_pixels: int = 25_000_000,
         expires: float | datetime.timedelta | None = datetime.timedelta(days=90),
+        per_jar: bool = False,
     ):
         try:
             import PIL.Image  # noqa: F401
@@ -474,7 +484,7 @@ class images(_Media):  # noqa: N801
                 "netweir.images needs Pillow, to convert images and make thumbnails:"
                 " pip install netweir[images]"
             ) from None
-        super().__init__(store, urls_field, result_field, expires)
+        super().__init__(store, urls_field, result_field, expires, per_jar)
         self.thumbs = dict(thumbs or {})
         for thumb, size in self.thumbs.items():
             # The name is a directory in the store.

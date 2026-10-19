@@ -694,9 +694,14 @@ delay and `per_domain`, the session's cookies, the proxies and their
 rotation, retries, the cache, the WARC and HAR files, and
 `max_response_size`. A file is fetched in the cookie jar of the request
 whose page gave the item (its `meta["cookiejar"]`, or the crawl's own),
-so a file behind a login comes with the login; a named jar's files are
-stored under the SHA-1 of the jar's name and the URL, apart from other
-users' copies. A file goes out as a page's own script would ask for
+so a file behind a login comes with the login. A URL is still fetched
+once a crawl, in the jar of the first item to name it, and stored at
+`full/<SHA-1 of the URL>.<ext>`, as Scrapy stores it. With
+`netweir.files(store, per_jar=True)` (or `netweir.images`), each named
+jar fetches its own copy and keeps it at `full/<SHA-1>.<ext>` of the
+jar's name as the crawl names it (`meta["cookiejar"]` as JSON, so
+`"ada"` with its quotes), a NUL character and the URL; the crawl's own
+jar keeps the URL's SHA-1. A file goes out as a page's own script would ask for
 it, and an image as an `<img>` on the page would, with the page as the
 Referer:
 

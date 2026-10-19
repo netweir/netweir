@@ -232,8 +232,10 @@ use a named jar, which keeps all three apart.
   and so is the cache's, which holds the pages they logged in to (on
   Windows each takes its folder's permissions).
 - `netweir.files` and `netweir.images` fetch an item's files in the jar
-  of the request whose page gave the item, and keep a named jar's files
-  apart from other users'.
+  of the request whose page gave the item, each URL once a crawl and
+  stored as Scrapy stores it; with `per_jar=True`, each named jar gets
+  and keeps its own copy (see
+  [Downloading files and images](crawling.md#downloading-files-and-images)).
 - With `workers`, every jar stays in the main process, where requests are
   sent, so callbacks in any worker see the same session.
 - In a crawl shared by several machines, a request's `cookies` and its
