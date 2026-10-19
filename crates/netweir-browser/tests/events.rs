@@ -139,9 +139,14 @@ async fn the_pause_before_an_answer_is_the_browsers_to_set() {
     let Some(executable) = common::chrome() else {
         return;
     };
+    // Longer than the default's longest, so only the pause set here can
+    // keep the page waiting this long. A bound the other way would be
+    // the machine's to keep: on a busy one, the round trips around the
+    // pause alone have taken over 400 ms.
+    let pause = Duration::from_millis(2000);
     let browser = common::launch(netweir_browser::LaunchOptions {
         executable: Some(executable),
-        dialog_pause: (Duration::from_millis(50), Duration::from_millis(60)),
+        dialog_pause: (pause, pause + Duration::from_millis(10)),
         ..Default::default()
     })
     .await;
@@ -150,14 +155,11 @@ async fn the_pause_before_an_answer_is_the_browsers_to_set() {
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
     let started = Instant::now();
     assert_eq!(
-        page.evaluate("confirm('quick?')").await.unwrap(),
+        page.evaluate("confirm('slow?')").await.unwrap(),
         json!(false)
     );
     let took = started.elapsed();
-    assert!(
-        took >= Duration::from_millis(50) && took < Duration::from_millis(450),
-        "answered in {took:?}"
-    );
+    assert!(took >= pause, "answered in {took:?}");
     browser.close().await.unwrap();
 }
 
