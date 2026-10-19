@@ -429,9 +429,14 @@ impl Jar {
         if name.len() + value.len() > MAX_SIZE || (name.is_empty() && value.is_empty()) {
             return false;
         }
-        // Nor may a cookie without a name pass for a prefixed one.
+        // Nor may a cookie without a name pass for a prefixed one, nor for
+        // another cookie: sent as its value alone, "=x=y" reads as x.
         let lower = value.to_ascii_lowercase();
-        if name.is_empty() && (lower.starts_with("__secure-") || lower.starts_with("__host-")) {
+        if name.is_empty()
+            && (lower.starts_with("__secure-")
+                || lower.starts_with("__host-")
+                || value.contains('='))
+        {
             return false;
         }
         let secure = parsed.secure().unwrap_or(false);
@@ -1320,9 +1325,19 @@ mod tests {
         // One replaces the other, as one cookie with no name.
         assert!(set(&jar, "https://e.com/", "other; Path=/"));
         assert_eq!(sent(&jar, "https://e.com/"), ["other"]);
-        // A value that looks like a prefixed name is refused.
+        // A value that looks like a prefixed name, or like a pair, is
+        // refused, as Chrome refuses them.
         assert!(!set(&jar, "https://e.com/", "__Secure-x; Secure"));
         assert!(!set(&jar, "https://e.com/", "=__Host-x; Secure; Path=/"));
+        for refused in [
+            "=x=y; Path=/a",
+            "=__Secure-z; Path=/c",
+            " __Host-q; Path=/d",
+            "=  __secure-w; Path=/e",
+        ] {
+            assert!(!set(&jar, "https://e.com/", refused), "{refused}");
+        }
+        assert!(set(&jar, "https://e.com/", "plain2; Path=/b"));
         assert!(!set(&jar, "https://e.com/", ""));
         assert!(!set(&jar, "https://e.com/", "; Path=/"));
     }
