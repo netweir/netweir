@@ -678,6 +678,36 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_wal_and_shm_an_older_run_left_readable_are_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("netweir-cp-sidecars-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A run from before checkpoints were private, still open: its
+        // -wal and -shm are there, readable by anyone.
+        let older = Connection::open(&path).unwrap();
+        older.pragma_update(None, "journal_mode", "WAL").unwrap();
+        older
+            .execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let files = ["", "-wal", "-shm"].map(|end| dir.join(format!("crawl.sqlite3{end}")));
+        for f in &files {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let (cp, _) = Checkpoint::open(&path).unwrap();
+        cp.jar("".into(), "cookies".into());
+        cp.flush().unwrap();
+        for f in &files {
+            let mode = std::fs::metadata(f).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{}", f.display());
+        }
+        drop((cp, older));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A checkpoint holds requests' logins: only its owner may read it,
     /// nor its write-ahead log.
     #[cfg(unix)]
