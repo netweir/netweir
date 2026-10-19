@@ -79,6 +79,35 @@ impl SameSite {
     }
 }
 
+/// A cookie's Priority attribute, Chrome's own: which go first when a
+/// site has too many.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum Priority {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl Priority {
+    /// From a Set-Cookie's attributes; Medium unless one says otherwise.
+    fn of(attributes: &str) -> Priority {
+        let mut priority = Priority::Medium;
+        for attribute in attributes.split(';') {
+            if let Some((k, v)) = attribute.split_once('=')
+                && k.trim().eq_ignore_ascii_case("priority")
+            {
+                priority = match v.trim().to_ascii_lowercase().as_str() {
+                    "low" => Priority::Low,
+                    "high" => Priority::High,
+                    _ => Priority::Medium,
+                };
+            }
+        }
+        priority
+    }
+}
+
 /// One cookie as the jar keeps it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Stored {
@@ -101,6 +130,8 @@ struct Stored {
     /// site or the jar holds too many.
     #[serde(default)]
     accessed: f64,
+    #[serde(default)]
+    priority: Priority,
     /// Creation order, which orders cookies of equal path length.
     seq: u64,
 }
@@ -163,6 +194,62 @@ struct Store {
     changes: u64,
 }
 
+/// Drops a site's cookies from over `SITE_MAX` to 150 as Chrome's
+/// CookieMonster does: in rounds by priority, insecure before secure
+/// (Low insecure, Low, Medium insecure, High insecure, Medium, High), each
+/// least recently used first, and each round keeping the most recently
+/// used of its priority (30 Low, 50 Medium, 70 High).
+fn purge_site(list: &mut Vec<Stored>) {
+    list.sort_by(|a, b| {
+        (a.accessed, a.seq)
+            .partial_cmp(&(b.accessed, b.seq))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let quota = |p: Priority| match p {
+        Priority::Low => SITE_QUOTA_LOW,
+        Priority::Medium => SITE_QUOTA_MEDIUM,
+        Priority::High => SITE_MAX - SITE_PURGE - SITE_QUOTA_LOW - SITE_QUOTA_MEDIUM,
+    };
+    let mut goal = list.len() - (SITE_MAX - SITE_PURGE);
+    let rounds = [
+        (Priority::Low, true),
+        (Priority::Low, false),
+        (Priority::Medium, true),
+        (Priority::High, true),
+        (Priority::Medium, false),
+        (Priority::High, false),
+    ];
+    for (priority, protect_secure) in rounds {
+        if goal == 0 {
+            break;
+        }
+        let count = list.iter().filter(|c| c.priority == priority).count();
+        if count <= quota(priority) {
+            continue;
+        }
+        let mut may_go = if protect_secure {
+            let secure = list
+                .iter()
+                .filter(|c| c.priority == priority && c.secure)
+                .count();
+            count - secure.max(quota(priority))
+        } else {
+            count - quota(priority)
+        };
+        let mut i = 0;
+        while goal > 0 && may_go > 0 && i < list.len() {
+            let c = &list[i];
+            if c.priority == priority && !(protect_secure && c.secure) {
+                list.remove(i);
+                goal -= 1;
+                may_go -= 1;
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
 /// The site a cookie of `domain` counts toward: its registrable domain,
 /// or `domain` itself for an address or a name with none.
 fn key_of(domain: &str) -> &str {
@@ -177,6 +264,9 @@ fn key_of(domain: &str) -> &str {
 /// month until it holds 3000.
 const SITE_MAX: usize = 180;
 const SITE_PURGE: usize = 30;
+/// How many of each priority's most recently used a site's purge keeps.
+const SITE_QUOTA_LOW: usize = 30;
+const SITE_QUOTA_MEDIUM: usize = 50;
 const JAR_MAX: usize = 3300;
 const JAR_PURGE: usize = 300;
 const SAFE_FROM_GLOBAL_PURGE: f64 = 30.0 * 24.0 * 3600.0;
@@ -211,13 +301,7 @@ impl Store {
         let before = list.len();
         list.retain(|c| !c.expired(now));
         if list.len() > SITE_MAX {
-            // Insecure cookies first, each kind least recently used first.
-            list.sort_by(|a, b| {
-                (a.secure, a.accessed, a.seq)
-                    .partial_cmp(&(b.secure, b.accessed, b.seq))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            list.drain(..list.len() - (SITE_MAX - SITE_PURGE));
+            purge_site(list);
         }
         self.count -= before - list.len();
         if self.count > JAR_MAX && self.earliest < now - SAFE_FROM_GLOBAL_PURGE {
@@ -228,28 +312,42 @@ impl Store {
 
     /// Chrome's purge of a jar over its limit: expired cookies, then, of
     /// the least recently used it would need to drop, those unsent for a
-    /// month.
+    /// month, insecure ones before secure ones.
     fn purge(&mut self, now: f64) {
         self.drop_where(|c| c.expired(now));
         if self.count <= JAR_MAX {
             self.earliest = 0.0;
             return;
         }
-        let goal = self.count - (JAR_MAX - JAR_PURGE);
-        let mut used: Vec<(f64, u64)> = self
-            .by_key
-            .values()
-            .flatten()
-            .map(|c| (c.accessed, c.seq))
-            .collect();
-        used.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut goal = self.count - (JAR_MAX - JAR_PURGE);
         let safe = now - SAFE_FROM_GLOBAL_PURGE;
-        let old = used[..goal].partition_point(|(accessed, _)| *accessed < safe);
-        let gone: std::collections::HashSet<u64> = used[..old].iter().map(|(_, s)| *s).collect();
-        self.earliest = used.get(old).map_or(now, |(accessed, _)| *accessed);
+        let mut gone = std::collections::HashSet::new();
+        for secure in [false, true] {
+            let mut used: Vec<(f64, u64)> = self
+                .by_key
+                .values()
+                .flatten()
+                .filter(|c| c.secure == secure)
+                .map(|c| (c.accessed, c.seq))
+                .collect();
+            used.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let within = goal.min(used.len());
+            let old = used[..within].partition_point(|(accessed, _)| *accessed < safe);
+            gone.extend(used[..old].iter().map(|(_, seq)| *seq));
+            goal -= old;
+            if goal == 0 {
+                break;
+            }
+        }
         if !gone.is_empty() {
             self.drop_where(|c| gone.contains(&c.seq));
         }
+        self.earliest = self
+            .by_key
+            .values()
+            .flatten()
+            .map(|c| c.accessed)
+            .fold(now, f64::min);
     }
 
     fn delete(&mut self, cookie: &Stored) {
@@ -496,6 +594,7 @@ impl Jar {
             partition,
             created: now,
             accessed: now,
+            priority: Priority::of(attributes),
             seq: 0,
         };
         if valid(&cookie).is_err() {
@@ -575,6 +674,7 @@ impl Jar {
             partition: cookie.partition_key.clone(),
             created: now,
             accessed: now,
+            priority: Priority::Medium,
             seq: 0,
         };
         valid(&stored)?;
@@ -1279,6 +1379,7 @@ mod tests {
                 partition: None,
                 created: at,
                 accessed: if i < 100 { now() } else { at },
+                priority: Priority::Medium,
                 seq: i as u64,
             })
             .collect();
@@ -1450,5 +1551,52 @@ mod tests {
             jar.add(&c, None).unwrap();
         }
         assert_eq!(jar.len(), 3);
+    }
+
+    #[test]
+    fn a_full_site_drops_cookies_in_chromes_order_by_priority() {
+        let jar = Jar::new();
+        let fill = |jar: &Jar, n: usize, prefix: &str, attributes: &str| {
+            for i in 0..n {
+                set(
+                    jar,
+                    "https://shop.example/",
+                    &format!("{prefix}{i}=1; {attributes}"),
+                );
+            }
+        };
+        // Low-priority cookies go first, newest or not, down to the 30
+        // most recently used; then Medium ones; High ones last of all.
+        fill(&jar, 20, "h", "Priority=High");
+        fill(&jar, 120, "m", "");
+        fill(&jar, 40, "l", "Priority=LOW");
+        set(&jar, "https://shop.example/", "m120=1");
+        assert_eq!(jar.len(), 150);
+        let left = held(&jar);
+        let count = |p: &str| left.iter().filter(|n| n.starts_with(p)).count();
+        assert_eq!((count("h"), count("m"), count("l")), (20, 100, 30));
+        assert!(!left.contains(&"l9".to_string()) && left.contains(&"l10".to_string()));
+        assert!(!left.contains(&"m20".to_string()) && left.contains(&"m21".to_string()));
+        assert!(left.contains(&"m120".to_string()));
+    }
+
+    #[test]
+    fn a_fresh_cookie_on_a_site_full_of_secure_ones_is_kept_if_secure() {
+        let jar = Jar::new();
+        for i in 0..180 {
+            set(&jar, "https://shop.example/", &format!("s{i}=1; Secure"));
+        }
+        set(&jar, "https://shop.example/", "fresh=1; Secure");
+        assert_eq!(jar.len(), 150);
+        assert!(held(&jar).contains(&"fresh".to_string()));
+        // An insecure one goes at once, as in Chrome: insecure cookies are
+        // dropped before any secure one of the same priority.
+        set(&jar, "https://shop.example/", "s0=1; Secure");
+        for i in 0..29 {
+            set(&jar, "https://shop.example/", &format!("t{i}=1; Secure"));
+        }
+        assert_eq!(jar.len(), 180);
+        set(&jar, "https://shop.example/", "plain=1");
+        assert!(!held(&jar).contains(&"plain".to_string()));
     }
 }

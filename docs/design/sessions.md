@@ -69,16 +69,21 @@ and what Chrome does where the draft leaves room:
   Chrome refuses fails `Storage.setCookies` for every cookie in the call:
   one check serves both ways in. The API calls raise; a storage state
   file leaves the cookie out and says so.
-- **Limits.** Chrome's: a site (a registrable domain, subdomains and
-  all) keeps 180 cookies, and one more drops it to 150, insecure cookies
-  first and each kind least recently sent or set first. Past 3300 in
-  the jar, the least recently used are dropped down to 3000, but only
-  those unsent for a month, so a jar whose cookies are all in use may
-  hold more, as Chrome's does. Expired cookies go when their site
-  changes and when the jar is saved. The jar is written out after its
-  lock is let go: a 50,000-cookie jar saved over and over kept a request
-  waiting at most 9 ms, against 4.4 s when it was written under the
-  lock.
+- **Limits.** Chrome's, from its CookieMonster: a site (a registrable
+  domain, subdomains and all) keeps 180 cookies, and one more drops it
+  to 150 in rounds by the `Priority` attribute: Low insecure, Low,
+  Medium insecure, High insecure, Medium, High, each least recently sent
+  or set first, and each round keeping the 30 Low, 50 Medium or 70 High
+  most recently used. So a fresh secure cookie on a site full of secure
+  ones stays, and a fresh insecure one goes at once, as in Chrome.
+  Priority isn't part of the cookie dicts; a cookie given whole is
+  Medium, Chrome's default. Past 3300 in the jar, the least recently
+  used are dropped down to 3000, insecure before secure, but only those
+  unsent for a month, so a jar whose cookies are all in use may hold
+  more, as Chrome's does. Expired cookies go when their site changes and
+  when the jar is saved. The jar is written out after its lock is let
+  go: a 50,000-cookie jar saved over and over kept a request waiting at
+  most 9 ms, against 4.4 s when it was written under the lock.
 - **Sending.** Domain, path, `Secure` (https, localhost and loopback
   only) and expiry, ordered as each browser orders them: longest path
   first, then oldest first (Chrome, Firefox) or newest first (Safari),
