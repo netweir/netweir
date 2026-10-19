@@ -658,7 +658,11 @@ impl Environment {
             out.push(("Network.setExtraHTTPHeaders", self.headers_param()));
         }
         if self.offline == Some(true) {
-            out.extend(offline(true));
+            out.extend(
+                offline(true)
+                    .into_iter()
+                    .filter(|(m, _)| page || *m != NETWORK_STATE),
+            );
         }
         if let Some(phone) = &self.phone {
             out.push((
@@ -766,6 +770,10 @@ pub(crate) enum Kind {
     /// A dedicated or service worker's.
     Worker,
 }
+
+/// What sets navigator.onLine: a page's or frame's alone. A worker's
+/// session answers it "Not supported", and its worker follows the page.
+pub(crate) const NETWORK_STATE: &str = "Network.overrideNetworkState";
 
 /// What turns offline on or off, in a session: requests fail, and
 /// `navigator.onLine` says so. The one without the other is what a page

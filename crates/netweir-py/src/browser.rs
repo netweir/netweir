@@ -67,7 +67,7 @@ fn seconds(name: &str, value: Option<f64>) -> PyResult<Option<Duration>> {
 
 /// Starts Chrome. Resolves to a Browser.
 #[pyfunction]
-#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None, dialog_pause=(0.5, 1.5), environment=None))]
+#[pyo3(signature = (executable=None, headless=true, args=Vec::new(), timeout=30.0, proxy=None, connect=None, user_data_dir=None, dialog_pause=(0.5, 1.5), environment=None, worker_header_order=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn launch<'py>(
     py: Python<'py>,
@@ -80,6 +80,7 @@ pub(crate) fn launch<'py>(
     user_data_dir: Option<PathBuf>,
     dialog_pause: (f64, f64),
     environment: Option<Bound<'py, PyDict>>,
+    worker_header_order: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let environment = crate::environment::environment_from(environment.as_ref())?;
     let (least, most) = dialog_pause;
@@ -124,6 +125,7 @@ pub(crate) fn launch<'py>(
         user_data_dir,
         dialog_pause,
         environment,
+        worker_header_order,
     };
     crate::aio::future_into_py(py, async move {
         let inner = match connect {

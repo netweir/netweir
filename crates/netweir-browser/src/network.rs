@@ -382,7 +382,28 @@ impl Tidy {
                 .iter()
                 .any(|(k, _)| k.eq_ignore_ascii_case(name))
         };
-        if chrome_type != "Other" || has("sec-ch-ua") || has("origin") {
+        // Only a worker's script: asked for as anything ("*/*"), and as a
+        // worker where the request says (Sec-Fetch-Dest isn't there yet
+        // when it's paused, and a page that isn't a secure context sends
+        // none at all). A favicon there is Other too, with no client
+        // hints, and its User-Agent is first, as Chrome sends it.
+        let value = |name: &str| {
+            request
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+        };
+        let worker = matches!(
+            value("sec-fetch-dest"),
+            None | Some("worker" | "sharedworker")
+        );
+        if chrome_type != "Other"
+            || has("sec-ch-ua")
+            || has("origin")
+            || value("accept") != Some("*/*")
+            || !worker
+        {
             return None;
         }
         let ours = |k: &str, v: &str| {

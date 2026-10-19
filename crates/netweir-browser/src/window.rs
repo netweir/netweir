@@ -142,10 +142,14 @@ fn os_major() -> u32 {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(0)
         } else if cfg!(windows) {
-            // "Microsoft Windows [Version 10.0.22631.4602]"
-            std::process::Command::new("cmd")
-                .args(["/c", "ver"])
-                .output()
+            // "Microsoft Windows [Version 10.0.22631.4602]", read with no
+            // console window, which a program without one (pythonw, a
+            // service) would otherwise flash up.
+            let mut ver = std::process::Command::new("cmd");
+            ver.args(["/c", "ver"]);
+            #[cfg(windows)]
+            std::os::windows::process::CommandExt::creation_flags(&mut ver, 0x0800_0000);
+            ver.output()
                 .ok()
                 .and_then(|o| {
                     let said = String::from_utf8_lossy(&o.stdout).to_string();

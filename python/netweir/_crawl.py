@@ -208,6 +208,10 @@ class Settings:
     #: agree, and a site's cookies handed back to the HTTP client go with
     #: the same language and user agent.
     browser_environment: Mapping[str, Any] | None = None
+    #: Send each worker script request of the crawl's Chrome pages with
+    #: its headers in Chrome's own order, at the cost of pausing every
+    #: request they make (see ``netweir.browser(worker_header_order=...)``).
+    browser_worker_header_order: bool = False
     #: Seconds between progress lines in the log ("crawled 120 pages (at
     #: 60 pages/min), ..."); None for none.
     stats_interval: float | None = 60.0
@@ -442,6 +446,7 @@ class Settings:
             browser_pages=self.browser_pages,
             browser_block=list(self.browser_block),
             browser_environment=self.browser_environment,
+            browser_worker_header_order=self.browser_worker_header_order,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None

@@ -59,6 +59,16 @@ pub struct LaunchOptions {
     /// language is Chrome's own from the start, so even service workers,
     /// which no override reaches, agree with it.
     pub environment: Environment,
+    /// Puts each worker script request's User-Agent and Accept-Language
+    /// back where Chrome sends them. The user agent override every page
+    /// has (it keeps the client hints the --user-agent switch empties)
+    /// moves them earlier among the headers of a dedicated or shared
+    /// worker's script, which a server reading header order can tell.
+    /// Off by default: it pauses every request of every page in the Fetch
+    /// domain: a page with 300 subresources took 118 ms to load where it
+    /// took 93, and one with frames and workers took 292 ms where it took
+    /// 200.
+    pub worker_header_order: bool,
 }
 
 impl std::fmt::Debug for LaunchOptions {
@@ -73,6 +83,7 @@ impl std::fmt::Debug for LaunchOptions {
             .field("user_data_dir", &self.user_data_dir)
             .field("dialog_pause", &self.dialog_pause)
             .field("environment", &self.environment)
+            .field("worker_header_order", &self.worker_header_order)
             .finish()
     }
 }
@@ -89,6 +100,7 @@ impl Default for LaunchOptions {
             user_data_dir: None,
             dialog_pause: (Duration::from_millis(500), Duration::from_millis(1500)),
             environment: Environment::default(),
+            worker_header_order: false,
         }
     }
 }
@@ -150,6 +162,8 @@ pub(crate) struct Inner {
     /// pixel ratio.
     pub screen: Size,
     pub screen_scale: f64,
+    /// See [`LaunchOptions::worker_header_order`].
+    pub worker_header_order: bool,
     /// A window size given as a --window-size switch: every page's
     /// window, unless its environment names a viewport.
     pub window_size: Option<(u32, u32)>,
@@ -397,14 +411,14 @@ impl Browser {
                     .into(),
             ));
         }
-        // The browser's own languages, so Chrome sends them as it would
-        // for a person whose languages they are.
-        // A fresh profile's own, en-US and en, unless the environment
-        // names others, given rather than left to the machine's language,
-        // so Chrome's own Accept-Language is known (see network.rs's
-        // tidying) and is what netweir's HTTP profiles send.
-        if !options.args.iter().any(|a| a.starts_with("--accept-lang")) {
-            let l = env.languages().unwrap_or_else(|| "en-US,en".into());
+        // The environment's languages as the browser's own, so Chrome
+        // sends them as it would for a person whose languages they are.
+        // With none, Chrome's own, which follow the machine's language as
+        // its Intl does: forcing English on a German machine would show
+        // navigator.language en-US beside an Intl in de-DE.
+        if let Some(l) = env.languages()
+            && !options.args.iter().any(|a| a.starts_with("--accept-lang"))
+        {
             args.push(format!("--accept-lang={l}"));
         }
         let mut proxy_login = None;
@@ -444,6 +458,7 @@ impl Browser {
             arranges: options.headless,
             screen,
             screen_scale,
+            worker_header_order: options.worker_header_order,
             window_size: options
                 .args
                 .iter()
@@ -516,6 +531,7 @@ impl Browser {
             arranges: false,
             screen,
             screen_scale,
+            worker_header_order: options.worker_header_order,
             window_size: None,
             agent: None,
             own_languages: Mutex::default(),
@@ -594,6 +610,7 @@ impl Browser {
                     .iter()
                     .map(|(brand, version)| json!({"brand": brand, "version": version}))
                     .collect();
+                metadata["fullVersion"] = Value::from(full.as_str());
                 // A brand at Chrome's own major version carries its full
                 // version; the made-up one, as in Chrome, is N.0.0.0.
                 metadata["fullVersionList"] = list
@@ -669,7 +686,7 @@ impl Browser {
     async fn own_metadata(&self) -> Result<Value> {
         const HINTS: &str = "navigator.userAgentData && navigator.userAgentData\
             .getHighEntropyValues(['architecture', 'bitness', 'formFactors', \
-            'fullVersionList', 'model', 'platformVersion', 'wow64'])";
+            'fullVersionList', 'model', 'platformVersion', 'uaFullVersion', 'wow64'])";
         let page = Page::open(
             self.inner.clone(),
             None,
@@ -714,6 +731,9 @@ impl Browser {
             "bitness": values["bitness"],
             "wow64": values["wow64"],
             "formFactors": values["formFactors"],
+            // Deprecated, but still a hint Chrome gives (`uaFullVersion`,
+            // `Sec-CH-UA-Full-Version`); left out, it was empty.
+            "fullVersion": values["uaFullVersion"],
         }))
     }
 
@@ -1408,6 +1428,7 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
+            worker_header_order: false,
             window_size: None,
             agent: None,
             own_languages: Mutex::default(),
@@ -2059,6 +2080,7 @@ mod tests {
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
+            worker_header_order: false,
             window_size: None,
             agent: None,
             own_languages: Mutex::default(),

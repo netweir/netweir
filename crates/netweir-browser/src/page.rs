@@ -608,8 +608,7 @@ impl Page {
             fetching: tokio::sync::Mutex::new(false),
             tidy: {
                 let e = lock_env(&env);
-                e.user_agent
-                    .is_some()
+                (browser.worker_header_order && e.user_agent.is_some())
                     .then(|| browser.tidy(&e.own_languages))
                     .flatten()
             },
@@ -1480,17 +1479,7 @@ impl Page {
     /// sends it, not as one leap no wheel makes.
     pub(crate) async fn mouse_wheel(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
         if self.touches() {
-            // A phone has no wheel: a finger drags the page the other way,
-            // and lifts without flinging it on, so it moves as far as asked.
-            self.call(
-                "Input.synthesizeScrollGesture",
-                json!({
-                    "x": x, "y": y, "xDistance": -dx, "yDistance": -dy,
-                    "preventFling": true, "gestureSourceType": "touch", "speed": 1200,
-                }),
-            )
-            .await?;
-            return Ok(());
+            return self.swipe(x, y, dx, dy).await;
         }
         self.mouse_move(x, y).await?;
         let notches = (dx.abs().max(dy.abs()) / NOTCH).ceil().max(1.0);
@@ -1500,6 +1489,64 @@ impl Page {
                 json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx / notches, "deltaY": dy / notches}),
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    /// Scrolls (dx, dy) as a finger does on a phone, which has no wheel:
+    /// it lands at (x, y), drags the page the other way and holds still a
+    /// moment before lifting, so the page doesn't fling on. Sent as touch
+    /// events, a fingertip's size from landing to lifting, where
+    /// `Input.synthesizeScrollGesture` gave its pointer a width of 1. A
+    /// drag too long for the screen goes as several, each staying on it.
+    async fn swipe(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+        // Chrome takes the finger's first 15 pixels as a tap's wobble.
+        const SLOP: f64 = 15.0;
+        const STEP: f64 = 20.0;
+        let height = self.viewport().map_or(700.0, |v| v.height as f64);
+        let width = self.viewport().map_or(360.0, |v| v.width as f64);
+        // How far a finger can go from (x, y) the way it drags.
+        let room = |at: f64, along: f64, size: f64| -> f64 {
+            if along > 0.0 {
+                at - 10.0
+            } else {
+                size - 10.0 - at
+            }
+        };
+        let most_y = (room(y, dy, height) - SLOP).max(40.0);
+        let most_x = (room(x, dx, width) - SLOP).max(40.0);
+        let parts = (dy.abs() / most_y).max(dx.abs() / most_x).ceil().max(1.0);
+        let (part_x, part_y) = (dx / parts, dy / parts);
+        let spread = (Duration::from_millis(0), Duration::from_millis(6000));
+        let radius = 8.0 + crate::events::pause(spread).as_millis() as f64 / 1000.0;
+        let point = |px: f64, py: f64| json!([{"x": px, "y": py, "radiusX": radius, "radiusY": radius, "force": 1, "id": 0}]);
+        let touch = |kind: &'static str, px: f64, py: f64| {
+            self.call(
+                "Input.dispatchTouchEvent",
+                json!({"type": kind, "touchPoints": point(px, py)}),
+            )
+        };
+        for _ in 0..parts as u32 {
+            let length = part_x.hypot(part_y);
+            if length == 0.0 {
+                break;
+            }
+            let (ux, uy) = (part_x / length, part_y / length);
+            let total = length + SLOP;
+            let steps = (total / STEP).ceil().max(1.0);
+            touch("touchStart", x, y).await?;
+            let (mut px, mut py) = (x, y);
+            for i in 1..=steps as u32 {
+                let done = total * i as f64 / steps;
+                px = x - ux * done;
+                py = y - uy * done;
+                touch("touchMove", px, py).await?;
+                tokio::time::sleep(Duration::from_millis(16)).await;
+            }
+            // Still, then lifted: no speed left to fling with.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            touch("touchMove", px, py).await?;
+            touch("touchEnd", px, py).await?;
         }
         Ok(())
     }
@@ -2290,7 +2337,11 @@ impl Page {
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
         lock_env(&self.inner.env).env.offline = Some(offline);
         for (method, params) in crate::environment::offline(offline) {
-            self.everywhere(Kind::Worker, method, params).await?;
+            let kind = match method {
+                crate::environment::NETWORK_STATE => Kind::Page,
+                _ => Kind::Worker,
+            };
+            self.everywhere(kind, method, params).await?;
         }
         self.service_workers_offline(offline).await
     }

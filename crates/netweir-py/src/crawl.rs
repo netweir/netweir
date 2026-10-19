@@ -881,7 +881,7 @@ impl Crawler {
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None,
         xml_recover=false, parse_timeout=Some(10.0),
-        browser_environment=None,
+        browser_environment=None, browser_worker_header_order=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -935,6 +935,7 @@ impl Crawler {
         xml_recover: bool,
         parse_timeout: Option<f64>,
         browser_environment: Option<Bound<'_, pyo3::types::PyDict>>,
+        browser_worker_header_order: bool,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         let environment = crate::environment::environment_from(browser_environment.as_ref())?;
@@ -1031,6 +1032,7 @@ impl Crawler {
             browser_pages,
             browser_launch: netweir_browser::LaunchOptions {
                 environment,
+                worker_header_order: browser_worker_header_order,
                 ..Default::default()
             },
             browser_block,

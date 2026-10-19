@@ -59,6 +59,14 @@ class browser:
     ``timezone_id`` and the rest), unless a context or page says
     otherwise. Given here, a screen, pixel ratio, user agent and language
     are Chrome's own from the start, so even service workers agree.
+
+    ``worker_header_order=True`` sends each dedicated and shared worker's
+    script request with its headers in Chrome's own order, which the user
+    agent override every page has otherwise changes (User-Agent comes
+    early), and a server reading header order can see. It's off by
+    default because it pauses every request of every page: a page with
+    300 subresources took 118 ms to load where it took 93, and one with
+    frames and workers took 292 ms where it took 200.
     """
 
     def __init__(
@@ -73,6 +81,7 @@ class browser:
         user_data_dir: str | os.PathLike[str] | None = None,
         dialog_pause: tuple[float, float] = (0.5, 1.5),
         environment: Environment | None = None,
+        worker_header_order: bool = False,
     ):
         self._options: dict[str, Any] = {
             "executable": None if executable is None else os.fspath(executable),
@@ -86,6 +95,7 @@ class browser:
             ),
             "dialog_pause": tuple(dialog_pause),
             "environment": None if environment is None else dict(environment),
+            "worker_header_order": worker_header_order,
         }
         self._browser: Browser | None = None
 

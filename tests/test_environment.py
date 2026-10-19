@@ -326,3 +326,19 @@ async def test_a_phone_without_touch_or_a_desktop_with_it_is_refused(browser):
         await browser.new_page(device="Galaxy S23", has_touch=False)
     with pytest.raises(ValueError, match="desktop"):
         await browser.new_page(has_touch=True)
+
+
+async def test_worker_header_order_puts_a_worker_scripts_headers_back(base):
+    want = ["host", "connection", "accept", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"]
+    for tidy in (False, True):
+        browser = await _launch(worker_header_order=tidy)
+        try:
+            page = await browser.new_page()
+            await page.goto(base + "/")
+            await page.evaluate("surfaces")
+            names = list(Handler.seen["/worker.js"])
+            assert names[: len(want)] == want if tidy else names[2:4] == ["accept", "user-agent"], (
+                names
+            )
+        finally:
+            await browser.close()

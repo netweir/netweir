@@ -54,8 +54,9 @@ function read() {
   return o;
 }
 async function hints() {
-  const h = await navigator.userAgentData.getHighEntropyValues(['model', 'platformVersion', 'formFactors']);
-  return { model: h.model, platformVersion: h.platformVersion, formFactors: (h.formFactors || []).join(',') };
+  const h = await navigator.userAgentData.getHighEntropyValues(['model', 'platformVersion', 'formFactors', 'uaFullVersion', 'fullVersionList']);
+  const full = (h.fullVersionList || []).find((b) => b.brand === 'Chromium');
+  return { model: h.model, platformVersion: h.platformVersion, formFactors: (h.formFactors || []).join(','), uaFullVersion: h.uaFullVersion, chromium: full && full.version };
 }
 "#;
 
@@ -140,7 +141,7 @@ fn site() -> common::Server {
     // The model is a high-entropy hint, sent only once asked for.
     page.headers.push((
         "Accept-CH",
-        "Sec-CH-UA-Model, Sec-CH-UA-Platform-Version".into(),
+        "Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Full-Version".into(),
     ));
     serve(vec![
         ("/", page),
@@ -387,6 +388,12 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
         assert_eq!(s[w]["hints"]["model"], "SM-S911B", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["platformVersion"], "14.0.0", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["formFactors"], "Mobile", "{w}: {s:#}");
+        // The full version Chrome reports, as its own full version list
+        // has it.
+        assert_eq!(
+            s[w]["hints"]["uaFullVersion"], s[w]["hints"]["chromium"],
+            "{w}: {s:#}"
+        );
     }
     all_are(&s, "screen", json!("360x780"));
     all_are(&s, "dpr", json!(3));
@@ -542,6 +549,9 @@ const DETECT: &str = r#"
     }
   }
   if (Object.getOwnPropertyNames(navigator).length || Object.getOwnPropertyNames(screen).length) flag('own properties');
+  if (!m.hints.uaFullVersion || m.hints.uaFullVersion !== m.hints.chromium) flag('uaFullVersion');
+  // The language page script reads against the one Intl formats in.
+  if (navigator.language !== Intl.DateTimeFormat().resolvedOptions().locale) flag('language vs Intl locale');
   if (!/\[native code\]/.test(Function.prototype.toString.call(Date.prototype.getTimezoneOffset))) flag('patched getTimezoneOffset');
   if (!/\[native code\]/.test(Function.prototype.toString.call(Intl.DateTimeFormat))) flag('patched Intl');
   if (!/\[native code\]/.test(Function.prototype.toString.call(window.matchMedia))) flag('patched matchMedia');
@@ -866,7 +876,8 @@ async fn a_phone_is_tapped_and_scrolled_by_touch() {
              <button id=b style='margin-top:100px;width:200px;height:80px'>tap</button>\
              <div style='height:5000px'></div>\
              <script>window.seen = []; for (const k of ['pointerdown', 'touchstart', 'touchend', 'mousemove', 'mousedown', 'click', 'wheel']) \
-             addEventListener(k, (e) => seen.push(k + (e.pointerType ? ':' + e.pointerType : '')), true);</script>",
+             addEventListener(k, (e) => seen.push(k + (e.pointerType ? ':' + e.pointerType : '')), true); \
+             window.widths = []; addEventListener('pointermove', (e) => widths.push(e.width), true);</script>",
         ),
     )]);
     let page = browser
@@ -895,6 +906,12 @@ async fn a_phone_is_tapped_and_scrolled_by_touch() {
     let seen: Vec<String> = serde_json::from_value(page.evaluate("seen").await.unwrap()).unwrap();
     assert!(!seen.iter().any(|s| s == "wheel"), "{seen:?}");
     assert!(seen.iter().any(|s| s == "touchstart"), "{seen:?}");
+    // A fingertip's size all the way, not a pointer 1 pixel wide.
+    let widths: Vec<f64> = serde_json::from_value(page.evaluate("widths").await.unwrap()).unwrap();
+    assert!(
+        !widths.is_empty() && widths.iter().all(|w| *w > 10.0),
+        "{widths:?}"
+    );
     let hover = page.hover("#b", None).await.unwrap_err();
     assert!(hover.to_string().contains("phone"), "{hover}");
     browser.close().await.unwrap();
@@ -1616,5 +1633,66 @@ async fn offline_reaches_a_service_worker_let_go_before() {
     );
     page.set_offline(false).await.unwrap();
     assert_eq!(page.evaluate("ask()").await.unwrap(), json!([true, 200]));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_full_version_is_said_as_chrome_says_it() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let probe = Probe::new();
+    let page = browser.new_page().await.unwrap();
+    let s = surfaces(&page, &probe).await;
+    let full = browser.version().trim_start_matches("Chrome/").to_string();
+    for w in ["main", "worker", "frame", "frameWorker"] {
+        assert_eq!(s[w]["hints"]["uaFullVersion"], full.as_str(), "{w}: {s:#}");
+    }
+    // Asked for, it goes in the header of what the page loads next.
+    assert_eq!(
+        probe
+            .header("/style.css", "sec-ch-ua-full-version")
+            .as_deref(),
+        Some(format!("\"{full}\"").as_str())
+    );
+    browser.close().await.unwrap();
+}
+
+/// On any machine, with any locale: the language page script reads is the
+/// one Intl formats in, as a person's Chrome has them.
+#[tokio::test]
+async fn the_language_page_script_reads_is_the_one_intl_formats_in() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let phone = Environment::device("Galaxy S21").unwrap();
+    for env in [
+        Environment::default(),
+        Environment {
+            locale: Some("pt-BR".into()),
+            ..Default::default()
+        },
+        phone.clone(),
+        Environment {
+            locale: Some("ko-KR".into()),
+            ..phone
+        },
+    ] {
+        let page = browser.new_page_with(env.clone()).await.unwrap();
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        let said = page
+            .evaluate("[navigator.language, Intl.DateTimeFormat().resolvedOptions().locale, Intl.NumberFormat().resolvedOptions().locale]")
+            .await
+            .unwrap();
+        assert_eq!(said[0], said[1], "{env:?}: {said}");
+        assert_eq!(said[0], said[2], "{env:?}: {said}");
+        if let Some(locale) = &env.locale {
+            assert_eq!(said[0], locale.as_str());
+        }
+        page.close().await.unwrap();
+    }
     browser.close().await.unwrap();
 }

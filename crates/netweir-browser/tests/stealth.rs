@@ -347,8 +347,9 @@ fn worker_site() -> common::Server {
 }
 
 /// The user agent override every page has (it keeps the client hints the
-/// --user-agent switch empties) used to put User-Agent, and a language's
-/// Accept-Language, early in a worker script's headers.
+/// --user-agent switch empties) puts User-Agent, and a language's
+/// Accept-Language, early in a worker script's headers, unless
+/// `worker_header_order` puts them back.
 #[tokio::test]
 async fn worker_scripts_send_their_headers_in_chromes_own_order() {
     let Some(executable) = common::chrome() else {
@@ -364,6 +365,7 @@ async fn worker_scripts_send_their_headers_in_chromes_own_order() {
         let browser = common::launch(netweir_browser::LaunchOptions {
             executable: Some(executable.clone()),
             environment: environment.clone(),
+            worker_header_order: true,
             ..Default::default()
         })
         .await;
@@ -382,4 +384,67 @@ async fn worker_scripts_send_their_headers_in_chromes_own_order() {
         }
         browser.close().await.unwrap();
     }
+}
+
+/// On a page that isn't a secure context (plain http, not loopback) a
+/// request sends no client hints and no Sec-Fetch headers, so a favicon's
+/// request looks like a worker script's but for its Accept: as Google
+/// Chrome 155 sent them to a LAN address, its User-Agent first, the
+/// worker's after Referer.
+#[tokio::test]
+async fn a_page_that_isnt_a_secure_context_keeps_chromes_order() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        worker_header_order: true,
+        args: vec!["--host-resolver-rules=MAP plain.test 127.0.0.1".into()],
+        ..Default::default()
+    })
+    .await;
+    let js = |body: &str| common::Reply {
+        status: 200,
+        headers: vec![("Content-Type", "application/javascript".into())],
+        body: body.into(),
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<link rel=icon href=/fav.ico><script>window.w = new Promise((ok) => \
+                 { const w = new Worker('/w.js'); w.onmessage = ok; });</script>",
+            ),
+        ),
+        ("/fav.ico", html("")),
+        ("/w.js", js("postMessage(1)")),
+    ]);
+    let url = server.url.replace("127.0.0.1", "plain.test");
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{url}/"), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    assert_eq!(page.evaluate("isSecureContext").await.unwrap(), false);
+    page.evaluate("w.then(() => 1)").await.unwrap();
+    for _ in 0..100 {
+        if !server.headers_for("/fav.ico").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        order(&server, "/"),
+        names(
+            "host connection upgrade-insecure-requests user-agent accept accept-encoding accept-language"
+        )
+    );
+    assert_eq!(
+        order(&server, "/fav.ico"),
+        names("host connection user-agent accept referer accept-encoding accept-language")
+    );
+    assert_eq!(
+        order(&server, "/w.js"),
+        names("host connection accept referer user-agent accept-encoding accept-language")
+    );
+    browser.close().await.unwrap();
 }

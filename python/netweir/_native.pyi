@@ -440,6 +440,7 @@ class Crawler:
         retry_http_codes: list[int] | None = None,
         http_auth: tuple[str, str, str] | None = None,
         browser_environment: Environment | None = None,
+        browser_worker_header_order: bool = False,
     ) -> None: ...
     def add_rule(
         self,
@@ -684,6 +685,7 @@ def launch(
     user_data_dir: str | os.PathLike[str] | None = None,
     dialog_pause: tuple[float, float] = (0.5, 1.5),
     environment: Environment | None = None,
+    worker_header_order: bool = False,
 ) -> Awaitable[Browser]: ...
 def find_chrome() -> str: ...
 
