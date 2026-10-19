@@ -1579,3 +1579,42 @@ async fn no_viewport_leaves_the_window_as_chrome_opens_it() {
     assert_eq!(fits, true);
     browser.close().await.unwrap();
 }
+
+/// A service worker of a page with nothing of its environment to give it
+/// is let go; offline set later still reaches it, through the page.
+#[tokio::test]
+async fn offline_reaches_a_service_worker_let_go_before() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<script>window.ask = () => new Promise(async (ok) => { const reg = await \
+                 navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; \
+                 navigator.serviceWorker.onmessage = (m) => ok(m.data); reg.active.postMessage('?'); \
+                 });</script>",
+            ),
+        ),
+        (
+            "/sw.js",
+            js("self.onmessage = (e) => fetch('/ping', { cache: 'no-store' }).then((r) => r.status, () => \
+                'failed').then((f) => e.source.postMessage([navigator.onLine, f]));"
+                .into()),
+        ),
+        ("/ping", text("x", "text/plain")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    assert_eq!(page.evaluate("ask()").await.unwrap(), json!([true, 200]));
+    page.set_offline(true).await.unwrap();
+    assert_eq!(
+        page.evaluate("ask()").await.unwrap(),
+        json!([false, "failed"])
+    );
+    page.set_offline(false).await.unwrap();
+    assert_eq!(page.evaluate("ask()").await.unwrap(), json!([true, 200]));
+    browser.close().await.unwrap();
+}

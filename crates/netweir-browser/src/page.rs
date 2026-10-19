@@ -192,6 +192,8 @@ pub(crate) struct PageInner {
     pub(crate) insets: Mutex<Option<(i64, i64)>>,
     /// The viewport netweir last gave its window.
     pub(crate) shown: Mutex<Option<Size>>,
+    /// Service workers of its context it attached to keep offline.
+    offline_workers: Mutex<Vec<String>>,
 }
 
 /// A page's environment, and the user agent override every session of it
@@ -682,6 +684,7 @@ impl Page {
                 env: env.clone(),
                 insets: Mutex::default(),
                 shown: Mutex::default(),
+                offline_workers: Mutex::default(),
             }),
         };
         {
@@ -2288,6 +2291,85 @@ impl Page {
         lock_env(&self.inner.env).env.offline = Some(offline);
         for (method, params) in crate::environment::offline(offline) {
             self.everywhere(Kind::Worker, method, params).await?;
+        }
+        self.service_workers_offline(offline).await
+    }
+
+    /// Takes the service workers of the page's context that it let go off
+    /// the network too, or back on. Nothing set in a page's session
+    /// reaches one: measured, its navigator.onLine said false but its
+    /// fetch went through. So each is attached while it's offline, and
+    /// let go again after, since Chrome keeps one running while anything
+    /// is attached.
+    async fn service_workers_offline(&self, offline: bool) -> Result<()> {
+        let browser = &self.inner.browser;
+        if !offline {
+            let held = std::mem::take(
+                &mut *self
+                    .inner
+                    .offline_workers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            );
+            for session in held {
+                for (method, params) in crate::environment::offline(false) {
+                    let _ = browser.call(&session, method, params).await;
+                }
+                let _ = browser
+                    .call("", "Target.detachFromTarget", json!({"sessionId": session}))
+                    .await;
+            }
+            return Ok(());
+        }
+        let made = browser
+            .contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let ours = |id: &str| match &self.inner.context {
+            Some(context) => id == context,
+            // The browser's own context, whose id netweir doesn't keep.
+            None => !made.iter().any(|m| m == id),
+        };
+        let targets = browser.call("", "Target.getTargets", json!({})).await?;
+        for t in targets["targetInfos"].as_array().into_iter().flatten() {
+            if t["type"] != "service_worker"
+                || t["attached"] == true
+                || !ours(t["browserContextId"].as_str().unwrap_or_default())
+            {
+                continue;
+            }
+            // Kept when the browser's session hears of the attaching.
+            browser
+                .attaching
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(str_of(t, "targetId"));
+            let attached = browser
+                .call(
+                    "",
+                    "Target.attachToTarget",
+                    json!({"targetId": t["targetId"], "flatten": true}),
+                )
+                .await;
+            let Ok(attached) = attached else {
+                browser
+                    .attaching
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&str_of(t, "targetId"));
+                continue;
+            };
+            let session = str_of(&attached, "sessionId");
+            let _ = browser.call(&session, "Network.enable", json!({})).await;
+            for (method, params) in crate::environment::offline(true) {
+                let _ = browser.call(&session, method, params).await;
+            }
+            self.inner
+                .offline_workers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(session);
         }
         Ok(())
     }

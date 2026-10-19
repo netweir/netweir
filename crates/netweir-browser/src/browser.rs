@@ -124,7 +124,7 @@ pub(crate) struct Inner {
     temp_profile: Mutex<Option<launch::TempProfile>>,
     /// Contexts netweir made, for closing a browser it connected to,
     /// whose other contexts aren't netweir's to close.
-    contexts: Mutex<Vec<String>>,
+    pub(crate) contexts: Mutex<Vec<String>>,
     version: String,
     pub identity: Option<Identity>,
     pub timeout: Duration,
