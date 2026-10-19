@@ -153,6 +153,13 @@ Working today:
   crawl, it can take over a request a site keeps blocking, and hand the
   cookies it earns back to the fast HTTP client. `netweir install chrome`
   fetches the Chrome it's tuned for.
+- A page's environment, with Playwright's names: viewport and screen,
+  phones (`device="Galaxy S23"`), language, time zone, location and
+  permissions, dark mode, extra headers, offline and init scripts, per
+  page, per context, for a whole browser or for a crawl. Each is set
+  where Chrome sets it for itself, so the page, its workers and frames
+  from other sites all say the same thing, and the request headers
+  agree. See [docs/environment.md](docs/environment.md).
 
 Coming next: Firefox in the driver, once there's a Firefox that doesn't
 announce it's automated. The designs are in [docs/design/](docs/design/).

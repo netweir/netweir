@@ -160,6 +160,13 @@ async with await browser.new_context() as context:
 
 Closing a context closes its pages; closing the browser closes everything.
 
+A page or a context can be given an environment: a viewport and screen,
+a phone, a language and time zone, a place, permissions and more, with
+Playwright's names (`browser.new_context(locale="de-DE",
+timezone_id="Europe/Berlin")`, `browser.new_page(device="Galaxy S23")`).
+[A page's environment](environment.md) has all of it. A page given none
+shows a 1280 by 720 viewport on a 1920 by 1080 screen.
+
 ## Navigating
 
 `await page.goto(url, wait="load")` loads the page and waits for its
@@ -806,6 +813,12 @@ Netweir avoids these giveaways:
   JavaScript calls.
 - A dialog is never answered sooner than a person could answer it, and
   Chrome's popup blocker stays on.
+- Headless Chrome's own screen is 800 by 600, smaller than the windows it
+  opens. Netweir gives it a 1920 by 1080 one, and sizes every page's real
+  window, so the window always fits the screen.
+- A viewport, a screen, a phone, a language or a time zone is set where
+  Chrome sets it for itself, so the page, its workers and frames from
+  other sites all say the same; see [A page's environment](environment.md).
 
 A test in the repository loads a page that checks the first two from page
 script and the server checks the request headers; the test also fails if

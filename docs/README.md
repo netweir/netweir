@@ -14,6 +14,7 @@
 - [Self-healing](self-healing.md): blocks, checkpoints, tracked selectors and repair proposals.
 - [One crawl, many machines](distributed.md): processes on several machines sharing one queue in Redis.
 - [Browser](browser.md): drive Chrome for pages that need JavaScript.
+- [A page's environment](environment.md): viewport, screen, phones, language, time zone, location, permissions and the rest, the same everywhere a site looks.
 - [Running spiders as a service](serve.md): `netweir serve`, jobs scheduled, watched and cancelled over HTTP, as with scrapyd.
 - [Settings](settings.md): every setting and its default.
 
@@ -23,6 +24,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/browser.md](design/browser.md): the Chrome driver.
 - [design/network.md](design/network.md): reading what a Chrome page fetches, and blocking or changing its requests.
 - [design/dialogs.md](design/dialogs.md): a Chrome page's dialogs, popups and downloads.
+- [design/environment.md](design/environment.md): a Chrome page's screen, window, device, language, clock and place, and what was measured to keep them consistent.
 - [design/requests.md](design/requests.md): requests other than GETs.
 - [design/fetch-policy.md](design/fetch-policy.md): timeouts, redirects, logins and certificates, per request and per crawl.
 - [design/workers.md](design/workers.md): callbacks in worker processes.

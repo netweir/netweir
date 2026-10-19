@@ -87,6 +87,7 @@ a spider's own `http_auth` always wins.
 | `browser` | `"off"` | which requests go through Chrome: `"off"` (those with `browser=True`), `"on_block"` (also any still blocked after its retries) or `"always"` |
 | `browser_pages` | `4` | Chrome pages open at once |
 | `browser_block` | `()` | resource types the crawl's Chrome pages never fetch, such as `("image", "font", "media")`; Chrome fails them before they leave it. Any of `stylesheet`, `image`, `media`, `font`, `script`, `texttrack`, `xhr`, `fetch` (which blocks `xhr` too, and the other way round), `prefetch`, `eventsource`, `websocket`, `manifest`, `signedexchange`, `ping`, `cspviolationreport`, `preflight`, `other`; see [Browser](browser.md#blocking-and-changing-requests) |
+| `browser_environment` | `None` | what the crawl's Chrome pages are shown in and say about themselves, as a dict of `new_context()`'s keyword arguments: `{"device": "Galaxy S23"}`, `{"locale": "de-DE", "timezone_id": "Europe/Berlin"}`. Cookies Chrome hands back go with the same language, user agent and client hints; see [A page's environment](environment.md#in-a-crawl) |
 
 ## State
 

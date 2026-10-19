@@ -228,6 +228,12 @@ These are rules of the driver, not options, and tests enforce them:
   (reading the metadata from `chrome://version`, the one page that can
   see it before any override). In a service worker, the high-entropy
   hints stay empty: no override reaches it.
+- Headless Chrome's own screen is 800 by 600, and the windows it opens
+  for new contexts are 1280 by 600: `outerWidth` bigger than
+  `screen.width`. It's launched with a 1920 by 1080 screen
+  (`--screen-info`) instead, and each page's window is sized to a
+  1280 by 720 viewport where that fits. Screens, windows and the rest of
+  a page's environment are in [environment.md](environment.md).
 
 ### Pages
 
@@ -742,3 +748,10 @@ page's own; see the network design note.
 listener or by default, never sooner than a person could; popups become
 pages with their opener's rules; downloads land in a folder per context.
 See [dialogs.md](dialogs.md).
+
+**M50, a page's environment.** Viewport, screen, phones and touch,
+locale, time zone, geolocation and permissions, media, extra headers,
+offline, user agent and init scripts, per browser, context and page,
+the same in every session a page has. Headless Chrome is given a real
+1920 by 1080 screen, and every page's window is sized. See
+[environment.md](environment.md).
