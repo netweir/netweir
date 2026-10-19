@@ -195,3 +195,191 @@ async fn pages_present_the_brands_netweir_is_told_to() {
     assert!(ua.contains("\"Brand X\""), "{ua}");
     browser.close().await.unwrap();
 }
+
+/// The names of the headers of the request for `path`, in order.
+fn order(server: &common::Server, path: &str) -> Vec<String> {
+    server
+        .headers_for(path)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect()
+}
+
+fn names(s: &str) -> Vec<String> {
+    s.split(' ').map(str::to_string).collect()
+}
+
+/// What Google Chrome 155 on a Mac sent, started by hand with no
+/// DevTools at all: the order of its headers for a document, a
+/// stylesheet, a worker's script and what the worker fetches.
+pub const DOCUMENT: &str = "host connection sec-ch-ua sec-ch-ua-mobile sec-ch-ua-platform \
+    upgrade-insecure-requests user-agent accept sec-fetch-site sec-fetch-mode sec-fetch-user \
+    sec-fetch-dest accept-encoding accept-language";
+pub const STYLESHEET: &str = "host connection sec-ch-ua-platform user-agent sec-ch-ua \
+    sec-ch-ua-mobile accept sec-fetch-site sec-fetch-mode sec-fetch-dest referer accept-encoding \
+    accept-language";
+pub const WORKER_SCRIPT: &str = "host connection accept sec-fetch-site sec-fetch-mode \
+    sec-fetch-dest referer user-agent accept-encoding accept-language";
+pub const WORKER_FETCH: &str = "host connection user-agent accept sec-fetch-site sec-fetch-mode \
+    sec-fetch-dest referer accept-encoding accept-language";
+
+/// As Google Chrome 155 on a Mac shows itself started by hand: the window
+/// around its page, its languages, and the order of its headers.
+#[tokio::test]
+async fn a_page_has_the_frame_languages_and_header_order_of_a_persons_chrome() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    let browser = common::launch(netweir_browser::LaunchOptions {
+        executable: Some(executable),
+        ..Default::default()
+    })
+    .await;
+    let js = |body: &str| common::Reply {
+        status: 200,
+        headers: vec![("Content-Type", "application/javascript".into())],
+        body: body.into(),
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<link rel=stylesheet href=/s.css><script>window.w = new Promise((ok) => \
+                 { const w = new Worker('/w.js'); w.onmessage = ok; });</script>",
+            ),
+        ),
+        (
+            "/s.css",
+            common::Reply {
+                status: 200,
+                headers: vec![("Content-Type", "text/css".into())],
+                body: "p{}".into(),
+            },
+        ),
+        ("/w.js", js("fetch('/f').finally(() => postMessage(1))")),
+        ("/f", html("x")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    page.evaluate("w.then(() => 1)").await.unwrap();
+    // Chrome for Testing shows an infobar a person's Chrome doesn't, and
+    // its field trial config holds the languages back to one.
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            page.evaluate("outerHeight - innerHeight").await.unwrap(),
+            json!(87)
+        );
+    }
+    assert_eq!(
+        page.evaluate("navigator.languages").await.unwrap(),
+        json!(["en-US", "en"])
+    );
+    assert_eq!(order(&server, "/"), names(DOCUMENT));
+    assert_eq!(order(&server, "/s.css"), names(STYLESHEET));
+    assert_eq!(order(&server, "/f"), names(WORKER_FETCH));
+    browser.close().await.unwrap();
+}
+
+/// Every kind of worker script, as Google Chrome 155 on a Mac sent each
+/// with no DevTools attached (the probe is in the design note): the
+/// worker's own script after Referer, what it imports with User-Agent
+/// first.
+const WORKER_KINDS: &[(&str, &str)] = &[
+    ("/classic.js", WORKER_SCRIPT),
+    ("/imported.js", WORKER_FETCH),
+    ("/nested.js", WORKER_SCRIPT),
+    ("/module.js", WORKER_SCRIPT),
+    (
+        "/dep.js",
+        "host connection user-agent origin accept sec-fetch-site sec-fetch-mode \
+         sec-fetch-dest referer accept-encoding accept-language",
+    ),
+    ("/shared.js", WORKER_SCRIPT),
+    ("/shared-module.js", WORKER_SCRIPT),
+    (
+        "/shared-dep.js",
+        "host connection user-agent origin accept sec-fetch-site sec-fetch-mode \
+         sec-fetch-dest referer accept-encoding accept-language",
+    ),
+];
+
+fn worker_site() -> common::Server {
+    let js = |body: &str| common::Reply {
+        status: 200,
+        headers: vec![("Content-Type", "application/javascript".into())],
+        body: body.into(),
+    };
+    serve(vec![
+        (
+            "/",
+            html(
+                "<script>const wait = (w, port) => new Promise((ok) => { (port || w).onmessage = ok; \
+                 setTimeout(ok, 4000); }); window.done = (async () => { \
+                 await wait(new Worker('/classic.js')); \
+                 await wait(new Worker('/module.js', { type: 'module' })); \
+                 const s = new SharedWorker('/shared.js'); await wait(s, s.port); \
+                 const m = new SharedWorker('/shared-module.js', { type: 'module' }); await wait(m, m.port); \
+                 return 1; })();</script>",
+            ),
+        ),
+        (
+            "/classic.js",
+            js(
+                "importScripts('/imported.js'); const n = new Worker('/nested.js'); n.onmessage = () => postMessage(1);",
+            ),
+        ),
+        ("/imported.js", js("1;")),
+        ("/nested.js", js("postMessage(1);")),
+        ("/module.js", js("import '/dep.js'; postMessage(1);")),
+        ("/dep.js", js("export const x = 1;")),
+        (
+            "/shared.js",
+            js("onconnect = (e) => e.ports[0].postMessage(1);"),
+        ),
+        (
+            "/shared-module.js",
+            js("import '/shared-dep.js'; onconnect = (e) => e.ports[0].postMessage(1);"),
+        ),
+        ("/shared-dep.js", js("export const y = 1;")),
+    ])
+}
+
+/// The user agent override every page has (it keeps the client hints the
+/// --user-agent switch empties) used to put User-Agent, and a language's
+/// Accept-Language, early in a worker script's headers.
+#[tokio::test]
+async fn worker_scripts_send_their_headers_in_chromes_own_order() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    for environment in [
+        netweir_browser::Environment::default(),
+        netweir_browser::Environment {
+            locale: Some("de-DE".into()),
+            ..Default::default()
+        },
+    ] {
+        let browser = common::launch(netweir_browser::LaunchOptions {
+            executable: Some(executable.clone()),
+            environment: environment.clone(),
+            ..Default::default()
+        })
+        .await;
+        let server = worker_site();
+        let page = browser.new_page().await.unwrap();
+        page.goto(&format!("{}/", server.url), WaitUntil::Load, None)
+            .await
+            .unwrap();
+        page.evaluate("done").await.unwrap();
+        for (path, want) in WORKER_KINDS {
+            assert_eq!(
+                order(&server, path),
+                names(want),
+                "{path} with {environment:?}"
+            );
+        }
+        browser.close().await.unwrap();
+    }
+}

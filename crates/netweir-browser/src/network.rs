@@ -123,6 +123,9 @@ pub struct Route {
 struct RouteInner {
     /// The Fetch domain's id for the pause, not the request's own.
     paused: String,
+    /// The headers it goes on with unless a route gives others: its own,
+    /// tidied (see [`Tidy`]); None for its own as they are.
+    tidied: Option<Vec<(String, String)>>,
     request: Request,
     conn: Connection,
     timeout: std::time::Duration,
@@ -188,8 +191,8 @@ impl Route {
         if let Some(method) = with.method {
             params["method"] = Value::from(method);
         }
-        if let Some(headers) = with.headers {
-            params["headers"] = entries(&headers);
+        if let Some(headers) = with.headers.as_ref().or(self.inner.tidied.as_ref()) {
+            params["headers"] = entries(headers);
         }
         if let Some(body) = with.body {
             params["postData"] =
@@ -255,11 +258,12 @@ impl Route {
 impl RouteInner {
     fn release(&self) {
         if !self.decided.swap(true, Ordering::Relaxed) {
-            self.conn.send(
-                &self.session,
-                "Fetch.continueRequest",
-                json!({"requestId": self.paused}),
-            );
+            let mut params = json!({"requestId": self.paused});
+            if let Some(headers) = &self.tidied {
+                params["headers"] = entries(headers);
+            }
+            self.conn
+                .send(&self.session, "Fetch.continueRequest", params);
         }
         self.settled.notify_one();
     }
@@ -340,6 +344,60 @@ pub(crate) struct Decider {
     /// sessions has it changed, so none is left with patterns from
     /// before the rules last changed.
     pub fetching: tokio::sync::Mutex<bool>,
+    /// What Chrome itself adds to a request, for the page's sessions with
+    /// a user agent override; see [`Tidy`].
+    pub tidy: Option<Tidy>,
+}
+
+/// The `User-Agent` and `Accept-Language` Chrome adds to a request by
+/// itself: those of its `--user-agent` and `--accept-lang` switches.
+///
+/// A session with a user agent override has the renderer set those two
+/// headers on a worker's script request, which puts them early among its
+/// headers (`Accept`, `User-Agent`, `Accept-Language`, `Sec-Fetch-Site`
+/// ...), where Chrome on its own sends them after `Referer`. Every page
+/// netweir launches has the override, to keep the client hints the
+/// switch empties. So such a request, paused as it leaves, goes on
+/// without either header where its value is the one Chrome would add, and
+/// Chrome adds it back in its own place. One that differs (a page's own
+/// user agent or language) stays where the override put it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Tidy {
+    pub user_agent: Option<String>,
+    pub accept_language: Option<String>,
+}
+
+impl Tidy {
+    /// The headers a paused request goes on with: its own, less those
+    /// Chrome puts back in their place. None leaves it as it is. Only for
+    /// a script a worker is started with: requests of type Other that
+    /// carry no client hints, which Chrome sends with every document and
+    /// subresource but never with a worker's script, and no Origin.
+    fn headers(&self, chrome_type: &str, request: &Request) -> Option<Vec<(String, String)>> {
+        // A module a worker imports is fetched with an Origin, and comes
+        // with User-Agent first as Chrome sends it: it's left.
+        let has = |name: &str| {
+            request
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case(name))
+        };
+        if chrome_type != "Other" || has("sec-ch-ua") || has("origin") {
+            return None;
+        }
+        let ours = |k: &str, v: &str| {
+            (k.eq_ignore_ascii_case("user-agent") && self.user_agent.as_deref() == Some(v))
+                || (k.eq_ignore_ascii_case("accept-language")
+                    && self.accept_language.as_deref() == Some(v))
+        };
+        let kept: Vec<(String, String)> = request
+            .headers
+            .iter()
+            .filter(|(k, v)| !ours(k, v))
+            .cloned()
+            .collect();
+        (kept.len() != request.headers.len()).then_some(kept)
+    }
 }
 
 impl Decider {
@@ -365,6 +423,12 @@ impl Decider {
         // only for a proxy with a login. Routes and blocked URLs need
         // every request paused too; a guard and blocked resource types
         // only their own.
+        // Worker scripts, for the override's headers to be put back in
+        // their place: one round trip each, for requests of type Other
+        // alone (see Tidy).
+        if self.tidy.is_some() && !types.contains(&"Other") {
+            types.push("Other");
+        }
         if all {
             vec![json!({"urlPattern": "*"})]
         } else {
@@ -409,9 +473,14 @@ impl Decider {
             && chrome_type == "Document"
             && params["frameId"] == self.frame.as_str();
         let settled = Arc::new(tokio::sync::Notify::new());
+        let tidied = self
+            .tidy
+            .as_ref()
+            .and_then(|t| t.headers(chrome_type, &request));
         let route = Route {
             inner: Arc::new(RouteInner {
                 paused,
+                tidied,
                 request,
                 conn: self.conn.clone(),
                 timeout: self.timeout,

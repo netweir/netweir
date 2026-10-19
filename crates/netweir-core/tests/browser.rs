@@ -1156,7 +1156,11 @@ async fn a_crawls_phone_hands_its_cookies_to_requests_that_say_the_same() {
             "{name}: {in_chrome:?} vs {over_http:?}"
         );
     }
-    assert_eq!(header(&over_http, "accept-language"), "pt-BR,pt;q=0.9");
+    // Chrome's own for a context made over CDP, which adds its language.
+    assert_eq!(
+        header(&over_http, "accept-language"),
+        "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+    );
     assert!(header(&over_http, "user-agent").contains("Android"));
     assert_eq!(header(&over_http, "sec-ch-ua-mobile"), "?1");
 }

@@ -77,6 +77,7 @@ window.surfaces = (async () => {{
   const main = read();
   main.hints = await hints();
   const worker = await new Promise((ok) => {{ const w = new Worker('/worker.js'); w.onmessage = (m) => ok(m.data); w.onerror = (e) => ok('worker failed'); }});
+  const shared = await new Promise((ok) => {{ const s = new SharedWorker('/shared.js'); s.port.onmessage = (m) => ok(m.data); s.onerror = () => ok('shared worker failed'); }});
   const frame = await new Promise((ok) => {{
     addEventListener('message', (m) => ok(m.data));
     const f = document.createElement('iframe');
@@ -84,7 +85,7 @@ window.surfaces = (async () => {{
     f.allow = 'geolocation';
     document.documentElement.appendChild(f);
   }});
-  return {{ main, worker, frame: frame.me, frameWorker: frame.worker }};
+  return {{ main, worker, shared, frame: frame.me, frameWorker: frame.worker }};
 }})();
 </script><body>"#
     )
@@ -108,6 +109,12 @@ fn frame_page() -> String {
 fn worker(fetching: &str) -> String {
     format!(
         "{READ}\nfetch('{fetching}').catch(() => {{}}).finally(async () => {{ const o = read(); o.hints = await hints(); postMessage(o); }});"
+    )
+}
+
+fn shared_worker() -> String {
+    format!(
+        "{READ}\nonconnect = (e) => {{ const p = e.ports[0]; fetch('/shared-fetch').catch(() => {{}}).finally(async () => {{ const o = read(); o.hints = await hints(); p.postMessage(o); }}); }};"
     )
 }
 
@@ -140,6 +147,8 @@ fn site() -> common::Server {
         ("/frame.html", html(&frame_page())),
         ("/worker.js", js(worker("/worker-fetch"))),
         ("/frame-worker.js", js(worker("/frame-fetch"))),
+        ("/shared.js", js(shared_worker())),
+        ("/shared-fetch", text("x", "text/plain")),
         ("/worker-fetch", text("x", "text/plain")),
         ("/frame-fetch", text("x", "text/plain")),
         ("/style.css", text("body{}", "text/css")),
@@ -232,7 +241,7 @@ fn desktop() -> Environment {
 
 /// Each surface's value of `key`, for those that have it.
 fn each<'a>(s: &'a Value, key: &str) -> Vec<(&'static str, &'a Value)> {
-    ["main", "worker", "frame", "frameWorker"]
+    ["main", "worker", "shared", "frame", "frameWorker"]
         .into_iter()
         .filter(|w| !s[w][key].is_null())
         .map(|w| (w, &s[w][key]))
@@ -302,6 +311,8 @@ async fn a_desktop_environment_is_the_same_on_every_surface() {
         "/frame.html",
         "/frame-worker.js",
         "/frame-fetch",
+        "/shared.js",
+        "/shared-fetch",
     ] {
         assert_eq!(
             probe.header(path, "accept-language").as_deref(),
@@ -346,13 +357,18 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
     assert_eq!(s["main"]["platform"], "Linux armv81");
     assert_eq!(s["frame"]["platform"], "Linux armv81");
     all_are(&s, "cores", json!(8));
-    all_are(&s, "userAgent", s["main"]["userAgent"].clone());
+    // A shared worker, like a service worker, takes its user agent and
+    // navigator.platform from the --user-agent switch alone, which a phone
+    // given for the whole browser sets (a known limit for one page's).
+    for w in ["worker", "frame", "frameWorker"] {
+        assert_eq!(s[w]["userAgent"], s["main"]["userAgent"], "{w}: {s:#}");
+    }
     let ua = s["main"]["userAgent"].as_str().unwrap();
     assert!(
         ua.contains("Android") && ua.contains("Mobile Safari"),
         "{ua}"
     );
-    for w in ["main", "worker", "frame", "frameWorker"] {
+    for w in ["main", "worker", "shared", "frame", "frameWorker"] {
         assert_eq!(s[w]["hints"]["model"], "SM-S911B", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["platformVersion"], "14.0.0", "{w}: {s:#}");
         assert_eq!(s[w]["hints"]["formFactors"], "Mobile", "{w}: {s:#}");
@@ -375,12 +391,14 @@ async fn a_phone_is_a_phone_on_every_surface_and_in_every_header() {
         "/frame.html",
         "/frame-worker.js",
         "/frame-fetch",
+        "/shared.js",
+        "/shared-fetch",
     ] {
         let agent = probe.header(path, "user-agent").unwrap();
         assert_eq!(agent, ua, "{path}");
         // Chrome sends no client hints with what a worker fetches, its
         // own script included.
-        if path.contains("worker") || path.ends_with("-fetch") {
+        if path.contains("worker") || path.contains("shared") || path.ends_with("-fetch") {
             assert_eq!(probe.header(path, "sec-ch-ua-mobile"), None, "{path}");
             continue;
         }
@@ -438,7 +456,7 @@ const DETECT: &str = r#"
   if (!platforms[navigator.userAgentData.platform].test(navigator.userAgent)) flag('UA-CH platform vs user agent');
   if (/Android/.test(navigator.userAgent) !== /arm|aarch/.test(navigator.platform)) flag('navigator.platform vs user agent');
   // The worker and the frame from another site.
-  for (const [w, o] of [['worker', s.worker], ['frame', s.frame], ['frameWorker', s.frameWorker]]) {
+  for (const [w, o] of [['worker', s.worker], ['shared', s.shared], ['frame', s.frame], ['frameWorker', s.frameWorker]]) {
     for (const k of ['language', 'languages', 'intlLocale', 'timeZone', 'offsets', 'dateString', 'userAgent', 'platform', 'uaMobile', 'uaPlatform', 'cores', 'onLine']) {
       if (JSON.stringify(o[k]) !== JSON.stringify(m[k])) flag(w + ' ' + k);
     }
@@ -506,7 +524,13 @@ async fn detection_tricks_on_a_phone_find_only_the_known_limits() {
     // reads the phone's. The design note says more.
     assert_eq!(
         found,
-        ["worker platform", "frameWorker platform", "frame outer"],
+        [
+            "worker platform",
+            "shared userAgent",
+            "shared platform",
+            "frameWorker platform",
+            "frame outer"
+        ],
         "{s:#}"
     );
     browser.close().await.unwrap();
@@ -819,13 +843,28 @@ async fn a_browser_launched_with_an_environment_is_it_from_the_start() {
     let s = surfaces(&page, &probe).await;
     all_are(&s, "screen", json!("1366x768"));
     all_are(&s, "intlLocale", json!("de-DE"));
-    // Chrome's own languages, as it shows them for a person: only the
-    // first to page script, and the header expanded.
     all_are(&s, "language", json!("de-DE"));
-    assert_eq!(
-        probe.header("/", "accept-language").as_deref(),
-        Some("de-DE,de;q=0.9")
-    );
+    // Chrome's own list for a context made over CDP, which adds its own
+    // language to the browser's: the same in the page, its frames and its
+    // workers, and in every request's header.
+    all_are(&s, "languages", json!("de-DE,de,en-US,en"));
+    for path in [
+        "/",
+        "/style.css",
+        "/worker.js",
+        "/worker-fetch",
+        "/frame.html",
+        "/frame-worker.js",
+        "/frame-fetch",
+        "/shared.js",
+        "/shared-fetch",
+    ] {
+        assert_eq!(
+            probe.header(path, "accept-language").as_deref(),
+            Some("de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"),
+            "{path}"
+        );
+    }
     let found = detected(&page, &s).await;
     assert!(found.is_empty(), "{found:?}");
     browser.close().await.unwrap();

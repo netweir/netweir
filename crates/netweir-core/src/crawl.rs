@@ -3433,7 +3433,10 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
                 } else {
                     cookies
                 };
-                if let Some(message) = hand_back(&shared, &mut state, &q.host, &cookies, &version) {
+                let said = page.page().request_headers();
+                if let Some(message) =
+                    hand_back(&shared, &mut state, &q.host, &cookies, &version, &said)
+                {
                     shared.push_event(&mut state, Event::Warning { message });
                 }
             }
@@ -3878,6 +3881,7 @@ fn hand_back(
     host: &str,
     cookies: &[Cookie],
     version: &str,
+    said: &[(String, String)],
 ) -> Option<String> {
     let major = version
         .trim_start_matches("Chrome/")
@@ -3907,13 +3911,8 @@ fn hand_back(
     }
     // And to the browser Chrome said it was: its language, and a phone's
     // user agent and client hints.
-    for (name, value) in shared
-        .settings
-        .browser_launch
-        .environment
-        .request_headers(version)
-    {
-        options.profile.set_header(&name, &value);
+    for (name, value) in said {
+        options.profile.set_header(name, value);
     }
     // The cookies are tied to the address Chrome went out from.
     options.proxy = state.chrome_proxy.clone();

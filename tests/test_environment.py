@@ -251,7 +251,12 @@ async def test_a_browser_launched_with_an_environment_gives_it_every_page(base):
         s = await _surfaces(page, base)
         assert _everywhere(s, "language") == {"fr-FR"}
         assert s["main"]["screen"] == s["frame"]["screen"] == [1366, 768, 1]
-        assert Handler.seen["/"]["accept-language"] == "fr-FR,fr;q=0.9"
+        # Chrome's own list for a context it makes, which adds its own
+        # language, sent the same by the page, its worker and its frame.
+        for path in ("/", "/worker.js", "/from-worker", "/frame"):
+            assert Handler.seen[path]["accept-language"] == "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7", (
+                path
+            )
     finally:
         await browser.close()
 
@@ -289,7 +294,7 @@ def test_a_crawl_s_chrome_pages_have_its_environment(base):
     if "said" not in seen and not os.environ.get("NETWEIR_REQUIRE_CHROME"):
         pytest.skip("Chrome couldn't be started")
     assert seen["said"] == ["it-IT", "Europe/Rome", True]
-    assert Handler.seen["/crawled"]["accept-language"] == "it-IT,it;q=0.9"
+    assert Handler.seen["/crawled"]["accept-language"] == "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
     assert Handler.seen["/crawled"]["sec-ch-ua-mobile"] == "?1"
 
 

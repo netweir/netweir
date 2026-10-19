@@ -878,8 +878,10 @@ async fn a_workers_requests_are_routed_and_heard() {
 /// Chrome holds every kind of target it attaches while it waits for a
 /// debugger, worklets included: each must be let go, or it never runs.
 /// One held shows as a timeout here. Nothing is routed, so Netweir pauses
-/// no request: a quick network error is Chrome failing to reach the test
-/// server, and the failure says what the network did.
+/// only requests of type Other (worker scripts, whose headers it puts back
+/// in order), and lets each go at once: a quick network error is Chrome
+/// failing to reach the test server, and the failure says what the
+/// network did.
 #[tokio::test]
 async fn worklets_still_load_in_the_page_and_in_a_frame_from_another_site() {
     let Some(browser) = browser().await else {
@@ -894,8 +896,6 @@ async fn worklets_still_load_in_the_page_and_in_a_frame_from_another_site() {
         panic!("{e}; {}", what_the_network_did(&browser, &server));
     }
     let frame = frame_at(&page, "child", "http://localhost:", "/child").await;
-    let sent = browser.methods_sent();
-    assert!(!sent.iter().any(|m| m.starts_with("Fetch.")), "{sent:?}");
     let audio = "new OfflineAudioContext(1, 1, 44100).audioWorklet.addModule('/audio.js')\
                  .then(() => 'loaded', e => String(e))";
     // Paint worklets may not exist headless: then there's nothing to load.

@@ -420,80 +420,31 @@ impl Environment {
     /// The `Accept-Language` header Chrome sends with this locale, if it
     /// sets one.
     pub fn accept_language(&self) -> Option<String> {
-        let languages = self.languages()?;
-        Some(
-            languages
-                .split(',')
-                .enumerate()
-                .map(|(i, l)| match i {
-                    0 => l.to_string(),
-                    // Chrome's q-values: 0.9, 0.8 ..., never below 0.1.
-                    _ => format!("{l};q={:.1}", (10 - i.min(9)) as f64 / 10.0),
-                })
-                .collect::<Vec<_>>()
-                .join(","),
-        )
+        Some(q_values(&self.languages()?))
     }
 
     /// Whether the user agent override has more to say than Chrome's own
-    /// identity: a phone, another user agent, or languages Chrome wasn't
-    /// launched with (those it was are left to it: then it sends them
-    /// exactly as it would for a person).
-    pub(crate) fn changes_user_agent(&self, launched: Option<&str>) -> bool {
-        self.phone.is_some()
-            || self.user_agent.is_some()
-            || self
-                .languages()
-                .is_some_and(|l| Some(l.as_str()) != launched)
-    }
-
-    /// The request headers whose values this environment changes from what
-    /// a person's Chrome `version` (its product, such as
-    /// "Chrome/154.0.8037.92") sends on the system it runs on: its user
-    /// agent and client hints for a phone or another user agent, and its
-    /// `Accept-Language`. For an HTTP client that's to look like the same
-    /// Chrome, as a crawl's does when Chrome hands it a site's cookies.
-    pub fn request_headers(&self, version: &str) -> Vec<(String, String)> {
-        let full = version
-            .trim_start_matches("HeadlessChrome/")
-            .trim_start_matches("Chrome/");
-        let mut out = Vec::new();
-        if self.phone.is_some() || self.user_agent.is_some() {
-            let blank = json!({"platform": ""});
-            if let Ok(Some(o)) = self.user_agent_override(Some(("", &blank)), full, None) {
-                let m = &o["userAgentMetadata"];
-                let mobile = if m["mobile"] == true { "?1" } else { "?0" };
-                out.push((
-                    "User-Agent".to_string(),
-                    o["userAgent"].as_str().unwrap_or_default().to_string(),
-                ));
-                out.push(("sec-ch-ua-mobile".into(), mobile.into()));
-                out.push((
-                    "sec-ch-ua-platform".into(),
-                    format!("\"{}\"", m["platform"].as_str().unwrap_or_default()),
-                ));
-            }
-        }
-        if let Some(languages) = self.accept_language() {
-            out.push(("Accept-Language".into(), languages));
-        }
-        out
+    /// identity: a phone, or another user agent.
+    pub(crate) fn changes_user_agent(&self) -> bool {
+        self.phone.is_some() || self.user_agent.is_some()
     }
 
     /// `Network.setUserAgentOverride`'s parameters for this environment,
     /// on top of `base` (Chrome's own user agent, without Headless, and its
     /// client hints), for a Chrome whose full version is `full` (such as
-    /// "154.0.8037.92") and which was launched with `launched` as its own
-    /// languages, if it was. None when nothing needs overriding.
+    /// "154.0.8037.92"), with `languages` as its Accept-Language list.
+    /// `own_languages` says they're Chrome's own for the page's context,
+    /// which nothing has to override. None when there's no `base` and
+    /// nothing needs overriding.
     pub(crate) fn user_agent_override(
         &self,
         base: Option<(&str, &Value)>,
         full: &str,
-        launched: Option<&str>,
+        languages: Option<&str>,
+        own_languages: bool,
     ) -> Result<Option<Value>> {
         let major = full.split('.').next().unwrap_or_default();
-        let languages = self.languages().filter(|l| Some(l.as_str()) != launched);
-        let wanted = self.changes_user_agent(launched);
+        let wanted = self.changes_user_agent() || (languages.is_some() && !own_languages);
         let Some((agent, metadata)) = base else {
             if wanted {
                 return Err(Error::Invalid(
@@ -552,8 +503,6 @@ impl Environment {
                 _ => "Desktop",
             }]);
             agent = ua.clone();
-        } else if !wanted {
-            return Ok(None);
         }
         let mut params = json!({"userAgent": agent, "userAgentMetadata": metadata});
         if let Some(platform) = platform {
@@ -646,6 +595,21 @@ impl Environment {
             || self.offline == Some(true)
             || self.phone.is_some()
     }
+}
+
+/// A list of languages ("de-DE,de") as Chrome sends it in
+/// `Accept-Language`: "de-DE,de;q=0.9".
+pub(crate) fn q_values(languages: &str) -> String {
+    languages
+        .split(',')
+        .enumerate()
+        .map(|(i, l)| match i {
+            0 => l.to_string(),
+            // Chrome's q-values: 0.9, 0.8 ..., never below 0.1.
+            _ => format!("{l};q={:.1}", (10 - i.min(9)) as f64 / 10.0),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The kinds of session an environment is set up in.
@@ -761,7 +725,7 @@ mod tests {
         let env = Environment::device("Galaxy S23").unwrap();
         env.validate().unwrap();
         let o = env
-            .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None)
+            .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None, true)
             .unwrap()
             .unwrap();
         let ua = o["userAgent"].as_str().unwrap();
@@ -807,7 +771,7 @@ mod tests {
         other_version.validate().unwrap();
         assert!(
             other_version
-                .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None)
+                .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None, true)
                 .is_err()
         );
         let headless = Environment {
@@ -835,7 +799,7 @@ mod tests {
             ..Default::default()
         };
         let o = env
-            .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None)
+            .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None, true)
             .unwrap()
             .unwrap();
         assert_eq!(o["userAgentMetadata"]["platform"], "Windows");
@@ -872,32 +836,30 @@ mod tests {
     }
 
     #[test]
-    fn an_http_client_can_say_what_the_page_said() {
-        let mut env = Environment::device("Galaxy S23").unwrap();
-        env.locale = Some("pt-BR".into());
-        let headers = env.request_headers("Chrome/154.0.8037.92");
-        let get = |n: &str| {
-            headers
-                .iter()
-                .find(|(k, _)| k == n)
-                .map(|(_, v)| v.as_str())
-        };
-        assert!(get("User-Agent").unwrap().contains("Android"));
-        assert_eq!(get("sec-ch-ua-mobile"), Some("?1"));
-        assert_eq!(get("sec-ch-ua-platform"), Some("\"Android\""));
-        assert_eq!(get("Accept-Language"), Some("pt-BR,pt;q=0.9"));
+    fn a_page_of_chromes_own_identity_and_languages_is_only_given_them() {
+        let o = Environment::default()
+            .user_agent_override(
+                Some((MAC, &metadata())),
+                "154.0.8037.92",
+                Some("en-US,en"),
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(o["userAgent"], MAC);
+        assert_eq!(o["acceptLanguage"], "en-US,en");
+        assert_eq!(o.get("platform"), None);
+        // Without Chrome's own hints, only what must change is refused.
+        assert_eq!(
+            Environment::default()
+                .user_agent_override(None, "154.0.8037.92", Some("en-US,en"), true)
+                .unwrap(),
+            None
+        );
         assert!(
             Environment::default()
-                .request_headers("Chrome/154.0.8037.92")
-                .is_empty()
+                .user_agent_override(None, "154.0.8037.92", Some("de-DE,de"), false)
+                .is_err()
         );
-    }
-
-    #[test]
-    fn nothing_is_overridden_for_nothing() {
-        let o = Environment::default()
-            .user_agent_override(Some((MAC, &metadata())), "154.0.8037.92", None)
-            .unwrap();
-        assert_eq!(o, None);
     }
 }

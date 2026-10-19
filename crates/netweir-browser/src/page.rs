@@ -162,7 +162,7 @@ pub(crate) struct PageInner {
     pub(crate) browser: Arc<Inner>,
     pub(crate) target: String,
     pub(crate) session: String,
-    context: Option<String>,
+    pub(crate) context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
     shared: Arc<Shared>,
@@ -201,6 +201,10 @@ pub(crate) struct PageInner {
 pub(crate) struct PageEnv {
     pub env: Environment,
     pub user_agent: Option<Value>,
+    /// The page's languages, and those Chrome shows in its context of
+    /// itself, with no override.
+    pub languages: String,
+    pub own_languages: String,
 }
 
 /// How a page comes to be: in which context, guarded by what, and opened
@@ -456,9 +460,6 @@ impl Page {
         env: Environment,
     ) -> Result<Page> {
         env.validate()?;
-        // Worked out before the page exists, so a page that can't have this
-        // environment is never made.
-        let user_agent = crate::browser::user_agent_for(&browser, &env).await?;
         let mut params = json!({"url": "about:blank"});
         if let Some(id) = &context {
             params["browserContextId"] = Value::from(id.as_str());
@@ -489,13 +490,33 @@ impl Page {
                 .remove(&target);
         }
         let session = str_of(&attached?, "sessionId");
+        let worked_out = async {
+            let own = own_languages(&browser, &session, context.is_none()).await?;
+            let (user_agent, languages) =
+                crate::browser::user_agent_for(&browser, &env, &own).await?;
+            Ok::<_, Error>(PageEnv {
+                env,
+                user_agent,
+                languages,
+                own_languages: own,
+            })
+        };
+        let env = match worked_out.await {
+            Ok(env) => env,
+            Err(e) => {
+                let _ = browser
+                    .call("", "Target.closeTarget", json!({"targetId": target}))
+                    .await;
+                return Err(e);
+            }
+        };
         let opening = Opening {
             context,
             owns_context,
             guard,
             shared_context,
             opener: None,
-            env: PageEnv { env, user_agent },
+            env,
         };
         Page::start(browser, target, session, opening).await
     }
@@ -581,6 +602,13 @@ impl Page {
             frame: target.clone(),
             login: browser.proxy_login.is_some(),
             fetching: tokio::sync::Mutex::new(false),
+            tidy: {
+                let e = lock_env(&env);
+                e.user_agent
+                    .is_some()
+                    .then(|| browser.tidy(&e.own_languages))
+                    .flatten()
+            },
         });
         // Documents the guard must see first, answered on a task of their
         // own, since the guard is async and the reader thread can't wait.
@@ -684,6 +712,7 @@ impl Page {
             let PageEnv {
                 env: environment,
                 user_agent,
+                ..
             } = lock_env(&env).clone();
             if let Some(user_agent) = user_agent {
                 steps.push(call("Network.setUserAgentOverride", user_agent));
@@ -1701,6 +1730,23 @@ struct Watch {
     pause: (Duration, Duration),
 }
 
+/// The user agent override for a worker's session: the page's, less its
+/// languages where they're Chrome's own in the page's context. A worker
+/// has those of itself, and an override's would move Accept-Language
+/// early in every request the worker sends (measured: `User-Agent`,
+/// `Accept-Language`, `Accept` ... where Chrome sends it last), which,
+/// unlike a worker's own script, nothing can put back: a worker has no
+/// Fetch domain.
+pub(crate) fn for_workers(user_agent: &Value, own: &str) -> Value {
+    let mut user_agent = user_agent.clone();
+    if user_agent["acceptLanguage"].as_str() == Some(own)
+        && let Some(o) = user_agent.as_object_mut()
+    {
+        o.remove("acceptLanguage");
+    }
+    user_agent
+}
+
 impl Watch {
     fn hear(self: &Arc<Self>, session: &str, method: &str, params: &Value) {
         match method {
@@ -1798,9 +1844,15 @@ impl Watch {
             // left again speaks the browser's language). Kept, Chrome
             // keeps it running until the page's session goes.
             Some("service_worker") if lock_env(&self.env).env.reaches_service_workers() => {
-                let PageEnv { env, user_agent } = lock_env(&self.env).clone();
+                let PageEnv {
+                    env,
+                    user_agent,
+                    own_languages,
+                    ..
+                } = lock_env(&self.env).clone();
                 self.conn.send(&session, "Network.enable", json!({}));
                 if let Some(user_agent) = user_agent {
+                    let user_agent = for_workers(&user_agent, &own_languages);
                     self.conn
                         .send(&session, "Network.setUserAgentOverride", user_agent);
                 }
@@ -1864,11 +1916,20 @@ impl Watch {
     async fn prepare(&self, session: String, frame: bool, url: String) {
         let decider = &self.intercept.decider;
         let call = |method: &'static str, params: Value| self.conn.call(&session, method, params);
-        let PageEnv { env, user_agent } = lock_env(&self.env).clone();
+        let PageEnv {
+            env,
+            user_agent,
+            own_languages,
+            ..
+        } = lock_env(&self.env).clone();
         let setup = async {
             call("Network.enable", json!({})).await?;
             if let Some(user_agent) = &user_agent {
-                call("Network.setUserAgentOverride", user_agent.clone()).await?;
+                let user_agent = match frame {
+                    true => user_agent.clone(),
+                    false => for_workers(user_agent, &own_languages),
+                };
+                call("Network.setUserAgentOverride", user_agent).await?;
             }
             let kind = if frame { Kind::Page } else { Kind::Worker };
             let commands = env.commands(kind);
@@ -1954,6 +2015,36 @@ impl Watch {
 
 fn lock_state(shared: &Shared) -> std::sync::MutexGuard<'_, State> {
     shared.state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The languages Chrome shows page script in `session`'s context with no
+/// override: read once for the browser's own context and once for those
+/// netweir makes, from a page just made, on about:blank, before its
+/// override.
+async fn own_languages(browser: &Inner, session: &str, own_context: bool) -> Result<String> {
+    let at = usize::from(!own_context);
+    if let Some(known) = &browser
+        .own_languages
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())[at]
+    {
+        return Ok(known.clone());
+    }
+    let r = browser
+        .call(
+            session,
+            "Runtime.evaluate",
+            json!({"expression": "navigator.languages.join(',')", "returnByValue": true}),
+        )
+        .await?;
+    let languages = str_of(&r["result"], "value");
+    if !languages.is_empty() {
+        browser
+            .own_languages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())[at] = Some(languages.clone());
+    }
+    Ok(languages)
 }
 
 pub(crate) fn lock_env(env: &Mutex<PageEnv>) -> std::sync::MutexGuard<'_, PageEnv> {
@@ -2196,6 +2287,35 @@ impl Page {
     /// Takes back every permission granted in the page's context.
     pub async fn clear_permissions(&self) -> Result<()> {
         clear_permissions(&self.inner.browser, self.inner.context.as_deref()).await
+    }
+
+    /// The request headers the page sends whose values its environment
+    /// sets: its user agent and client hints, where it changes them, and
+    /// its Accept-Language. For an HTTP client that's to look like the
+    /// same Chrome, as a crawl's does when Chrome hands it a site's
+    /// cookies.
+    pub fn request_headers(&self) -> Vec<(String, String)> {
+        let e = lock_env(&self.inner.env);
+        let mut out = Vec::new();
+        if let Some(o) = &e.user_agent
+            && (e.env.phone.is_some() || e.env.user_agent.is_some())
+        {
+            let m = &o["userAgentMetadata"];
+            let mobile = if m["mobile"] == true { "?1" } else { "?0" };
+            out.push(("User-Agent".to_string(), str_of(o, "userAgent")));
+            out.push(("sec-ch-ua-mobile".into(), mobile.into()));
+            out.push((
+                "sec-ch-ua-platform".into(),
+                format!("\"{}\"", m["platform"].as_str().unwrap_or_default()),
+            ));
+        }
+        if !e.languages.is_empty() {
+            out.push((
+                "Accept-Language".into(),
+                crate::environment::q_values(&e.languages),
+            ));
+        }
+        out
     }
 
     /// Whether the page is touched rather than clicked: a phone's.

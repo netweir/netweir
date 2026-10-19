@@ -150,9 +150,14 @@ pub(crate) struct Inner {
     /// pixel ratio.
     pub screen: Size,
     pub screen_scale: f64,
-    /// The languages Chrome was launched with as its own, if netweir gave
-    /// it some (`--accept-lang`).
-    pub languages: Option<String>,
+    /// The user agent Chrome was launched with (`--user-agent`), if
+    /// netweir knows it.
+    pub agent: Option<String>,
+    /// The languages Chrome shows page script with no override, in its
+    /// own context (first) and in contexts netweir makes, once read. The
+    /// two differ: launched with `--accept-lang=de-DE,de`, a context made
+    /// over CDP shows `de-DE,de,en-US,en`, page and worker alike.
+    pub own_languages: Mutex<[Option<String>; 2]>,
     /// Held while a screen is looked for, and added if there's none, so
     /// two pages wanting one don't add two.
     pub screens: tokio::sync::Mutex<()>,
@@ -169,28 +174,47 @@ fn bare(options: &LaunchOptions) -> (Environment, Size, f64) {
     (env, screen, scale)
 }
 
-/// The user agent override for a page with `env`, worked out from what
-/// Chrome says it is, and read from Chrome first if netweir doesn't know
-/// that yet. None leaves the page as Chrome makes it.
+/// The user agent override for a page with `env` in a context whose own
+/// languages are `own` (as Chrome shows them with no override), worked
+/// out from what Chrome says it is, and read from Chrome first if netweir
+/// doesn't know that yet, and the page's languages. None leaves the page
+/// as Chrome makes it.
 /// Boxed, since reading what Chrome says opens a page, which comes here.
+/// What `user_agent_for` gives: the override, and the page's languages.
+type Overriding<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(Option<Value>, String)>> + Send + 'a>,
+>;
+
 pub(crate) fn user_agent_for<'a>(
     browser: &'a Arc<Inner>,
     env: &'a Environment,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
-    Box::pin(user_agent_of(browser, env))
+    own: &'a str,
+) -> Overriding<'a> {
+    Box::pin(user_agent_of(browser, env, own))
 }
 
-async fn user_agent_of(browser: &Arc<Inner>, env: &Environment) -> Result<Option<Value>> {
+async fn user_agent_of(
+    browser: &Arc<Inner>,
+    env: &Environment,
+    own: &str,
+) -> Result<(Option<Value>, String)> {
+    // A locale of the page's or its context's own; the browser's is the
+    // one Chrome already shows, in each context as it computes it there.
+    let languages = match &env.locale {
+        Some(l) if Some(l) != browser.environment.locale.as_ref() => {
+            env.languages().unwrap_or_default()
+        }
+        _ => own.to_string(),
+    };
+    let own_languages = languages == own;
     let full = browser
         .version
         .trim_start_matches("HeadlessChrome/")
         .trim_start_matches("Chrome/");
-    let identity =
-        |i: &Identity| json!({"userAgent": i.user_agent, "userAgentMetadata": i.metadata});
-    let wanted = env.changes_user_agent(browser.languages.as_deref());
+    let wanted = env.changes_user_agent() || !own_languages;
     let base = match (&browser.identity, wanted) {
         (Some(i), _) => Some(i.clone()),
-        (None, false) => return Ok(None),
+        (None, false) => return Ok((None, languages)),
         (None, true) => browser
             .own
             .get_or_try_init(|| async {
@@ -213,9 +237,12 @@ async fn user_agent_of(browser: &Arc<Inner>, env: &Environment) -> Result<Option
     let overridden = env.user_agent_override(
         base.as_ref().map(|i| (i.user_agent.as_str(), &i.metadata)),
         full,
-        browser.languages.as_deref(),
+        // Chrome's own are left to it: an override's Accept-Language goes
+        // out after User-Agent, where Chrome's own is last.
+        (!own_languages && !languages.is_empty()).then_some(languages.as_str()),
+        own_languages,
     )?;
-    Ok(overridden.or_else(|| base.as_ref().map(identity)))
+    Ok((overridden, languages))
 }
 
 impl Browser {
@@ -283,10 +310,23 @@ impl Browser {
             // Leaves navigator.webdriver false.
             "--disable-blink-features=AutomationControlled".into(),
         ];
-        args.extend(KEYRING.iter().chain(FOREGROUND).map(|a| a.to_string()));
+        args.extend(
+            KEYRING
+                .iter()
+                .chain(FOREGROUND)
+                .chain(AS_SHIPPED)
+                .map(|a| a.to_string()),
+        );
         // Chrome's client hints, when they had to be read before launch.
         let mut hints = None;
         let env = &options.environment;
+        // The caller's own, if given.
+        let mut agent = options
+            .args
+            .iter()
+            .rev()
+            .find_map(|a| a.strip_prefix("--user-agent="))
+            .map(str::to_string);
         if options.headless {
             args.push("--headless".into());
             // Service workers take their user agent from this flag alone;
@@ -294,21 +334,22 @@ impl Browser {
             // high-entropy client hints, which each page's override puts
             // back.
             if !options.args.iter().any(|a| a.starts_with("--user-agent=")) {
-                let (agent, metadata) = headless_identity(&executable, &options.args).await?;
-                let agent = agent.replace("HeadlessChrome/", "Chrome/");
+                let (own, metadata) = headless_identity(&executable, &options.args).await?;
+                let own = own.replace("HeadlessChrome/", "Chrome/");
                 // The environment's own, where it has one, so a service
                 // worker says it too.
-                let full = agent
+                let full = own
                     .split("Chrome/")
                     .nth(1)
                     .and_then(|v| v.split(' ').next())
                     .unwrap_or_default()
                     .to_string();
                 let flag = env
-                    .user_agent_override(Some((&agent, &metadata)), &full, None)?
+                    .user_agent_override(Some((&own, &metadata)), &full, None, true)?
                     .and_then(|o| o["userAgent"].as_str().map(str::to_string))
-                    .unwrap_or(agent);
+                    .unwrap_or(own);
                 args.push(format!("--user-agent={flag}"));
+                agent = Some(flag);
                 hints = Some(metadata);
             }
             // A real screen for the pages: the environment's, or one the
@@ -323,13 +364,14 @@ impl Browser {
         }
         // The browser's own languages, so Chrome sends them as it would
         // for a person whose languages they are.
-        let languages = match env.languages() {
-            Some(l) if !options.args.iter().any(|a| a.starts_with("--accept-lang")) => {
-                args.push(format!("--accept-lang={l}"));
-                Some(l)
-            }
-            _ => None,
-        };
+        // A fresh profile's own, en-US and en, unless the environment
+        // names others, given rather than left to the machine's language,
+        // so Chrome's own Accept-Language is known (see network.rs's
+        // tidying) and is what netweir's HTTP profiles send.
+        if !options.args.iter().any(|a| a.starts_with("--accept-lang")) {
+            let l = env.languages().unwrap_or_else(|| "en-US,en".into());
+            args.push(format!("--accept-lang={l}"));
+        }
         let mut proxy_login = None;
         if let Some(proxy) = &options.proxy {
             let (server, login) = split_proxy(proxy)?;
@@ -367,7 +409,8 @@ impl Browser {
             arranges: options.headless,
             screen,
             screen_scale,
-            languages,
+            agent,
+            own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
             own: tokio::sync::OnceCell::new(),
         };
@@ -431,7 +474,8 @@ impl Browser {
             arranges: false,
             screen,
             screen_scale,
-            languages: None,
+            agent: None,
+            own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
             own: tokio::sync::OnceCell::new(),
         };
@@ -550,11 +594,14 @@ impl Browser {
             _ => {}
         });
         self.inner.conn.on("", handler);
+        // Shared workers too: no page's session is told of one, since it
+        // belongs to no page, so it's held here until it has the
+        // environment of the context it's in.
         let attach = json!({
             "autoAttach": true,
             "waitForDebuggerOnStart": true,
             "flatten": true,
-            "filter": [{"type": "page"}],
+            "filter": [{"type": "page"}, {"type": "shared_worker"}],
         });
         match self.inner.call("", "Target.setAutoAttach", attach).await {
             Ok(_) => Ok(()),
@@ -828,6 +875,15 @@ fn popped(
 ) {
     let info = &params["targetInfo"];
     let session = str_of(params, "sessionId");
+    if info["type"] == "shared_worker" {
+        return shared_worker(
+            conn,
+            pages,
+            &session,
+            info,
+            params["waitingForDebugger"] == true,
+        );
+    }
     if params["waitingForDebugger"] != true {
         let ours = attaching
             .lock()
@@ -858,6 +914,52 @@ fn popped(
             conn.send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
             conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
         }
+    }
+}
+
+/// For a shared worker the browser's session holds: it gets the user agent
+/// and environment of a page of netweir's in its context, as a page's
+/// dedicated worker does, before it runs, and its session is kept, since
+/// overrides go with it. One in no context of netweir's pages (a tab of
+/// a browser netweir connected to) is let go and left.
+fn shared_worker(
+    conn: &Connection,
+    pages: &Mutex<Vec<Weak<PageInner>>>,
+    session: &str,
+    info: &Value,
+    held: bool,
+) {
+    let context = info["browserContextId"].as_str().unwrap_or_default();
+    let env = {
+        let pages = pages.lock().unwrap_or_else(|e| e.into_inner());
+        let live: Vec<_> = pages.iter().filter_map(Weak::upgrade).collect();
+        live.iter()
+            .find(|p| p.context.as_deref() == Some(context))
+            // A page of the browser's own context, whose id netweir
+            // doesn't keep.
+            .or_else(|| live.iter().find(|p| p.context.is_none()))
+            .map(|p| crate::page::lock_env(&p.env).clone())
+    };
+    let Some(env) = env else {
+        if held {
+            conn.send(session, "Runtime.runIfWaitingForDebugger", json!({}));
+        }
+        conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
+        return;
+    };
+    conn.send(session, "Network.enable", json!({}));
+    if let Some(user_agent) = &env.user_agent {
+        conn.send(
+            session,
+            "Network.setUserAgentOverride",
+            crate::page::for_workers(user_agent, &env.own_languages),
+        );
+    }
+    for (method, params) in env.env.commands(crate::environment::Kind::Worker) {
+        conn.send(session, method, params);
+    }
+    if held {
+        conn.send(session, "Runtime.runIfWaitingForDebugger", json!({}));
     }
 }
 
@@ -1152,6 +1254,17 @@ const FOREGROUND: &[&str] = &[
     "--disable-background-timer-throttling",
 ];
 
+/// Chrome as Google ships it to people. Chrome for Testing shows an
+/// infobar saying what it is, which takes 56 pixels from every page's
+/// viewport (a window 143 pixels taller than its page, where a person's
+/// Chrome is 87), and applies the field trial config its builds carry,
+/// which a person's Chrome doesn't: with it, page script saw one language
+/// (`["en-US"]`, against `["en-US", "en"]`) and documents sent
+/// Accept-Language before Upgrade-Insecure-Requests, where Google Chrome
+/// sends it last, as netweir's HTTP profiles do. Google Chrome itself
+/// has neither, and takes both switches as having nothing to turn off.
+const AS_SHIPPED: &[&str] = &["--disable-infobars", "--disable-field-trial-config"];
+
 /// The switches each probe was started with, for the tests that count
 /// them.
 #[cfg(test)]
@@ -1219,7 +1332,13 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
         "--no-first-run".into(),
         "--headless".into(),
     ];
-    args.extend(KEYRING.iter().chain(FOREGROUND).map(|a| a.to_string()));
+    args.extend(
+        KEYRING
+            .iter()
+            .chain(FOREGROUND)
+            .chain(AS_SHIPPED)
+            .map(|a| a.to_string()),
+    );
     args.extend(extra.iter().cloned());
     args.push("about:blank".into());
     let started = launch::start(executable, &args)?;
@@ -1246,7 +1365,8 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
-            languages: None,
+            agent: None,
+            own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
             own: tokio::sync::OnceCell::new(),
         }),
@@ -1678,6 +1798,20 @@ fn gone_is_fine(r: Result<()>) -> Result<()> {
     }
 }
 
+impl Inner {
+    /// What Chrome adds to a request itself, as its switches say, for a
+    /// page whose sessions have a user agent override: None where netweir
+    /// knows neither.
+    /// `own` is the context's own languages, as Chrome shows them.
+    pub(crate) fn tidy(&self, own: &str) -> Option<crate::network::Tidy> {
+        let accept_language = (!own.is_empty()).then(|| crate::environment::q_values(own));
+        (self.agent.is_some() || accept_language.is_some()).then(|| crate::network::Tidy {
+            user_agent: self.agent.clone(),
+            accept_language,
+        })
+    }
+}
+
 /// Checks a page of a shared context (`shared`'s) asks for no timezone or
 /// locale of its own: Chrome keeps one of each per renderer process, and
 /// a context's pages of one site can share one.
@@ -1867,7 +2001,8 @@ mod tests {
             arranges: false,
             screen: crate::window::DEFAULT_SCREEN,
             screen_scale: 1.0,
-            languages: None,
+            agent: None,
+            own_languages: Mutex::default(),
             screens: tokio::sync::Mutex::new(()),
             own: tokio::sync::OnceCell::new(),
         });
