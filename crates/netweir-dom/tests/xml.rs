@@ -843,6 +843,19 @@ fn css_attribute_selectors_work_on_xml_names_html_also_has() {
     assert_eq!(xpath(&doc, "//*[local-name()='b']/@ID"), ["caps"]);
     assert_eq!(xpath(&doc, "//*[local-name()='b']/@id"), ["low"]);
     assert_eq!(css("#low::text"), ["b"]);
+    // CSS attribute names ignore case for these too, as for any other.
+    let doc = Document::parse_xml(r#"<r><x ID="up">1</x><y Class="c">2</y><z id="lo">3</z></r>"#)
+        .unwrap();
+    let css = |q: &str| Query::new(q).unwrap().strings(doc.root());
+    assert_eq!(css("[ID]::text"), ["1", "3"]);
+    assert_eq!(css("[id]::text"), ["1", "3"]);
+    assert_eq!(css("[ID=up]::text"), ["1"]);
+    assert_eq!(css("[class]::text"), ["2"]);
+    assert_eq!(css("[CLASS=c]::text"), ["2"]);
+    // #id and .class are the attributes named exactly so.
+    assert_eq!(css("#up::text"), Vec::<String>::new());
+    assert_eq!(css("#lo::text"), ["3"]);
+    assert_eq!(css(".c::text"), Vec::<String>::new());
 }
 
 #[test]

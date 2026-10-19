@@ -286,11 +286,13 @@ lxb_dom_node_t *nw_xml_element(lxb_html_document_t *doc, const char *qname, size
 }
 
 /* An XML attribute's local name id: the lowercased name's, as lexbor's
- * HTML attributes have, which its CSS attribute selectors look up (so they
- * ignore case on XML too). Not where that would be lexbor's `id` or `class`
- * for a name written otherwise (`ID`, `Class`): lexbor keeps one of each per
- * element, dropping another, and XML may have `id` and `ID` side by side.
- * Those keep their written form's id. Returns 0 on success. */
+ * HTML attributes have, which its CSS attribute selectors look up, so they
+ * ignore case on XML too (`[id]` finds `ID`). Returns 1 for a name that
+ * lowercases to `id` or `class` without being written so (`ID`, `Class`):
+ * lexbor keeps one `id` and one `class` attribute per element, displacing
+ * another, and XML may have `id` and `ID` side by side, so such a one must
+ * be linked in without lexbor's bookkeeping (nw_xml_attr_link). 0 for any
+ * other name, -1 when lexbor cannot allocate. */
 static int nw_xml_attr_set_local(lxb_dom_document_t *d, lxb_dom_attr_t *attr, const char *qname,
                                  size_t qlen) {
     lxb_dom_attr_data_t *local =
@@ -298,14 +300,24 @@ static int nw_xml_attr_set_local(lxb_dom_document_t *d, lxb_dom_attr_t *attr, co
     if (local == NULL) {
         return -1;
     }
-    if ((local->attr_id == LXB_DOM_ATTR_ID && !(qlen == 2 && memcmp(qname, "id", 2) == 0))
-        || (local->attr_id == LXB_DOM_ATTR_CLASS
-            && !(qlen == 5 && memcmp(qname, "class", 5) == 0))) {
-        attr->node.local_name = attr->qualified_name;
+    attr->node.local_name = local->attr_id;
+    return (local->attr_id == LXB_DOM_ATTR_ID && !(qlen == 2 && memcmp(qname, "id", 2) == 0))
+           || (local->attr_id == LXB_DOM_ATTR_CLASS
+               && !(qlen == 5 && memcmp(qname, "class", 5) == 0));
+}
+
+/* Puts `attr` last among `el`'s attributes as lxb_dom_element_attr_append
+ * does, but without taking it for the element's `id` or `class` (and
+ * dropping the one there). */
+static void nw_xml_attr_link(lxb_dom_element_t *el, lxb_dom_attr_t *attr) {
+    if (el->first_attr == NULL) {
+        el->first_attr = attr;
     } else {
-        attr->node.local_name = local->attr_id;
+        attr->prev = el->last_attr;
+        el->last_attr->next = attr;
     }
-    return 0;
+    el->last_attr = attr;
+    attr->owner = el;
 }
 
 /* Adds an attribute named `qname`, exactly as written, to element `n`.
@@ -324,13 +336,18 @@ lxb_dom_attr_t *nw_xml_attr(lxb_dom_node_t *n, const char *qname, size_t qlen, c
         return NULL;
     }
     attr->qualified_name = q->attr_id;
-    if (nw_xml_attr_set_local(d, attr, qname, qlen) != 0) {
+    int special = nw_xml_attr_set_local(d, attr, qname, qlen);
+    if (special < 0) {
         return NULL;
     }
     if (lxb_dom_attr_set_value(attr, (const lxb_char_t *) value, vlen) != LXB_STATUS_OK) {
         return NULL;
     }
-    lxb_dom_element_attr_append(lxb_dom_interface_element(n), attr);
+    if (special) {
+        nw_xml_attr_link(lxb_dom_interface_element(n), attr);
+    } else {
+        lxb_dom_element_attr_append(lxb_dom_interface_element(n), attr);
+    }
     return attr;
 }
 
@@ -406,12 +423,9 @@ int nw_xml_attr_rename(lxb_dom_attr_t *a, const char *qname, size_t qlen) {
         return -1;
     }
     a->qualified_name = q->attr_id;
-    /* An `id` or `class` attribute keeps its place in its element: never
-     * renamed onto, since only a prefixed name is renamed. */
-    if (a->node.local_name == LXB_DOM_ATTR_ID || a->node.local_name == LXB_DOM_ATTR_CLASS) {
-        return 0;
-    }
-    return nw_xml_attr_set_local(d, a, qname, qlen);
+    /* Only a prefixed name is renamed, and it's already linked in: the new
+     * name's id is all that changes, never the element's id or class. */
+    return nw_xml_attr_set_local(d, a, qname, qlen) < 0 ? -1 : 0;
 }
 
 /* HTML's named character `name` (given with its `;`), as UTF-8, or NULL
