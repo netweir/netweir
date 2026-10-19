@@ -3,6 +3,7 @@
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
 - [Fetching pages](fetching.md): query strings, logins, redirects, timeouts and certificates.
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles and Markdown, prices, dates and the data in scripts.
+- [XML, feeds and CSV](xml.md): XML responses, namespaces, the limits on hostile XML, XMLFeedSpider and CSVFeedSpider.
 - [Item loaders](loaders.md): filling items as Scrapy's loaders do, with input and output processors.
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
 - [Projects](project.md): `startproject`, `genspider`, `list`, `parse`, `check` (Scrapy's contracts) and `version`.
@@ -38,6 +39,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.
 - [design/helpers.md](design/helpers.md): prices, dates and the data in a page's scripts.
 - [design/selecting.md](design/selecting.md): editing the tree safely, `find_similar()` and JMESPath.
+- [design/xml.md](design/xml.md): XML in the same tree and XPath engine as HTML, namespaces, and what hostile XML may cost.
 - [design/loaders.md](design/loaders.md): item loaders, and why they're Netweir's own rather than the itemloaders package.
 - [design/threads.md](design/threads.md): what kept threads from scaling on free-threaded Python, and what replaced it.
 - [design/content.md](design/content.md): finding a page's main content, reading it as an article, and Markdown.

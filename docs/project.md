@@ -82,7 +82,7 @@ netweir genspider -t crawl catalogue https://shop.example/catalogue/
 
 writes `spiders/books.py` (or `./books.py` outside a project) with the name,
 `allowed_domains` and `start_urls` filled in. Give a URL instead of a
-domain to start somewhere other than the home page. Three templates, `-l`
+domain to start somewhere other than the home page. Five templates, `-l`
 lists them:
 
 | template | what you get |
@@ -90,10 +90,13 @@ lists them:
 | `basic` | a `parse` callback, the default |
 | `crawl` | `rules` of `netweir.Follow` and a `netweir.Item`, so items come out of Rust with no Python per page ([Declarative spiders](declarative.md)) |
 | `sitemap` | `sitemap_urls` pointing at the site's robots.txt, and `sitemap_rules` ([Sitemaps](crawling.md#sitemaps)) |
+| `xmlfeed` | an XMLFeedSpider reading an RSS feed node by node ([XML feeds](xml.md#xml-feeds-xmlfeedspider)) |
+| `csvfeed` | a CSVFeedSpider reading a CSV file row by row ([CSV feeds](xml.md#csv-feeds-csvfeedspider)) |
 
-Each one comes with a contract for [`netweir check`](#contracts-check).
-Scrapy's `xmlfeed` and `csvfeed` templates aren't here, since Netweir has no
-feed spiders. genspider won't write over a file, or reuse a name the
+Given a domain, the feed templates start from `/feed.xml` or `/feed.csv`
+there; given a URL, from that URL. The first three come with a contract
+for [`netweir check`](#contracts-check); a feed's nodes and rows don't
+have a page of their own to check. genspider won't write over a file, or reuse a name the
 project already has, unless you pass `--force`. It refuses a name that's
 also a Python module's, such as `json` or `asyncio`, since a file of that
 name would hide the module.
@@ -266,5 +269,6 @@ What's different:
 - A page with an error status, a 404 say, still reaches the callback, as in
   a crawl, so `@returns items 0` passes on a 404 where Scrapy reports an
   error. Add `@returns items 1` if the page must have something on it.
-- `genspider` has `basic`, `crawl` and `sitemap`, and no `-e` or `-d`.
+- `genspider` has `basic`, `crawl`, `sitemap`, `xmlfeed` and `csvfeed`,
+  and no `-e` or `-d`.
 - There's no `bench`, `settings` or `edit` command.

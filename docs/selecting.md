@@ -50,6 +50,11 @@ Keyword arguments to `xpath()` bind `$variables`. A query that can't be
 parsed raises `netweir.XPathError`; a CSS selector that can't be parsed
 raises `netweir.SelectorError`.
 
+XML is queried the same way. `netweir.parse(text, type="xml")` reads it,
+a page served as XML is read as XML, and `namespaces=`,
+`register_namespace()` and `remove_namespaces()` work as in Scrapy; see
+[XML, feeds and CSV](xml.md).
+
 ## Selections
 
 `css()` and `xpath()` return a `Selection`, a list of results:

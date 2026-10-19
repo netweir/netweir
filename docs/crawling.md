@@ -150,8 +150,11 @@ class Recent(netweir.Spider):
 
 A sitemap that isn't valid, or ends part way through, is logged and
 skipped. Sitemaps are read no further than `max_response_size`, after
-unzipping, and XML entities a sitemap declares are never expanded, so a
-hostile one can't fill memory.
+unzipping, and with the same limits as any XML (see
+[Broken and hostile XML](xml.md#broken-and-hostile-xml)): nothing is
+fetched, and entities a sitemap declares are expanded only so far, so a
+hostile one can't fill memory. Element names are matched without regard
+to case or namespace, as sitemaps in the wild vary in both.
 
 `sitemap_urls` and `start_urls` can be used together.
 
@@ -1110,6 +1113,11 @@ same meaning: `DOWNLOAD_TIMEOUT` is `timeout`, `REDIRECT_MAX_TIMES` is
 `http_auth_domain` and `proxy` do what they do in Scrapy. One difference:
 `HTTPAUTH_DOMAIN=None`, which sends the login to every site, has no
 equivalent, and `http_auth` without a domain is an error.
+
+XMLFeedSpider and CSVFeedSpider are `netweir.XMLFeedSpider` and
+`netweir.CSVFeedSpider`, with the same attributes and methods; see
+[XML, feeds and CSV](xml.md). Selectors on XML, `register_namespace()`
+and `remove_namespaces()` included, work as parsel's.
 
 Item loaders carry over with a change of import, to
 [`netweir.loader`](loaders.md): `ItemLoader`, `MapCompose`, `TakeFirst`

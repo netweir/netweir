@@ -49,6 +49,11 @@ Working today:
 - CSS queries with Scrapy's `::text` and `::attr()`, all of XPath 1.0, and
   Beautiful Soup's `find_all` family, each faster than the library you'd
   otherwise use for it.
+- XML read as XML: RSS, Atom, sitemaps and SOAP, with namespaces,
+  `register_namespace()` and `remove_namespaces()` as in Scrapy, and
+  hostile XML (external entities, a "billion laughs") refused. Scrapy's
+  XMLFeedSpider and CSVFeedSpider, with a node-by-node reader in Rust
+  for feeds too big to hold. See [docs/xml.md](docs/xml.md).
 - Changing the page as Beautiful Soup does (`decompose()`, `extract()`,
   `replace_with()`, `unwrap()`, `new_tag()`, `append()`, `prettify()`),
   `find_similar()` to get every product card once you've found one, and
@@ -96,7 +101,7 @@ Working today:
   Python prompt, on stdout or in your browser, for trying selectors before
   they go in a spider. See [docs/shell.md](docs/shell.md).
 - Scrapy's project commands, so your hands already know them:
-  `startproject`, `genspider` (plain, rules or sitemap spiders), `list`,
+  `startproject`, `genspider` (plain, rules, sitemap or feed spiders), `list`,
   `crawl NAME`, `parse URL` to see what a callback makes of one page, and
   `check`, which runs Scrapy-style contracts from your docstrings,
   custom ones included, and exits 1 when a redesign broke a spider. See
