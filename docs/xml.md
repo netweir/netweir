@@ -112,9 +112,10 @@ CSS works, with allowances where it can't tell what XML tells apart:
 - Type selectors match an element's local name whatever its namespace and
   whatever its case: `page.css("entry title::text")` reads an Atom feed
   without `remove_namespaces()`, and `css("item")` finds `<Item>` too.
-- Attribute names ignore case, as in HTML: `[href]` matches `HREF="..."`.
-  A prefixed attribute is matched by its whole name, so `[href]` doesn't
-  match `xlink:href`.
+- Attribute names ignore case, as in HTML: `[href]` matches `HREF="..."`,
+  and `[id]` matches `ID="..."`, though `#x` and `.x` look only at the
+  attributes named exactly `id` and `class`. A prefixed attribute is
+  matched by its whole name, so `[href]` doesn't match `xlink:href`.
 
 When the namespace or the case matters, use XPath, which respects both.
 
@@ -187,7 +188,7 @@ refused, each with an `XMLError`:
 | Entities the document declares | expanded, but no more than 16 deep, and to no more than 1 MiB plus 8 bytes per byte of the document in all. The "billion laughs" (10 levels of 10 references each, a gigabyte from a kilobyte) stops at the limit |
 | Entities that refer to themselves | refused |
 | Nesting | 2048 elements deep, lxml's limit with Scrapy's settings (lxml cuts a deeper document off there without a word) |
-| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds; the clock is read every thousand or so events, attributes or kilobytes of expanded entity, so one enormous start tag can't outrun it. In a crawl, every page has `Settings.parse_timeout` (10 seconds), wherever it's parsed: in the engine for its rules, or when your callback first reads it, in the main process or a worker. A sitemap has 10 seconds, and iternodes 10 seconds for each node. Only a page you make yourself (`netweir.parse`, or a `Page` built by hand) has no limit unless you give one |
+| Time | `netweir.parse(text, type="xml", timeout=5)` raises `ParseTimeout` after 5 seconds; the clock is read every thousand or so events, attributes or kilobytes of expanded entity, so one enormous start tag can't outrun it. In a crawl, every page has `Settings.parse_timeout` (10 seconds; `None` for none), wherever it's parsed: in the engine for its rules, or when your callback first reads it, in the main process or a worker. A sitemap has 10 seconds, and iternodes 10 seconds for each node. Only a page you make yourself (`netweir.parse`, or a `Page` built by hand) has no limit unless you give one |
 
 Parameter entities (`%name;`) are never expanded, and declarations after
 one aren't read.

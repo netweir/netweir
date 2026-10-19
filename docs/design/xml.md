@@ -59,14 +59,17 @@ drops an earlier attribute whose lowercased local name is `id` (or
 `class`), and XML may have `id` and `ID` side by side. An XML attribute
 gets lexbor's id for its whole name lowercased (`href`, `x:href`), which is
 what lexbor's CSS attribute selectors look up, so `a[href]` works on XML
-as on HTML and ignores case as it does there. The one exception is a
-name that lowercases to `id` or `class` without being written so: `ID`
-keeps an id of its written form, so it can't displace an `id`. The first
-version gave every attribute but `id` and `class` the id of its written
-form, which broke `a[href]` even on XHTML served as XML, since lexbor's
-ids for names HTML knows are static ones. Attribute lookup by name in XML
-compares the written name in Rust, since lexbor's would also match
-`x:href` for `href`.
+as on HTML and ignores case as it does there. A name that lowercases to
+`id` or `class` without being written so (`ID`, `Class`) gets lexbor's id
+too, so `[id]` finds it, but is linked into its element without
+`lxb_dom_element_attr_append`, whose bookkeeping would make it the
+element's one `id` and drop an `id` already there; `#x` and `.x` match
+only the attributes named exactly `id` and `class`. The first version gave
+every attribute but `id` and `class` the id of its written form, which
+broke `a[href]` even on XHTML served as XML, since lexbor's ids for names
+HTML knows are static ones, and a second left `ID` out of `[id]`.
+Attribute lookup by name in XML compares the written name in Rust, since
+lexbor's would also match `x:href` for `href`.
 
 Namespace declarations aren't attributes in XPath's data model, so they
 aren't lexbor attributes either: `XmlNames` keeps each element's in
@@ -148,10 +151,19 @@ characters XML doesn't allow are dropped, the first of two attributes of
 one name is kept, and elements open at the end are closed. Each repair
 is a `repair(problem, fix)` call at the point the strict parser would
 fail, so the strict errors and the repairs can't drift apart. What isn't
-on the list (an end tag that closes the wrong element, `<` in text) is
-still an error, and every limit on hostile XML holds in both modes. An
-empty document is "Document is empty" when strict, as lxml says, and an
-empty document when recovering.
+on the list (a start tag that never ends, say) is still an error, and
+every limit on hostile XML holds in both modes. An empty document is
+"Document is empty" when strict, as lxml says, and an empty document
+when recovering.
+
+Recovering costs no more than parsing: a `<` that starts no markup is
+seen before quick-xml is asked to read it (which would read on to the
+next `>`, so a run of them cost the square of its length), an `&` in an
+attribute value is read only as far as a reference could go, and whether
+an end tag closes anything open is a lookup, not a search of every open
+element. The tests hold all three to linear time on a megabyte of each.
+Sitemaps and iternodes are read on threads of their own, so a crawl's
+event loop goes on while they are.
 
 Recover mode also repairs end tags: one for an element further out
 closes what's inside it, and one that closes nothing open is ignored. A
