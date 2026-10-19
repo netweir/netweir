@@ -76,7 +76,7 @@ fn kill(pid: u32) {
 async fn chromes_launched_at_once_are_each_seen_to_die() {
     let Some(executable) = chrome() else { return };
     // Every turn there is: these Chromes are this test's alone.
-    let _turns = (common::turn(), common::turn());
+    let _turns = common::all_turns();
     for _round in 0..3 {
         let launches: Vec<_> = (0..4)
             .map(|_| {
@@ -111,7 +111,7 @@ async fn chromes_launched_at_once_are_each_seen_to_die() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chrome_is_seen_to_die_while_other_processes_hold_its_pipe() {
     let Some(executable) = chrome() else { return };
-    let _turns = (common::turn(), common::turn());
+    let _turns = common::all_turns();
     // A process lasting well past the five seconds below, started over and
     // over by another thread while each Chrome launches.
     fn lasting() -> std::process::Command {

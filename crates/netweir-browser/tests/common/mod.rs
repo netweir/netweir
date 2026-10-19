@@ -171,24 +171,39 @@ impl Drop for Listening {
 /// A turn with Chrome. Only two tests have a Chrome at once: a small CI
 /// runner with one each, all at once, takes longer over a page than a test
 /// waits. Blocking, so the helpers that start Chrome by hand can take one.
-pub struct Turn(());
+pub struct Turn(usize);
 
-static TURNS: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(2), std::sync::Condvar::new());
+const ALL_TURNS: usize = 2;
+
+static TURNS: (Mutex<usize>, std::sync::Condvar) =
+    (Mutex::new(ALL_TURNS), std::sync::Condvar::new());
 
 pub fn turn() -> Turn {
+    turns(1)
+}
+
+/// Every turn there is, for a test whose Chromes are its alone. They're
+/// taken at once: two such tests taking them one by one could each hold
+/// one and wait on the other for good, and every other test with them.
+pub fn all_turns() -> Turn {
+    turns(ALL_TURNS)
+}
+
+fn turns(n: usize) -> Turn {
     report_socket_state_on_enobufs();
     let mut free = TURNS.0.lock().unwrap_or_else(|e| e.into_inner());
-    while *free == 0 {
+    while *free < n {
         free = TURNS.1.wait(free).unwrap_or_else(|e| e.into_inner());
     }
-    *free -= 1;
-    Turn(())
+    *free -= n;
+    Turn(n)
 }
 
 impl Drop for Turn {
     fn drop(&mut self) {
-        *TURNS.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        TURNS.1.notify_one();
+        *TURNS.0.lock().unwrap_or_else(|e| e.into_inner()) += self.0;
+        // All, as a waiter for more than is free waits on.
+        TURNS.1.notify_all();
     }
 }
 
