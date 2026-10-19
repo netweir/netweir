@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 brotli = "9"
 netweir-browser = { path = "../netweir-browser" }
+netweir-dom = { path = "../netweir-dom" }
 btls = "0.5.6"
 bytes = "1"
 chardetng = "1"
@@ -33,7 +34,6 @@ zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 psl = "2.1"
 cookie = "0.18"
 http-body-util = "0.1"
-quick-xml = "0.42"
 # The shared queue.
 # Known limit: plain TCP only. netweir's TLS is BoringSSL, and a second
 # TLS stack for this alone isn't worth it yet.

@@ -2,6 +2,8 @@
 //! sitemaps.org, gzipped or not, and plain-text sitemaps of one URL per
 //! line.
 
+use netweir_dom::{Document, Node, NodeKind};
+
 /// What a sitemap lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -30,8 +32,9 @@ pub struct Sitemap {
 
 /// Parses `body`, unzipping it first if it's gzip, to at most `max` bytes.
 ///
-/// Entities a document declares are left as written, never expanded, so a
-/// "billion laughs" sitemap costs no more than its own size.
+/// XML is read as netweir-dom reads any XML: nothing is ever fetched, and
+/// entities a sitemap declares are expanded only so far, so a "billion
+/// laughs" sitemap is refused rather than filling memory.
 pub fn parse(body: &[u8], max: usize) -> Result<Sitemap, String> {
     let data = if body.starts_with(&[0x1f, 0x8b]) {
         gunzip(body, max)?
@@ -86,114 +89,64 @@ fn plain(text: &str) -> Result<Sitemap, String> {
     })
 }
 
+/// Read with netweir-dom's XML parser, with its limits on what a hostile
+/// document can cost. Names are matched by their local part, in any case
+/// and any namespace, as sitemaps in the wild vary in both.
 fn xml(text: &str) -> Result<Sitemap, String> {
-    use quick_xml::events::Event;
-    let bad = |e: &dyn std::fmt::Display| format!("the sitemap isn't valid XML: {e}");
-    let mut reader = quick_xml::Reader::from_str(text);
-    let mut kind = None;
-    // Local names of the open elements, outermost first.
-    let mut open: Vec<String> = Vec::new();
-    let mut entry: Option<Entry> = None;
+    let doc = Document::parse_xml(text).map_err(|e| format!("the sitemap isn't valid XML: {e}"))?;
+    let root = doc
+        .root()
+        .children()
+        .find(|n| n.kind() == NodeKind::Element);
+    let kind = match root.and_then(|r| r.tag()) {
+        Some(r) if is(r, "urlset") => Kind::Urlset,
+        Some(r) if is(r, "sitemapindex") => Kind::Index,
+        _ => return Err("not a sitemap: no <urlset> or <sitemapindex>".into()),
+    };
     let mut entries = Vec::new();
-    let mut buf = String::new();
-    loop {
-        match reader.read_event().map_err(|e| bad(&e))? {
-            Event::Start(e) => {
-                let name = local(e.local_name().as_ref());
-                match (open.len(), name.as_str()) {
-                    (0, "urlset") => kind = Some(Kind::Urlset),
-                    (0, "sitemapindex") => kind = Some(Kind::Index),
-                    (1, "url" | "sitemap") if kind.is_some() => entry = Some(Entry::default()),
-                    _ => {}
-                }
-                open.push(name);
-                buf.clear();
+    for el in root.map(elements).unwrap_or_default() {
+        if !el.tag().is_some_and(|t| is(t, "url") || is(t, "sitemap")) {
+            continue;
+        }
+        let mut entry = Entry::default();
+        for field in elements(el) {
+            let name = field.tag().unwrap_or_default();
+            let value = || field.text().trim().to_string();
+            if is(name, "loc") {
+                entry.loc = value();
+            } else if is(name, "lastmod") {
+                entry.lastmod = Some(value());
+            } else if is(name, "changefreq") {
+                entry.changefreq = Some(value());
+            } else if is(name, "priority") {
+                entry.priority = value().parse().ok();
+            } else if is(name, "link")
+                && field
+                    .attr("rel")
+                    .is_some_and(|r| r.eq_ignore_ascii_case("alternate"))
+                && let Some(href) = field.attr("href")
+            {
+                // <xhtml:link rel="alternate" href="...">: the page in
+                // another language.
+                entry.alternates.push(href.trim().to_string());
             }
-            Event::Empty(e) => {
-                // <xhtml:link rel="alternate" href="..."/> directly in a <url>.
-                if open.len() == 2
-                    && local(e.local_name().as_ref()) == "link"
-                    && let Some(entry) = entry.as_mut()
-                {
-                    let attr = |name: &str| {
-                        e.attributes()
-                            .flatten()
-                            .find(|a| a.key.local_name().as_ref() == name)
-                            .and_then(|a| {
-                                a.normalized_value(quick_xml::XmlVersion::default())
-                                    .ok()
-                                    .map(|v| v.into_owned())
-                            })
-                    };
-                    if attr("rel").is_some_and(|r| r.eq_ignore_ascii_case("alternate"))
-                        && let Some(href) = attr("href")
-                    {
-                        entry.alternates.push(href.trim().to_string());
-                    }
-                }
-            }
-            Event::Text(t) => buf.push_str(&t.into_inner()),
-            Event::CData(c) => buf.push_str(&c.into_inner()),
-            Event::GeneralRef(r) => match r.resolve_char_ref().map_err(|e| bad(&e))? {
-                Some(c) => buf.push(c),
-                None => {
-                    let name = r.into_inner();
-                    match name.as_ref() {
-                        "amp" => buf.push('&'),
-                        "lt" => buf.push('<'),
-                        "gt" => buf.push('>'),
-                        "quot" => buf.push('"'),
-                        "apos" => buf.push('\''),
-                        // Declared by the document: kept as written.
-                        other => {
-                            buf.push('&');
-                            buf.push_str(other);
-                            buf.push(';');
-                        }
-                    }
-                }
-            },
-            Event::End(_) => {
-                let name = open.pop().unwrap_or_default();
-                match (open.len(), name.as_str()) {
-                    // A field directly inside <url> or <sitemap>.
-                    (2, field) => {
-                        if let Some(entry) = entry.as_mut() {
-                            let value = buf.trim().to_string();
-                            match field {
-                                "loc" => entry.loc = value,
-                                "lastmod" => entry.lastmod = Some(value),
-                                "changefreq" => entry.changefreq = Some(value),
-                                "priority" => entry.priority = value.parse().ok(),
-                                _ => {}
-                            }
-                        }
-                    }
-                    (1, "url" | "sitemap") => {
-                        if let Some(entry) = entry.take().filter(|e| !e.loc.is_empty()) {
-                            entries.push(entry);
-                        }
-                    }
-                    _ => {}
-                }
-                buf.clear();
-            }
-            Event::Eof if !open.is_empty() => {
-                return Err(format!(
-                    "the sitemap ends part way through <{}>",
-                    open.join("><")
-                ));
-            }
-            Event::Eof => break,
-            _ => {}
+        }
+        if !entry.loc.is_empty() {
+            entries.push(entry);
         }
     }
-    let kind = kind.ok_or("not a sitemap: no <urlset> or <sitemapindex>")?;
     Ok(Sitemap { kind, entries })
 }
 
-fn local(name: &str) -> String {
-    name.to_ascii_lowercase()
+/// The elements directly inside `n`.
+fn elements(n: Node<'_>) -> Vec<Node<'_>> {
+    n.children()
+        .filter(|c| c.kind() == NodeKind::Element)
+        .collect()
+}
+
+fn is(name: &str, wanted: &str) -> bool {
+    name.eq_ignore_ascii_case(wanted)
 }
 
 #[cfg(test)]
@@ -302,9 +255,46 @@ mod tests {
     }
 
     #[test]
+    fn names_are_matched_in_any_case_and_namespace() {
+        let xml = br#"<?xml version="1.0"?>
+<!DOCTYPE s [<!ENTITY host "https://example.com">]>
+<s:SitemapIndex xmlns:s="http://www.google.com/schemas/sitemap/0.84">
+  <s:Sitemap><s:Loc>&host;/one.xml</s:Loc><s:LastMod>2026-01-01</s:LastMod></s:Sitemap>
+  <!-- a comment between entries -->
+  <s:Sitemap><s:Loc>&host;/two.xml</s:Loc></s:Sitemap>
+</s:SitemapIndex>"#;
+        let map = parse(xml, MAX).unwrap();
+        assert_eq!(map.kind, Kind::Index);
+        let locs: Vec<&str> = map.entries.iter().map(|e| e.loc.as_str()).collect();
+        assert_eq!(
+            locs,
+            ["https://example.com/one.xml", "https://example.com/two.xml"]
+        );
+        assert_eq!(map.entries[0].lastmod.as_deref(), Some("2026-01-01"));
+    }
+
+    #[test]
+    fn an_empty_urlset_has_no_entries() {
+        let map = parse(
+            b"<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'/>",
+            MAX,
+        )
+        .unwrap();
+        assert_eq!(map.kind, Kind::Urlset);
+        assert!(map.entries.is_empty());
+    }
+
+    #[test]
+    fn external_entities_in_a_sitemap_are_never_fetched() {
+        let xml = br#"<!DOCTYPE u [<!ENTITY x SYSTEM "file:///etc/passwd">]><urlset><url><loc>&x;</loc></url></urlset>"#;
+        let err = parse(xml, MAX).unwrap_err();
+        assert!(err.contains("never fetched"), "{err}");
+    }
+
+    #[test]
     fn a_sitemap_cut_off_part_way_is_an_error() {
         let err = parse(b"<urlset><url><loc>https://example.com/a</loc>", MAX).unwrap_err();
-        assert!(err.contains("part way"), "{err}");
+        assert!(err.contains("ends inside <urlset><url>"), "{err}");
     }
 
     #[test]
