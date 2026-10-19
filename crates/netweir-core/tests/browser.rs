@@ -370,6 +370,68 @@ async fn a_browser_request_in_the_crawls_own_jar_takes_it_and_gives_it_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_jars_page_stays_out_of_a_kept_profile() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![
+        ("/", Page::html("<p>in</p>")),
+        ("/plain", Page::html("plain")),
+    ])
+    .await;
+    let profile = std::env::temp_dir().join(format!("netweir-jar-profile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&profile);
+    let mut with_profile = settings(BrowserMode::Off);
+    with_profile.browser_launch.user_data_dir = Some(profile.clone());
+    let c = crawler(with_profile);
+    c.submit(CrawlRequest {
+        cookies: netweir_core::RequestCookies {
+            jar: Some("ada".into()),
+            add: vec![netweir_core::cookies::Cookie {
+                name: "sid".into(),
+                value: "ada".into(),
+                domain: String::new(),
+                path: String::new(),
+                expires: -1.0,
+                http_only: false,
+                secure: false,
+                same_site: None,
+                partition_key: None,
+            }],
+            ..Default::default()
+        },
+        ..request(1, site.url("/"), true)
+    });
+    drain_closing(&c).await;
+    // A page that leaves the jar out opens in the profile, which never
+    // saw Ada's cookie.
+    c.submit(CrawlRequest {
+        cookies: netweir_core::RequestCookies {
+            dont_merge: true,
+            ..Default::default()
+        },
+        ..request(2, site.url("/plain"), true)
+    });
+    drain_closing(&c).await;
+    let cookie = site
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(p, _)| p == "/plain")
+        .and_then(|(_, h)| {
+            h.iter()
+                .find(|(k, _)| k == "cookie")
+                .map(|(_, v)| v.clone())
+        });
+    assert_eq!(cookie, None);
+    if let Some(browser) = c.browser().await {
+        let _ = browser.close().await;
+    }
+    let _ = std::fs::remove_dir_all(&profile);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cookie_that_expired_in_chrome_isnt_taken_from_the_jar_that_renewed_it() {
     let Some(_chrome) = chrome().await else {
         return;

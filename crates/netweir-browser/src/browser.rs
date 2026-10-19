@@ -538,6 +538,14 @@ impl Browser {
         Page::open(self.inner.clone(), Some(context), true, None, None).await
     }
 
+    /// A page in a context of its own, with a
+    /// [`LaunchOptions::user_data_dir`] too: nothing it keeps reaches the
+    /// profile, nor any other page.
+    pub async fn new_page_apart(&self) -> Result<Page> {
+        let context = self.create_context().await?;
+        Page::open(self.inner.clone(), Some(context), true, None, None).await
+    }
+
     /// Like [`Browser::new_page`], but every document the page's main
     /// frame is about to fetch (each hop of a redirect included) is put
     /// to `guard` first, and one it refuses isn't fetched: navigating there

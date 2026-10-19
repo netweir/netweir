@@ -187,8 +187,10 @@ with the request's `cookies=` added, and when the page closes, after the callbac
 Chrome goes back into the jar: the cookies it set or changed, and the
 removal of those it deleted, so a logout in Chrome is a logout. A cookie
 Chrome left alone isn't put back, so one the jar got over HTTP while the
-page was open keeps its newer value. A login done by hand in Chrome
-inside a callback carries on over HTTP:
+page was open keeps its newer value. Each such page has a context of its
+own, even when the crawl's Chrome keeps a profile (`user_data_dir`), so
+one jar's cookies never reach another page or the profile on disk. A
+login done by hand in Chrome inside a callback carries on over HTTP:
 
 ```python
 async def start(self):

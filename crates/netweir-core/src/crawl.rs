@@ -3336,6 +3336,10 @@ async fn render(
             })
         });
         browser.new_guarded_page(guard).await
+    } else if jar.is_some() || !seed.is_empty() {
+        // A jar's cookies stay in a context of their own, never a kept
+        // profile's, where other pages and the next run would see them.
+        browser.new_page_apart().await
     } else {
         browser.new_page().await
     }
