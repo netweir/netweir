@@ -995,7 +995,13 @@ impl Frame {
                 // turn after it can move nothing.
                 let view = (m["view"].as_f64().unwrap_or(600.0) / NOTCH).floor();
                 let left = ((max - at) / NOTCH).ceil();
-                let step = view.min(left).max(1.0) * NOTCH;
+                let mut step = view.min(left).max(1.0) * NOTCH;
+                if self.page.touches() {
+                    // A finger has no notches; it drags what one swipe
+                    // across the screen can, about four fifths of it.
+                    let reach = (m["view"].as_f64().unwrap_or(600.0) * 0.8).floor();
+                    step = reach.min(max - at).max(1.0);
+                }
                 // The place is picked again each turn, since the page moves
                 // what's under it; where a turn moves nothing, a few others
                 // are tried before the page is taken to have stopped.

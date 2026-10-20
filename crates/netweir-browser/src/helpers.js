@@ -40,6 +40,24 @@
   const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
 
   globalThis.__netweir = {
+    // The box a finger at (x, y) would drag: the nearest one that scrolls
+    // by itself, or a frame, as [left, top, right, bottom]; null for the
+    // page's own.
+    // Where what a finger at (x, y) drags is scrolled to.
+    swipeMark(x, y) {
+      const el = document.elementFromPoint(x, y);
+      const s = el && scrollers(el)[0];
+      return s ? [s.scrollLeft, s.scrollTop] : [scrollX, scrollY];
+    },
+    swipeArea(x, y) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) return null;
+      const s = el.matches("iframe, frame") ? el : scrollers(el)[0];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return [r.left, r.top, r.right, r.bottom];
+    },
+
     // Whether the element `selector` finds passes `checks`, in order. The
     // first that fails is named; otherwise its centre is returned.
     async check(selector, checks, scroll) {
