@@ -162,11 +162,15 @@ bottom (`availTop` 0), 24 bits deep, and `getScreenDetails()` names it
 window is the work area exactly, 1536×912 at 0, 0: no invisible border
 when maximised. Netweir's Windows screens follow that: the taskbar's 48
 at the bottom of every screen (40 before build 22000, Windows 10's
-default, not measured), and a laptop's own panel sizes at 125% or 150%
-internal and named for a panel model (`160WUX\n` for 1920×1200, as
-measured, and `B156HAN02.1\n`, a common 15.6-inch 1920×1080 panel's).
-The `Desktop 1536x960 125%` preset is that laptop; its ratio can only
-be a whole browser's, since an added screen is rounded to a whole one.
+default, not measured). The `Desktop 1536x960 125%` preset is that
+laptop's screen; its ratio can only be a whole browser's, since an added
+screen is rounded to a whole one. Known limit: on Windows itself no
+ratio that isn't whole can be shown, so a laptop's own panel (internal
+and named for its model) isn't offered. Headless Chrome 155 there,
+launched with `--force-device-scale-factor=1.25` and a 1920×1200 screen,
+showed `screen.width` 1228 and `availWidth` 1536: the screen divided by
+the ratio twice, its work area once. A launch on Windows with such a
+ratio is refused.
 A work area at a ratio like 1.25 is given in whole pixels rounded down,
 since Chrome shows the whole CSS pixels inside it (30 at 1.25 given as
 38 device pixels came out as 31). On Linux a screen is its whole: its desktops put a bar, a dock or

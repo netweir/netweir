@@ -222,7 +222,8 @@ struct Preset {
 /// with a whole pixel ratio, and a frame from another site reads the real
 /// one (see the design note), so the one desktop preset with another
 /// ratio, a Windows laptop's 1920×1200 panel at 125% (measured), is only
-/// for a whole browser, given at launch. The phones keep to whole ratios,
+/// for a whole browser, given at launch, and not on Windows (see
+/// `window::launch_switches`). The phones keep to whole ratios,
 /// so a page or a context can have them, which rules out the Pixels
 /// (2.625 or 2.75). A phone's viewport is its screen less Chrome's
 /// status and address bars, 76 pixels.

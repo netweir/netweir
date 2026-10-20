@@ -403,7 +403,7 @@ impl Browser {
             }
             // A real screen for the pages: the environment's, or one the
             // windows fit on.
-            args.extend(crate::window::launch_switches(env, &options.args));
+            args.extend(crate::window::launch_switches(env, &options.args)?);
         } else if env.screen.is_some() || env.device_scale_factor.is_some() || env.is_mobile() {
             return Err(Error::Launch(
                 "a screen, pixel ratio or phone needs a headless Chrome: a window on the real \

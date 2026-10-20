@@ -66,8 +66,7 @@ a `--window-size` switch gives; a headless Chrome Netweir starts has a
 person's: on a Mac, the menu bar and the Dock are taken from the work
 area, and a MacBook's own screen (the HiDPI presets) is the "Built-in
 Retina Display", 30 bits deep; on Windows the taskbar's 48 pixels are,
-and a laptop's own panel is named for its model, as Windows 11 shows
-them.
+as Windows 11 shows them.
 
 ## Devices
 
@@ -96,7 +95,11 @@ say so whatever its user agent claimed.
 can only be the whole browser's, so give it at launch,
 `netweir.browser(environment={"device": "Desktop 1536x960 125%"})`; a
 page or context given it in a browser launched without it raises
-`ValueError`.
+`ValueError`. Not on Windows, though, where any ratio that isn't whole
+raises `ValueError` at launch: headless Chrome there shows a screen
+smaller than its own work area (1228 × 768 around a 1536 × 912 one).
+It's for showing a Windows laptop from a Mac or Linux, with a Windows
+user agent to match.
 
 A phone is an Android phone running Chrome, in every client hint and
 every header: `Sec-CH-UA-Mobile: ?1`, the platform `"Android"`, its model

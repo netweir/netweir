@@ -1355,28 +1355,12 @@ async fn screens_look_like_a_macs() {
     browser.close().await.unwrap();
 }
 
-/// Windows' build number, if it's Windows.
-fn windows_build() -> Option<u32> {
-    if !cfg!(windows) {
-        return None;
-    }
-    let out = std::process::Command::new("cmd")
-        .args(["/c", "ver"])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .split('.')
-        .nth(2)?
-        .trim()
-        .parse()
-        .ok()
-}
-
 /// The Windows laptop preset, measured on a Dell XPS with Windows 11 and
-/// Google Chrome 155: 1536 by 960 at 125%, the taskbar's 48 below, its
-/// own panel named for its model. On a Mac it's an external monitor with
-/// the menu bar and the Dock; on Linux, the whole screen. Its ratio can
-/// only be the whole browser's.
+/// Google Chrome 155: 1536 by 960 at 125%. On a Mac it's an external
+/// monitor with the menu bar and the Dock; on Linux, the whole screen.
+/// Its ratio can only be the whole browser's. On Windows itself headless
+/// Chrome can't show a ratio that isn't whole (see `launch_switches`),
+/// so it's refused there.
 #[tokio::test]
 async fn a_windows_laptops_screen_is_the_whole_browsers() {
     let Some(mut options) = launch_options() else {
@@ -1384,14 +1368,19 @@ async fn a_windows_laptops_screen_is_the_whole_browsers() {
     };
     let preset = Environment::device("Desktop 1536x960 125%").unwrap();
     options.environment = preset.clone();
+    if cfg!(windows) {
+        let Err(err) = netweir_browser::Browser::launch(options).await else {
+            panic!("Windows launched a headless Chrome at 1.25");
+        };
+        assert!(err.to_string().contains("whole one"), "{err}");
+        return;
+    }
     let browser = common::launch(options).await;
     let server = serve(vec![("/", html("<p>x</p>"))]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
     let (top, bottom, label, internal) = if let Some(major) = macos_major() {
         (if major >= 26 { 30 } else { 25 }, 60, "DELL P2422H", false)
-    } else if let Some(build) = windows_build() {
-        (0, if build >= 22000 { 48 } else { 40 }, "160WUX\n", true)
     } else {
         (0, 0, "DELL P2422H", false)
     };
@@ -1884,6 +1873,8 @@ async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
         .as_f64()
         .unwrap();
     assert!(y >= 14995.0, "{y}");
-    assert!(took < Duration::from_secs(20), "{took:?}");
+    // 14 s on an M-series Mac, 22.5 on a CI runner; it was over the 30 s
+    // timeout before.
+    assert!(took < Duration::from_secs(30), "{took:?}");
     browser.close().await.unwrap();
 }

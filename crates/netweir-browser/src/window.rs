@@ -49,17 +49,6 @@ const MAC_BUILT_IN: [(u32, u32, bool); 7] = [
     (1536, 960, false),
 ];
 
-/// A Windows laptop's own panels, by the size they show at the ratio
-/// Windows gives them, and the name their EDID gives (newline and all, as
-/// Chrome reads it). The first was measured: a Dell XPS's 1920×1200 panel
-/// at 125%, "160WUX\n". The 1920×1080 one is a common 15.6-inch panel's.
-const WINDOWS_BUILT_IN: [(u32, u32, f64, &str); 4] = [
-    (1536, 960, 1.25, "160WUX\n"),
-    (1280, 800, 1.5, "160WUX\n"),
-    (1536, 864, 1.25, "B156HAN02.1\n"),
-    (1280, 720, 1.5, "B156HAN02.1\n"),
-];
-
 /// What a screen a person might have is called: a common monitor's name
 /// for its size, as its EDID gives it.
 fn monitor(size: Size) -> &'static str {
@@ -83,8 +72,9 @@ fn monitor(size: Size) -> &'static str {
 ///   measured here).
 /// - Windows, measured on 11 with Google Chrome 155: the taskbar, 48 at
 ///   the bottom, on every screen, as Windows shows it by default (40 on
-///   Windows 10, not measured); a laptop's own panel is internal, 24 bits
-///   deep and named for its model.
+///   Windows 10, not measured). A laptop's own panel (internal, named for
+///   its model, "160WUX\n" on the one measured) is at 125% or 150%, which
+///   headless Chrome on Windows can't show (see `launch_switches`).
 /// - Linux: the whole screen. Its desktops differ (a top bar, a dock, a
 ///   panel at any edge, or none on a server), so no one shape is more
 ///   like a person's than another.
@@ -133,18 +123,7 @@ fn look(size: Size, scale: f64, primary: bool, phone: bool) -> Look {
     }
     if cfg!(windows) {
         let bottom = if os_major() >= 22000 { 48 } else { 40 };
-        let built_in = WINDOWS_BUILT_IN
-            .iter()
-            .find(|(w, h, s, _)| *w == size.width && *h == size.height && *s == scale);
-        return match built_in {
-            Some((.., label)) => Look {
-                bottom,
-                internal: true,
-                label,
-                ..external
-            },
-            None => Look { bottom, ..external },
-        };
+        return Look { bottom, ..external };
     }
     external
 }
@@ -188,13 +167,23 @@ fn os_major() -> u32 {
 
 /// The switches that give a launched headless Chrome its screen: the
 /// environment's, or the default. A ratio that isn't whole can only be
-/// given this way, for the whole browser.
-pub(crate) fn launch_switches(env: &Environment, args: &[String]) -> Vec<String> {
+/// given this way, for the whole browser, and not on Windows: there
+/// headless Chrome 155 divides the screen by the ratio twice and its work
+/// area once, so 1920×1200 at 1.25 showed a screen 1228×768 with a work
+/// area 1536×912 inside it, which no screen has.
+pub(crate) fn launch_switches(env: &Environment, args: &[String]) -> Result<Vec<String>> {
     if args.iter().any(|a| a.starts_with("--screen-info")) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let size = screen_of(env);
     let scale = env.device_scale_factor.unwrap_or(1.0);
+    if cfg!(windows) && scale.fract() != 0.0 {
+        return Err(Error::Invalid(format!(
+            "a device_scale_factor of {scale} can't be shown on Windows: headless Chrome there \
+             makes a screen smaller than its own work area at a ratio that isn't whole; give a \
+             whole one"
+        )));
+    }
     let look = look(size, scale, true, env.is_mobile());
     let (top, bottom) = (look.top, look.bottom);
     let px = |css: u32| (css as f64 * scale).round() as u64;
@@ -226,7 +215,7 @@ pub(crate) fn launch_switches(env: &Environment, args: &[String]) -> Vec<String>
     }
     info.push('}');
     out.push(format!("--screen-info={info}"));
-    out
+    Ok(out)
 }
 
 /// For a phone, `Emulation.setDeviceMetricsOverride`'s parameters: the
