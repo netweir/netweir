@@ -799,14 +799,20 @@ CTRL_C_WITH_ANOTHER_TASK = """
 import asyncio, signal
 from netweir._crawl import _run
 
+# The side task is still winding up as the main one ends, and wakes in
+# the round of the loop that stops it. On a timer of its own, it woke in
+# that round only when the clock put both timers in it, and otherwise
+# was cancelled again as asyncio.run closed.
 async def side():
     try:
         await asyncio.sleep(60)
     finally:
-        await asyncio.sleep(0.1)
+        await main_done.wait()
         print("side wound up", flush=True)
 
 async def main():
+    global main_done
+    main_done = asyncio.Event()
     side_task = asyncio.ensure_future(side())
     await asyncio.sleep(0.1)
     signal.raise_signal(signal.SIGINT)
@@ -816,6 +822,7 @@ async def main():
         side_task.cancel()
         await asyncio.sleep(0.1)
         print("main wound up", flush=True)
+        main_done.set()
 
 try:
     _run(main())
