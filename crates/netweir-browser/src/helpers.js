@@ -37,6 +37,16 @@
     return el && !el.matches("iframe, frame") && !scrollers(el).length;
   };
 
+  // The element a selector finds: CSS, or XPath after "xpath=", whose
+  // first match must be an element.
+  const find = (selector) => {
+    if (!selector.startsWith("xpath=")) return document.querySelector(selector);
+    const node = document.evaluate(
+      selector.slice(6), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null,
+    ).singleNodeValue;
+    return node instanceof Element ? node : null;
+  };
+
   const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
 
   globalThis.__netweir = {
@@ -77,7 +87,7 @@
     // Whether the element `selector` finds passes `checks`, in order. The
     // first that fails is named; otherwise its centre is returned.
     async check(selector, checks, scroll) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return { failed: "attached" };
       if (scroll) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       let b = box(el);
@@ -108,7 +118,7 @@
     // A point just outside the element `selector` finds, in view, where
     // the mouse can come onto it from; none if it fills the window.
     beside(selector) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return { failed: "attached" };
       const r = el.getBoundingClientRect();
       const [x, y] = [r.left + r.width / 2, r.top + r.height / 2];
@@ -124,7 +134,7 @@
     armOver(selector) {
       if (this.disarm) this.disarm();
       this.over = false;
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return;
       const seen = () => {
         this.over = true;
@@ -145,14 +155,14 @@
 
     // "detached", "hidden" or "visible".
     state(selector) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return "detached";
       return visible(el) ? "visible" : "hidden";
     },
 
     // Focuses the element and selects what's in it, so typing replaces it.
     focus(selector) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return false;
       el.focus();
       if (typeof el.select === "function") {
@@ -165,6 +175,21 @@
         selection.addRange(range);
       }
       return document.activeElement === el;
+    },
+
+    find,
+
+    // Whether the element has focus, or holds what does.
+    focused(selector) {
+      const el = find(selector);
+      return !!el && (document.activeElement === el || el.contains(document.activeElement));
+    },
+
+    // Whether there's anything in the field to replace.
+    hasText(selector) {
+      const el = find(selector);
+      if (!el) return false;
+      return "value" in el ? el.value !== "" : (el.textContent || "") !== "";
     },
 
     content() {
@@ -253,7 +278,7 @@
           parts.push("?");
         }
       }
-      const el = selector && document.querySelector(selector);
+      const el = selector && find(selector);
       if (el) {
         const r = el.getBoundingClientRect();
         parts.push(el.scrollLeft, el.scrollTop, r.left, r.top);
@@ -287,7 +312,7 @@
     async aim(selector) {
       const c = await this.check(selector, ["attached", "visible"], false);
       if (c.failed) return c;
-      const el = document.querySelector(selector);
+      const el = find(selector);
       const r = el.getBoundingClientRect();
       const [cx, cy] = [r.left + r.width / 2, r.top + r.height / 2];
       const viewport = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
@@ -321,7 +346,7 @@
 
     // Scrolls the element into view without the mouse, as click does.
     reveal(selector) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (el) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     },
 
@@ -329,7 +354,7 @@
     // label speaks for its control; role=checkbox, radio and switch count.
     // One that isn't `want` (true or false) has to be enabled to change.
     checked(selector, want) {
-      let el = document.querySelector(selector);
+      let el = find(selector);
       if (!el) return { failed: "attached" };
       if (el.matches("label") && el.control) el = el.control;
       let state;
@@ -353,7 +378,7 @@
     async select(selector, by, wanted) {
       const c = await this.check(selector, ["attached", "visible", "enabled"], false);
       if (c.failed) return c;
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el.matches("select")) return { error: "it isn't a <select>" };
       if (wanted.length > 1 && !el.multiple) {
         return { error: `it takes one option, and ${wanted.length} were asked for` };
@@ -383,7 +408,7 @@
 
     // Whether the element `selector` finds can be given `count` files.
     fileInput(selector, count) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el) return { failed: "attached" };
       if (!el.matches("input[type=file]")) return { error: "it isn't an <input type=file>" };
       if (count > 1 && !el.multiple) return { error: `it takes one file, and ${count} were given` };
@@ -394,7 +419,7 @@
     // Empties a file input, telling the page as a choice would, if it held
     // anything.
     clearFiles(selector) {
-      const el = document.querySelector(selector);
+      const el = find(selector);
       if (!el || !el.files.length) return;
       el.value = "";
       el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));

@@ -76,6 +76,56 @@ pub(crate) fn pause((least, most): (Duration, Duration)) -> Duration {
     least + Duration::from_micros(random.checked_rem(spread).unwrap_or(0))
 }
 
+/// A number picked at random, more than 0 and less than 1.
+fn unit() -> f64 {
+    let random = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    ((random >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+}
+
+/// A time picked from a log-normal spread, as people's timings are: most
+/// near `median`, a few well above it, none below `least` or above
+/// `most`. `sigma` is the spread of its logarithm.
+pub(crate) fn skewed(median: Duration, sigma: f64, least: Duration, most: Duration) -> Duration {
+    // Box-Muller: a standard normal from two uniforms.
+    let normal = (-2.0 * unit().ln()).sqrt() * (std::f64::consts::TAU * unit()).cos();
+    let secs = median.as_secs_f64() * (sigma * normal).exp();
+    Duration::try_from_secs_f64(secs)
+        .unwrap_or(most)
+        .clamp(least, most)
+}
+
+/// How long a person holds a key down: about 85 ms, from 45 to 180, more
+/// often longer than shorter (keystroke studies put most between 60 and
+/// 120).
+pub(crate) fn key_hold() -> Duration {
+    skewed(
+        Duration::from_millis(85),
+        0.25,
+        Duration::from_millis(45),
+        Duration::from_millis(180),
+    )
+}
+
+/// The longest [`key_hold`] gives.
+pub(crate) const KEY_HOLD_MAX: Duration = Duration::from_millis(180);
+
+/// A pause between two keys within (`least`, `most`): log-normal around
+/// their geometric mean, as typists' intervals are; `least` itself when
+/// the two are equal.
+pub(crate) fn key_gap((least, most): (Duration, Duration)) -> Duration {
+    if most <= least {
+        return least;
+    }
+    let low = least.max(Duration::from_millis(1)).as_secs_f64();
+    let high = most.as_secs_f64();
+    let median = Duration::from_secs_f64((low * high).sqrt());
+    // Most of them (two standard deviations either way) within the range.
+    let sigma = (high / low).ln() / 4.0;
+    skewed(median, sigma, least, most)
+}
+
 impl Dialog {
     /// For `Page.javascriptDialogOpening` on `session`.
     pub(crate) fn opened(

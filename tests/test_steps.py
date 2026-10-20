@@ -5,6 +5,7 @@ without one, unless NETWEIR_REQUIRE_CHROME is set."""
 import asyncio
 import os
 import pickle
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
 
@@ -96,9 +97,9 @@ def test_step_results_survive_pickling_as_a_worker_gets_them():
 
     outcomes = (
         '[{"action": "screenshot", "status": "ok", "error": null, "elapsed": 0.5,'
-        ' "value": null, "png": "iVBORw=="},'
+        ' "value": null, "image": "iVBORw=="},'
         ' {"action": "evaluate", "status": "failed", "error": "no", "elapsed": 0.1,'
-        ' "value": {"n": 1}, "png": null}]'
+        ' "value": {"n": 1}, "image": null}]'
     )
     r = _response("https://a.test/", 200, "browser", [], b"<p>hi</p>", outcomes)
     back = pickle.loads(pickle.dumps(r))
@@ -181,6 +182,16 @@ FEED = """<!DOCTYPE html><style>li { height: 200px; }</style><ul id=feed></ul>
 
 CHALLENGE = "<title>Just a moment...</title><p>checking your browser</p>"
 
+TYPING = """<!DOCTYPE html><input id=q value="old"><textarea id=long></textarea>
+<p id=cell ondblclick="this.textContent = 'edited'">cell</p>
+<script>
+window.log = [];
+for (const t of ['mousedown', 'keydown', 'keyup', 'input']) {
+  document.addEventListener(t, e => log.push({t, key: e.key, code: e.code, keyCode: e.keyCode,
+    shift: e.shiftKey, at: e.timeStamp, data: e.data ?? null}), true);
+}
+</script>"""
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -209,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 body = str([f"post {page}.{i}" for i in range(5)]).replace("'", '"')
             kind = "application/json"
+        elif url.path == "/typing":
+            body = TYPING
         elif url.path == "/to-gate":
             body = "<a id=go href=/gate>go</a>"
         elif url.path == "/gate":
@@ -574,15 +587,318 @@ def test_a_checkpoint_wont_keep_a_call_step_it_cant_name(base, tmp_path):
         spider.run()
 
 
-def test_typing_a_key_at_a_time_sends_every_key(base):
+def test_typing_clicks_holds_keys_and_shifts_as_a_person_does(base):
     async def go():
         async with netweir.browser() as browser:
             page = await browser.new_page()
-            await page.goto(base + "/form")
-            await page.evaluate(
-                "() => { window.keys = 0; addEventListener('keydown', () => keys++) }"
+            await page.goto(base + "/typing")
+            await page.type("#q", "Ab.@é tea", delay=(0.06, 0.22))
+            return (
+                await page.evaluate("log"),
+                await page.evaluate("document.querySelector('#q').value"),
             )
-            await page.type("#q", "tea", delay=(0.01, 0.02))
-            return await page.evaluate("[keys, document.querySelector('#q').value]")
 
-    assert asyncio.run(go()) == [3, "tea"]
+    log, value = asyncio.run(go())
+    assert value == "Ab.@é tea"
+    clicked = next(e["at"] for e in log if e["t"] == "mousedown")
+    downs = [e for e in log if e["t"] == "keydown"]
+    ups = [e for e in log if e["t"] == "keyup"]
+    assert downs[0]["at"] - clicked >= 150, "a moment between the click and the first key"
+    key = {e["key"]: e for e in downs}
+    assert (key["A"]["code"], key["A"]["keyCode"], key["A"]["shift"]) == ("KeyA", 65, True)
+    assert (key["."]["code"], key["."]["keyCode"]) == ("Period", 190)
+    assert (key["@"]["code"], key["@"]["keyCode"], key["@"]["shift"]) == ("Digit2", 50, True)
+    assert "é" not in key and any(e["data"] == "é" for e in log if e["t"] == "input")
+    typed = [e for e in downs if len(e["key"]) == 1]
+    for down in typed:
+        up = next(u for u in ups if u["code"] == down["code"] and u["at"] >= down["at"])
+        assert 40 <= up["at"] - down["at"] <= 200, (down["key"], up["at"] - down["at"])
+    gaps = [b["at"] - a["at"] for a, b in zip(typed, typed[1:], strict=False)]
+    mean = sum(gaps) / len(gaps)
+    spread = (sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5
+    assert spread > 5, gaps
+
+
+def test_a_long_type_step_has_time_for_every_key(base):
+    class Long(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/typing",
+                steps=[
+                    steps.type("#long", "x" * 40, delay=0, timeout=1),
+                    steps.evaluate("document.querySelector('#long').value.length"),
+                ],
+            )
+
+        def parse(self, page):
+            yield {"steps": [(s["status"], s["result"]) for s in page.steps]}
+
+    items, _ = run(Long())
+    assert items == [{"steps": [("ok", None), ("ok", 40)]}]
+
+
+def test_huge_and_overlong_steps_are_refused_where_they_are_written(base):
+    with pytest.raises(ValueError, match="at most"):
+        netweir.Request(base + "/", steps=[steps.click("#a", timeout=1e19)])
+    with pytest.raises(ValueError, match="at most"):
+        netweir.Request(base + "/", steps=[steps.wait(1e300)])
+    with pytest.raises(ValueError, match="browser_steps_max"):
+        netweir.Settings(browser_steps=[steps.wait(200)])
+    with pytest.raises(ValueError, match="positive"):
+        netweir.Settings(browser_steps_max=0)
+    assert netweir.Settings(browser_steps=[steps.wait(200)], browser_steps_max=None)
+
+    class Long(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/shop", steps=[steps.wait(200)])
+
+        def parse(self, page):
+            yield {"fetched": page.url}
+
+    items, stats = run(Long())
+    assert items == [] and stats["callback_errors"] == 1
+    assert stats.get("browser_fetches", 0) == 0
+
+
+def test_a_pages_steps_stop_at_browser_steps_max(base):
+    failures = []
+
+    class Slow(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/shop",
+                steps=[
+                    steps.wait(0.5),
+                    steps.wait_for("#never", on_error="continue"),
+                    steps.click("#more"),
+                ],
+                errback=self.lost,
+            )
+
+        def parse(self, page):
+            yield {"reached": page.url}
+
+        def lost(self, request, error):
+            failures.append((error.kind, str(error), [s["status"] for s in error.steps]))
+
+    started = time.monotonic()
+    items, _ = run(Slow(), browser_steps_max=1.5)
+    assert time.monotonic() - started < 20
+    assert items == []
+    ((kind, message, statuses),) = failures
+    assert kind == "step" and "browser_steps_max" in message
+    assert statuses == ["ok", "failed", "skipped"]
+
+
+def test_other_steps_on_the_same_url_are_another_request(base):
+    class Twice(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/shop", browser=True)
+            yield netweir.Request(base + "/shop", steps=[steps.click("#accept")])
+            yield netweir.Request(
+                base + "/shop", steps=[steps.click("#accept", timeout=4, on_error="continue")]
+            )
+            yield netweir.Request(
+                base + "/shop",
+                steps=[steps.click("#more")],
+                meta={"steps_in_fingerprint": False},
+            )
+
+        def parse(self, page):
+            yield {"steps": [s["action"] for s in page.steps]}
+
+    items, stats = run(Twice())
+    assert sorted(i["steps"] for i in items) == [[], ["click"]]
+    assert stats["duplicates"] == 2, "a timeout doesn't make another page, nor a flag's steps"
+
+
+def test_deltafetch_keys_a_page_by_its_steps(base, tmp_path):
+    delta = str(tmp_path / "delta")
+
+    def crawl(spider):
+        out = tmp_path / f"items{time.monotonic_ns()}.jsonl"
+        spider.settings = settings(deltafetch=delta)
+        stats = spider.run(output=str(out))
+        return out.read_text().splitlines() if out.exists() else [], stats
+
+    class Once(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/shop", steps=[steps.click("#accept")])
+
+        def parse(self, page):
+            yield {"url": page.url}
+
+    items, _ = crawl(Once())
+    assert len(items) == 1
+    items, stats = crawl(Once())
+    assert items == [] and stats["skipped_delta"] == 1
+
+    class Other(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/shop", steps=[steps.click("#accept"), steps.click("#more")]
+            )
+            yield netweir.Request(base + "/shop", browser=True)
+
+        def parse(self, page):
+            yield {"url": page.url}
+
+    items, stats = crawl(Other())
+    assert len(items) == 2 and stats.get("skipped_delta", 0) == 0
+
+
+def _from_data(spider, request, source, **settings):
+    from types import SimpleNamespace
+
+    from netweir._crawl import _Run
+
+    run = SimpleNamespace(spider=spider, settings=netweir.Settings(**settings))
+    _Run.from_data(run, request, source)
+
+
+def test_a_request_from_data_names_only_the_spiders_own_methods(tmp_path):
+    class Spider(netweir.Spider):
+        def item(self, page):
+            pass
+
+        def _private(self, page):
+            pass
+
+    spider = Spider()
+    url = "https://a.test/"
+    _from_data(spider, netweir.Request(url, callback="item"), "queue")
+    for bad in ("__init__", "__class__", "_private", "missing", "settings", "run_call"):
+        with pytest.raises(ValueError, match="isn't a method the spider defines"):
+            _from_data(spider, netweir.Request(url, callback=bad), "queue")
+    # A checkpoint is this crawl's own file: a private method may be named.
+    _from_data(spider, netweir.Request(url, callback="_private"), "checkpoint")
+    with pytest.raises(ValueError, match="isn't a method"):
+        _from_data(spider, netweir.Request(url, callback="__init__"), "checkpoint")
+    with pytest.raises(ValueError, match="call step"):
+        _from_data(spider, netweir.Request(url, steps=[steps.call("__reduce__")]), "queue")
+    with pytest.raises(ValueError, match="errback"):
+        _from_data(spider, netweir.Request(url, errback="_private"), "queue")
+
+
+def test_a_request_from_data_uploads_only_from_browser_upload_dir(tmp_path):
+    spider = netweir.Spider()
+    allowed = tmp_path / "uploads"
+    allowed.mkdir()
+    (allowed / "cv.pdf").write_bytes(b"%PDF")
+    upload = netweir.Request("https://a.test/", steps=[steps.set_input_files("#f", "/etc/hosts")])
+    with pytest.raises(ValueError, match="browser_upload_dir"):
+        _from_data(spider, upload, "queue")
+    with pytest.raises(ValueError, match="isn't in browser_upload_dir"):
+        _from_data(spider, upload, "queue", browser_upload_dir=str(allowed))
+    sneaky = netweir.Request(
+        "https://a.test/",
+        steps=[steps.set_input_files("#f", str(allowed / ".." / "outside.pdf"))],
+    )
+    with pytest.raises(ValueError, match="isn't in"):
+        _from_data(spider, sneaky, "checkpoint", browser_upload_dir=str(allowed))
+    fine = netweir.Request(
+        "https://a.test/", steps=[steps.set_input_files("#f", [str(allowed / "cv.pdf")])]
+    )
+    _from_data(spider, fine, "queue", browser_upload_dir=str(allowed))
+
+
+def test_a_resumed_upload_step_needs_browser_upload_dir(base, tmp_path):
+    class Stop(Exception):
+        pass
+
+    upload = tmp_path / "up"
+    upload.mkdir()
+    (upload / "a.txt").write_text("a")
+    seen = []
+
+    class Uploads(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/plain/first")
+
+        def parse(self, page):
+            if page.url.endswith("/first"):
+                yield netweir.Request(
+                    base + "/shop",
+                    callback="shop",
+                    steps=[
+                        steps.evaluate("1"),
+                        steps.set_input_files("#none", str(upload / "a.txt"), on_error="continue"),
+                    ],
+                )
+                raise Stop
+
+        def shop(self, page):
+            seen.append(page.url)
+
+    state = str(tmp_path / "state")
+    spider = Uploads()
+    spider.settings = settings(checkpoint=state, fail_fast=True)
+    with pytest.raises(Stop):
+        spider.run()
+    spider = Uploads()
+    spider.settings = settings(checkpoint=state)
+    spider.run()
+    assert seen == [], "refused on resume without browser_upload_dir"
+    spider = Uploads()
+    spider.settings = settings(checkpoint=state, browser_upload_dir=str(upload))
+    spider.run()
+    assert seen == [base + "/shop"]
+
+
+def test_a_plain_function_call_step_is_warned_about_once(base, caplog):
+    def plain(page, request):
+        return 1
+
+    class Plain(netweir.Spider):
+        async def start(self):
+            for i in range(2):
+                yield netweir.Request(base + f"/shop?{i}", steps=[plain])
+
+        def parse(self, page):
+            yield {"r": page.steps[0]["result"]}
+
+    with caplog.at_level("WARNING", logger="netweir"):
+        items, _ = run(Plain())
+    assert [i["r"] for i in items] == [1, 1]
+    assert sum("plain function" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_a_rules_call_step_gets_the_request_the_rule_made(base):
+    seen = []
+
+    class Ruled(netweir.Spider):
+        start_urls = [base + "/shops"]
+        rules = (netweir.Follow("a.shop", callback="shop", steps=[steps.call("look")]),)
+
+        async def look(self, page, request):
+            seen.append((request.url, request.depth, request.callback))
+            return "looked"
+
+        def shop(self, page):
+            yield {"result": page.steps[0]["result"]}
+
+    items, _ = run(Ruled())
+    assert items == [{"result": "looked"}]
+    assert seen == [(base + "/shop", 1, "shop")]
+
+
+def test_double_clicks_xpath_jpeg_and_cached_steps(base):
+    class Cell(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/typing",
+                steps=[
+                    steps.double_click("xpath=//p[@id='cell']"),
+                    steps.screenshot(quality=50),
+                ],
+            )
+
+        def parse(self, page):
+            yield {
+                "cell": page.css("#cell::text").get(),
+                "jpeg": page.steps[1]["result"][:2] == b"\xff\xd8",
+                "cached": page.steps is page.steps,
+            }
+
+    items, _ = run(Cell())
+    assert items == [{"cell": "edited", "jpeg": True, "cached": True}]

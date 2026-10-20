@@ -76,7 +76,7 @@ async fn steps_click_type_and_wait_with_the_page_own_actions() {
         {"action": "evaluate", "js": "document.title"},
     ]))
     .unwrap();
-    let report = steps::run(&page, &list, &*no_calls()).await;
+    let report = steps::run(&page, &list, &*no_calls(), None).await;
     assert_eq!(report.failed, None, "{:?}", report.failure());
     let o = &report.outcomes;
     assert!(o.iter().all(|o| o.status == Status::Ok), "{o:?}");
@@ -87,7 +87,7 @@ async fn steps_click_type_and_wait_with_the_page_own_actions() {
     assert_eq!(o[4].value, Some(json!(3)));
     assert_eq!(o[6].value, Some(json!(9)), "one keydown a character");
     assert_eq!(o[7].value, Some(json!(["m"])));
-    assert!(o[8].png.as_ref().unwrap().starts_with(b"\x89PNG"));
+    assert!(o[8].image.as_ref().unwrap().starts_with(b"\x89PNG"));
     assert!(
         o[10].value.as_ref().unwrap()["url"]
             .as_str()
@@ -113,7 +113,7 @@ async fn a_failing_step_continues_stops_or_fails_as_it_says() {
         let page = page.clone();
         async move {
             let list = steps::parse(&list).unwrap();
-            steps::run(&page, &list, &*no_calls()).await
+            steps::run(&page, &list, &*no_calls(), None).await
         }
     };
 
@@ -184,7 +184,7 @@ async fn steps_answer_dialogs_act_in_frames_and_run_calls() {
         {"action": "call", "method": "log_in"},
     ]))
     .unwrap();
-    let report = steps::run(&page, &list, &*call).await;
+    let report = steps::run(&page, &list, &*call, None).await;
     assert_eq!(report.failed, None, "{:?}", report.failure());
     assert_eq!(report.outcomes[2].value, Some(json!(true)), "accepted");
     assert_eq!(report.outcomes[4].value, Some(json!(true)));
@@ -203,7 +203,7 @@ async fn steps_answer_dialogs_act_in_frames_and_run_calls() {
         })
     });
     let list = steps::parse(&json!([{"action": "call", "timeout": 0.2}])).unwrap();
-    let report = steps::run(&page, &list, &*slow).await;
+    let report = steps::run(&page, &list, &*slow, None).await;
     assert_eq!(report.failed, Some(0));
     assert!(
         report.outcomes[0]
@@ -212,5 +212,198 @@ async fn steps_answer_dialogs_act_in_frames_and_run_calls() {
             .unwrap()
             .contains("took more than")
     );
+    browser.close().await.unwrap();
+}
+
+/// A field that logs every input event it, and the document, hears.
+const LOGGED: &str = r#"<!DOCTYPE html><input id=q value="old" style="width: 300px">
+<script>
+window.log = [];
+for (const t of ['mousedown', 'touchstart', 'keydown', 'keyup', 'input', 'select']) {
+  document.addEventListener(t, e => log.push({t, key: e.key, code: e.code, keyCode: e.keyCode,
+    shift: e.shiftKey, trusted: e.isTrusted, at: e.timeStamp, data: e.data ?? null}), true);
+}
+</script>"#;
+
+#[tokio::test]
+async fn typing_clicks_holds_keys_and_uses_shift_as_a_person_does() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(LOGGED))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let text = "Ab.@é tea";
+    page.type_text(
+        "#q",
+        text,
+        (Duration::from_millis(60), Duration::from_millis(220)),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page.evaluate("document.querySelector('#q').value")
+            .await
+            .unwrap(),
+        json!(text),
+        "what was there is replaced"
+    );
+    let log: Vec<Value> = serde_json::from_value(page.evaluate("log").await.unwrap()).unwrap();
+    let of = |t: &'static str| log.iter().filter(move |e| e["t"] == t);
+    assert!(log.iter().all(|e| e["trusted"] == true), "{log:?}");
+    // Selected with the keys: the select comes after Control or Command.
+    let select = of("select").next().expect("what was there selected")["at"]
+        .as_f64()
+        .unwrap();
+    let modifier = of("keydown")
+        .find(|e| matches!(e["key"].as_str(), Some("Control" | "Meta")))
+        .expect("Control-A or Command-A")["at"]
+        .as_f64()
+        .unwrap();
+    assert!(modifier <= select);
+    // The field is clicked first, and nobody types in the same instant.
+    let pressed = of("mousedown").next().expect("a click into the field")["at"]
+        .as_f64()
+        .unwrap();
+    let downs: Vec<&Value> = of("keydown").collect();
+    let first = downs.first().unwrap()["at"].as_f64().unwrap();
+    assert!(first - pressed >= 150.0, "{}", first - pressed);
+    // Control-A or Command-A, then the keys.
+    assert!(
+        matches!(downs[0]["key"].as_str(), Some("Control" | "Meta")),
+        "{:?}",
+        downs[0]
+    );
+    let key = |k: &str| {
+        downs
+            .iter()
+            .find(|e| e["key"] == k)
+            .unwrap_or_else(|| panic!("no keydown for {k}: {downs:?}"))
+    };
+    assert_eq!(
+        (
+            key("A")["code"].clone(),
+            key("A")["keyCode"].clone(),
+            key("A")["shift"].clone()
+        ),
+        (json!("KeyA"), json!(65), json!(true))
+    );
+    assert_eq!(
+        (key("b")["code"].clone(), key("b")["shift"].clone()),
+        (json!("KeyB"), json!(false))
+    );
+    assert_eq!(
+        (key(".")["code"].clone(), key(".")["keyCode"].clone()),
+        (json!("Period"), json!(190))
+    );
+    assert_eq!(
+        (
+            key("@")["code"].clone(),
+            key("@")["keyCode"].clone(),
+            key("@")["shift"].clone()
+        ),
+        (json!("Digit2"), json!(50), json!(true))
+    );
+    assert_eq!(downs.iter().filter(|e| e["key"] == "Shift").count(), 2);
+    // Off the keyboard, é comes as text with no key.
+    assert!(downs.iter().all(|e| e["key"] != "é"));
+    assert!(of("input").any(|e| e["data"] == "é"));
+    // Every key is held, for a person's time.
+    let ups: Vec<&Value> = of("keyup").collect();
+    let printable: Vec<&&Value> = downs
+        .iter()
+        .filter(|e| e["key"].as_str().unwrap().chars().count() == 1)
+        .collect();
+    for down in &printable {
+        let up = ups
+            .iter()
+            .find(|u| u["code"] == down["code"] && u["at"].as_f64() >= down["at"].as_f64())
+            .unwrap();
+        let held = up["at"].as_f64().unwrap() - down["at"].as_f64().unwrap();
+        assert!(
+            (40.0..=200.0).contains(&held),
+            "{} held {held} ms",
+            down["key"]
+        );
+    }
+    // And the gaps between keys vary, not one fixed pace.
+    let at: Vec<f64> = printable
+        .iter()
+        .map(|e| e["at"].as_f64().unwrap())
+        .collect();
+    let gaps: Vec<f64> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+    let spread = (gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / gaps.len() as f64).sqrt();
+    assert!(spread > 5.0, "{gaps:?}");
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn double_clicks_xpath_and_two_waits_for_one_url() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<!DOCTYPE html><p id=cell ondblclick="this.textContent = 'edited'">cell</p>
+<button onclick="fetch('/api/a')">one</button><button id=two onclick="fetch('/api/a')">two</button>"#,
+            ),
+        ),
+        ("/api/a", json_reply("{}")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let list = steps::parse(&json!([
+        {"action": "double_click", "selector": "xpath=//p[@id='cell']"},
+        {"action": "evaluate", "js": "document.querySelector('#cell').textContent"},
+        {"action": "click", "selector": "xpath=//button[1]"},
+        {"action": "wait_for_response", "url": "**/api/a"},
+        // The first response was taken: this one needs a second.
+        {"action": "wait_for_response", "url": "**/api/a", "timeout": 0.5, "on_error": "continue"},
+        {"action": "click", "selector": "#two"},
+        {"action": "wait_for_response", "url": "**/api/a"},
+    ]))
+    .unwrap();
+    let report = steps::run(&page, &list, &*no_calls(), None).await;
+    let statuses: Vec<_> = report.outcomes.iter().map(|o| o.status.as_str()).collect();
+    assert_eq!(
+        statuses,
+        ["ok", "ok", "ok", "ok", "failed", "ok", "ok"],
+        "{report:?}"
+    );
+    assert_eq!(report.outcomes[1].value, Some(json!("edited")));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_steps_stop_at_their_cap_whatever_their_on_error() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let list = steps::parse(&json!([
+        {"action": "wait", "seconds": 0.2},
+        {"action": "wait_for", "selector": "#never", "on_error": "continue"},
+        {"action": "evaluate", "js": "1"},
+    ]))
+    .unwrap();
+    let started = std::time::Instant::now();
+    let report = steps::run(&page, &list, &*no_calls(), Some(Duration::from_millis(800))).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(report.failed, Some(1), "{report:?}");
+    assert!(
+        report.failure().unwrap().contains("browser_steps_max"),
+        "{report:?}"
+    );
+    assert_eq!(report.outcomes[2].status, Status::Skipped);
     browser.close().await.unwrap();
 }

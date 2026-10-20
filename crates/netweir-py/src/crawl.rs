@@ -334,7 +334,7 @@ impl Engine {
                 proxy: None,
                 delta_key: Default::default(),
                 cookies: Default::default(),
-                steps: rule.steps.clone(),
+                steps: rule.steps.clone().map(Into::into),
             };
             let payload = format!(r#"{{"rule":{at}}}"#);
             if self.core.submit_with(request, &payload) != Submitted::Queued {
@@ -371,7 +371,7 @@ impl Engine {
             proxy: p.proxy,
             delta_key: Default::default(),
             cookies: Default::default(),
-            steps: rule.steps.clone(),
+            steps: rule.steps.clone().map(Into::into),
         };
         if self.core.resubmit(request, row) != Submitted::Queued {
             self.tags().remove(&id);
@@ -710,17 +710,27 @@ pub struct StepCall {
     method: Option<String>,
     #[pyo3(get)]
     timeout: f64,
+    /// The request's URL and depth, and for a rule's request the rule.
+    #[pyo3(get)]
+    url: String,
+    #[pyo3(get)]
+    depth: u32,
+    #[pyo3(get)]
+    rule: Option<usize>,
     page: netweir_core::LivePage,
     reply: Mutex<Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
 }
 
-impl From<netweir_core::StepCall> for StepCall {
-    fn from(call: netweir_core::StepCall) -> StepCall {
+impl StepCall {
+    fn of(call: netweir_core::StepCall, rule: Option<usize>) -> StepCall {
         StepCall {
             id: call.id,
             index: call.index,
             method: call.method,
             timeout: call.timeout.as_secs_f64(),
+            url: call.url,
+            depth: call.depth,
+            rule,
             page: call.page,
             reply: Mutex::new(Some(call.reply)),
         }
@@ -953,6 +963,7 @@ impl Crawler {
         http_auth=None,
         xml_recover=false, parse_timeout=Some(10.0),
         browser_environment=None, browser_worker_header_order=false, browser_steps=None,
+        browser_steps_max=Some(120.0),
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1008,6 +1019,7 @@ impl Crawler {
         browser_environment: Option<Bound<'_, pyo3::types::PyDict>>,
         browser_worker_header_order: bool,
         browser_steps: Option<&str>,
+        browser_steps_max: Option<f64>,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         let environment = crate::environment::environment_from(browser_environment.as_ref())?;
@@ -1108,6 +1120,9 @@ impl Crawler {
                 ..Default::default()
             },
             browser_block,
+            browser_steps_max: browser_steps_max
+                .map(|m| positive("browser_steps_max", m))
+                .transpose()?,
             browser_steps: browser_steps
                 .map(crate::browser::steps_from)
                 .transpose()?
@@ -1241,7 +1256,7 @@ impl Crawler {
     /// Fetcher.send takes them. `jar` names its cookie jar (None for the
     /// crawl's own), `cookies` are its own, and `dont_merge_cookies`
     /// leaves the jar out.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None, jar=None, cookies=None, dont_merge_cookies=false, steps=None))]
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None, jar=None, cookies=None, dont_merge_cookies=false, steps=None, steps_in_fingerprint=true))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -1274,8 +1289,15 @@ impl Crawler {
         cookies: Option<Vec<Bound<'_, PyAny>>>,
         dont_merge_cookies: bool,
         steps: Option<&str>,
+        steps_in_fingerprint: bool,
     ) -> PyResult<&'static str> {
-        let steps = steps.map(crate::browser::steps_from).transpose()?;
+        let steps = steps
+            .map(crate::browser::steps_from)
+            .transpose()?
+            .map(|steps| netweir_core::RequestSteps {
+                steps,
+                in_fingerprint: steps_in_fingerprint,
+            });
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
         let cookies = request_cookies(&url, jar, cookies.unwrap_or_default(), dont_merge_cookies)?;
@@ -1605,7 +1627,9 @@ impl Crawler {
     /// when given, else its fingerprint in the cookie jar `jar` names (as
     /// `submit` takes it). None for a URL that can't be crawled.
     #[staticmethod]
-    #[pyo3(signature = (method, url, body=None, delta_key=None, jar=None))]
+    /// `steps` (JSON) are its own steps, when they're part of its
+    /// fingerprint.
+    #[pyo3(signature = (method, url, body=None, delta_key=None, jar=None, steps=None))]
     fn delta_key<'py>(
         py: Python<'py>,
         method: &str,
@@ -1613,13 +1637,22 @@ impl Crawler {
         body: Option<Vec<u8>>,
         delta_key: Option<Vec<u8>>,
         jar: Option<&str>,
-    ) -> Option<Bound<'py, PyBytes>> {
+        steps: Option<&str>,
+    ) -> PyResult<Option<Bound<'py, PyBytes>>> {
+        let steps = steps.map(crate::browser::steps_from).transpose()?;
         let key = netweir_core::deltafetch::key(method, url, body.as_deref(), delta_key.as_deref());
-        key.map(|k| match delta_key {
-            Some(_) => k,
-            None => netweir_core::canonical::in_jar(k, jar),
-        })
-        .map(|k| PyBytes::new(py, &k))
+        Ok(key
+            .map(|k| match delta_key {
+                Some(_) => k,
+                None => {
+                    let k = netweir_core::canonical::in_jar(k, jar);
+                    match &steps {
+                        Some(steps) => netweir_core::canonical::with_steps(k, steps),
+                        None => k,
+                    }
+                }
+            })
+            .map(|k| PyBytes::new(py, &k)))
     }
 
     /// Records that the pages with these keys (from `delta_key`) gave
@@ -1675,8 +1708,16 @@ impl Crawler {
         let engine = self.engine.clone();
         crate::aio::future_into_py(py, async move {
             let call = engine.calls.lock().await.recv().await;
-            Ok(call.map(StepCall::from))
+            Ok(call.map(|call| {
+                let rule = engine.tags().get(&call.id).and_then(|t| t.rule);
+                StepCall::of(call, rule)
+            }))
         })
+    }
+
+    /// Says nothing will run call steps from now on: each fails at once.
+    fn close_calls(&self) {
+        self.engine.core.close_calls();
     }
 
     /// Closes Chrome, if the crawl started it.

@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::archive::Archive;
 use crate::cache::{Cache, Policy, Redirect};
-use crate::canonical::{Fingerprint, fingerprint, fingerprint_with, in_jar};
+use crate::canonical::{Fingerprint, fingerprint, fingerprint_with, in_jar, with_steps};
 use crate::checkpoint::{Checkpoint, Pending, Saved};
 use crate::classify::{BlockKind, Outcome, classify};
 use crate::cookies::Jar;
@@ -98,6 +98,8 @@ pub struct CrawlSettings {
     /// What every page fetched in Chrome does once it has loaded, before
     /// the caller sees it, unless its request has steps of its own.
     pub browser_steps: Arc<[Step]>,
+    /// The most a page's steps may take, all told; None for no limit.
+    pub browser_steps_max: Option<Duration>,
     /// Domains requests may go to, with their subdomains, normalised by
     /// `allowed_domains`; empty for any. A request elsewhere is dropped
     /// unless it has `dont_filter`.
@@ -267,6 +269,7 @@ impl Default for CrawlSettings {
             browser_launch: LaunchOptions::default(),
             browser_block: Vec::new(),
             browser_steps: Arc::default(),
+            browser_steps_max: Some(Duration::from_secs(120)),
             allowed_domains: Vec::new(),
             cache: None,
             cache_expiry: None,
@@ -308,9 +311,39 @@ pub struct CrawlRequest {
     pub cookies: RequestCookies,
     /// What to do on its page once Chrome has loaded it, before the
     /// caller sees it, in place of the crawl's `browser_steps`; None for
-    /// those. Not part of its fingerprint, as Scrapy leaves meta out:
-    /// the same URL with other steps is the same request.
-    pub steps: Option<Arc<[Step]>>,
+    /// those.
+    pub steps: Option<RequestSteps>,
+}
+
+/// A request's own steps, and whether they're part of its fingerprint.
+/// They are by default, as different steps leave a different page: the
+/// duplicate filter, the cache and deltafetch then tell the same URL
+/// with other steps apart.
+#[derive(Debug, Clone)]
+pub struct RequestSteps {
+    pub steps: Arc<[Step]>,
+    pub in_fingerprint: bool,
+}
+
+impl From<Arc<[Step]>> for RequestSteps {
+    fn from(steps: Arc<[Step]>) -> RequestSteps {
+        RequestSteps {
+            steps,
+            in_fingerprint: true,
+        }
+    }
+}
+
+/// `request`'s fingerprint: its method, URL and body, in its cookie jar,
+/// and with what its own steps do when they count.
+fn fingerprint_of(request: &CrawlRequest) -> Option<Fingerprint> {
+    let o = &request.outgoing;
+    let fp = fingerprint_with(&o.method, &request.url, o.body.as_deref())
+        .map(|fp| in_jar(fp, request.cookies.jar.as_deref()))?;
+    Some(match &request.steps {
+        Some(own) if own.in_fingerprint => with_steps(fp, &own.steps),
+        _ => fp,
+    })
 }
 
 /// The cookies a request goes with: Scrapy's `Request.cookies`,
@@ -439,6 +472,10 @@ pub struct Downloaded {
 /// may take. The step waits for `reply`; one dropped unanswered fails it.
 pub struct StepCall {
     pub id: u64,
+    /// The request's URL and depth, for one the caller never made (a
+    /// rule's).
+    pub url: String,
+    pub depth: u32,
     pub index: usize,
     pub method: Option<String>,
     pub page: LivePage,
@@ -748,6 +785,9 @@ struct Shared {
     /// `step_calls`, where they arrive.
     calls: tokio::sync::mpsc::UnboundedSender<StepCall>,
     called: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<StepCall>>>,
+    /// Set once whoever took the calls has stopped running them: call
+    /// steps then fail at once rather than wait out their timeouts.
+    calls_closed: std::sync::atomic::AtomicBool,
     /// The jars requests name (`RequestCookies::jar`), made as they're
     /// first named.
     jars: Mutex<HashMap<String, Arc<Jar>>>,
@@ -1444,6 +1484,7 @@ impl Crawler {
             runtime: tokio::runtime::Handle::current(),
             calls,
             called: Mutex::new(Some(called)),
+            calls_closed: std::sync::atomic::AtomicBool::new(false),
         });
         // Each host's own session the checkpoint kept, with its cookies.
         let host_jars = shared
@@ -1723,6 +1764,14 @@ impl Crawler {
             .take()
     }
 
+    /// Says the call steps that come from now on have nobody to run them,
+    /// so each fails at once.
+    pub fn close_calls(&self) {
+        self.shared
+            .calls_closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Closes Chrome, if the crawl started it.
     pub async fn close_browser(&self) {
         if let Some(browser) = self.browser().await {
@@ -1802,10 +1851,7 @@ impl Crawler {
     fn admit(&self, mut request: CrawlRequest, persist: Persist<'_>) -> Submitted {
         // Below every download's, which an item is waiting for.
         request.priority = request.priority.min(DOWNLOAD_PRIORITY - 1);
-        let o = &request.outgoing;
-        let Some(fp) = fingerprint_with(&o.method, &request.url, o.body.as_deref())
-            .map(|fp| in_jar(fp, request.cookies.jar.as_deref()))
-        else {
+        let Some(fp) = fingerprint_of(&request) else {
             return Submitted::Invalid;
         };
         let Ok(parsed) = Url::parse(&request.url) else {
@@ -1859,7 +1905,7 @@ impl Crawler {
         {
             let key = match &request.delta_key {
                 DeltaKey::Custom(custom) => {
-                    deltafetch::key(&o.method, &request.url, None, Some(custom))
+                    deltafetch::key(&request.outgoing.method, &request.url, None, Some(custom))
                 }
                 DeltaKey::Fingerprint => Some(fp),
                 DeltaKey::Off => None,
@@ -3349,18 +3395,12 @@ type Rendered = (Response, LivePage, Vec<Cookie>, Duration, String);
 /// blocked isn't retried in Chrome.
 async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphorePermit) {
     let timeout = shared.options.timeout;
-    let steps = q
-        .request
-        .steps
-        .clone()
-        .unwrap_or_else(|| shared.settings.browser_steps.clone());
-    // A Chrome that stops answering mid-page mustn't hold the request, and
-    // its place in the crawl, for good. Steps have time of their own, and
-    // a challenge they lead to as long again to pass.
-    let mut limit = timeout.saturating_mul(2) + CHALLENGE_WAIT;
-    if !steps.is_empty() {
-        limit += steps::budget(&steps, shared.settings.browser_launch.timeout) + CHALLENGE_WAIT;
-    }
+    let steps = match &q.request.steps {
+        Some(own) => own.steps.clone(),
+        None if q.blocked.is_some() => lenient(&shared.settings.browser_steps),
+        None => shared.settings.browser_steps.clone(),
+    };
+    let limit = fetch_limit(timeout, &steps, &shared.settings);
     // Set if robots.txt or TDMRep stopped a document Chrome was about to
     // fetch: a redirect hop, or a navigation the page's script started.
     let refused: Refusal = Arc::default();
@@ -3368,7 +3408,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
     let doing: Doing = Arc::new(Mutex::new("starting"));
     let work = render(
         shared.clone(),
-        (q.request.id, q.request.url.clone(), steps),
+        (q.request.id, q.request.url.clone(), q.request.depth, steps),
         q.blocked.is_some(),
         browser_cookies(&shared, &q.request),
         permit,
@@ -3573,7 +3613,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
 /// as the steps left them. `id` is the request's, for call steps.
 async fn render(
     shared: Arc<Shared>,
-    (id, url, steps): (u64, String, Arc<[Step]>),
+    (id, url, depth, steps): (u64, String, u32, Arc<[Step]>),
     cookies: bool,
     (seed, jar): (Seed, Option<Arc<Jar>>),
     permit: OwnedSemaphorePermit,
@@ -3690,8 +3730,9 @@ async fn render(
         let report = match classify(&response) {
             Outcome::Ok => {
                 now("running its steps");
-                let call = caller(&shared, id, &live);
-                let report = steps::run(&page, &steps, &*call).await;
+                let call = caller(&shared, (id, &url, depth), &live);
+                let cap = shared.settings.browser_steps_max;
+                let report = steps::run(&page, &steps, &*call, cap).await;
                 {
                     let mut state = shared.lock();
                     let ran = report
@@ -3810,17 +3851,26 @@ async fn settle(
 
 /// Runs the call steps of request `id`'s page by sending them to whoever
 /// took `step_calls`; with nobody there, each fails at once.
-fn caller(shared: &Arc<Shared>, id: u64, live: &LivePage) -> Box<steps::Call> {
-    let (shared, live) = (shared.clone(), live.clone());
+fn caller(
+    shared: &Arc<Shared>,
+    (id, url, depth): (u64, &str, u32),
+    live: &LivePage,
+) -> Box<steps::Call> {
+    let (shared, live, url) = (shared.clone(), live.clone(), url.to_string());
     Box::new(move |index, method, timeout| {
         let taken = shared
             .called
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_none();
+            .is_none()
+            && !shared
+                .calls_closed
+                .load(std::sync::atomic::Ordering::SeqCst);
         let (reply, answer) = tokio::sync::oneshot::channel();
         let call = StepCall {
             id,
+            url: url.clone(),
+            depth,
             index,
             method,
             page: live.clone(),
@@ -3837,6 +3887,40 @@ fn caller(shared: &Arc<Shared>, id: u64, live: &LivePage) -> Box<steps::Call> {
                 .unwrap_or_else(|_| Err("the call step was never answered".to_string()))
         })
     })
+}
+
+/// The crawl's steps for the one go Chrome gets at a request blocked over
+/// HTTP: a step failing there (a banner this site doesn't show) goes on
+/// to the next rather than fail a request Chrome may have got through.
+fn lenient(steps: &Arc<[Step]>) -> Arc<[Step]> {
+    steps
+        .iter()
+        .map(|s| Step {
+            on_error: match s.on_error {
+                steps::OnError::Fail => steps::OnError::Continue,
+                other => other,
+            },
+            ..s.clone()
+        })
+        .collect()
+}
+
+/// How long a Chrome fetch may take in all, so a Chrome that stops
+/// answering mid-page can't hold the request, and its place in the crawl,
+/// for good: twice the request timeout and a challenge's wait, and for
+/// steps, their own time (no more than `browser_steps_max`) and as long
+/// again for a challenge they lead to.
+fn fetch_limit(timeout: Duration, steps: &[Step], settings: &CrawlSettings) -> Duration {
+    let mut limit = timeout.saturating_mul(2).saturating_add(CHALLENGE_WAIT);
+    if !steps.is_empty() {
+        let budget = steps::budget(
+            steps,
+            settings.browser_launch.timeout,
+            settings.browser_steps_max,
+        );
+        limit = limit.saturating_add(budget).saturating_add(CHALLENGE_WAIT);
+    }
+    limit
 }
 
 /// Why a document Chrome is about to fetch may not be: robots.txt or
@@ -4624,6 +4708,55 @@ fn gate_done(shared: &Shared, mut state: std::sync::MutexGuard<'_, State>, origi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chrome_fetch_has_time_for_its_steps_and_never_overflows() {
+        let parse = |v: serde_json::Value| -> Vec<Step> { steps::parse(&v).unwrap() };
+        let settings = CrawlSettings::default();
+        let timeout = Duration::from_secs(10);
+        let plain = fetch_limit(timeout, &[], &settings);
+        assert_eq!(plain, Duration::from_secs(20) + CHALLENGE_WAIT);
+        let some = parse(serde_json::json!([{"action": "wait", "seconds": 5}]));
+        let with = fetch_limit(timeout, &some, &settings);
+        assert!(
+            with >= plain + Duration::from_secs(5) + CHALLENGE_WAIT,
+            "{with:?}"
+        );
+        // Never past browser_steps_max, and no panic however big it gets.
+        let long = parse(serde_json::json!([{"action": "wait", "seconds": 86_400}]));
+        let capped = fetch_limit(timeout, &long, &settings);
+        assert!(
+            capped < plain + Duration::from_secs(200) + CHALLENGE_WAIT,
+            "{capped:?}"
+        );
+        let unlimited = CrawlSettings {
+            browser_steps_max: None,
+            browser_launch: LaunchOptions {
+                timeout: Duration::MAX,
+                ..LaunchOptions::default()
+            },
+            ..CrawlSettings::default()
+        };
+        let click = serde_json::json!({"action": "click", "selector": "a"});
+        let clicks = parse(serde_json::json!([click, click]));
+        assert_eq!(
+            fetch_limit(Duration::MAX, &clicks, &unlimited),
+            Duration::MAX
+        );
+    }
+
+    #[test]
+    fn the_crawls_steps_on_a_blocked_requests_go_never_fail_it() {
+        let list: Arc<[Step]> = steps::parse(&serde_json::json!([
+            {"action": "click", "selector": "a"},
+            {"action": "click", "selector": "b", "on_error": "stop"},
+        ]))
+        .unwrap()
+        .into();
+        let went = lenient(&list);
+        assert_eq!(went[0].on_error, steps::OnError::Continue);
+        assert_eq!(went[1].on_error, steps::OnError::Stop);
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn work_that_arrives_after_the_queue_went_quiet_gets_a_fresh_grace() {

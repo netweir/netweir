@@ -439,6 +439,9 @@ pub(crate) fn _response(
 #[pyclass(frozen, module = "netweir")]
 pub struct Response {
     inner: Arc<netweir_core::Response>,
+    /// `steps` as Python has them, made once: a screenshot's bytes are
+    /// copied out of Rust the first time, not on every read.
+    steps: std::sync::OnceLock<Py<PyList>>,
 }
 
 impl Response {
@@ -450,7 +453,10 @@ impl Response {
 
 impl From<netweir_core::Response> for Response {
     fn from(r: netweir_core::Response) -> Response {
-        Response { inner: Arc::new(r) }
+        Response {
+            inner: Arc::new(r),
+            steps: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -481,7 +487,11 @@ impl Response {
     /// empty for any other.
     #[getter]
     fn steps<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        crate::browser::outcomes_py(py, &self.inner.steps)
+        if let Some(made) = self.steps.get() {
+            return Ok(made.bind(py).clone());
+        }
+        let made = crate::browser::outcomes_py(py, &self.inner.steps)?.unbind();
+        Ok(self.steps.get_or_init(|| made).bind(py).clone())
     }
 
     #[getter]

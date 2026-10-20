@@ -818,6 +818,21 @@ impl BrowserPage {
         })
     }
 
+    /// Double-clicks the element (taps it twice on a phone).
+    #[pyo3(signature = (selector, timeout=None))]
+    fn dblclick<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.dblclick(&selector, timeout).await.map_err(raise)
+        })
+    }
+
     #[pyo3(signature = (selector, text, timeout=None))]
     fn fill<'py>(
         &self,
@@ -1004,17 +1019,22 @@ impl BrowserPage {
         })
     }
 
-    /// PNG bytes, also written to `path` if given.
-    #[pyo3(signature = (path=None, full_page=false))]
+    /// PNG bytes, or with a `quality` (1 to 100) JPEG ones, also written
+    /// to `path` if given.
+    #[pyo3(signature = (path=None, full_page=false, quality=None))]
     fn screenshot<'py>(
         &self,
         py: Python<'py>,
         path: Option<PathBuf>,
         full_page: bool,
+        quality: Option<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if quality.is_some_and(|q| !(1..=100).contains(&q)) {
+            return Err(PyValueError::new_err("quality is from 1 to 100"));
+        }
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
-            let png = page.screenshot(full_page).await.map_err(raise)?;
+            let png = page.capture(full_page, quality).await.map_err(raise)?;
             if let Some(path) = path {
                 std::fs::write(&path, &png)?;
             }
@@ -1407,6 +1427,21 @@ impl BrowserFrame {
         })
     }
 
+    /// Double-clicks the element (taps it twice on a phone).
+    #[pyo3(signature = (selector, timeout=None))]
+    fn dblclick<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let frame = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            frame.dblclick(&selector, timeout).await.map_err(raise)
+        })
+    }
+
     #[pyo3(signature = (selector, text, timeout=None))]
     fn fill<'py>(
         &self,
@@ -1581,10 +1616,17 @@ pub(crate) fn steps_from(json: &str) -> PyResult<Arc<[netweir_browser::steps::St
 }
 
 /// Checks steps (JSON) when they're written, rather than when a page
-/// reaches them.
+/// reaches them: each step, and with `cap` (seconds), that they ask for
+/// no more time than that outright.
 #[pyfunction]
-pub(crate) fn _check_steps(json: &str) -> PyResult<()> {
-    steps_from(json).map(|_| ())
+#[pyo3(signature = (json, cap=None))]
+pub(crate) fn _check_steps(json: &str, cap: Option<f64>) -> PyResult<()> {
+    let steps = steps_from(json)?;
+    let cap = cap
+        .map(Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|_| PyValueError::new_err("browser_steps_max must be a number of seconds"))?;
+    netweir_browser::steps::within(&steps, cap).map_err(PyValueError::new_err)
 }
 
 /// How each step went, as Python dicts: `action`, `status` ("ok",
@@ -1601,8 +1643,8 @@ pub(crate) fn outcomes_py<'py>(
         d.set_item("status", o.status.as_str())?;
         d.set_item("error", &o.error)?;
         d.set_item("elapsed", o.elapsed.as_secs_f64())?;
-        match (&o.png, &o.value) {
-            (Some(png), _) => d.set_item("result", PyBytes::new(py, png))?,
+        match (&o.image, &o.value) {
+            (Some(image), _) => d.set_item("result", PyBytes::new(py, image))?,
             (None, Some(v)) => d.set_item("result", to_python(py, v)?)?,
             (None, None) => d.set_item("result", py.None())?,
         }

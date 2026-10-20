@@ -936,6 +936,11 @@ impl Page {
             .min(Duration::from_secs(365 * 24 * 3600))
     }
 
+    /// When a wait of `timeout` (the browser's, for None) begun now ends.
+    pub(crate) fn deadline(&self, timeout: Option<Duration>) -> Instant {
+        Instant::now() + self.timeout(timeout)
+    }
+
     /// Navigates and waits for `wait`. An HTTP error status is returned,
     /// not raised; a network error is [`Error::Navigation`].
     pub async fn goto(
@@ -1320,7 +1325,13 @@ impl Page {
         self.main_frame().click(selector, timeout).await
     }
 
-    /// Replaces the element's contents with `text`, as typing would.
+    /// See [`Frame::dblclick`].
+    pub async fn dblclick(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.main_frame().dblclick(selector, timeout).await
+    }
+
+    /// Replaces the element's contents with `text` in one go, as pasting
+    /// would.
     pub async fn fill(&self, selector: &str, text: &str, timeout: Option<Duration>) -> Result<()> {
         self.main_frame().fill(selector, text, timeout).await
     }
@@ -1419,26 +1430,83 @@ impl Page {
             self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
                 .await?;
             self.call("Input.insertText", json!({"text": text})).await?;
+            tokio::time::sleep(crate::events::key_hold()).await;
             self.call("Input.dispatchKeyEvent", unknown("keyUp"))
                 .await?;
             return Ok(());
+        }
+        if k.code.is_empty()
+            && let Some(text) = &k.text
+        {
+            // Not on the keyboard (an é on a US layout): it comes the way
+            // an OS's character picker sends it, as text with no key.
+            self.call("Input.insertText", json!({"text": text})).await?;
+            return Ok(());
+        }
+        let modifiers = if k.shift { SHIFT } else { 0 };
+        if k.shift {
+            self.call("Input.dispatchKeyEvent", shift_key("rawKeyDown", SHIFT))
+                .await?;
+            tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
         }
         let mut down = json!({
             "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
             "key": k.key,
             "code": k.code,
             "windowsVirtualKeyCode": k.key_code,
+            "modifiers": modifiers,
         });
         if let Some(text) = &k.text {
             down["text"] = Value::from(text.as_str());
             down["unmodifiedText"] = Value::from(text.as_str());
         }
         self.call("Input.dispatchKeyEvent", down).await?;
+        // Held as a person holds a key, not let go in the same instant.
+        tokio::time::sleep(crate::events::key_hold()).await;
         self.call(
             "Input.dispatchKeyEvent",
-            json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code}),
+            json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
         )
         .await?;
+        if k.shift {
+            tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+            self.call("Input.dispatchKeyEvent", shift_key("keyUp", 0))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Selects everything in the field that has focus, with the keys a
+    /// person uses: Control-A, or Command-A on a Mac.
+    pub(crate) async fn select_all(&self) -> Result<()> {
+        let mac = self
+            .main_frame()
+            .helper("/Mac|iPhone|iPad/.test(navigator.platform)")
+            .await?
+            == true;
+        let (key, code, key_code, flag) = if mac {
+            ("Meta", "MetaLeft", 91, META)
+        } else {
+            ("Control", "ControlLeft", 17, CONTROL)
+        };
+        let modifier = |kind: &str, modifiers: u32| json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "modifiers": modifiers});
+        self.call("Input.dispatchKeyEvent", modifier("rawKeyDown", flag))
+            .await?;
+        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+        self.call(
+            "Input.dispatchKeyEvent",
+            json!({"type": "rawKeyDown", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag, "commands": ["selectAll"]}),
+        )
+        .await?;
+        tokio::time::sleep(crate::events::key_hold()).await;
+        self.call(
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyUp", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag}),
+        )
+        .await?;
+        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+        self.call("Input.dispatchKeyEvent", modifier("keyUp", 0))
+            .await?;
         Ok(())
     }
 
@@ -1455,6 +1523,20 @@ impl Page {
     /// Clicks the left button at (x, y), where the mouse already is; on a
     /// phone, taps there, as a finger does: down, a moment, and up.
     pub(crate) async fn mouse_press(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse_press_count(x, y, 1).await
+    }
+
+    /// Clicks twice at (x, y), as a double click goes: the second press
+    /// a moment after the first, Chrome told it's the second. On a phone,
+    /// two taps.
+    pub(crate) async fn mouse_double(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse_press_count(x, y, 1).await?;
+        tokio::time::sleep(crate::events::pause(DOUBLE_GAP)).await;
+        self.mouse_press_count(x, y, 2).await
+    }
+
+    /// The press of a click that's the `count`th in a row.
+    async fn mouse_press_count(&self, x: f64, y: f64, count: u32) -> Result<()> {
         if self.touches() {
             // A fingertip's contact, a little different each time (about 8
             // to 14 pixels across, as Android reports one), the same from
@@ -1477,9 +1559,13 @@ impl Page {
             return Ok(());
         }
         for kind in ["mousePressed", "mouseReleased"] {
+            if kind == "mouseReleased" {
+                // A button is held a moment, as a key is.
+                tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
+            }
             self.call(
                 "Input.dispatchMouseEvent",
-                json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": 1}),
+                json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": count}),
             )
             .await?;
         }
@@ -1777,7 +1863,16 @@ impl Page {
 
     /// A PNG of the viewport, or of the whole page.
     pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>> {
-        let mut params = json!({"format": "png"});
+        self.capture(full_page, None).await
+    }
+
+    /// [`Page::screenshot`], or with a `quality` (1 to 100) a JPEG of
+    /// that quality, which is often a tenth the size.
+    pub async fn capture(&self, full_page: bool, quality: Option<u8>) -> Result<Vec<u8>> {
+        let mut params = match quality {
+            Some(q) => json!({"format": "jpeg", "quality": q.clamp(1, 100)}),
+            None => json!({"format": "png"}),
+        };
         if full_page {
             let metrics = self.call("Page.getLayoutMetrics", json!({})).await?;
             let size = &metrics["cssContentSize"];
@@ -2674,6 +2769,77 @@ struct Key {
     code: String,
     key_code: u32,
     text: Option<String>,
+    /// Typed with Shift held, on a US layout.
+    shift: bool,
+}
+
+/// How long a mouse button is held for a click.
+const BUTTON_HOLD: (Duration, Duration) = (Duration::from_millis(50), Duration::from_millis(120));
+
+/// The pause between the two clicks of a double click, well inside the
+/// half second an OS allows.
+const DOUBLE_GAP: (Duration, Duration) = (Duration::from_millis(70), Duration::from_millis(160));
+
+/// CDP's modifier flags.
+const SHIFT: u32 = 8;
+const CONTROL: u32 = 2;
+const META: u32 = 4;
+
+/// How long Shift (or Control) goes down before the key it changes, and
+/// up after it.
+const SHIFT_LEAD: (Duration, Duration) = (Duration::from_millis(30), Duration::from_millis(90));
+
+/// The left Shift key, going `kind` ("rawKeyDown" or "keyUp").
+fn shift_key(kind: &str, modifiers: u32) -> Value {
+    json!({"type": kind, "key": "Shift", "code": "ShiftLeft", "windowsVirtualKeyCode": 16, "modifiers": modifiers})
+}
+
+/// Where a printable ASCII character is on a US keyboard: its key's
+/// code, its Windows key code, and whether it needs Shift.
+fn us_layout(c: char) -> Option<(String, u32, bool)> {
+    if c.is_ascii_alphabetic() {
+        let upper = c.to_ascii_uppercase();
+        return Some((format!("Key{upper}"), upper as u32, c.is_ascii_uppercase()));
+    }
+    if c.is_ascii_digit() {
+        return Some((format!("Digit{c}"), c as u32, false));
+    }
+    let (code, key_code, shift) = match c {
+        '`' => ("Backquote", 192, false),
+        '~' => ("Backquote", 192, true),
+        '!' => ("Digit1", 49, true),
+        '@' => ("Digit2", 50, true),
+        '#' => ("Digit3", 51, true),
+        '$' => ("Digit4", 52, true),
+        '%' => ("Digit5", 53, true),
+        '^' => ("Digit6", 54, true),
+        '&' => ("Digit7", 55, true),
+        '*' => ("Digit8", 56, true),
+        '(' => ("Digit9", 57, true),
+        ')' => ("Digit0", 48, true),
+        '-' => ("Minus", 189, false),
+        '_' => ("Minus", 189, true),
+        '=' => ("Equal", 187, false),
+        '+' => ("Equal", 187, true),
+        '[' => ("BracketLeft", 219, false),
+        '{' => ("BracketLeft", 219, true),
+        ']' => ("BracketRight", 221, false),
+        '}' => ("BracketRight", 221, true),
+        '\\' => ("Backslash", 220, false),
+        '|' => ("Backslash", 220, true),
+        ';' => ("Semicolon", 186, false),
+        ':' => ("Semicolon", 186, true),
+        '\'' => ("Quote", 222, false),
+        '"' => ("Quote", 222, true),
+        ',' => ("Comma", 188, false),
+        '<' => ("Comma", 188, true),
+        '.' => ("Period", 190, false),
+        '>' => ("Period", 190, true),
+        '/' => ("Slash", 191, false),
+        '?' => ("Slash", 191, true),
+        _ => return None,
+    };
+    Some((code.to_string(), key_code, shift))
 }
 
 impl Key {
@@ -2683,6 +2849,7 @@ impl Key {
             code: code.to_string(),
             key_code,
             text: text.map(str::to_string),
+            shift: false,
         };
         Ok(match name {
             "Enter" => named("Enter", 13, Some("\r")),
@@ -2703,27 +2870,22 @@ impl Key {
                 code: "Space".into(),
                 key_code: 32,
                 text: Some(" ".into()),
+                shift: false,
             },
             _ => {
                 let mut chars = name.chars();
                 let (Some(c), None) = (chars.next(), chars.next()) else {
                     return Err(Error::Invalid(format!("unknown key {name:?}")));
                 };
-                let (code, key_code) = if c.is_ascii_alphabetic() {
-                    (
-                        format!("Key{}", c.to_ascii_uppercase()),
-                        c.to_ascii_uppercase() as u32,
-                    )
-                } else if c.is_ascii_digit() {
-                    (format!("Digit{c}"), c as u32)
-                } else {
-                    (String::new(), 0)
-                };
+                // Off a US keyboard, a character has no key: `press` sends
+                // it as text alone.
+                let (code, key_code, shift) = us_layout(c).unwrap_or_default();
                 Key {
                     key: c.to_string(),
                     code,
                     key_code,
                     text: Some(c.to_string()),
+                    shift,
                 }
             }
         })

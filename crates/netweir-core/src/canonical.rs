@@ -103,6 +103,22 @@ pub fn in_jar(fp: Fingerprint, jar: Option<&str>) -> Fingerprint {
     out
 }
 
+/// `fp` for a request whose own `steps` change the page it gets: the same
+/// URL with other steps is another request. No steps leave `fp` as it is.
+pub fn with_steps(fp: Fingerprint, steps: &[netweir_browser::steps::Step]) -> Fingerprint {
+    if steps.is_empty() {
+        return fp;
+    }
+    let digest = Sha256::new()
+        .chain_update(fp)
+        .chain_update(b"\0steps\0")
+        .chain_update(netweir_browser::steps::key(steps).as_bytes())
+        .finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

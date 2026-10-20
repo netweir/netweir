@@ -18,7 +18,8 @@ Each function here gives a plain dict, ``{"action": "click", "selector":
 ...}``, so a step list is JSON: it's kept in a checkpoint and sent through
 a shared queue as the request is. Writing the dicts yourself does the same.
 
-Every step takes ``timeout``, in seconds (the browser's 30 by default),
+Selectors are CSS, or XPath after ``xpath=``. Every step takes
+``timeout``, in seconds (the browser's 30 by default, a day at most),
 and ``on_error``: ``"fail"`` (the default) fails the request, so its
 errback gets a ``FetchError`` of kind ``"step"``; ``"continue"`` notes the
 error and goes on; ``"stop"`` skips the steps after it and hands the
@@ -41,6 +42,7 @@ __all__ = [
     "call",
     "check",
     "click",
+    "double_click",
     "evaluate",
     "fill",
     "hover",
@@ -78,6 +80,14 @@ def click(
     return _step("click", timeout, on_error, selector=selector, frame=frame)
 
 
+def double_click(
+    selector: str, *, frame: _FRAME = None, timeout: float | None = None, on_error: str = "fail"
+) -> dict[str, Any]:
+    """Double-clicks the element (taps it twice on a phone):
+    ``page.dblclick``."""
+    return _step("double_click", timeout, on_error, selector=selector, frame=frame)
+
+
 def fill(
     selector: str,
     text: str,
@@ -100,10 +110,12 @@ def type(  # noqa: A001 - the step's name
     timeout: float | None = None,
     on_error: str = "fail",
 ) -> dict[str, Any]:
-    """Types ``text`` into a field a key at a time, replacing what's there,
-    with a pause between keys picked from ``delay`` (seconds, or a (least,
-    most) pair; a person's 0.08 to 0.25 by default): ``page.type``. The
-    typing isn't held to ``timeout``, only the wait for the field."""
+    """Clicks a field and types ``text`` into it a key at a time, replacing
+    what's there: ``page.type``. Between keys there's a pause within
+    ``delay`` (seconds, or a (least, most) pair; a person's 0.08 to 0.25 by
+    default), most often near its middle, and each key is held as a
+    person holds it. ``timeout`` covers the wait for the field; the
+    typing has time of its own."""
     if isinstance(delay, tuple):
         delay = list(delay)  # type: ignore[assignment]
     return _step("type", timeout, on_error, selector=selector, text=text, delay=delay, frame=frame)
@@ -255,11 +267,16 @@ def evaluate(
 
 
 def screenshot(
-    *, full_page: bool = False, timeout: float | None = None, on_error: str = "fail"
+    *,
+    full_page: bool = False,
+    quality: int | None = None,
+    timeout: float | None = None,
+    on_error: str = "fail",
 ) -> dict[str, Any]:
-    """Takes a PNG of the viewport, or the whole page; its ``result`` is
-    the PNG's bytes."""
-    return _step("screenshot", timeout, on_error, full_page=full_page or None)
+    """Takes a PNG of the viewport, or the whole page, or with a
+    ``quality`` (1 to 100) a JPEG, often a tenth the size; its ``result``
+    is the image's bytes."""
+    return _step("screenshot", timeout, on_error, full_page=full_page or None, quality=quality)
 
 
 def answer_dialogs(

@@ -1205,7 +1205,7 @@ async fn a_requests_steps_run_before_its_page_comes_back() {
         ..settings(BrowserMode::Off)
     });
     c.submit(CrawlRequest {
-        steps: Some(steps(serde_json::json!([
+        steps: Some(own(serde_json::json!([
             {"action": "click", "selector": "#missing", "timeout": 0.3, "on_error": "continue"},
             {"action": "click", "selector": "#more"},
             {"action": "wait_for", "selector": "li:nth-child(3)"},
@@ -1215,7 +1215,7 @@ async fn a_requests_steps_run_before_its_page_comes_back() {
     });
     c.submit(request(2, site.url("/?2"), true));
     c.submit(CrawlRequest {
-        steps: Some(steps(serde_json::json!([]))),
+        steps: Some(own(serde_json::json!([]))),
         ..request(3, site.url("/?3"), true)
     });
     let events = drain_closing(&c).await;
@@ -1255,7 +1255,7 @@ async fn a_step_that_fails_the_request_isnt_tried_again() {
     let site = Site::start(vec![("/", Page::html(LOAD_MORE))]).await;
     let c = crawler(settings(BrowserMode::Off));
     c.submit(CrawlRequest {
-        steps: Some(steps(serde_json::json!([
+        steps: Some(own(serde_json::json!([
             {"action": "evaluate", "js": "1 + 1"},
             {"action": "click", "selector": "#missing", "timeout": 0.3},
             {"action": "click", "selector": "#more"},
@@ -1299,7 +1299,7 @@ async fn a_step_that_leads_to_a_block_hands_the_block_on() {
     options.timeout = Duration::from_secs(2);
     let c = Crawler::new(options, settings(BrowserMode::Off)).unwrap();
     c.submit(CrawlRequest {
-        steps: Some(steps(serde_json::json!([
+        steps: Some(own(serde_json::json!([
             {"action": "click", "selector": "#go"},
             {"action": "wait_for", "selector": "#prize", "timeout": 0.5},
         ]))),
@@ -1307,7 +1307,7 @@ async fn a_step_that_leads_to_a_block_hands_the_block_on() {
     });
     // A page blocked before its steps doesn't run them.
     c.submit(CrawlRequest {
-        steps: Some(steps(serde_json::json!([
+        steps: Some(own(serde_json::json!([
             {"action": "evaluate", "js": "1"},
         ]))),
         ..request(2, site.url("/gate?direct"), true)
@@ -1344,7 +1344,7 @@ async fn call_steps_go_to_whoever_takes_them() {
     // Nobody has taken the calls: the step fails at once.
     let c = crawler(settings(BrowserMode::Off));
     c.submit(CrawlRequest {
-        steps: Some(list.clone()),
+        steps: Some(list.clone().into()),
         ..request(1, site.url("/"), true)
     });
     let events = drain_closing(&c).await;
@@ -1366,7 +1366,7 @@ async fn call_steps_go_to_whoever_takes_them() {
         }
     });
     c.submit(CrawlRequest {
-        steps: Some(list),
+        steps: Some(list.into()),
         ..request(7, site.url("/"), true)
     });
     let events = drain_closing(&c).await;
@@ -1377,4 +1377,132 @@ async fn call_steps_go_to_whoever_takes_them() {
         response.steps[0].value,
         Some(serde_json::json!({"id": 7, "index": 0, "method": "title_of", "title": "t"}))
     );
+}
+
+fn own(json: serde_json::Value) -> netweir_core::RequestSteps {
+    steps(json).into()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_go_in_chrome_a_block_gets_runs_the_crawls_steps_and_hands_their_cookies_back() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let banner = r#"<p id=prize>the page</p>
+<button id=accept onclick="document.cookie = 'consent=yes; path=/'">OK</button>"#;
+    let guarded = Page::status(
+        403,
+        "<title>Just a moment...</title><script>setTimeout(() => { document.cookie = 'pass=1; path=/'; location.reload() }, 200)</script>",
+    )
+    .with_header("content-type", "text/html")
+    .with_header("cf-mitigated", "challenge")
+    .unless_cookie("pass=1", Page::html(banner));
+    let site = Site::start(vec![
+        ("/guarded", guarded),
+        (
+            "/also",
+            Page::status(403, "no consent").unless_cookie("consent=yes", Page::html("welcome")),
+        ),
+    ])
+    .await;
+    let c = crawler(CrawlSettings {
+        // The second fails, as the crawl's steps would on a site without
+        // that banner: on a blocked request's one go, it goes on.
+        browser_steps: steps(serde_json::json!([
+            {"action": "click", "selector": "#accept"},
+            {"action": "click", "selector": "#not-on-this-site", "timeout": 0.3},
+        ])),
+        ..settings(BrowserMode::OnBlock)
+    });
+    c.submit(request(1, site.url("/guarded"), false));
+    let events = drain_closing(&c).await;
+    let Some((Event::Fetched { response, .. }, _)) = events
+        .iter()
+        .find(|(e, _)| !matches!(e, Event::Warning { .. }))
+    else {
+        panic!("{events:?}");
+    };
+    let statuses: Vec<_> = response.steps.iter().map(|o| o.status.as_str()).collect();
+    assert_eq!(statuses, ["ok", "failed"]);
+    assert_eq!(c.stats().browser_unblocked, 1);
+    c.submit(request(2, site.url("/also"), false));
+    let events = drain(&c).await;
+    let Some(Event::Fetched { response, page, .. }) = main(&events) else {
+        panic!("{events:?}");
+    };
+    assert!(page.is_none(), "fetched over HTTP");
+    assert_eq!(response.status, 200, "the cookie the step set came back");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn other_steps_on_the_same_url_are_another_request() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html(LOAD_MORE))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    let more = || own(serde_json::json!([{"action": "click", "selector": "#more"}]));
+    assert_eq!(
+        c.submit(request(1, site.url("/"), true)),
+        netweir_core::Submitted::Queued
+    );
+    assert_eq!(
+        c.submit(CrawlRequest {
+            steps: Some(more()),
+            ..request(2, site.url("/"), true)
+        }),
+        netweir_core::Submitted::Queued,
+        "steps make another page"
+    );
+    // The same steps, with another timeout, are the same request.
+    assert_eq!(
+        c.submit(CrawlRequest {
+            steps: Some(own(serde_json::json!([
+                {"action": "click", "selector": "#more", "timeout": 5, "on_error": "continue"},
+            ]))),
+            ..request(3, site.url("/"), true)
+        }),
+        netweir_core::Submitted::Duplicate
+    );
+    // Steps left out of the fingerprint: the plain request's duplicate.
+    let mut quiet = own(serde_json::json!([{"action": "click", "selector": "#less"}]));
+    quiet.in_fingerprint = false;
+    assert_eq!(
+        c.submit(CrawlRequest {
+            steps: Some(quiet),
+            ..request(4, site.url("/"), true)
+        }),
+        netweir_core::Submitted::Duplicate
+    );
+    let _ = drain_closing(&c).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_after_the_calls_closed_fails_at_once() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<title>t</title>"))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    // Taken, and never answered: as Python's task leaves them once it ends.
+    let _calls = c.step_calls().unwrap();
+    c.close_calls();
+    c.submit(CrawlRequest {
+        steps: Some(own(serde_json::json!([
+            {"action": "call", "method": "m", "timeout": 20, "on_error": "continue"},
+        ]))),
+        ..request(1, site.url("/"), true)
+    });
+    let started = std::time::Instant::now();
+    let events = drain_closing(&c).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    let Some((Event::Fetched { response, .. }, _)) = events.first() else {
+        panic!("{events:?}");
+    };
+    let error = response.steps[0].error.as_deref().unwrap();
+    assert!(error.contains("nothing here runs call steps"), "{error}");
 }

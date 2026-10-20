@@ -101,9 +101,9 @@ class Request:
     cookies: Any = dataclasses.field(default=None, repr=False)
     #: What to do on its page in Chrome before the callback, as a list of
     #: step dicts (``netweir.steps``); None for the crawl's
-    #: ``browser_steps``. Not part of the request's fingerprint, as meta
-    #: isn't in Scrapy's: the same URL with other steps is a duplicate
-    #: unless ``dont_filter=True``.
+    #: ``browser_steps``. Part of the request's fingerprint, so the same
+    #: URL with other steps is another request, unless
+    #: ``meta["steps_in_fingerprint"]`` is False.
     steps: list[Any] | None = None
 
     def __post_init__(self) -> None:
@@ -202,7 +202,7 @@ def _cookies(url: str, cookies: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _steps(steps: Any, where: str = "steps") -> list[Any]:
+def _steps(steps: Any, where: str = "steps", cap: float | None = None) -> list[Any]:
     """A step list checked, each step a dict of its own: a function in it
     becomes a call step. Raises TypeError or ValueError for one that's
     wrong, saying which."""
@@ -220,7 +220,7 @@ def _steps(steps: Any, where: str = "steps") -> list[Any]:
     from netweir._native import _check_steps
 
     try:
-        _check_steps(steps_json(out, lambda fn: None))
+        _check_steps(steps_json(out, lambda fn: None), cap)
     except ValueError as e:
         raise ValueError(f"{where}: {e}") from None
     return out

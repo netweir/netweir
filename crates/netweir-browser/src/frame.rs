@@ -21,6 +21,24 @@ const HELPERS: &str = include_str!("helpers.js");
 /// made afresh as they're needed.
 const WORLDS: usize = 64;
 
+/// How long a person takes to see the caret, or the selection, before
+/// typing.
+const REACTION: (Duration, Duration) = (Duration::from_millis(150), Duration::from_millis(400));
+
+/// At most how long typing `text` with `delay` between keys takes: each
+/// key held its longest, Shift and all, the longest pause between keys,
+/// and Chrome's own time for each event, as well as the click and the
+/// moments to react.
+pub fn typing_time(text: &str, delay: (Duration, Duration)) -> Duration {
+    let keys = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+    // A held key, Shift's lead either side of it, and four events.
+    let per_key = crate::events::KEY_HOLD_MAX + Duration::from_millis(180 + 4 * 25);
+    per_key
+        .saturating_add(delay.1)
+        .saturating_mul(keys)
+        .saturating_add(Duration::from_secs(2))
+}
+
 /// Which options [`Frame::select_option`] picks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pick {
@@ -500,10 +518,20 @@ impl Frame {
         // for a frame from another site it goes by what the page around
         // the frame last drew: a click there could land on that page
         // instead, return, and do nothing.
-        let deadline = Instant::now() + self.page.timeout(timeout);
+        let deadline = self.page.deadline(timeout);
         self.page.to_front().await?;
         let (x, y) = self.over(action, selector, &checks, deadline).await?;
-        self.page.mouse_press(x, y).await
+        if action == "double_click" {
+            self.page.mouse_double(x, y).await
+        } else {
+            self.page.mouse_press(x, y).await
+        }
+    }
+
+    /// Double-clicks the element's centre (taps it twice on a phone), once
+    /// it's visible, still, enabled and not covered.
+    pub async fn dblclick(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.click_as("double_click", selector, timeout).await
     }
 
     /// Moves the mouse to the element's centre, once it's visible, still
@@ -613,13 +641,20 @@ impl Frame {
         }
     }
 
-    /// Types `text` into the element a key at a time, as a person does:
-    /// focused as [`Frame::fill`] focuses it, with what's there selected
-    /// so the first key replaces it, then each character pressed and
-    /// released, with a pause picked at random from `delay` between one
-    /// key and the next. A newline is Enter and a tab is Tab. On a phone,
-    /// each key comes as its on-screen keyboard sends it. `timeout` is
-    /// for the element to be ready; the typing takes as long as it takes.
+    /// Types `text` into the element a key at a time, as a person does.
+    /// The field is clicked (tapped on a phone), and after a moment to
+    /// see the caret, what's in it is selected with Control-A (Command-A
+    /// on a Mac), so the first key replaces it. Each character is a key
+    /// pressed and held for a person's time; capitals and symbols are
+    /// typed with Shift as on a US keyboard, a newline is Enter and a tab
+    /// is Tab, and one that isn't on the keyboard arrives as text, as an
+    /// OS's character picker sends it. Between keys there's a pause
+    /// within `delay`, more often near its middle. On a phone, each key
+    /// comes as its on-screen keyboard sends it, and the field's contents
+    /// are selected from script, as a phone has no Control-A.
+    ///
+    /// `timeout` is for the field to be ready; the typing takes as long
+    /// as it takes (see [`typing_time`]).
     pub async fn type_text(
         &self,
         selector: &str,
@@ -627,13 +662,32 @@ impl Frame {
         delay: (Duration, Duration),
         timeout: Option<Duration>,
     ) -> Result<()> {
-        self.focus_field("type", selector, timeout).await?;
+        let deadline = self.page.deadline(timeout);
+        self.click_as("type", selector, timeout).await?;
+        let left = Some(deadline.saturating_duration_since(Instant::now()));
+        let sel = Value::from(selector);
+        let checks = ["attached", "visible", "enabled", "editable"];
+        let call = format!("__netweir.check({sel}, {}, false)", json!(checks));
+        self.attempt("type", selector, &call, None, left).await?;
+        // The click put the caret there; a page that moved focus elsewhere
+        // on mousedown gets it back as a script would give it.
+        if self.helper(&format!("__netweir.focused({sel})")).await? != true {
+            self.focus_field("type", selector, left).await?;
+        } else if self.helper(&format!("__netweir.hasText({sel})")).await? == true {
+            tokio::time::sleep(crate::events::pause(REACTION)).await;
+            if self.page.touches() {
+                self.helper(&format!("__netweir.focus({sel})")).await?;
+            } else {
+                self.page.select_all().await?;
+            }
+        }
+        tokio::time::sleep(crate::events::pause(REACTION)).await;
         if text.is_empty() {
             return self.page.press("Delete").await;
         }
         for (i, c) in text.chars().enumerate() {
             if i > 0 {
-                tokio::time::sleep(crate::events::pause(delay)).await;
+                tokio::time::sleep(crate::events::key_gap(delay)).await;
             }
             let key = match c {
                 '\n' | '\r' => "Enter".to_string(),
@@ -831,7 +885,7 @@ impl Frame {
         let r = self
             .call(
                 "Runtime.evaluate",
-                json!({"expression": format!("document.querySelector({})", Value::from(selector)), "contextId": id}),
+                json!({"expression": format!("__netweir.find({})", Value::from(selector)), "contextId": id}),
             )
             .await?;
         let input = str_of(&r["result"], "objectId");

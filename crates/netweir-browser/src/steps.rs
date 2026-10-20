@@ -15,11 +15,24 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
-use crate::{Error, Frame, Page, PageEvent, Pick, Result, WaitUntil, glob_match};
+use crate::{Error, Frame, Page, PageEvent, Pick, Result, WaitUntil, glob_match, typing_time};
 
-/// How long a key waits after the one before it, by default: between
-/// these two, picked at random each time.
+/// How long a key waits after the one before it, by default: within
+/// these two, most often near the middle.
 pub const TYPING: (Duration, Duration) = (Duration::from_millis(80), Duration::from_millis(250));
+
+/// The longest any one timeout, wait or idle may be: a day. Past that
+/// it's a mistake, and a big enough one overflows the clock.
+pub const MAX_SECONDS: f64 = 86_400.0;
+
+/// The longest pause between two keys `type` takes.
+pub const MAX_DELAY: f64 = 10.0;
+
+/// `t` plus `d`, or a year on from `t` where that would overflow.
+fn after(t: Instant, d: Duration) -> Instant {
+    t.checked_add(d)
+        .unwrap_or_else(|| t + Duration::from_secs(365 * 24 * 3600))
+}
 
 /// What a step that fails does to the steps after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +56,9 @@ pub struct FrameSel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Click {
+        selector: String,
+    },
+    DoubleClick {
         selector: String,
     },
     Fill {
@@ -97,6 +113,8 @@ pub enum Action {
     },
     Screenshot {
         full_page: bool,
+        /// A JPEG of this quality (1 to 100) in place of a PNG.
+        quality: Option<u8>,
     },
     AnswerDialogs {
         accept: bool,
@@ -113,6 +131,7 @@ impl Action {
     pub fn name(&self) -> &'static str {
         match self {
             Action::Click { .. } => "click",
+            Action::DoubleClick { .. } => "double_click",
             Action::Fill { .. } => "fill",
             Action::Type { .. } => "type",
             Action::Press { .. } => "press",
@@ -136,6 +155,7 @@ impl Action {
     fn selector(&self) -> Option<&str> {
         match self {
             Action::Click { selector }
+            | Action::DoubleClick { selector }
             | Action::Fill { selector, .. }
             | Action::Type { selector, .. }
             | Action::Hover { selector }
@@ -199,8 +219,8 @@ pub struct Outcome {
     /// select_option chose, how many times a scroll loaded more, the URL
     /// and status of the response waited for.
     pub value: Option<Value>,
-    /// A screenshot's PNG.
-    pub png: Option<Arc<Vec<u8>>>,
+    /// A screenshot's PNG, or JPEG with a `quality`.
+    pub image: Option<Arc<Vec<u8>>>,
 }
 
 impl Outcome {
@@ -211,7 +231,7 @@ impl Outcome {
             error: None,
             elapsed: Duration::ZERO,
             value: None,
-            png: None,
+            image: None,
         }
     }
 
@@ -223,7 +243,7 @@ impl Outcome {
         }
     }
 
-    /// As JSON, the PNG as base64: to keep or send elsewhere.
+    /// As JSON, the image as base64: to keep or send elsewhere.
     pub fn to_json(&self) -> Value {
         use base64::Engine;
         json!({
@@ -232,8 +252,8 @@ impl Outcome {
             "error": self.error,
             "elapsed": self.elapsed.as_secs_f64(),
             "value": self.value,
-            "png": self
-                .png
+            "image": self
+                .image
                 .as_ref()
                 .map(|p| base64::engine::general_purpose::STANDARD.encode(p.as_slice())),
         })
@@ -242,7 +262,7 @@ impl Outcome {
     /// Back from [`Outcome::to_json`].
     pub fn from_json(v: &Value) -> Option<Outcome> {
         use base64::Engine;
-        let png = match &v["png"] {
+        let image = match &v["image"] {
             Value::String(s) => Some(Arc::new(
                 base64::engine::general_purpose::STANDARD.decode(s).ok()?,
             )),
@@ -255,7 +275,7 @@ impl Outcome {
             elapsed: Duration::try_from_secs_f64(v["elapsed"].as_f64().unwrap_or(0.0))
                 .unwrap_or_default(),
             value: Some(v["value"].clone()).filter(|v| !v.is_null()),
-            png,
+            image,
         })
     }
 }
@@ -333,6 +353,9 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
     let action = (|| -> std::result::Result<Action, String> {
     Ok(match name {
         "click" => Action::Click {
+            selector: f.selector()?,
+        },
+        "double_click" => Action::DoubleClick {
             selector: f.selector()?,
         },
         "fill" => Action::Fill {
@@ -431,6 +454,15 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
         }
         "screenshot" => Action::Screenshot {
             full_page: f.boolean("full_page")?.unwrap_or(false),
+            quality: match f.take("quality") {
+                None | Some(Value::Null) => None,
+                Some(q) => Some(
+                    q.as_u64()
+                        .filter(|q| (1..=100).contains(q))
+                        .map(|q| q as u8)
+                        .ok_or(format!("quality must be a whole number from 1 to 100, not {q}"))?,
+                ),
+            },
         },
         "answer_dialogs" => Action::AnswerDialogs {
             accept: f.boolean("accept")?.unwrap_or(true),
@@ -441,7 +473,7 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
         },
         other => {
             return Err(format!(
-                "unknown action {other:?}; the actions are click, fill, type, press, hover, \
+                "unknown action {other:?}; the actions are click, double_click, fill, type, press, hover, \
                  wait_for, wait, wait_for_navigation, wait_for_response, scroll, \
                  select_option, check, uncheck, set_input_files, evaluate, screenshot, \
                  answer_dialogs and call"
@@ -528,6 +560,7 @@ const FIELDS: &[&str] = &[
     "files",
     "js",
     "full_page",
+    "quality",
     "accept",
     "method",
 ];
@@ -592,6 +625,9 @@ impl<'a> Fields<'a, '_> {
     fn seconds(&mut self, key: &'static str) -> std::result::Result<Option<Duration>, String> {
         match self.number(key)? {
             None => Ok(None),
+            Some(n) if n > MAX_SECONDS => Err(format!(
+                "{key} must be at most {MAX_SECONDS} seconds (a day), not {n}"
+            )),
             Some(n) => Duration::try_from_secs_f64(n)
                 .map(Some)
                 .map_err(|_| format!("{key} must be a number of seconds, 0 or more")),
@@ -610,8 +646,11 @@ impl<'a> Fields<'a, '_> {
     fn delay(&mut self) -> std::result::Result<(Duration, Duration), String> {
         let secs = |v: &Value| {
             v.as_f64()
+                .filter(|n| *n <= MAX_DELAY)
                 .and_then(|n| Duration::try_from_secs_f64(n).ok())
-                .ok_or(format!("delay must be seconds, or [least, most], not {v}"))
+                .ok_or(format!(
+                    "delay must be seconds (at most {MAX_DELAY}), or [least, most], not {v}"
+                ))
         };
         match self.take("delay") {
             None | Some(Value::Null) => Ok(TYPING),
@@ -644,24 +683,127 @@ fn many<T>(
     }
 }
 
+/// The most one step may take: its timeout (the browser's `default` for
+/// one that gives none), a wait's seconds, or for `type` the time for the
+/// field and then for every key.
+fn step_time(step: &Step, default: Duration) -> Duration {
+    let timeout = step.timeout.unwrap_or(default);
+    match &step.action {
+        Action::Wait { seconds } => *seconds,
+        Action::Type { text, delay, .. } => timeout.saturating_add(typing_time(text, *delay)),
+        _ => timeout,
+    }
+}
+
 /// At most how long `steps` take, the browser's `default` timeout standing
-/// in for each step that gives none: for a caller's own limit on the page.
-pub fn budget(steps: &[Step], default: Duration) -> Duration {
+/// in for each step that gives none, and never more than `cap`, the most
+/// a page's steps may take: for a caller's own limit on the page.
+pub fn budget(steps: &[Step], default: Duration, cap: Option<Duration>) -> Duration {
+    if steps.is_empty() {
+        return Duration::ZERO;
+    }
+    let all = steps
+        .iter()
+        .map(|s| step_time(s, default))
+        .fold(Duration::ZERO, Duration::saturating_add)
+        .saturating_add(GRACE.saturating_mul(steps.len() as u32));
+    match cap {
+        Some(cap) => all.min(cap.saturating_add(GRACE)),
+        None => all,
+    }
+}
+
+/// The time `steps` ask for outright: each wait's seconds, each timeout
+/// given, and the keys of each `type`. A step leaning on the browser's
+/// timeout asks for nothing here, as the run holds it to the cap anyway.
+pub fn asked(steps: &[Step]) -> Duration {
     steps
         .iter()
-        .map(|s| {
-            let timeout = s.timeout.unwrap_or(default);
-            match &s.action {
-                Action::Wait { seconds } => *seconds,
-                // The typing isn't held to the timeout: only the field is.
-                Action::Type { text, delay, .. } => {
-                    timeout + delay.1.saturating_mul(text.chars().count() as u32)
-                }
-                _ => timeout,
+        .map(|s| match (&s.action, s.timeout) {
+            (Action::Wait { .. }, _) | (Action::Type { .. }, _) => {
+                step_time(s, s.timeout.unwrap_or_default())
             }
+            (_, Some(t)) => t,
+            (_, None) => Duration::ZERO,
         })
         .fold(Duration::ZERO, Duration::saturating_add)
-        .saturating_add(GRACE.saturating_mul(steps.len() as u32))
+}
+
+/// Refuses `steps` that ask outright for more than `cap` seconds, saying
+/// how much they ask for.
+pub fn within(steps: &[Step], cap: Option<Duration>) -> std::result::Result<(), String> {
+    let Some(cap) = cap else {
+        return Ok(());
+    };
+    let asked = asked(steps);
+    if asked > cap {
+        return Err(format!(
+            "the steps ask for {:.1}s (their waits, timeouts and typing), more than the {:.1}s \
+             browser_steps_max allows a page's steps",
+            asked.as_secs_f64(),
+            cap.as_secs_f64()
+        ));
+    }
+    Ok(())
+}
+
+/// What the steps do, as canonical JSON, for a request's fingerprint:
+/// each action and what it acts on, in a fixed order, without its
+/// timeout, `on_error` or typing pace, which change how long a step may
+/// take but not the page it leaves.
+pub fn key(steps: &[Step]) -> String {
+    let list: Vec<Value> = steps
+        .iter()
+        .map(|step| {
+            let mut v = match &step.action {
+                Action::Click { selector }
+                | Action::DoubleClick { selector }
+                | Action::Hover { selector } => json!([step.action.name(), selector]),
+                Action::Fill { selector, text } | Action::Type { selector, text, .. } => {
+                    json!([step.action.name(), selector, text])
+                }
+                Action::Press { key } => json!(["press", key]),
+                Action::WaitFor { selector, state } => json!(["wait_for", selector, state]),
+                Action::Wait { seconds } => json!(["wait", seconds.as_secs_f64()]),
+                Action::WaitForNavigation { wait } => {
+                    json!(["wait_for_navigation", format!("{wait:?}")])
+                }
+                Action::WaitForResponse { url } => json!(["wait_for_response", url]),
+                Action::Scroll {
+                    selector,
+                    x,
+                    y,
+                    times,
+                    idle,
+                } => json!(["scroll", selector, x, y, times, idle.as_secs_f64()]),
+                Action::SelectOption { selector, pick } => {
+                    let pick = match pick {
+                        Pick::Values(v) => json!(["value", v]),
+                        Pick::Labels(l) => json!(["label", l]),
+                        Pick::Indexes(i) => json!(["index", i]),
+                    };
+                    json!(["select_option", selector, pick])
+                }
+                Action::Check { selector, .. } => json!([step.action.name(), selector]),
+                Action::SetInputFiles { selector, files } => {
+                    let files: Vec<String> =
+                        files.iter().map(|f| f.display().to_string()).collect();
+                    json!(["set_input_files", selector, files])
+                }
+                Action::Evaluate { js } => json!(["evaluate", js]),
+                Action::Screenshot { full_page, quality } => {
+                    json!(["screenshot", full_page, quality])
+                }
+                Action::AnswerDialogs { accept, text } => json!(["answer_dialogs", accept, text]),
+                Action::Call { method } => json!(["call", method]),
+            };
+            if let (Some(frame), Some(list)) = (&step.frame, v.as_array_mut()) {
+                list.push(json!({"frame": [frame.name, frame.url]}));
+            }
+            v
+        })
+        .collect();
+    Value::Array(list).to_string()
 }
 
 /// What a step may take past its timeout before it's cut short, so the
@@ -671,9 +813,18 @@ const GRACE: Duration = Duration::from_millis(500);
 
 /// Runs `steps` on `page`, in order, and says how each went. A step that
 /// fails is dealt with as its `on_error` says; those after a step that
-/// stops them are skipped. `call` runs the call steps.
-pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
+/// stops them are skipped. `call` runs the call steps. The steps together
+/// take at most `cap`: the step running when it's reached fails them, as
+/// does any after it, whatever its `on_error`.
+pub async fn run(page: &Page, steps: &[Step], call: &Call, cap: Option<Duration>) -> Report {
     let mut report = Report::default();
+    let ends = cap.map(|c| after(Instant::now(), c));
+    let out_of_time = || {
+        format!(
+            "the page's steps ran out of time: browser_steps_max is {}s",
+            cap.unwrap_or_default().as_secs_f64()
+        )
+    };
     // Only heard if a step waits for a response: the page's network
     // events cost nothing until someone listens.
     let mut heard = steps
@@ -698,8 +849,22 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
         }
         let showing = page.response();
         let started = Instant::now();
-        let timeout = step.timeout.unwrap_or(page.default_timeout());
         let mut outcome = Outcome::new(step.action.name(), Status::Ok);
+        let left = ends.map(|e| e.saturating_duration_since(started));
+        if left.is_some_and(|l| l.is_zero()) {
+            outcome.status = Status::Failed;
+            outcome.error = Some(out_of_time());
+            report.failed = Some(i);
+            report.outcomes.push(outcome);
+            stopped = true;
+            continue;
+        }
+        let mut timeout = step.timeout.unwrap_or(page.default_timeout());
+        // Whether the page's time, not the step's own, is what limits it.
+        let capped = left.is_some_and(|l| l < step_time(step, page.default_timeout()));
+        if let Some(left) = left {
+            timeout = timeout.min(left);
+        }
         let done = match &step.action {
             Action::AnswerDialogs { accept, text } => {
                 if let Some(old) = dialogs.take() {
@@ -717,7 +882,7 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
                 .await
                 .map(|r| Some(json!({"url": r.url, "status": r.status}))),
             Action::Call { method } => {
-                let limit = timeout + GRACE;
+                let limit = timeout.saturating_add(GRACE);
                 match tokio::time::timeout(limit, call(i, method.clone(), timeout)).await {
                     Ok(Ok(v)) => Ok(Some(v).filter(|v| !v.is_null())),
                     Ok(Err(why)) => Err(Error::Script(why)),
@@ -728,13 +893,18 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
                 }
             }
             action => {
-                let limit = match action {
-                    Action::Wait { seconds } => *seconds + GRACE,
+                let mut limit = match action {
+                    Action::Wait { seconds } => *seconds,
+                    // The typing has time of its own, after the field.
                     Action::Type { text, delay, .. } => {
-                        timeout + GRACE + delay.1.saturating_mul(text.chars().count() as u32)
+                        timeout.saturating_add(typing_time(text, *delay))
                     }
-                    _ => timeout + GRACE,
-                };
+                    _ => timeout,
+                }
+                .saturating_add(GRACE);
+                if let Some(left) = left {
+                    limit = limit.min(left);
+                }
                 let work = act(page, step, timeout, &mut outcome);
                 match tokio::time::timeout(limit, work).await {
                     Ok(r) => r,
@@ -762,7 +932,7 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
                 // sent) leaves the next one the new document, loaded: the
                 // old one's elements are gone.
                 if page.response().loader != showing.loader {
-                    let left = (started + timeout).saturating_duration_since(Instant::now());
+                    let left = after(started, timeout).saturating_duration_since(Instant::now());
                     let _ = page.wait_for_load(WaitUntil::Load, Some(left)).await;
                 }
                 outcome.elapsed = started.elapsed();
@@ -770,8 +940,16 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
             Err(e) => {
                 outcome.elapsed = started.elapsed();
                 outcome.status = Status::Failed;
-                outcome.error = Some(e.to_string());
-                match step.on_error {
+                let spent = ends.is_some_and(|e| Instant::now() >= e)
+                    || (capped && matches!(e, Error::Timeout(_)));
+                outcome.error = Some(if spent {
+                    format!("{e}; {}", out_of_time())
+                } else {
+                    e.to_string()
+                });
+                // Out of the page's time, nothing after it can run.
+                let on_error = if spent { OnError::Fail } else { step.on_error };
+                match on_error {
                     OnError::Continue => {}
                     OnError::Stop => stopped = true,
                     OnError::Fail => {
@@ -798,14 +976,16 @@ pub async fn run(page: &Page, steps: &[Step], call: &Call) -> Report {
 /// is the one before).
 struct Heard {
     rx: tokio::sync::mpsc::UnboundedReceiver<PageEvent>,
-    seen: Vec<(usize, String, u16)>,
+    /// Each response's step, URL and status, and whether a wait already
+    /// took it: two waits for the same URL want two responses.
+    seen: Vec<(usize, String, u16, bool)>,
 }
 
 impl Heard {
     fn drain(&mut self, step: usize) {
         while let Ok(event) = self.rx.try_recv() {
             if let PageEvent::Response(r) = event {
-                self.seen.push((step, r.url, r.status));
+                self.seen.push((step, r.url, r.status, false));
             }
         }
     }
@@ -814,24 +994,21 @@ impl Heard {
     /// started, waiting up to `timeout` for one.
     async fn wait(&mut self, i: usize, url: &str, timeout: Duration) -> Result<Value> {
         let since = i.checked_sub(1);
-        let found = |seen: &[(usize, String, u16)]| {
-            seen.iter()
-                .find(|(step, u, _)| {
-                    since.is_none_or(|s| *step != usize::MAX && *step >= s) && glob_match(url, u)
-                })
-                .map(|(_, u, status)| json!({"url": u, "status": status}))
-        };
         self.drain(i);
-        if let Some(v) = found(&self.seen) {
-            return Ok(v);
+        let found = self.seen.iter_mut().find(|(step, u, _, taken)| {
+            !*taken && since.is_none_or(|s| *step != usize::MAX && *step >= s) && glob_match(url, u)
+        });
+        if let Some((_, u, status, taken)) = found {
+            *taken = true;
+            return Ok(json!({"url": u, "status": status}));
         }
-        let deadline = Instant::now() + timeout;
+        let deadline = after(Instant::now(), timeout);
         loop {
             match tokio::time::timeout_at(deadline, self.rx.recv()).await {
                 Ok(Some(PageEvent::Response(r))) => {
                     let matched = glob_match(url, &r.url);
                     let v = json!({"url": r.url, "status": r.status});
-                    self.seen.push((i, r.url, r.status));
+                    self.seen.push((i, r.url, r.status, matched));
                     if matched {
                         return Ok(v);
                     }
@@ -893,8 +1070,7 @@ async fn act(
     timeout: Duration,
     outcome: &mut Outcome,
 ) -> Result<Option<Value>> {
-    let started = Instant::now();
-    let deadline = started + timeout;
+    let deadline = after(Instant::now(), timeout);
     let frame = match &step.frame {
         Some(sel) => frame_of(page, sel, deadline).await?,
         None => page.main_frame(),
@@ -904,6 +1080,10 @@ async fn act(
     Ok(match &step.action {
         Action::Click { selector } => {
             frame.click(selector, left).await?;
+            None
+        }
+        Action::DoubleClick { selector } => {
+            frame.dblclick(selector, left).await?;
             None
         }
         Action::Fill { selector, text } => {
@@ -963,8 +1143,8 @@ async fn act(
             None
         }
         Action::Evaluate { js } => Some(frame.evaluate(js).await?).filter(|v| !v.is_null()),
-        Action::Screenshot { full_page } => {
-            outcome.png = Some(Arc::new(page.screenshot(*full_page).await?));
+        Action::Screenshot { full_page, quality } => {
+            outcome.image = Some(Arc::new(page.capture(*full_page, *quality).await?));
             None
         }
         Action::AnswerDialogs { .. }
@@ -1139,9 +1319,110 @@ mod tests {
         ]))
         .unwrap();
         let default = Duration::from_secs(10);
-        // 10 + 2 + 3 + (10 + 4 * 0.5), and the grace each.
-        assert_eq!(budget(&steps, default), Duration::from_secs(27) + GRACE * 4);
-        assert_eq!(budget(&[], default), Duration::ZERO);
+        let typing = typing_time(
+            "abcd",
+            (Duration::from_millis(500), Duration::from_millis(500)),
+        );
+        // 10 + 2 + 3 + (10 + the keys), and the grace each.
+        let all = Duration::from_secs(25) + typing + GRACE * 4;
+        assert_eq!(budget(&steps, default, None), all);
+        assert_eq!(budget(&[], default, None), Duration::ZERO);
+        let cap = Duration::from_secs(4);
+        assert_eq!(budget(&steps, default, Some(cap)), cap + GRACE);
+        // What they ask for outright: the 2 s timeout, the wait, the keys.
+        assert_eq!(asked(&steps), Duration::from_secs(5) + typing);
+        assert!(within(&steps, None).is_ok());
+        assert!(within(&steps, Some(Duration::from_secs(60))).is_ok());
+        let err = within(&steps, Some(cap)).unwrap_err();
+        assert!(err.contains("browser_steps_max"), "{err}");
+    }
+
+    #[test]
+    fn typing_has_time_for_every_key() {
+        let fast = (Duration::ZERO, Duration::ZERO);
+        // Each key is held, Shift and all, even with no pause between.
+        let t = typing_time(&"x".repeat(100), fast);
+        assert!(t >= crate::events::KEY_HOLD_MAX * 100, "{t:?}");
+        assert!(typing_time("", fast) > Duration::ZERO);
+        assert!(typing_time(&"x".repeat(1_000_000), (Duration::MAX, Duration::MAX)) > t);
+    }
+
+    #[test]
+    fn huge_values_are_refused_rather_than_overflowing() {
+        for v in [
+            json!({"action": "click", "selector": "a", "timeout": 1e19}),
+            json!({"action": "click", "selector": "a", "timeout": 86_401}),
+            json!({"action": "wait", "seconds": 1e300}),
+            json!({"action": "scroll", "idle": 1e12}),
+            json!({"action": "type", "selector": "a", "text": "b", "delay": 1e9}),
+            json!({"action": "type", "selector": "a", "text": "b", "delay": [0, 11]}),
+        ] {
+            let err = one(v.clone()).unwrap_err();
+            assert!(err.contains("at most"), "{v}: {err}");
+        }
+        assert!(one(json!({"action": "wait", "seconds": 86_400})).is_ok());
+        // The clock never overflows, however far out a deadline is.
+        let now = Instant::now();
+        assert!(after(now, Duration::MAX) > now);
+        let wait = json!({"action": "wait", "seconds": 86_400});
+        let steps = parse(&json!([wait, wait, wait])).unwrap();
+        assert_eq!(
+            budget(&steps, Duration::MAX, None),
+            Duration::from_secs(3 * 86_400) + GRACE * 3
+        );
+    }
+
+    #[test]
+    fn the_key_is_what_the_steps_do_not_how_long_they_may_take() {
+        let k = |v: Value| key(&parse(&v).unwrap());
+        let base = k(json!([{"action": "click", "selector": "#more"}]));
+        assert_eq!(
+            base,
+            k(
+                json!([{"action": "click", "selector": "#more", "timeout": 3, "on_error": "continue"}])
+            )
+        );
+        assert_ne!(base, k(json!([{"action": "click", "selector": "#less"}])));
+        assert_ne!(
+            base,
+            k(json!([{"action": "double_click", "selector": "#more"}]))
+        );
+        assert_ne!(
+            base,
+            k(json!([{"action": "click", "selector": "#more", "frame": {"name": "f"}}]))
+        );
+        assert_eq!(
+            k(json!([{"action": "type", "selector": "q", "text": "tea", "delay": 0.01}])),
+            k(json!([{"action": "type", "selector": "q", "text": "tea"}]))
+        );
+        assert_eq!(k(json!([])), "[]");
+        // Fixed: a fingerprint kept in a checkpoint must mean the same
+        // thing in the next version.
+        assert_eq!(base, r##"[["click","#more"]]"##);
+    }
+
+    #[test]
+    fn double_click_and_jpeg_screenshots_read_from_json() {
+        let s = one(json!({"action": "double_click", "selector": "td"})).unwrap();
+        assert_eq!(
+            s.action,
+            Action::DoubleClick {
+                selector: "td".into()
+            }
+        );
+        let s = one(json!({"action": "screenshot", "quality": 60})).unwrap();
+        assert_eq!(
+            s.action,
+            Action::Screenshot {
+                full_page: false,
+                quality: Some(60)
+            }
+        );
+        assert!(
+            one(json!({"action": "screenshot", "quality": 0}))
+                .unwrap_err()
+                .contains("1 to 100")
+        );
     }
 
     #[test]
@@ -1152,7 +1433,7 @@ mod tests {
             error: Some("gone".into()),
             elapsed: Duration::from_millis(1500),
             value: Some(json!({"n": 1})),
-            png: Some(Arc::new(vec![0x89, b'P', b'N', b'G'])),
+            image: Some(Arc::new(vec![0x89, b'P', b'N', b'G'])),
         };
         let back = Outcome::from_json(&outcome.to_json()).unwrap();
         assert_eq!(back, outcome);

@@ -217,6 +217,15 @@ class Settings:
     #: A request's own ``steps`` take their place. A call step here names
     #: a spider method by its name, as a string.
     browser_steps: tuple[dict[str, Any], ...] = ()
+    #: The most one page's steps may take, all told, in seconds; None for
+    #: no limit. Steps that ask outright for more (their waits, timeouts
+    #: and typing) are refused where they're written, and a page's steps
+    #: that reach it stop there, failing the request.
+    browser_steps_max: float | None = 120.0
+    #: The only folder a ``set_input_files`` step from data (the shared
+    #: queue, or a checkpoint) may upload files from; None for none. Steps
+    #: made in this process's own code may upload from anywhere.
+    browser_upload_dir: str | None = None
     #: Seconds between progress lines in the log ("crawled 120 pages (at
     #: 60 pages/min), ..."); None for none.
     stats_interval: float | None = 60.0
@@ -322,7 +331,13 @@ class Settings:
                 f"browser_block is a tuple of resource types, such as ({self.browser_block!r},)"
             )
         object.__setattr__(self, "browser_block", tuple(self.browser_block))
-        steps = _steps(self.browser_steps, "browser_steps")
+        if self.browser_steps_max is not None:
+            if isinstance(self.browser_steps_max, bool) or not (
+                isinstance(self.browser_steps_max, (int, float)) and self.browser_steps_max > 0
+            ):
+                raise ValueError("browser_steps_max must be a positive number of seconds, or None")
+            object.__setattr__(self, "browser_steps_max", float(self.browser_steps_max))
+        steps = _steps(self.browser_steps, "browser_steps", self.browser_steps_max)
         for step in steps:
             if step.get("action") == "call" and not isinstance(step.get("method"), str):
                 raise TypeError(
@@ -461,6 +476,7 @@ class Settings:
             browser_environment=self.browser_environment,
             browser_worker_header_order=self.browser_worker_header_order,
             browser_steps=steps_json(list(self.browser_steps), str) if self.browser_steps else None,
+            browser_steps_max=self.browser_steps_max,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None
@@ -1017,7 +1033,19 @@ class _Run:
         self.ids = itertools.count()
         self.waiting: dict[int, Request] = {}
         self.rules = list(spider.rules)
+        #: Each rule's steps as the engine has them (JSON), for the
+        #: deltafetch key of the pages it leads to.
+        self.rule_steps: list[str | None] = []
         for rule in self.rules:
+            self.rule_steps.append(
+                None
+                if rule.steps is None
+                else _capped(
+                    steps_json(rule.steps, functools.partial(_rule_method, spider)),
+                    self.settings.browser_steps_max,
+                    "Follow's steps",
+                )
+            )
             self.engine.add_rule(
                 rule.kind,
                 rule.query,
@@ -1030,9 +1058,7 @@ class _Run:
                 allow_domains=rule.allow_domains,
                 deny_domains=rule.deny_domains,
                 browser=rule.browser,
-                steps=None
-                if rule.steps is None
-                else steps_json(rule.steps, functools.partial(_rule_method, spider)),
+                steps=self.rule_steps[-1],
             )
         # parse runs alongside the rules only if the spider writes its own.
         self.has_parse = type(spider).parse is not Spider.parse
@@ -1042,6 +1068,8 @@ class _Run:
         #: Requests leave this process as data, callbacks by name: for a
         #: checkpoint, or for the shared queue.
         self.by_name = self.saving or self.settings.queue is not None
+        #: Call steps' plain (not async) functions already warned about.
+        self.warned_sync: set[Any] = set()
         #: Requests from the shared queue that couldn't be made Requests.
         self.queue_bad = 0
         #: Ids of items delivered but not yet recorded as such.
@@ -1235,7 +1263,13 @@ class _Run:
             return None
         self.delivered = set(saved["items"])
         for head, sent, policy in saved["pending"]:
-            self.submit(_restored(head, sent, policy)[0], row=head[0])
+            request = _restored(head, sent, policy)[0]
+            try:
+                self.from_data(request, "checkpoint")
+            except ValueError as e:
+                log.error("%s from the checkpoint is skipped: %s", request.url, e)
+                continue
+            self.submit(request, row=head[0])
         if saved["pending"] or self.delivered:
             log.info(
                 "resuming: %d requests left, %d items already written",
@@ -1268,6 +1302,55 @@ class _Run:
             f'{{"callback": {callback}, "errback": {errback}, "meta": {meta}, '
             f'"browser": {browser}{cookies}{steps}}}'
         )
+
+    def ruled_request(self, rule: int, url: str, depth: int = 0) -> Request:
+        """A request as rule ``rule`` made it, in Rust: its URL, depth,
+        callback, and steps as the engine has them (call steps by name), so
+        it pickles for a worker and keys deltafetch as the engine did."""
+        steps = self.rule_steps[rule]
+        return Request(
+            url,
+            callback=self.rules[rule].callback,
+            depth=depth,
+            steps=None if steps is None else json.loads(steps),
+        )
+
+    def from_data(self, request: Request, source: str) -> None:
+        """Refuses a request read back from data (``source`` is "queue" or
+        "checkpoint") that would name what it shouldn't: a callback,
+        errback or call step that isn't a method the spider's class
+        defines, a dunder, or (from the shared queue, which anyone who can
+        reach Redis writes to) a private name; or a set_input_files step
+        whose files aren't in ``browser_upload_dir``."""
+        names = [("callback", request.callback), ("errback", request.errback)]
+        for step in request.steps or ():
+            if step.get("action") == "call":
+                names.append(("call step", step.get("method")))
+        for what, name in names:
+            if name is None:
+                continue
+            if not isinstance(name, str) or not _spider_method(
+                self.spider, name, private=source != "queue"
+            ):
+                raise ValueError(f"its {what} {name!r} isn't a method the spider defines")
+        for step in request.steps or ():
+            if step.get("action") != "set_input_files":
+                continue
+            files = step.get("files")
+            files = [files] if isinstance(files, str) else list(files or ())
+            folder = self.settings.browser_upload_dir
+            if folder is None:
+                raise ValueError(
+                    "it uploads files (set_input_files), which a request from data may do only"
+                    " from browser_upload_dir, and that isn't set"
+                )
+            root = os.path.realpath(folder)
+            for path in files:
+                real = os.path.realpath(path)
+                if os.path.commonpath([root, real]) != root:
+                    raise ValueError(
+                        f"it uploads {path!r}, which isn't in browser_upload_dir ({folder!r})"
+                    )
 
     def step_name(self, fn: Callable[..., Any]) -> str:
         """The name a checkpoint or the shared queue keeps for a call
@@ -1337,6 +1420,14 @@ class _Run:
             jar = _jar_name(meta)
             if request.cookies:
                 Crawler.check_cookies(request.url, request.cookies)
+            steps = None
+            if request.steps is not None:
+                steps = _capped(
+                    steps_json(request.steps, self.engine_step_name),
+                    self.settings.browser_steps_max,
+                    "steps",
+                )
+            steps_in_fingerprint = _steps_in_fingerprint(meta)
         except (TypeError, ValueError) as e:
             message = f"{request.url}: {e}; skipped"
             error = type(e)
@@ -1382,9 +1473,8 @@ class _Run:
             jar=jar,
             cookies=request.cookies,
             dont_merge_cookies=bool(meta.get("dont_merge_cookies")),
-            steps=None
-            if request.steps is None
-            else steps_json(request.steps, self.engine_step_name),
+            steps=steps,
+            steps_in_fingerprint=steps_in_fingerprint,
         )
         if outcome in ("queued", "pushed", "answered"):
             self.accepted += 1
@@ -1622,6 +1712,9 @@ class _Run:
                 running.add(task)
                 task.add_done_callback(running.discard)
         finally:
+            # Calls that come now have nobody to run them: they fail at
+            # once rather than wait out their timeouts.
+            self.engine.close_calls()
             for task in running:
                 task.cancel()
 
@@ -1641,8 +1734,21 @@ class _Run:
                 raise LookupError("its function isn't known in this process")
             page = call.page
             if request is None:
-                # A rule's request: the rules know it by its URL alone.
-                request = Request(page.url)
+                # A rule's request, which the rules made in Rust: the same
+                # URL, depth and callback.
+                if call.rule is not None:
+                    request = self.ruled_request(call.rule, call.url, call.depth)
+                else:
+                    request = Request(call.url, depth=call.depth)
+            plain = getattr(fn, "__func__", fn)
+            if not inspect.iscoroutinefunction(plain) and plain not in self.warned_sync:
+                self.warned_sync.add(plain)
+                log.warning(
+                    "the call step %s is a plain function: while it runs, nothing else in"
+                    " the crawl does. An async def lets the crawl go on meanwhile (said once"
+                    " a function)",
+                    getattr(fn, "__qualname__", repr(fn)),
+                )
             value = await asyncio.wait_for(_result(fn(page, request)), call.timeout)
             try:
                 answer = json.dumps(value)
@@ -2049,7 +2155,7 @@ class _Run:
         else:
             _, rule, url, response, _root, depth = event[:6]
             callback, default = self.rules[rule].callback, None
-            request = Request(url, callback=callback, depth=depth)
+            request = self.ruled_request(rule, url, depth)
         try:
             name = self.method_name(callback) or default
             sent = dataclasses.replace(
@@ -2084,7 +2190,9 @@ class _Run:
             self.page_jar = None
             # The page a rule's link led to, fetched as a plain GET. Its
             # one item is all it gives.
-            self.from_page = ("GET", url, None, None) if self.delta else None
+            self.from_page = (
+                ("GET", url, None, None, None, self.rule_steps[rule]) if self.delta else None
+            )
             self.gave = False
             try:
                 await self.handle(item_class._finish(item, self.warned))
@@ -2093,7 +2201,7 @@ class _Run:
         elif kind == "ruled":
             _, rule, url, response, root, depth = event[:6]
             callback = self.rules[rule].callback
-            request = Request(url, callback=callback, depth=depth)
+            request = self.ruled_request(rule, url, depth)
             page = event[6] if len(event) > 6 else self.crawl_page(response, request, root)
             if job is not None:
                 await self.collect(job, callback, request, page)
@@ -2116,10 +2224,7 @@ class _Run:
             self.waiting.pop(event[1])
         elif kind == "blocked":
             _, rid, rule, url, _vendor, _kind, response = event
-            if rule is None:
-                request = self.waiting.pop(rid)
-            else:
-                request = Request(url, callback=self.rules[rule].callback)
+            request = self.waiting.pop(rid) if rule is None else self.ruled_request(rule, url)
             page = self.crawl_page(response, request)
             if rule is None:
                 await self.left_downloader(request, page)
@@ -2130,6 +2235,7 @@ class _Run:
             _, head, sent, policy = event
             try:
                 request, data = _restored(head, sent, policy)
+                self.from_data(request, "queue")
                 if data.get("pushed"):
                     # Pushed from outside: a start request, which the
                     # middlewares haven't seen yet.
@@ -2505,7 +2611,7 @@ class _Run:
             default: str | None = "parse"
         else:
             _, rule, url, response, root, depth = event
-            request = Request(url, callback=self.rules[rule].callback, depth=depth)
+            request = self.ruled_request(rule, url, depth)
             live, default = None, None
         if page is None:
             page = self.crawl_page(response, request, root)
@@ -2811,7 +2917,10 @@ class _Run:
         if delta is None or not delta[0]:
             return None
         body = request.body.encode() if isinstance(request.body, str) else request.body
-        return (request.method, request.url, body, delta[1], _jar_name(meta))
+        steps = None
+        if request.steps and _steps_in_fingerprint(meta):
+            steps = steps_json(request.steps, self.engine_step_name)
+        return (request.method, request.url, body, delta[1], _jar_name(meta), steps)
 
     def page_gave_item(self) -> None:
         """The running callback's page has given a delivered item."""
@@ -2923,6 +3032,41 @@ def _jar_name(meta: dict[str, Any]) -> str | None:
         raise TypeError(
             f'meta["cookiejar"] must be a JSON value (a str, a number...), not {type(key).__name__}'
         ) from None
+
+
+def _capped(steps: str, cap: float | None, where: str) -> str:
+    """``steps`` (JSON), once checked against ``browser_steps_max``."""
+    from netweir._native import _check_steps
+
+    try:
+        _check_steps(steps, cap)
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
+    return steps
+
+
+def _steps_in_fingerprint(meta: dict[str, Any]) -> bool:
+    """Whether a request's steps are part of its fingerprint:
+    ``meta["steps_in_fingerprint"]``, True unless it says otherwise."""
+    flag = meta.get("steps_in_fingerprint", True)
+    if not isinstance(flag, bool):
+        raise TypeError(f'meta["steps_in_fingerprint"] must be True or False, not {flag!r}')
+    return flag
+
+
+def _spider_method(spider: Any, name: str, private: bool = False) -> bool:
+    """Whether ``name`` is a method ``spider``'s class defines (or one it
+    inherits), and not a dunder; with ``private`` False, nor a name
+    starting with an underscore."""
+    if name.startswith("__") or (not private and name.startswith("_")):
+        return False
+    for klass in type(spider).__mro__:
+        if klass is object:
+            break
+        if name in vars(klass):
+            attr = vars(klass)[name]
+            return inspect.isfunction(attr) or isinstance(attr, (staticmethod, classmethod))
+    return False
 
 
 def _rule_method(spider: Any, fn: Callable[..., Any]) -> str:
