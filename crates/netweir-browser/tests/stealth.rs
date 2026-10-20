@@ -266,10 +266,12 @@ async fn a_page_has_the_frame_languages_and_header_order_of_a_persons_chrome() {
     page.evaluate("w.then(() => 1)").await.unwrap();
     // Chrome for Testing shows an infobar a person's Chrome doesn't, and
     // its field trial config holds the languages back to one. A headless
-    // window's frame is Google Chrome's on every system.
+    // window's frame is Google Chrome's on a Mac and on Linux; on Windows
+    // headless Chrome 155 makes it 95 (measured on CI), and a person's
+    // Chrome there wasn't measured.
     assert_eq!(
         page.evaluate("outerHeight - innerHeight").await.unwrap(),
-        json!(87)
+        json!(if cfg!(windows) { 95 } else { 87 })
     );
     assert_eq!(
         page.evaluate("navigator.languages").await.unwrap(),

@@ -192,7 +192,8 @@ Windows is said to have an invisible border, which would make
 `outerWidth` 16 more than `innerWidth`; a maximised one has none, as
 measured, and a headless window has none either way. A restored
 window's border and Google Chrome's frame height on Windows weren't
-measured: the window's frame is headless Chrome's 87 on every system.
+measured: the window's frame is headless Chrome's own, 87 on macOS and
+Linux and 95 on Windows (measured on CI runners).
 
 Headless Chrome on Linux takes `Browser.setWindowBounds` in the device
 pixels of the screen the window is on and gives them back in those of
