@@ -1344,10 +1344,9 @@ class _Run:
                     "it uploads files (set_input_files), which a request from data may do only"
                     " from browser_upload_dir, and that isn't set"
                 )
-            root = os.path.realpath(folder)
+            root = os.path.normcase(os.path.realpath(folder))
             for path in files:
-                real = os.path.realpath(path)
-                if os.path.commonpath([root, real]) != root:
+                if not _inside(root, os.path.normcase(os.path.realpath(path))):
                     raise ValueError(
                         f"it uploads {path!r}, which isn't in browser_upload_dir ({folder!r})"
                     )
@@ -1758,7 +1757,8 @@ class _Run:
         except asyncio.CancelledError:
             call.fail("the crawl stopped")
             raise
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
+            # Before 3.11, asyncio's isn't the built-in one.
             call.fail(f"it took more than {call.timeout:g}s")
         except Exception as e:  # noqa: BLE001 - the step's on_error decides
             log.debug("a call step raised", exc_info=True)
@@ -3032,6 +3032,15 @@ def _jar_name(meta: dict[str, Any]) -> str | None:
         raise TypeError(
             f'meta["cookiejar"] must be a JSON value (a str, a number...), not {type(key).__name__}'
         ) from None
+
+
+def _inside(root: str, path: str) -> bool:
+    """Whether ``path`` is ``root`` or below it, both resolved. Paths on
+    two Windows drives have no common path, and aren't."""
+    try:
+        return os.path.commonpath([root, path]) == root
+    except ValueError:
+        return False
 
 
 def _capped(steps: str, cap: float | None, where: str) -> str:

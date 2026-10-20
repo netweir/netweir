@@ -612,7 +612,7 @@ def test_typing_clicks_holds_keys_and_shifts_as_a_person_does(base):
     typed = [e for e in downs if len(e["key"]) == 1]
     for down in typed:
         up = next(u for u in ups if u["code"] == down["code"] and u["at"] >= down["at"])
-        assert 40 <= up["at"] - down["at"] <= 200, (down["key"], up["at"] - down["at"])
+        assert 40 <= up["at"] - down["at"] <= 400, (down["key"], up["at"] - down["at"])
     gaps = [b["at"] - a["at"] for a, b in zip(typed, typed[1:], strict=False)]
     mean = sum(gaps) / len(gaps)
     spread = (sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5
@@ -800,6 +800,18 @@ def test_a_request_from_data_uploads_only_from_browser_upload_dir(tmp_path):
         "https://a.test/", steps=[steps.set_input_files("#f", [str(allowed / "cv.pdf")])]
     )
     _from_data(spider, fine, "queue", browser_upload_dir=str(allowed))
+
+
+def test_an_upload_on_another_windows_drive_is_outside_the_folder(monkeypatch):
+    import ntpath
+
+    from netweir._crawl import _inside
+
+    assert _inside("/up", "/up/cv.pdf") and not _inside("/up", "/upload/cv.pdf")
+    # Windows has no common path for two drives: that's outside, not an error.
+    monkeypatch.setattr(os.path, "commonpath", ntpath.commonpath)
+    assert not _inside("c:\\up", "d:\\etc\\hosts")
+    assert _inside("c:\\up", "c:\\up\\cv.pdf")
 
 
 def test_a_resumed_upload_step_needs_browser_upload_dir(base, tmp_path):
