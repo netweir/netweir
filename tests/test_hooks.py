@@ -28,6 +28,8 @@ class Handler(BaseHTTPRequestHandler):
             n = Handler.served[self.path]
         if self.path == "/":
             body = b"<a href='/a'>a</a><a href='/b'>b</a>"
+        elif self.path == "/ruled":
+            body = b"<a href='/ruled/a'>a</a><a href='/ruled/b'>b</a>"
         elif self.path.startswith("/echo"):
             body = json.dumps({k.lower(): v for k, v in self.headers.items()}).encode()
         elif self.path.startswith("/ready"):
@@ -1616,7 +1618,9 @@ def test_close_spider_from_a_signal_handler(base):
 
 
 def test_a_rules_spider_s_answered_page_is_read_by_the_rules(base):
-    stored = netweir.get(base + "/")  # links to /a and /b
+    # Links no other test follows: a crawl the test before closed early
+    # can still have its request for /b on the way.
+    stored = netweir.get(base + "/ruled")
     Handler.served.clear()
 
     class Store:
@@ -1633,7 +1637,7 @@ def test_a_rules_spider_s_answered_page_is_read_by_the_rules(base):
     assert stats["callback_errors"] == 0 and stats["pages_served"] == 1
     # The rules found the served page's links, and Rust fetched them.
     assert Handler.served["/start"] == 0
-    assert (Handler.served["/a"], Handler.served["/b"]) == (1, 1)
+    assert (Handler.served["/ruled/a"], Handler.served["/ruled/b"]) == (1, 1)
 
 
 def test_a_from_crawler_that_fails_stops_the_crawl_before_any_fetch(base):
