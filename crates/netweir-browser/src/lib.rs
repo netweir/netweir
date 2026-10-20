@@ -13,6 +13,7 @@ mod frame;
 mod launch;
 mod network;
 mod page;
+pub mod steps;
 mod storage;
 mod window;
 

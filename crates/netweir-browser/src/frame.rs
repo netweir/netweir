@@ -598,22 +598,7 @@ impl Frame {
 
     /// Replaces the element's contents with `text`, as typing would.
     pub async fn fill(&self, selector: &str, text: &str, timeout: Option<Duration>) -> Result<()> {
-        self.page.to_front().await?;
-        let checks = ["attached", "visible", "enabled", "editable"];
-        let call = format!(
-            "__netweir.check({}, {}, true)",
-            Value::from(selector),
-            json!(checks)
-        );
-        self.attempt("fill", selector, &call, None, timeout).await?;
-        let focused = self
-            .helper(&format!("__netweir.focus({})", Value::from(selector)))
-            .await?;
-        if focused != Value::Bool(true) {
-            return Err(Error::Script(format!(
-                "fill {selector}: it couldn't be focused"
-            )));
-        }
+        self.focus_field("fill", selector, timeout).await?;
         if text.is_empty() {
             self.page.press("Delete").await
         } else {
@@ -626,6 +611,65 @@ impl Frame {
                 .await?;
             Ok(())
         }
+    }
+
+    /// Types `text` into the element a key at a time, as a person does:
+    /// focused as [`Frame::fill`] focuses it, with what's there selected
+    /// so the first key replaces it, then each character pressed and
+    /// released, with a pause picked at random from `delay` between one
+    /// key and the next. A newline is Enter and a tab is Tab. On a phone,
+    /// each key comes as its on-screen keyboard sends it. `timeout` is
+    /// for the element to be ready; the typing takes as long as it takes.
+    pub async fn type_text(
+        &self,
+        selector: &str,
+        text: &str,
+        delay: (Duration, Duration),
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.focus_field("type", selector, timeout).await?;
+        if text.is_empty() {
+            return self.page.press("Delete").await;
+        }
+        for (i, c) in text.chars().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(crate::events::pause(delay)).await;
+            }
+            let key = match c {
+                '\n' | '\r' => "Enter".to_string(),
+                '\t' => "Tab".to_string(),
+                c => c.to_string(),
+            };
+            self.page.press(&key).await?;
+        }
+        Ok(())
+    }
+
+    /// Waits for a visible, enabled, editable field, and focuses it with
+    /// its contents selected.
+    async fn focus_field(
+        &self,
+        action: &str,
+        selector: &str,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.page.to_front().await?;
+        let checks = ["attached", "visible", "enabled", "editable"];
+        let call = format!(
+            "__netweir.check({}, {}, true)",
+            Value::from(selector),
+            json!(checks)
+        );
+        self.attempt(action, selector, &call, None, timeout).await?;
+        let focused = self
+            .helper(&format!("__netweir.focus({})", Value::from(selector)))
+            .await?;
+        if focused != Value::Bool(true) {
+            return Err(Error::Script(format!(
+                "{action} {selector}: it couldn't be focused"
+            )));
+        }
+        Ok(())
     }
 
     /// Waits until `selector` is "attached", "visible", "hidden" (or gone)

@@ -1325,6 +1325,19 @@ impl Page {
         self.main_frame().fill(selector, text, timeout).await
     }
 
+    /// See [`Frame::type_text`].
+    pub async fn type_text(
+        &self,
+        selector: &str,
+        text: &str,
+        delay: (Duration, Duration),
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        self.main_frame()
+            .type_text(selector, text, delay, timeout)
+            .await
+    }
+
     /// Moves the mouse to the element's centre, once it's visible, still
     /// and not covered.
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
