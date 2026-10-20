@@ -113,6 +113,46 @@ jobs:
       - run: uv run pytest -q --durations=20
         timeout-minutes: 20
 
+  # The browser tests again, against the runner's Google Chrome rather
+  # than Chrome for Testing. Branded Chrome holds rules of its own, such
+  # as refusing to be driven on its default profile, and the release's
+  # wheel checks run on it: a difference should show here, not there.
+  google-chrome:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            chrome: /usr/bin/google-chrome
+          - os: macos-latest
+            chrome: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+            args: --disable-gpu
+          - os: windows-latest
+            chrome: C:\Program Files\Google\Chrome\Application\chrome.exe
+            args: --disable-features=TcpPortRandomizationWin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      NETWEIR_REQUIRE_CHROME: "1"
+      NETWEIR_CHROME: ${{ matrix.chrome }}
+      # As in the test job above.
+      NETWEIR_CHROME_ARGS: ${{ matrix.args }}
+      RUSTFLAGS: --cfg pyo3_disable_reference_pool
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.14"
+      - run: uv sync --group dev
+      - run: uv run maturin develop --uv
+      - run: uv run pytest -q --durations=10 tests/test_browser.py tests/test_crawl_browser.py
+        timeout-minutes: 15
+
   bench:
     runs-on: ubuntu-latest
     timeout-minutes: 30

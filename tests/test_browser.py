@@ -566,6 +566,11 @@ async def test_a_profile_under_home_is_found_there(tmp_path, monkeypatch):
         raise
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # Windows finds a user's local app data under USERPROFILE, and when
+    # that folder is missing, Google Chrome can't tell its default profile
+    # from any other, so it takes every profile for the default and
+    # refuses to be driven. A real home has the folder.
+    (tmp_path / "AppData" / "Local").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     b = await netweir.browser(executable, user_data_dir="~/kept-profile")
     await b.close()
