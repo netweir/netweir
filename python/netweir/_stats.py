@@ -39,6 +39,8 @@ METRICS: dict[str, tuple[str, str]] = {
     "breaker_trips": ("counter", "Times a host was paused for blocking."),
     "browser_fetches": ("counter", "Pages fetched in Chrome."),
     "browser_unblocked": ("counter", "Requests blocked over HTTP that Chrome got through."),
+    "browser_steps": ("counter", "Steps run on pages in Chrome."),
+    "browser_steps_failed": ("counter", "Steps that failed, whatever their on_error."),
     "offsite": ("counter", "Requests dropped for going outside allowed_domains."),
     "cache_hits": ("counter", "Pages served from the cache."),
     "cache_stores": ("counter", "Responses written to the cache."),

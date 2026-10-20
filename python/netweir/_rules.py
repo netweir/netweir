@@ -189,11 +189,19 @@ class Follow:
     a link is taken if it matches one of ``allow`` (or ``allow`` is empty)
     and none of ``deny``. ``allow_domains`` and ``deny_domains`` do the same
     by site, a domain covering its subdomains.
+
+    ``browser=True`` fetches the pages it leads to in Chrome, so their item
+    and links come from the page as its scripts built it. ``steps`` is
+    what to do on each first (see ``netweir.steps``), in place of the
+    crawl's ``browser_steps``, and implies ``browser``. A call step among
+    them names a spider method, or is one: the rules run in Rust, which
+    holds the name.
     """
 
     __slots__ = (
         "allow",
         "allow_domains",
+        "browser",
         "callback",
         "deny",
         "deny_domains",
@@ -202,6 +210,7 @@ class Follow:
         "kind",
         "priority",
         "query",
+        "steps",
     )
 
     def __init__(
@@ -217,6 +226,8 @@ class Follow:
         deny: Iterable[str] = (),
         allow_domains: Iterable[str] = (),
         deny_domains: Iterable[str] = (),
+        browser: bool = False,
+        steps: Iterable[Any] | None = None,
     ):
         if (css is None) == (xpath is None):
             raise TypeError("Follow takes a css query or an xpath query, not both or neither")
@@ -232,6 +243,10 @@ class Follow:
         self.allow, self.deny = _patterns("allow", allow), _patterns("deny", deny)
         self.allow_domains = _domains(allow_domains)
         self.deny_domains = _domains(deny_domains)
+        from netweir._request import _steps
+
+        self.steps = None if steps is None else _steps(steps, "Follow's steps")
+        self.browser = bool(browser or self.steps)
 
 
 def _patterns(what: str, patterns: Iterable[str]) -> list[str]:

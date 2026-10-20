@@ -295,6 +295,8 @@ struct Engine {
     xml_recover: bool,
     /// How long parsing one page may take (Settings.parse_timeout).
     parse_budget: Duration,
+    /// The call steps of pages in Chrome, for Python to run.
+    calls: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<netweir_core::StepCall>>,
 }
 
 impl Engine {
@@ -326,12 +328,13 @@ impl Engine {
                 headers: Vec::new(),
                 dont_filter: false,
                 depth,
-                browser: false,
+                browser: rule.browser,
                 outgoing: netweir_core::Outgoing::navigate(),
                 retry_post: false,
                 proxy: None,
                 delta_key: Default::default(),
                 cookies: Default::default(),
+                steps: rule.steps.clone(),
             };
             let payload = format!(r#"{{"rule":{at}}}"#);
             if self.core.submit_with(request, &payload) != Submitted::Queued {
@@ -362,12 +365,13 @@ impl Engine {
             headers: p.headers,
             dont_filter: p.dont_filter,
             depth: p.depth,
-            browser: false,
+            browser: rule.browser,
             outgoing: netweir_core::Outgoing::navigate(),
             retry_post: false,
             proxy: p.proxy,
             delta_key: Default::default(),
             cookies: Default::default(),
+            steps: rule.steps.clone(),
         };
         if self.core.resubmit(request, row) != Submitted::Queued {
             self.tags().remove(&id);
@@ -691,6 +695,73 @@ impl Engine {
     }
 }
 
+/// A call step for Python to run: `id` is its request's, `index` the
+/// step's place among its steps (from 0), `method` the spider method it
+/// names, or None, `page` the live page and `timeout` the seconds it may
+/// take. Answered once, with `reply(json)` or `fail(message)`; one let go
+/// of unanswered fails the step.
+#[pyclass(frozen, module = "netweir")]
+pub struct StepCall {
+    #[pyo3(get)]
+    id: u64,
+    #[pyo3(get)]
+    index: usize,
+    #[pyo3(get)]
+    method: Option<String>,
+    #[pyo3(get)]
+    timeout: f64,
+    page: netweir_core::LivePage,
+    reply: Mutex<Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
+}
+
+impl From<netweir_core::StepCall> for StepCall {
+    fn from(call: netweir_core::StepCall) -> StepCall {
+        StepCall {
+            id: call.id,
+            index: call.index,
+            method: call.method,
+            timeout: call.timeout.as_secs_f64(),
+            page: call.page,
+            reply: Mutex::new(Some(call.reply)),
+        }
+    }
+}
+
+impl StepCall {
+    fn answer(&self, answer: Result<serde_json::Value, String>) -> PyResult<()> {
+        let reply = self.reply.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match reply {
+            // The step may have given up waiting: nothing to tell.
+            Some(reply) => {
+                let _ = reply.send(answer);
+                Ok(())
+            }
+            None => Err(PyValueError::new_err("the call step was already answered")),
+        }
+    }
+}
+
+#[pymethods]
+impl StepCall {
+    /// The page, as the callback's `page.browser` would be.
+    #[getter]
+    fn page(&self) -> BrowserPage {
+        BrowserPage::from_crawl(self.page.clone())
+    }
+
+    /// The step went well, and gave `json` (JSON text).
+    fn reply(&self, json: &str) -> PyResult<()> {
+        let value = serde_json::from_str(json)
+            .map_err(|e| PyValueError::new_err(format!("not JSON: {e}")))?;
+        self.answer(Ok(value))
+    }
+
+    /// The step failed, for `message`.
+    fn fail(&self, message: String) -> PyResult<()> {
+        self.answer(Err(message))
+    }
+}
+
 /// One crawl: per-host queues, robots.txt and TDMRep checks, throttling and
 /// deduplication, all in Rust. Python submits requests by id and awaits
 /// `next()` for what happened to them.
@@ -881,7 +952,7 @@ impl Crawler {
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None,
         xml_recover=false, parse_timeout=Some(10.0),
-        browser_environment=None, browser_worker_header_order=false,
+        browser_environment=None, browser_worker_header_order=false, browser_steps=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -936,6 +1007,7 @@ impl Crawler {
         parse_timeout: Option<f64>,
         browser_environment: Option<Bound<'_, pyo3::types::PyDict>>,
         browser_worker_header_order: bool,
+        browser_steps: Option<&str>,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         let environment = crate::environment::environment_from(browser_environment.as_ref())?;
@@ -1036,6 +1108,10 @@ impl Crawler {
                 ..Default::default()
             },
             browser_block,
+            browser_steps: browser_steps
+                .map(crate::browser::steps_from)
+                .transpose()?
+                .unwrap_or_default(),
             allowed_domains,
             cache,
             cache_expiry,
@@ -1071,6 +1147,10 @@ impl Crawler {
         .map_err(|e| PyValueError::new_err(e.message))?;
         Ok(Crawler {
             engine: Arc::new(Engine {
+                calls: tokio::sync::Mutex::new(
+                    core.step_calls()
+                        .expect("a new crawl's calls are there to take"),
+                ),
                 core,
                 tracks: Mutex::new(None),
                 unacked: Mutex::new(Vec::new()),
@@ -1093,7 +1173,9 @@ impl Crawler {
     /// "ruled" events.
     /// `allow` and `deny` are regexes for the links to keep and skip;
     /// `allow_domains` and `deny_domains` limit them by site.
-    #[pyo3(signature = (kind, query, item=None, follow=true, to_python=false, priority=0, allow=None, deny=None, allow_domains=None, deny_domains=None))]
+    /// `browser` fetches the pages it leads to in Chrome, and `steps`
+    /// (JSON) is what to do on them first, in place of the crawl's.
+    #[pyo3(signature = (kind, query, item=None, follow=true, to_python=false, priority=0, allow=None, deny=None, allow_domains=None, deny_domains=None, browser=false, steps=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_rule(
         &self,
@@ -1107,6 +1189,8 @@ impl Crawler {
         deny: Option<Vec<String>>,
         allow_domains: Option<Vec<String>>,
         deny_domains: Option<Vec<String>>,
+        browser: bool,
+        steps: Option<&str>,
     ) -> PyResult<usize> {
         let patterns = |what: &str, list: Option<Vec<String>>| {
             list.unwrap_or_default()
@@ -1130,6 +1214,8 @@ impl Crawler {
             deny: patterns("deny", deny)?,
             allow_domains: domains(allow_domains)?,
             deny_domains: domains(deny_domains)?,
+            browser,
+            steps: steps.map(crate::browser::steps_from).transpose()?,
         };
         let mut rules = self.engine.rules.lock().unwrap_or_else(|e| e.into_inner());
         let mut next = rules.as_ref().clone();
@@ -1155,7 +1241,7 @@ impl Crawler {
     /// Fetcher.send takes them. `jar` names its cookie jar (None for the
     /// crawl's own), `cookies` are its own, and `dont_merge_cookies`
     /// leaves the jar out.
-    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None, jar=None, cookies=None, dont_merge_cookies=false))]
+    #[pyo3(signature = (id, url, priority=0, headers=None, dont_filter=false, apply_rules=false, to_python=true, depth=0, payload="{}", row=None, browser=false, method="GET", kind="navigate", body=None, content_type=None, referer=None, retry_post=false, proxy=None, delta_key=None, delta=true, answered=false, timeout=None, max_redirects=None, dont_redirect=false, auth=None, jar=None, cookies=None, dont_merge_cookies=false, steps=None))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -1187,7 +1273,9 @@ impl Crawler {
         jar: Option<String>,
         cookies: Option<Vec<Bound<'_, PyAny>>>,
         dont_merge_cookies: bool,
+        steps: Option<&str>,
     ) -> PyResult<&'static str> {
+        let steps = steps.map(crate::browser::steps_from).transpose()?;
         let kind = netweir_core::Kind::parse(kind)
             .ok_or_else(|| PyValueError::new_err(format!("unknown kind of request {kind:?}")))?;
         let cookies = request_cookies(&url, jar, cookies.unwrap_or_default(), dont_merge_cookies)?;
@@ -1226,6 +1314,7 @@ impl Crawler {
                 (true, None) => netweir_core::DeltaKey::Fingerprint,
             },
             cookies,
+            steps,
         };
         let outcome = match row {
             _ if answered => self.engine.core.claim(request),
@@ -1302,6 +1391,7 @@ impl Crawler {
                 jar,
                 ..Default::default()
             },
+            steps: None,
         };
         let done = self.engine.core.download(request);
         crate::aio::future_into_py(py, async move {
@@ -1579,6 +1669,16 @@ impl Crawler {
         self.engine.core.save_counters(json);
     }
 
+    /// The next call step of a page in Chrome, once one comes: a StepCall
+    /// for Python to run and answer.
+    fn next_call<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let engine = self.engine.clone();
+        crate::aio::future_into_py(py, async move {
+            let call = engine.calls.lock().await.recv().await;
+            Ok(call.map(StepCall::from))
+        })
+    }
+
     /// Closes Chrome, if the crawl started it.
     fn close_browser<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let engine = self.engine.clone();
@@ -1628,6 +1728,8 @@ impl Crawler {
         d.set_item("breaker_trips", s.breaker_trips)?;
         d.set_item("browser_fetches", s.browser_fetches)?;
         d.set_item("browser_unblocked", s.browser_unblocked)?;
+        d.set_item("browser_steps", s.browser_steps)?;
+        d.set_item("browser_steps_failed", s.browser_steps_failed)?;
         d.set_item("offsite", s.offsite)?;
         d.set_item("cache_hits", s.cache_hits)?;
         d.set_item("cache_stores", s.cache_stores)?;
@@ -1761,5 +1863,6 @@ fn _check_queue_url(url: &str) -> PyResult<()> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Crawler>()?;
     m.add_class::<QueueHandle>()?;
+    m.add_class::<StepCall>()?;
     m.add_function(wrap_pyfunction!(_check_queue_url, m)?)
 }

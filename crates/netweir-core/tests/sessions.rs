@@ -46,6 +46,7 @@ fn request(id: u64, url: String) -> CrawlRequest {
         proxy: None,
         delta_key: Default::default(),
         cookies: RequestCookies::default(),
+        steps: None,
     }
 }
 

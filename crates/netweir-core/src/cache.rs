@@ -240,6 +240,7 @@ impl Cache {
             version: version_of(&version),
             headers: serde_json::from_str(&headers).map_err(undecodable)?,
             body: body.into(),
+            steps: Default::default(),
         };
         let redirects = serde_json::from_str(&redirects).map_err(undecodable)?;
         Ok(Some((response, redirects)))

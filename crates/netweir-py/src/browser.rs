@@ -833,6 +833,26 @@ impl BrowserPage {
         })
     }
 
+    /// Types `text` a key at a time; see `Frame::type_text`.
+    #[pyo3(signature = (selector, text, delay=None, timeout=None))]
+    fn r#type<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        text: String,
+        delay: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let delay = delay_of(delay)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            page.type_text(&selector, &text, delay, timeout)
+                .await
+                .map_err(raise)
+        })
+    }
+
     fn press<'py>(&self, py: Python<'py>, key: String) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move { page.press(&key).await.map_err(raise) })
@@ -1402,6 +1422,26 @@ impl BrowserFrame {
         })
     }
 
+    #[pyo3(signature = (selector, text, delay=None, timeout=None))]
+    fn r#type<'py>(
+        &self,
+        py: Python<'py>,
+        selector: String,
+        text: String,
+        delay: Option<Bound<'py, PyAny>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        let delay = delay_of(delay)?;
+        let frame = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            frame
+                .type_text(&selector, &text, delay, timeout)
+                .await
+                .map_err(raise)
+        })
+    }
+
     #[pyo3(signature = (selector, state="visible".to_string(), timeout=None))]
     fn wait_for<'py>(
         &self,
@@ -1505,6 +1545,70 @@ impl BrowserFrame {
             self.inner.url()
         )
     }
+}
+
+/// The pause between keys `type` takes: seconds, or (least, most), and
+/// a person's by default.
+fn delay_of(delay: Option<Bound<'_, PyAny>>) -> PyResult<(Duration, Duration)> {
+    let Some(delay) = delay.filter(|d| !d.is_none()) else {
+        return Ok(netweir_browser::steps::TYPING);
+    };
+    let secs = |v: f64| {
+        Duration::try_from_secs_f64(v)
+            .map_err(|_| PyValueError::new_err("delay must be seconds, 0 or more"))
+    };
+    if let Ok(one) = delay.extract::<f64>() {
+        let d = secs(one)?;
+        return Ok((d, d));
+    }
+    let (least, most): (f64, f64) = delay
+        .extract()
+        .map_err(|_| PyTypeError::new_err("delay is seconds, or a (least, most) pair of them"))?;
+    let (least, most) = (secs(least)?, secs(most)?);
+    if least > most {
+        return Err(PyValueError::new_err("delay's least is more than its most"));
+    }
+    Ok((least, most))
+}
+
+/// Steps from their JSON, a ValueError saying what's wrong with them.
+pub(crate) fn steps_from(json: &str) -> PyResult<Arc<[netweir_browser::steps::Step]>> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| PyValueError::new_err(format!("steps must be JSON: {e}")))?;
+    netweir_browser::steps::parse(&value)
+        .map(Into::into)
+        .map_err(PyValueError::new_err)
+}
+
+/// Checks steps (JSON) when they're written, rather than when a page
+/// reaches them.
+#[pyfunction]
+pub(crate) fn _check_steps(json: &str) -> PyResult<()> {
+    steps_from(json).map(|_| ())
+}
+
+/// How each step went, as Python dicts: `action`, `status` ("ok",
+/// "failed" or "skipped"), `error`, `elapsed` (seconds) and `result`
+/// (a screenshot's PNG as bytes).
+pub(crate) fn outcomes_py<'py>(
+    py: Python<'py>,
+    outcomes: &[netweir_browser::steps::Outcome],
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for o in outcomes {
+        let d = PyDict::new(py);
+        d.set_item("action", &o.action)?;
+        d.set_item("status", o.status.as_str())?;
+        d.set_item("error", &o.error)?;
+        d.set_item("elapsed", o.elapsed.as_secs_f64())?;
+        match (&o.png, &o.value) {
+            (Some(png), _) => d.set_item("result", PyBytes::new(py, png))?,
+            (None, Some(v)) => d.set_item("result", to_python(py, v)?)?,
+            (None, None) => d.set_item("result", py.None())?,
+        }
+        list.append(d)?;
+    }
+    Ok(list)
 }
 
 /// The actions a page and its frames share, on a frame.
@@ -2299,6 +2403,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Browser>()?;
     m.add_class::<BrowserContext>()?;
     m.add_class::<BrowserPage>()?;
+    m.add_function(wrap_pyfunction!(_check_steps, m)?)?;
     m.add_class::<BrowserFrame>()?;
     m.add_class::<BrowserResponse>()?;
     m.add_class::<BrowserRequest>()?;

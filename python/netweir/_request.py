@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,6 +21,12 @@ class Request:
     a request a callback yields. ``browser=True`` fetches it in Chrome,
     and the callback's ``page.browser`` is the page, open until the
     callback returns.
+
+    ``steps`` is what to do on the page in Chrome before the callback
+    sees it (see ``netweir.steps``): a list of step dicts, and functions
+    to call with the page. A request with steps is fetched in Chrome. They
+    take the place of the crawl's ``browser_steps``; ``steps=[]`` runs
+    none. What each did is in the callback's ``page.steps``.
 
     ``method`` and one of ``form``, ``json`` or ``body`` send something
     other than a GET: ``form`` as a form submission (URL-encoded), ``json``
@@ -93,6 +99,12 @@ class Request:
     #: own. ``meta["dont_merge_cookies"] = True`` leaves the jar out: only
     #: these cookies are sent, and nothing the response sets is kept.
     cookies: Any = dataclasses.field(default=None, repr=False)
+    #: What to do on its page in Chrome before the callback, as a list of
+    #: step dicts (``netweir.steps``); None for the crawl's
+    #: ``browser_steps``. Not part of the request's fingerprint, as meta
+    #: isn't in Scrapy's: the same URL with other steps is a duplicate
+    #: unless ``dont_filter=True``.
+    steps: list[Any] | None = None
 
     def __post_init__(self) -> None:
         from netweir._fetch import checked_auth, login_of, redirect_limit, seconds
@@ -103,6 +115,10 @@ class Request:
         redirect_limit(self.max_redirects)
         if self.cookies is not None:
             self.cookies = _cookies(self.url, self.cookies)
+        if self.steps is not None:
+            self.steps = _steps(self.steps)
+            if self.steps:
+                self.browser = True
         has_body = self.form is not None or self.json is not None or self.body is not None
         self.method = (self.method or ("POST" if has_body else "GET")).upper()
         if self.form is not None or self.json is not None or self.kind is None:
@@ -115,6 +131,8 @@ class Request:
             # Encoded into body: replace() and pickling see one body.
             self.form = self.json = None
         if self.browser and (self.method != "GET" or self.body is not None):
+            if self.steps:
+                raise ValueError("only a GET can be fetched in Chrome, where steps run")
             raise ValueError("only a GET can be fetched in Chrome (browser=True)")
 
     def replace(self, **changes: Any) -> Request:
@@ -182,3 +200,44 @@ def _cookies(url: str, cookies: Any) -> list[dict[str, Any]]:
             c["value"] = str(c["value"])
         out.append(c)
     return out
+
+
+def _steps(steps: Any, where: str = "steps") -> list[Any]:
+    """A step list checked, each step a dict of its own: a function in it
+    becomes a call step. Raises TypeError or ValueError for one that's
+    wrong, saying which."""
+    if isinstance(steps, (str, bytes, dict)) or not isinstance(steps, Iterable):
+        raise TypeError(f"{where} is a list of steps, not {type(steps).__name__}")
+    out: list[Any] = []
+    for step in steps:
+        if isinstance(step, dict):
+            step = dict(step)
+        elif callable(step):
+            step = {"action": "call", "method": step}
+        else:
+            raise TypeError(f"a step is a dict or a function, not {step!r}")
+        out.append(step)
+    from netweir._native import _check_steps
+
+    try:
+        _check_steps(steps_json(out, lambda fn: None))
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
+    return out
+
+
+def steps_json(steps: list[Any], name: Callable[[Any], str | None]) -> str:
+    """``steps`` as JSON, each call step's function given as ``name`` says:
+    a name, or None for one only this process can run."""
+    import json
+
+    def portable(step: dict[str, Any]) -> dict[str, Any]:
+        method = step.get("method")
+        if step.get("action") == "call" and method is not None and not isinstance(method, str):
+            return {**step, "method": name(method)}
+        return step
+
+    try:
+        return json.dumps([portable(s) for s in steps])
+    except TypeError as e:
+        raise TypeError(f"steps must be JSON: {e}") from None

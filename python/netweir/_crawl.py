@@ -44,7 +44,7 @@ from netweir._native import (
     fingerprint,
 )
 from netweir._native import _sitemap as _parse_sitemap
-from netweir._request import Request
+from netweir._request import Request, _steps, steps_json
 from netweir._rules import Follow, _warn_invalid
 
 log = logging.getLogger("netweir")
@@ -212,6 +212,11 @@ class Settings:
     #: its headers in Chrome's own order, at the cost of pausing every
     #: request they make (see ``netweir.browser(worker_header_order=...)``).
     browser_worker_header_order: bool = False
+    #: What every page the crawl fetches in Chrome does once it has loaded,
+    #: before its callback sees it: a list of steps (``netweir.steps``).
+    #: A request's own ``steps`` take their place. A call step here names
+    #: a spider method by its name, as a string.
+    browser_steps: tuple[dict[str, Any], ...] = ()
     #: Seconds between progress lines in the log ("crawled 120 pages (at
     #: 60 pages/min), ..."); None for none.
     stats_interval: float | None = 60.0
@@ -317,6 +322,14 @@ class Settings:
                 f"browser_block is a tuple of resource types, such as ({self.browser_block!r},)"
             )
         object.__setattr__(self, "browser_block", tuple(self.browser_block))
+        steps = _steps(self.browser_steps, "browser_steps")
+        for step in steps:
+            if step.get("action") == "call" and not isinstance(step.get("method"), str):
+                raise TypeError(
+                    "browser_steps: a call step here names a spider method, as a string"
+                    " (Settings go to worker processes, and a function can't)"
+                )
+        object.__setattr__(self, "browser_steps", tuple(steps))
         if self.browser_environment is not None:
             if not isinstance(self.browser_environment, Mapping):
                 raise ValueError(
@@ -447,6 +460,7 @@ class Settings:
             browser_block=list(self.browser_block),
             browser_environment=self.browser_environment,
             browser_worker_header_order=self.browser_worker_header_order,
+            browser_steps=steps_json(list(self.browser_steps), str) if self.browser_steps else None,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None
@@ -1015,6 +1029,10 @@ class _Run:
                 deny=rule.deny,
                 allow_domains=rule.allow_domains,
                 deny_domains=rule.deny_domains,
+                browser=rule.browser,
+                steps=None
+                if rule.steps is None
+                else steps_json(rule.steps, functools.partial(_rule_method, spider)),
             )
         # parse runs alongside the rules only if the spider writes its own.
         self.has_parse = type(spider).parse is not Spider.parse
@@ -1240,12 +1258,38 @@ class _Run:
         callback = json.dumps(self.method_name(request.callback))
         errback = json.dumps(self.method_name(request.errback))
         browser = json.dumps(request.browser)
-        # A request still waiting when the crawl stops keeps its cookies.
+        # A request still waiting when the crawl stops keeps its cookies,
+        # and its steps, call steps by name as callbacks are.
         cookies = f', "cookies": {json.dumps(request.cookies)}' if request.cookies else ""
+        steps = ""
+        if request.steps is not None:
+            steps = f', "steps": {steps_json(request.steps, self.step_name)}'
         return (
             f'{{"callback": {callback}, "errback": {errback}, "meta": {meta}, '
-            f'"browser": {browser}{cookies}}}'
+            f'"browser": {browser}{cookies}{steps}}}'
         )
+
+    def step_name(self, fn: Callable[..., Any]) -> str:
+        """The name a checkpoint or the shared queue keeps for a call
+        step's function, which must be a spider method, as callbacks must."""
+        try:
+            name = self.method_name(fn)
+        except TypeError:
+            raise TypeError(
+                f"with a {self.keeper}, call steps are saved by name, so {fn!r} must be a"
+                " method of the spider"
+            ) from None
+        assert name is not None
+        return name
+
+    def engine_step_name(self, fn: Callable[..., Any]) -> str | None:
+        """The name the engine is given for a call step's function: a
+        spider method's, or None for any other, which is found again by
+        its place in the request's steps."""
+        name = getattr(fn, "__name__", None)
+        if name is not None and getattr(self.spider, name, None) == fn:
+            return name
+        return None
 
     def method_name(self, fn: Callable[..., Any] | str | None) -> str | None:
         if fn is None or isinstance(fn, str):
@@ -1338,6 +1382,9 @@ class _Run:
             jar=jar,
             cookies=request.cookies,
             dont_merge_cookies=bool(meta.get("dont_merge_cookies")),
+            steps=None
+            if request.steps is None
+            else steps_json(request.steps, self.engine_step_name),
         )
         if outcome in ("queued", "pushed", "answered"):
             self.accepted += 1
@@ -1485,6 +1532,7 @@ class _Run:
         if not self.settings.obey_robots:
             log.warning("obey_robots is off: robots.txt is not being checked")
         abandoned = True
+        calls: asyncio.Future | None = None
         try:
             if self.settings.workers > 1:
                 from netweir import _workers
@@ -1500,6 +1548,7 @@ class _Run:
                 # As Scrapy's engine starts once the spider is open.
                 await self.signal("engine_started")
                 self.engine_started = True
+                calls = asyncio.ensure_future(self.serve_calls())
                 await self.queue_start()
                 while True:
                     self.check_limits()
@@ -1540,6 +1589,10 @@ class _Run:
                 else:
                     log.info("stopping the crawl: %s", stop.reason)
         finally:
+            if calls is not None:
+                calls.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await calls
             if self.pool is not None:
                 # Stopping early (fail_fast, an interrupt) doesn't wait for
                 # callbacks the workers are still running.
@@ -1553,6 +1606,57 @@ class _Run:
             ", ".join(f"{k} {v}" for k, v in stats.items()),
         )
         return stats
+
+    async def serve_calls(self) -> None:
+        """Runs the call steps of pages in Chrome as they come, each as a
+        task of its own, alongside the callbacks: a slow callback never
+        holds a page's steps up. Always here, in this process, as the live
+        page is, whether or not there are workers."""
+        running: set[asyncio.Future] = set()
+        try:
+            while True:
+                call = await self.engine.next_call()
+                if call is None:
+                    return
+                task = asyncio.ensure_future(self.run_call(call))
+                running.add(task)
+                task.add_done_callback(running.discard)
+        finally:
+            for task in running:
+                task.cancel()
+
+    async def run_call(self, call: Any) -> None:
+        """One call step: the spider method it names, or the function in
+        its request's steps, called with the page and the request; what it
+        returns, as JSON, is the step's result."""
+        try:
+            request = self.waiting.get(call.id)
+            if call.method is not None:
+                fn = getattr(self.spider, call.method, None)
+                if not callable(fn):
+                    raise AttributeError(f"the spider has no method {call.method!r}")
+            elif request is not None and request.steps is not None:
+                fn = request.steps[call.index]["method"]
+            else:
+                raise LookupError("its function isn't known in this process")
+            page = call.page
+            if request is None:
+                # A rule's request: the rules know it by its URL alone.
+                request = Request(page.url)
+            value = await asyncio.wait_for(_result(fn(page, request)), call.timeout)
+            try:
+                answer = json.dumps(value)
+            except (TypeError, ValueError) as e:
+                raise TypeError(f"what it returned isn't JSON: {e}") from None
+            call.reply(answer)
+        except asyncio.CancelledError:
+            call.fail("the crawl stopped")
+            raise
+        except TimeoutError:
+            call.fail(f"it took more than {call.timeout:g}s")
+        except Exception as e:  # noqa: BLE001 - the step's on_error decides
+            log.debug("a call step raised", exc_info=True)
+            call.fail(f"{type(e).__name__}: {e}")
 
     async def queue_start(self) -> None:
         """The spider's start requests, through the spider middlewares'
@@ -2821,6 +2925,18 @@ def _jar_name(meta: dict[str, Any]) -> str | None:
         ) from None
 
 
+def _rule_method(spider: Any, fn: Callable[..., Any]) -> str:
+    """The name a rule's call step keeps for ``fn``, which must be a
+    method of ``spider``: the rules run in Rust, which holds names."""
+    name = getattr(fn, "__name__", None)
+    if name is not None and getattr(spider, name, None) == fn:
+        return name
+    raise TypeError(
+        f"Follow's call steps run spider methods, which the rules keep by name, so {fn!r}"
+        " must be a method of the spider"
+    )
+
+
 def _jar_of(request: Request | None) -> str | None:
     """The jar ``request``'s ``meta["cookiejar"]`` names, or None for the
     crawl's own (or a name that isn't JSON, which never got as far as a
@@ -2869,6 +2985,7 @@ def _restored(
         allow_redirects=not dont_redirect,
         auth=auth[:2] if auth is not None and auth[2] is None else None,
         cookies=data.get("cookies"),
+        steps=data.get("steps"),
     )
     return request, data
 

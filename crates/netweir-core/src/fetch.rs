@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
+use netweir_browser::steps::Outcome;
 use url::Url;
 use wreq::header::{HeaderMap, HeaderName, HeaderValue, LOCATION, OrigHeaderMap, SET_COOKIE};
 use wreq::{Proxy, Uri, Version, redirect};
@@ -289,6 +290,9 @@ pub struct Response {
     pub headers: Vec<(String, String)>,
     /// Decompressed, not decoded.
     pub body: Bytes,
+    /// For a page Chrome rendered, how each of its request's steps went;
+    /// empty for any other.
+    pub steps: Arc<[Outcome]>,
 }
 
 impl Response {
@@ -323,6 +327,10 @@ pub enum FetchErrorKind {
     Body,
     /// The body was larger than the limit.
     TooLarge,
+    /// A browser request's step failed, and its `on_error` said to fail
+    /// the request. Not retried: steps may have done something (sent a
+    /// form) a retry would do twice.
+    Step,
     Other,
 }
 
@@ -330,6 +338,19 @@ pub enum FetchErrorKind {
 pub struct FetchError {
     pub kind: FetchErrorKind,
     pub message: String,
+    /// For a browser request whose steps failed, how each went, up to the
+    /// one that failed them; empty for any other error.
+    pub steps: Arc<[Outcome]>,
+}
+
+impl FetchError {
+    pub fn new(kind: FetchErrorKind, message: impl Into<String>) -> FetchError {
+        FetchError {
+            kind,
+            message: message.into(),
+            steps: Arc::default(),
+        }
+    }
 }
 
 impl fmt::Display for FetchError {
@@ -345,6 +366,7 @@ impl FetchError {
         FetchError {
             kind: FetchErrorKind::Invalid,
             message: message.into(),
+            steps: Default::default(),
         }
     }
 
@@ -395,7 +417,7 @@ impl From<wreq::Error> for FetchError {
             message.push_str(&s.to_string());
             source = s.source();
         }
-        FetchError { kind, message }
+        FetchError::new(kind, message)
     }
 }
 
@@ -499,6 +521,7 @@ async fn read_at_most(url: &str, response: wreq::Response, max: u64) -> Result<B
     let too_large = || FetchError {
         kind: FetchErrorKind::TooLarge,
         message: format!("{url}: the response is larger than the limit of {max} bytes"),
+        steps: Default::default(),
     };
     let declared = response
         .headers()
@@ -1428,6 +1451,7 @@ impl Fetcher {
             return Err(FetchError {
                 kind: FetchErrorKind::TooManyRedirects,
                 message: format!("more than {limit} redirects, the last to {url}"),
+                steps: Default::default(),
             });
         }
         let mut next = current
@@ -1714,6 +1738,7 @@ async fn drain(url: String, response: wreq::Response) -> (Response, bool) {
             version,
             headers,
             body: body.into(),
+            steps: Default::default(),
         },
         !whole,
     )
@@ -1761,6 +1786,7 @@ async fn into_response(
         version,
         headers,
         body,
+        steps: Default::default(),
     })
 }
 

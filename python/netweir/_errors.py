@@ -4,12 +4,21 @@ class FetchError(Exception):
     ``kind`` says why: ``"invalid"`` (bad URL, header or proxy),
     ``"timeout"``, ``"connect"``, ``"tls"``, ``"too_many_redirects"``,
     ``"body"`` (the connection broke mid-response), ``"too_large"`` (the
-    body passed the size limit) or ``"other"``.
+    body passed the size limit), ``"step"`` (a browser request's step
+    failed, and said to fail the request) or ``"other"``.
+
+    For ``"step"``, ``steps`` is how each step went, as ``page.steps``
+    would have it: the one that failed, those before it, and those after
+    it skipped. It's empty for any other kind.
     """
 
-    def __init__(self, message: str, kind: str = "other"):
+    def __init__(self, message: str, kind: str = "other", steps: list | None = None):
         super().__init__(message)
         self.kind = kind
+        self.steps = steps if steps is not None else []
+
+    def __reduce__(self):
+        return (type(self), (str(self), self.kind, self.steps))
 
 
 class QueueError(ConnectionError):

@@ -63,6 +63,7 @@ fn request(id: u64, url: String, browser: bool) -> CrawlRequest {
         proxy: None,
         delta_key: Default::default(),
         cookies: Default::default(),
+        steps: None,
     }
 }
 
@@ -1163,4 +1164,217 @@ async fn a_crawls_phone_hands_its_cookies_to_requests_that_say_the_same() {
     );
     assert!(header(&over_http, "user-agent").contains("Android"));
     assert_eq!(header(&over_http, "sec-ch-ua-mobile"), "?1");
+}
+
+fn steps(json: serde_json::Value) -> std::sync::Arc<[netweir_browser::steps::Step]> {
+    netweir_browser::steps::parse(&json).unwrap().into()
+}
+
+/// A list that loads more items from the server when its button is
+/// clicked.
+const LOAD_MORE: &str = r#"<ul id=list><li>one</li></ul><button id=more onclick="more()">More</button>
+<script>
+  async function more() {
+    const r = await fetch('/api/items');
+    for (const name of await r.json()) {
+      document.querySelector('#list').insertAdjacentHTML('beforeend', `<li>${name}</li>`);
+    }
+  }
+</script>"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_requests_steps_run_before_its_page_comes_back() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![
+        ("/", Page::html(LOAD_MORE)),
+        ("/?2", Page::html(LOAD_MORE)),
+        ("/?3", Page::html(LOAD_MORE)),
+        (
+            "/api/items",
+            Page::html(r#"["two", "three"]"#).with_header("content-type", "application/json"),
+        ),
+    ])
+    .await;
+    // The crawl's own steps, which a request's steps take the place of.
+    let c = crawler(CrawlSettings {
+        browser_steps: steps(serde_json::json!([
+            {"action": "evaluate", "js": "document.title = 'crawl-wide'"},
+        ])),
+        ..settings(BrowserMode::Off)
+    });
+    c.submit(CrawlRequest {
+        steps: Some(steps(serde_json::json!([
+            {"action": "click", "selector": "#missing", "timeout": 0.3, "on_error": "continue"},
+            {"action": "click", "selector": "#more"},
+            {"action": "wait_for", "selector": "li:nth-child(3)"},
+            {"action": "evaluate", "js": "document.querySelectorAll('li').length"},
+        ]))),
+        ..request(1, site.url("/"), true)
+    });
+    c.submit(request(2, site.url("/?2"), true));
+    c.submit(CrawlRequest {
+        steps: Some(steps(serde_json::json!([]))),
+        ..request(3, site.url("/?3"), true)
+    });
+    let events = drain_closing(&c).await;
+    let fetched = |want: u64| {
+        events
+            .iter()
+            .find_map(|(e, _)| match e {
+                Event::Fetched { id, response, .. } if *id == want => Some(response.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{events:?}"))
+    };
+    let first = fetched(1);
+    let html = String::from_utf8_lossy(&first.body);
+    assert!(
+        html.contains("<li>three</li>"),
+        "the HTML is the page after its steps: {html}"
+    );
+    let statuses: Vec<_> = first.steps.iter().map(|o| o.status.as_str()).collect();
+    assert_eq!(statuses, ["failed", "ok", "ok", "ok"]);
+    assert_eq!(first.steps[3].value, Some(serde_json::json!(3)));
+    let second = fetched(2);
+    assert_eq!(second.steps.len(), 1);
+    assert!(String::from_utf8_lossy(&second.body).contains("<title>crawl-wide</title>"));
+    let third = fetched(3);
+    assert!(third.steps.is_empty());
+    assert!(!String::from_utf8_lossy(&third.body).contains("crawl-wide"));
+    let stats = c.stats();
+    assert_eq!((stats.browser_steps, stats.browser_steps_failed), (5, 1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_step_that_fails_the_request_isnt_tried_again() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html(LOAD_MORE))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    c.submit(CrawlRequest {
+        steps: Some(steps(serde_json::json!([
+            {"action": "evaluate", "js": "1 + 1"},
+            {"action": "click", "selector": "#missing", "timeout": 0.3},
+            {"action": "click", "selector": "#more"},
+        ]))),
+        ..request(1, site.url("/"), true)
+    });
+    let events = drain(&c).await;
+    let Some(Event::Failed { error, .. }) = main(&events) else {
+        panic!("{events:?}");
+    };
+    assert_eq!(error.kind, netweir_core::FetchErrorKind::Step);
+    assert!(
+        error.message.starts_with("step 2 (click) failed"),
+        "{}",
+        error.message
+    );
+    let statuses: Vec<_> = error.steps.iter().map(|o| o.status.as_str()).collect();
+    assert_eq!(statuses, ["ok", "failed", "skipped"]);
+    assert_eq!(c.stats().retries, 0);
+    assert_eq!(site.paths().iter().filter(|p| *p == "/").count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_step_that_leads_to_a_block_hands_the_block_on() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let gate = || {
+        Page::status(403, "<title>Just a moment...</title>")
+            .with_header("content-type", "text/html")
+            .with_header("cf-mitigated", "challenge")
+    };
+    let site = Site::start(vec![
+        ("/", Page::html("<a id=go href=/gate>go</a>")),
+        ("/gate", gate()),
+        ("/gate?direct", gate()),
+    ])
+    .await;
+    let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+    // The challenge is waited out for at most this long.
+    options.timeout = Duration::from_secs(2);
+    let c = Crawler::new(options, settings(BrowserMode::Off)).unwrap();
+    c.submit(CrawlRequest {
+        steps: Some(steps(serde_json::json!([
+            {"action": "click", "selector": "#go"},
+            {"action": "wait_for", "selector": "#prize", "timeout": 0.5},
+        ]))),
+        ..request(1, site.url("/"), true)
+    });
+    // A page blocked before its steps doesn't run them.
+    c.submit(CrawlRequest {
+        steps: Some(steps(serde_json::json!([
+            {"action": "evaluate", "js": "1"},
+        ]))),
+        ..request(2, site.url("/gate?direct"), true)
+    });
+    let events = drain(&c).await;
+    let blocked: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Blocked { id, response, .. } => Some((*id, response)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocked.len(), 2, "{events:?}");
+    let (_, after) = blocked.iter().find(|(id, _)| *id == 1).unwrap();
+    assert!(after.url.ends_with("/gate"), "{}", after.url);
+    assert_eq!(after.steps[1].status.as_str(), "failed");
+    let (_, before) = blocked.iter().find(|(id, _)| *id == 2).unwrap();
+    assert_eq!(before.steps[0].status.as_str(), "skipped");
+    assert_eq!(
+        before.steps[0].error.as_deref(),
+        Some("the page was blocked")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_steps_go_to_whoever_takes_them() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html("<title>t</title>"))]).await;
+    let list = steps(serde_json::json!([
+        {"action": "call", "method": "title_of", "on_error": "continue"},
+    ]));
+    // Nobody has taken the calls: the step fails at once.
+    let c = crawler(settings(BrowserMode::Off));
+    c.submit(CrawlRequest {
+        steps: Some(list.clone()),
+        ..request(1, site.url("/"), true)
+    });
+    let events = drain_closing(&c).await;
+    let Some((Event::Fetched { response, .. }, _)) = events.first() else {
+        panic!("{events:?}");
+    };
+    let error = response.steps[0].error.as_deref().unwrap();
+    assert!(error.contains("nothing here runs call steps"), "{error}");
+
+    let c = crawler(settings(BrowserMode::Off));
+    let mut calls = c.step_calls().unwrap();
+    assert!(c.step_calls().is_none(), "taken once");
+    tokio::spawn(async move {
+        while let Some(call) = calls.recv().await {
+            let title = call.page.page().title().await.unwrap();
+            let _ = call.reply.send(Ok(serde_json::json!({
+                "id": call.id, "index": call.index, "method": call.method, "title": title,
+            })));
+        }
+    });
+    c.submit(CrawlRequest {
+        steps: Some(list),
+        ..request(7, site.url("/"), true)
+    });
+    let events = drain_closing(&c).await;
+    let Some((Event::Fetched { response, .. }, _)) = events.first() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        response.steps[0].value,
+        Some(serde_json::json!({"id": 7, "index": 0, "method": "title_of", "title": "t"}))
+    );
 }

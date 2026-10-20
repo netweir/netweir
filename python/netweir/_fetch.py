@@ -275,6 +275,17 @@ class Page:
         return self._response.version
 
     @property
+    def steps(self) -> list[dict[str, Any]]:
+        """For a page fetched in Chrome with steps, how each went: a dict
+        with ``action``, ``status`` (``"ok"``, ``"failed"`` or
+        ``"skipped"``), ``error``, ``elapsed`` (seconds) and ``result``:
+        what an evaluate or a call returned, a screenshot's PNG bytes, the
+        values a select_option chose, how many rounds a scroll loaded, the
+        ``{"url", "status"}`` a wait_for_response or wait_for_navigation
+        saw. Empty for any other page."""
+        return getattr(self._response, "steps", None) or []
+
+    @property
     def raw_headers(self) -> list[tuple[str, str]]:
         """Every header as (name, value), in the order received, repeats
         included. Names are lowercase."""

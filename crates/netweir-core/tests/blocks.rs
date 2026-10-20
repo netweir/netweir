@@ -39,6 +39,7 @@ fn load(name: &str) -> Response {
         version: "HTTP/1.1",
         headers,
         body: Bytes::copy_from_slice(&raw[split + 4..]),
+        steps: Default::default(),
     }
 }
 

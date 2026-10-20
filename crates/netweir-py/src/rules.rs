@@ -303,6 +303,10 @@ pub(crate) struct Rule {
     pub deny: Vec<regex::Regex>,
     pub allow_domains: Vec<String>,
     pub deny_domains: Vec<String>,
+    /// Fetch the pages it leads to in Chrome.
+    pub browser: bool,
+    /// What to do on them first, in place of the crawl's steps.
+    pub steps: Option<Arc<[netweir_browser::steps::Step]>>,
 }
 
 impl Rule {

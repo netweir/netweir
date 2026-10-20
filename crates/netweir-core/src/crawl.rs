@@ -8,6 +8,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use netweir_browser::steps::{self, Report, Step};
 use netweir_browser::{Browser, Cookie, LaunchOptions, WaitUntil};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use url::Url;
@@ -94,6 +95,9 @@ pub struct CrawlSettings {
     /// Resource types ("image", "font", ...) the crawl's Chrome pages
     /// fail before they're fetched.
     pub browser_block: Vec<String>,
+    /// What every page fetched in Chrome does once it has loaded, before
+    /// the caller sees it, unless its request has steps of its own.
+    pub browser_steps: Arc<[Step]>,
     /// Domains requests may go to, with their subdomains, normalised by
     /// `allowed_domains`; empty for any. A request elsewhere is dropped
     /// unless it has `dont_filter`.
@@ -262,6 +266,7 @@ impl Default for CrawlSettings {
             browser_pages: 4,
             browser_launch: LaunchOptions::default(),
             browser_block: Vec::new(),
+            browser_steps: Arc::default(),
             allowed_domains: Vec::new(),
             cache: None,
             cache_expiry: None,
@@ -301,6 +306,11 @@ pub struct CrawlRequest {
     pub delta_key: DeltaKey,
     /// Its own cookies and the jar it shares.
     pub cookies: RequestCookies,
+    /// What to do on its page once Chrome has loaded it, before the
+    /// caller sees it, in place of the crawl's `browser_steps`; None for
+    /// those. Not part of its fingerprint, as Scrapy leaves meta out:
+    /// the same URL with other steps is the same request.
+    pub steps: Option<Arc<[Step]>>,
 }
 
 /// The cookies a request goes with: Scrapy's `Request.cookies`,
@@ -421,6 +431,29 @@ const DOWNLOAD_PRIORITY: i32 = i32::MAX;
 pub struct Downloaded {
     pub event: Event,
     pub cached: bool,
+}
+
+/// A call step for the caller to run with code of its own: which
+/// request's page (`id`), which of its steps (`index`, from 0), the method
+/// the step names if it names one, the page itself, and how long the step
+/// may take. The step waits for `reply`; one dropped unanswered fails it.
+pub struct StepCall {
+    pub id: u64,
+    pub index: usize,
+    pub method: Option<String>,
+    pub page: LivePage,
+    pub timeout: Duration,
+    pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+impl std::fmt::Debug for StepCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepCall")
+            .field("id", &self.id)
+            .field("index", &self.index)
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A page still open in Chrome after a browser fetch. Closing it, or
@@ -641,6 +674,10 @@ pub struct Stats {
     pub browser_fetches: u64,
     /// Requests blocked over HTTP that Chrome got through.
     pub browser_unblocked: u64,
+    /// Steps run on pages in Chrome, and those of them that failed,
+    /// whatever their `on_error`.
+    pub browser_steps: u64,
+    pub browser_steps_failed: u64,
     /// Requests dropped for going outside `allowed_domains`.
     pub offsite: u64,
     /// Pages served from the cache rather than fetched.
@@ -707,6 +744,10 @@ struct Shared {
     /// Places for open Chrome pages.
     pages: Arc<Semaphore>,
     runtime: tokio::runtime::Handle,
+    /// Where call steps go to be run, and, until the caller takes it with
+    /// `step_calls`, where they arrive.
+    calls: tokio::sync::mpsc::UnboundedSender<StepCall>,
+    called: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<StepCall>>>,
     /// The jars requests name (`RequestCookies::jar`), made as they're
     /// first named.
     jars: Mutex<HashMap<String, Arc<Jar>>>,
@@ -1383,6 +1424,7 @@ impl Crawler {
                 }
             }
         }
+        let (calls, called) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             fetcher,
             jars: Mutex::new(jars),
@@ -1400,6 +1442,8 @@ impl Crawler {
             browser: tokio::sync::Mutex::new(None),
             pages: Arc::new(Semaphore::new(settings_pages)),
             runtime: tokio::runtime::Handle::current(),
+            calls,
+            called: Mutex::new(Some(called)),
         });
         // Each host's own session the checkpoint kept, with its cookies.
         let host_jars = shared
@@ -1666,6 +1710,17 @@ impl Crawler {
             Some(Ok(browser)) => Some(browser.clone()),
             _ => None,
         }
+    }
+
+    /// The call steps of pages in Chrome, as they come, for the caller to
+    /// run: the first call has them, and later ones None. Until a caller
+    /// takes them, a call step fails at once.
+    pub fn step_calls(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<StepCall>> {
+        self.shared
+            .called
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Closes Chrome, if the crawl started it.
@@ -2909,6 +2964,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
                     Err(FetchError {
                         kind: FetchErrorKind::Other,
                         message: format!("the fetch failed inside netweir: {why}"),
+                        steps: Default::default(),
                     })
                 },
             )
@@ -3293,9 +3349,18 @@ type Rendered = (Response, LivePage, Vec<Cookie>, Duration, String);
 /// blocked isn't retried in Chrome.
 async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphorePermit) {
     let timeout = shared.options.timeout;
+    let steps = q
+        .request
+        .steps
+        .clone()
+        .unwrap_or_else(|| shared.settings.browser_steps.clone());
     // A Chrome that stops answering mid-page mustn't hold the request, and
-    // its place in the crawl, for good.
-    let limit = timeout.saturating_mul(2) + CHALLENGE_WAIT;
+    // its place in the crawl, for good. Steps have time of their own, and
+    // a challenge they lead to as long again to pass.
+    let mut limit = timeout.saturating_mul(2) + CHALLENGE_WAIT;
+    if !steps.is_empty() {
+        limit += steps::budget(&steps, shared.settings.browser_launch.timeout) + CHALLENGE_WAIT;
+    }
     // Set if robots.txt or TDMRep stopped a document Chrome was about to
     // fetch: a redirect hop, or a navigation the page's script started.
     let refused: Refusal = Arc::default();
@@ -3303,7 +3368,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
     let doing: Doing = Arc::new(Mutex::new("starting"));
     let work = render(
         shared.clone(),
-        q.request.url.clone(),
+        (q.request.id, q.request.url.clone(), steps),
         q.blocked.is_some(),
         browser_cookies(&shared, &q.request),
         permit,
@@ -3320,6 +3385,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
                         limit.as_secs(),
                         doing.lock().unwrap_or_else(|e| e.into_inner())
                     ),
+                    steps: Default::default(),
                 })
             })
         },
@@ -3327,6 +3393,7 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
             Err(FetchError {
                 kind: FetchErrorKind::Other,
                 message: format!("the browser fetch failed inside netweir: {why}"),
+                steps: Default::default(),
             })
         },
     )
@@ -3500,12 +3567,13 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
     shared.schedule.notify_one();
 }
 
-/// Loads `url` in a new Chrome page and reads it back. A challenge page is
-/// given time to pass and move on. With `cookies`, also returns the
-/// page's cookies.
+/// Loads `url` in a new Chrome page, runs `steps` on it, and reads it
+/// back. A challenge page is given time to pass and move on, before the
+/// steps and after them. With `cookies`, also returns the page's cookies,
+/// as the steps left them. `id` is the request's, for call steps.
 async fn render(
     shared: Arc<Shared>,
-    url: String,
+    (id, url, steps): (u64, String, Arc<[Step]>),
     cookies: bool,
     (seed, jar): (Seed, Option<Arc<Jar>>),
     permit: OwnedSemaphorePermit,
@@ -3548,6 +3616,7 @@ async fn render(
     .map_err(|e| FetchError {
         kind: FetchErrorKind::Other,
         message: format!("can't start Chrome: {e}"),
+        steps: Default::default(),
     })?;
     let guarded = shared.settings.obey_robots || shared.settings.obey_tdmrep;
     now("opening a page");
@@ -3611,55 +3680,53 @@ async fn render(
         timeout
     };
     now("loading the page");
-    let mut document = page
+    let document = page
         .goto(&url, WaitUntil::Load, Some(load_limit))
         .await
         .map_err(browser_error)?;
     let latency = started.elapsed();
-    let deadline = Instant::now() + CHALLENGE_WAIT.min(timeout);
-    let response = loop {
-        // A script may already have moved the page on (a challenge that
-        // passes at once does): read the newest document, once loaded.
-        if page.response().loader != document.loader {
-            now("loading the page a script moved on to");
-            let left = deadline.saturating_duration_since(Instant::now());
-            match page
-                .wait_for_navigation(&document, WaitUntil::Load, Some(left))
-                .await
-            {
-                Ok(next) => document = next,
-                Err(netweir_browser::Error::Timeout(_)) => {}
-                Err(e) => return Err(browser_error(e)),
+    let mut response = settle(&page, document, CHALLENGE_WAIT.min(timeout), &now).await?;
+    if !steps.is_empty() {
+        let report = match classify(&response) {
+            Outcome::Ok => {
+                now("running its steps");
+                let call = caller(&shared, id, &live);
+                let report = steps::run(&page, &steps, &*call).await;
+                {
+                    let mut state = shared.lock();
+                    let ran = report
+                        .outcomes
+                        .iter()
+                        .filter(|o| o.status != steps::Status::Skipped);
+                    for o in ran {
+                        state.stats.browser_steps += 1;
+                        if o.status == steps::Status::Failed {
+                            state.stats.browser_steps_failed += 1;
+                        }
+                    }
+                }
+                // A step may have moved the page on, to a challenge as
+                // likely as anywhere: given the same time to pass.
+                response =
+                    settle(&page, page.response(), CHALLENGE_WAIT.min(timeout), &now).await?;
+                report
             }
+            Outcome::Blocked { .. } => Report::skipped(&steps, "the page was blocked"),
+            _ => Report::skipped(&steps, &format!("the page answered {}", response.status)),
+        };
+        let blocked = matches!(classify(&response), Outcome::Blocked { .. });
+        let outcomes: Arc<[steps::Outcome]> = report.outcomes.clone().into();
+        // A step that failed on a page that's now blocked failed for the
+        // block, which is what the request hears about.
+        if let (Some(why), false) = (report.failure(), blocked) {
+            return Err(FetchError {
+                kind: FetchErrorKind::Step,
+                message: why,
+                steps: outcomes,
+            });
         }
-        now("reading the page");
-        let response = rendered(&document, content(&page).await?);
-        let challenged = matches!(
-            classify(&response),
-            Outcome::Blocked {
-                kind: BlockKind::Challenge,
-                ..
-            }
-        );
-        let left = deadline.saturating_duration_since(Instant::now());
-        if !challenged || left.is_zero() {
-            break response;
-        }
-        now("waiting for a challenge to pass");
-        match page
-            .wait_for_navigation(&document, WaitUntil::Load, Some(left))
-            .await
-        {
-            Ok(next) => document = next,
-            // Out of time. One last look, for a challenge that swaps the
-            // page's content without navigating.
-            Err(netweir_browser::Error::Timeout(_)) => {
-                now("reading the page");
-                break rendered(&page.response(), content(&page).await?);
-            }
-            Err(e) => return Err(browser_error(e)),
-        }
-    };
+        response.steps = outcomes;
+    }
     // A navigation that was refused leaves Chrome's error page showing,
     // which isn't the page.
     if refused.lock().unwrap_or_else(|e| e.into_inner()).is_some()
@@ -3668,6 +3735,7 @@ async fn render(
         return Err(FetchError {
             kind: FetchErrorKind::Other,
             message: "Chrome was refused the page it was going to".into(),
+            steps: Default::default(),
         });
     }
     now("reading its cookies");
@@ -3683,6 +3751,92 @@ async fn render(
         latency,
         browser.version().to_string(),
     ))
+}
+
+/// The page as it is once a script that moved it on has its document
+/// loaded, and a challenge showing has had until `wait` to pass, starting
+/// from `document`, the one it was showing.
+async fn settle(
+    page: &netweir_browser::Page,
+    mut document: netweir_browser::Response,
+    wait: Duration,
+    now: &impl Fn(&'static str),
+) -> Result<Response, FetchError> {
+    let deadline = Instant::now() + wait;
+    loop {
+        // A script may already have moved the page on (a challenge that
+        // passes at once does): read the newest document, once loaded.
+        if page.response().loader != document.loader {
+            now("loading the page a script moved on to");
+            let left = deadline.saturating_duration_since(Instant::now());
+            match page
+                .wait_for_navigation(&document, WaitUntil::Load, Some(left))
+                .await
+            {
+                Ok(next) => document = next,
+                Err(netweir_browser::Error::Timeout(_)) => {}
+                Err(e) => return Err(browser_error(e)),
+            }
+        }
+        now("reading the page");
+        let response = rendered(&document, content(page).await?);
+        let challenged = matches!(
+            classify(&response),
+            Outcome::Blocked {
+                kind: BlockKind::Challenge,
+                ..
+            }
+        );
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !challenged || left.is_zero() {
+            return Ok(response);
+        }
+        now("waiting for a challenge to pass");
+        match page
+            .wait_for_navigation(&document, WaitUntil::Load, Some(left))
+            .await
+        {
+            Ok(next) => document = next,
+            // Out of time. One last look, for a challenge that swaps the
+            // page's content without navigating.
+            Err(netweir_browser::Error::Timeout(_)) => {
+                now("reading the page");
+                return Ok(rendered(&page.response(), content(page).await?));
+            }
+            Err(e) => return Err(browser_error(e)),
+        }
+    }
+}
+
+/// Runs the call steps of request `id`'s page by sending them to whoever
+/// took `step_calls`; with nobody there, each fails at once.
+fn caller(shared: &Arc<Shared>, id: u64, live: &LivePage) -> Box<steps::Call> {
+    let (shared, live) = (shared.clone(), live.clone());
+    Box::new(move |index, method, timeout| {
+        let taken = shared
+            .called
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none();
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let call = StepCall {
+            id,
+            index,
+            method,
+            page: live.clone(),
+            timeout,
+            reply,
+        };
+        let sent = taken && shared.calls.send(call).is_ok();
+        Box::pin(async move {
+            if !sent {
+                return Err("nothing here runs call steps".to_string());
+            }
+            answer
+                .await
+                .unwrap_or_else(|_| Err("the call step was never answered".to_string()))
+        })
+    })
 }
 
 /// Why a document Chrome is about to fetch may not be: robots.txt or
@@ -3853,6 +4007,7 @@ fn rendered(document: &netweir_browser::Response, html: String) -> Response {
         version: "browser",
         headers,
         body: html.into(),
+        steps: Default::default(),
     }
 }
 
@@ -3867,6 +4022,7 @@ fn browser_error(e: netweir_browser::Error) -> FetchError {
     FetchError {
         kind,
         message: format!("in Chrome: {e}"),
+        steps: Default::default(),
     }
 }
 
@@ -4377,6 +4533,7 @@ async fn gate_get<T>(
                     Err(FetchError {
                         kind: FetchErrorKind::Other,
                         message: format!("the fetch failed inside netweir: {why}"),
+                        steps: Default::default(),
                     })
                 },
             )
@@ -4537,6 +4694,7 @@ mod tests {
             proxy: None,
             delta_key: Default::default(),
             cookies: Default::default(),
+            steps: None,
         }
     }
 
@@ -4756,6 +4914,7 @@ mod tests {
                 proxy: None,
                 delta_key: DeltaKey::Fingerprint,
                 cookies: Default::default(),
+                steps: None,
             },
             host: String::new(),
             origin: String::new(),

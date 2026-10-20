@@ -12,7 +12,7 @@ use netweir_core::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyList};
 
 use crate::Node;
 
@@ -27,10 +27,12 @@ pub(crate) fn fetch_error_value(py: Python<'_>, e: &CoreError) -> PyResult<Py<Py
         FetchErrorKind::TooManyRedirects => "too_many_redirects",
         FetchErrorKind::Body => "body",
         FetchErrorKind::TooLarge => "too_large",
+        FetchErrorKind::Step => "step",
         FetchErrorKind::Other => "other",
     };
     let class = py.import("netweir._errors")?.getattr("FetchError")?;
-    Ok(class.call1((e.message.clone(), kind))?.unbind())
+    let steps = crate::browser::outcomes_py(py, &e.steps)?;
+    Ok(class.call1((e.message.clone(), kind, steps))?.unbind())
 }
 
 /// Raises `netweir.FetchError(message, kind)`.
@@ -393,15 +395,18 @@ fn outgoing(
 }
 
 /// A response from its parts, as a worker process gets one, or as the
-/// shell makes one for a page read from a file.
+/// shell makes one for a page read from a file. `steps` is the JSON of
+/// its steps' outcomes, if it had any.
 #[pyfunction]
+#[pyo3(signature = (url, status, version, headers, body, steps=None))]
 pub(crate) fn _response(
     url: String,
     status: u16,
     version: &str,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
-) -> Response {
+    steps: Option<&str>,
+) -> PyResult<Response> {
     // Only these are ever made; anything else reads as HTTP/1.1.
     let version = [
         "HTTP/0.9", "HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/3", "browser", "file",
@@ -409,13 +414,26 @@ pub(crate) fn _response(
     .into_iter()
     .find(|v| *v == version)
     .unwrap_or("HTTP/1.1");
-    Response::from(netweir_core::Response {
+    let steps = match steps {
+        None => Default::default(),
+        Some(json) => serde_json::from_str::<Vec<serde_json::Value>>(json)
+            .ok()
+            .and_then(|list| {
+                list.iter()
+                    .map(netweir_browser::steps::Outcome::from_json)
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| PyValueError::new_err("steps isn't the JSON of steps' outcomes"))?
+            .into(),
+    };
+    Ok(Response::from(netweir_core::Response {
         url,
         status,
         version,
         headers,
         body: body.into(),
-    })
+        steps,
+    }))
 }
 
 #[pyclass(frozen, module = "netweir")]
@@ -443,16 +461,27 @@ impl Response {
         let py = slf.py();
         let r = &slf.get().inner;
         let rebuild = py.import("netweir._native")?.getattr("_response")?;
+        let steps = (!r.steps.is_empty()).then(|| {
+            serde_json::Value::Array(r.steps.iter().map(|o| o.to_json()).collect()).to_string()
+        });
         let parts = (
             r.url.clone(),
             r.status,
             r.version,
             r.headers.clone(),
             PyBytes::new(py, &r.body),
+            steps,
         )
             .into_pyobject(py)?
             .into_any();
         Ok((rebuild, parts))
+    }
+
+    /// How each of its request's steps went, for a page Chrome rendered;
+    /// empty for any other.
+    #[getter]
+    fn steps<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        crate::browser::outcomes_py(py, &self.inner.steps)
     }
 
     #[getter]
