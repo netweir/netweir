@@ -4,7 +4,6 @@ import json
 import os
 import random
 import shutil
-import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -266,17 +265,26 @@ ALL = sorted(f"{n}-{i}" for n in range(1, PAGES + 1) for i in range(PER_PAGE))
 def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplog):
     db = tmp_path / "state" / "crawl.sqlite3"
 
+    def sql(statement):
+        # From another process: Python's SQLite is a second copy of SQLite
+        # in this one, and closing its connection drops the locks the
+        # crawl's copy holds on the file (POSIX locks are per process).
+        subprocess.run(
+            [sys.executable, "-c", "import sqlite3, sys; sqlite3.connect(sys.argv[1]).execute(sys.argv[2])", str(db), statement],
+            check=True,
+        )  # fmt: skip
+
     def at(n):
-        # The commit after the 4th item's batch fails, until the 6th puts
-        # the table back. Each pause lets the writer commit (or fail)
-        # before the batch is settled.
+        # The commits after the 4th item's batch fail, as on a full disk,
+        # until the 6th lets them through. Each pause lets the writer
+        # commit (or fail) before the batch is settled.
         if n == 4:
-            with sqlite3.connect(db) as c:
-                c.execute("ALTER TABLE items RENAME TO items_away")
+            sql(
+                "CREATE TRIGGER full BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'disk full'); END"
+            )
         if n == 6:
             time.sleep(0.3)
-            with sqlite3.connect(db) as c:
-                c.execute("ALTER TABLE items_away RENAME TO items")
+            sql("DROP TRIGGER full")
         if n in (5, 7):
             time.sleep(0.3)
 
@@ -291,7 +299,7 @@ def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplo
     with caplog.at_level("WARNING", logger="netweir"):
         stats = spider.run(output=str(out))
     failing = [r.message for r in caplog.records if "each commit tries" in r.message]
-    assert len(failing) == 1 and "no such table: items" in failing[0], caplog.text
+    assert len(failing) == 1 and "disk full" in failing[0], caplog.text
     assert caplog.text.count("checkpoint commits work again") == 1, caplog.text
     assert stats["checkpoint_failures"] >= 1
     assert names_in(out) == ALL
