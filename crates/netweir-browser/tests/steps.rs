@@ -161,8 +161,11 @@ async fn steps_answer_dialogs_act_in_frames_and_run_calls() {
             "/",
             html(
                 r#"<!DOCTYPE html>
-<button id=ask onclick="window.answer = confirm('Sure?')">Delete</button>
-<script>setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<iframe name=consent src=/frame></iframe>'), 300)</script>"#,
+<div><button id=ask onclick="window.answer = confirm('Sure?')">Delete</button></div>
+<!-- The frame comes late, below the button: an inline frame on the
+     button's line would move it down mid-click. -->
+<div id=later></div>
+<script>setTimeout(() => document.querySelector('#later').innerHTML = '<iframe name=consent src=/frame></iframe>', 300)</script>"#,
             ),
         ),
         (
