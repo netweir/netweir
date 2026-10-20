@@ -1066,6 +1066,8 @@ class _Run:
         #: Items already delivered by an earlier run of this crawl, by _id.
         self.delivered: set[str] = set()
         self.saving = self.settings.checkpoint is not None
+        #: Whether the crawl has warned that checkpoint commits are failing.
+        self.checkpoint_warned = False
         #: Requests leave this process as data, callbacks by name: for a
         #: checkpoint, or for the shared queue.
         self.by_name = self.saving or self.settings.queue is not None
@@ -1858,6 +1860,8 @@ class _Run:
         memory until the end."""
         from netweir import export
 
+        if self.saving:
+            self.watch_checkpoint()
         exporters = [s for s in self.pipelines if isinstance(s, export._Exporter)]
         delta = self.delta and (self.produced or self.counts["items"] != self.delta_items)
         if not (self.saving or delta):
@@ -1877,6 +1881,28 @@ class _Run:
         if self.checkpoint_committed():
             self.record_pages()
         self.engine.ack()
+
+    def watch_checkpoint(self) -> None:
+        """Warns once when checkpoint commits start failing, and once when
+        they work again; raises OSError when the checkpoint has stopped,
+        having held back more failed writes than it keeps. Reads the
+        commits made so far, without waiting on one."""
+        failing = self.engine.checkpoint_failing()
+        if failing is None:
+            if self.checkpoint_warned:
+                self.checkpoint_warned = False
+                log.warning("checkpoint commits work again: it's up to date")
+            return
+        why, stopped = failing
+        if stopped:
+            raise OSError(why)
+        if not self.checkpoint_warned:
+            self.checkpoint_warned = True
+            log.warning(
+                "%s; the crawl goes on, and each commit tries the failed writes"
+                " again (a resume meanwhile starts from the last that worked)",
+                why,
+            )
 
     def checkpoint_committed(self) -> bool:
         """With a checkpoint and deltafetch, waits for the checkpoint's
@@ -1949,7 +1975,8 @@ class _Run:
         try:
             if self.saving:
                 self.record()
-                # A failed write is reported when the crawl closes.
+                # A failed write goes again with the next commit, and the
+                # first settle warns of it.
                 with contextlib.suppress(OSError):
                     self.engine.flush()
             self.record_pages()

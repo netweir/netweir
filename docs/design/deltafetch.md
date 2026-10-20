@@ -163,7 +163,10 @@ the next one, so no later commit lands without them: one that did would
 hold counters whose file lengths cover items the checkpoint doesn't have
 as delivered, and a resume would write those items again. Once a commit
 with them in it lands, recording again is safe. Until then every flush
-reports the failure, the one that closes the crawl included.
+reports the failure, the one that closes the crawl included. Held back,
+the counters and each cookie jar's snapshot keep only their latest, as
+each replaces the last whole; past a million held writes the checkpoint
+stops where its last good commit left it, and the crawl with it.
 
 ## What is recorded
 

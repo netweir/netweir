@@ -211,6 +211,15 @@ With a checkpoint, callbacks are saved by name, so they must be methods of
 the spider, and `meta` must be JSON. Delete the directory to start the crawl
 over.
 
+If a commit to the checkpoint fails (a full disk, or on Windows a file
+another program holds for a moment), the crawl warns once and carries on,
+and each commit after it tries the failed writes again; a second warning
+says when they've gone in, and `checkpoint_failures` in the stats counts
+the failed commits. Until then, a crawl that stops resumes from the last
+commit that worked. If commits keep failing until a million writes are
+waiting, the crawl stops with an `OSError` saying why, rather than run
+out of memory holding them.
+
 ## Tracked selectors
 
 ```python

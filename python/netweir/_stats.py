@@ -46,6 +46,7 @@ METRICS: dict[str, tuple[str, str]] = {
     "cache_stores": ("counter", "Responses written to the cache."),
     "proxies_benched": ("counter", "Times a proxy was benched."),
     "archive_errors": ("counter", "Responses that didn't reach the WARC or HAR file."),
+    "checkpoint_failures": ("counter", "Checkpoint commits that failed, to go again."),
     "pushed": ("counter", "Requests sent to the shared queue."),
     "leased": ("counter", "Requests taken from the shared queue."),
     "leases_reclaimed": ("counter", "Requests taken back from processes that died."),

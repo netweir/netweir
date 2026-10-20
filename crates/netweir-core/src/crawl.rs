@@ -736,6 +736,9 @@ pub struct Stats {
     /// Members of the shared queue that weren't requests netweir could
     /// read, dropped.
     pub queue_bad: u64,
+    /// Checkpoint commits that failed. Their writes go again with the
+    /// next commit.
+    pub checkpoint_failures: u64,
 }
 
 /// What one proxy did in a crawl.
@@ -1591,6 +1594,18 @@ impl Crawler {
         self.shared.release(row);
     }
 
+    /// Whether the crawl keeps a checkpoint.
+    pub fn has_checkpoint(&self) -> bool {
+        self.shared.checkpoint.is_some()
+    }
+
+    /// Why the checkpoint's last commit failed, if it did, and whether
+    /// it has stopped for good; without waiting on a commit.
+    pub fn checkpoint_failing(&self) -> Option<(String, bool)> {
+        let cp = self.shared.checkpoint.as_ref()?;
+        cp.failing().map(|why| (why, cp.stopped()))
+    }
+
     /// Whether the crawl shares a queue with other processes.
     pub fn has_queue(&self) -> bool {
         self.shared.queue.is_some()
@@ -1684,8 +1699,9 @@ impl Crawler {
         }
     }
 
-    /// Waits until every checkpoint write so far is on disk; an error if
-    /// one of them failed.
+    /// Waits until every checkpoint write so far is on disk; an error
+    /// while one is failing, as it goes again with each commit until one
+    /// works.
     pub fn flush(&self) -> Result<(), String> {
         match &self.shared.checkpoint {
             Some(cp) => cp.flush(),
@@ -2040,6 +2056,9 @@ impl Crawler {
         let mut stats = self.shared.lock().stats.clone();
         if let Some(archive) = &self.shared.options.archive {
             stats.archive_errors = archive.errors();
+        }
+        if let Some(cp) = &self.shared.checkpoint {
+            stats.checkpoint_failures = cp.failures();
         }
         stats
     }

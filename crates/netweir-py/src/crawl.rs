@@ -1682,6 +1682,12 @@ impl Crawler {
         self.engine.core.delta_files()
     }
 
+    /// Why the checkpoint's last commit failed and whether it has stopped
+    /// for good, or None if it worked; without waiting on a commit.
+    fn checkpoint_failing(&self) -> Option<(String, bool)> {
+        self.engine.core.checkpoint_failing()
+    }
+
     /// Whether the deltafetch record had no pages when the crawl started;
     /// None without one.
     fn delta_was_empty(&self) -> Option<bool> {
@@ -1689,8 +1695,8 @@ impl Crawler {
     }
 
     /// Waits until every checkpoint write so far is committed. Raises
-    /// OSError if that commit failed; an earlier failure is raised by
-    /// close.
+    /// OSError if that commit failed: its writes, and those of any failed
+    /// commit before it, go again with the next.
     fn flush(&self, py: Python<'_>) -> PyResult<()> {
         let engine = self.engine.clone();
         py.detach(move || engine.core.commit())
@@ -1777,6 +1783,9 @@ impl Crawler {
         d.set_item("pages_served", s.served)?;
         d.set_item("proxies_benched", s.proxies_benched)?;
         d.set_item("archive_errors", s.archive_errors)?;
+        if self.engine.core.has_checkpoint() {
+            d.set_item("checkpoint_failures", s.checkpoint_failures)?;
+        }
         if self.engine.core.has_queue() {
             d.set_item("pushed", s.pushed)?;
             d.set_item("leased", s.leased)?;

@@ -4,12 +4,14 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import sys
 import textwrap
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
@@ -234,6 +236,107 @@ def test_kill_9_at_random_points_loses_nothing_and_repeats_nothing(base, tmp_pat
     expected = sorted(f"{n}-{i}" for n in range(1, PAGES + 1) for i in range(PER_PAGE))
     assert names == expected, f"after {kills} kills"
     assert len({r["_id"] for r in rows}) == len(rows)
+
+
+class Breaking(netweir.Spider):
+    """Items, with ``at`` called before each: the n-th, from 1."""
+
+    start_urls: list[str] = []
+    at: Any = None
+
+    def parse(self, page):
+        for href in page.css("a.item::attr(href)").getall():
+            yield page.follow(href, callback="item")
+        if nxt := page.css("a.next::attr(href)").get():
+            yield page.follow(nxt)
+
+    def item(self, page):
+        type(self).seen += 1
+        type(self).at(type(self).seen)
+        yield {"name": page.css("h1::text").get()}
+
+
+def names_in(out):
+    return sorted(json.loads(line)["name"] for line in out.read_text(encoding="utf-8").splitlines())
+
+
+ALL = sorted(f"{n}-{i}" for n in range(1, PAGES + 1) for i in range(PER_PAGE))
+
+
+def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplog):
+    db = tmp_path / "state" / "crawl.sqlite3"
+
+    def at(n):
+        # The commit after the 4th item's batch fails, until the 6th puts
+        # the table back. Each pause lets the writer commit (or fail)
+        # before the batch is settled.
+        if n == 4:
+            with sqlite3.connect(db) as c:
+                c.execute("ALTER TABLE items RENAME TO items_away")
+        if n == 6:
+            time.sleep(0.3)
+            with sqlite3.connect(db) as c:
+                c.execute("ALTER TABLE items_away RENAME TO items")
+        if n in (5, 7):
+            time.sleep(0.3)
+
+    class Items(Breaking):
+        start_urls = [f"{base}/page/1"]
+        seen = 0
+
+    Items.at = staticmethod(at)
+    spider = Items()
+    spider.settings = settings(tmp_path)
+    out = tmp_path / "items.jsonl"
+    with caplog.at_level("WARNING", logger="netweir"):
+        stats = spider.run(output=str(out))
+    failing = [r.message for r in caplog.records if "each commit tries" in r.message]
+    assert len(failing) == 1 and "no such table: items" in failing[0], caplog.text
+    assert caplog.text.count("checkpoint commits work again") == 1, caplog.text
+    assert stats["checkpoint_failures"] >= 1
+    assert names_in(out) == ALL
+
+
+def test_a_checkpoint_that_has_stopped_stops_the_crawl(base, tmp_path, monkeypatch):
+    real = netweir._crawl._Run.watch_checkpoint
+    given_up = "checkpoint write failed: disk full, and the checkpoint has stopped"
+
+    def watch(self):
+        if Items.seen < 8:
+            return real(self)
+        engine = self.engine
+
+        class Stopped:
+            def __getattr__(self, name):
+                return getattr(engine, name)
+
+            def checkpoint_failing(self):
+                return (given_up, True)
+
+        self.engine = Stopped()
+        try:
+            real(self)
+        finally:
+            self.engine = engine
+
+    monkeypatch.setattr(netweir._crawl._Run, "watch_checkpoint", watch)
+
+    class Items(Breaking):
+        start_urls = [f"{base}/page/1"]
+        seen = 0
+        at = staticmethod(lambda n: None)
+
+    out = tmp_path / "items.jsonl"
+    spider = Items()
+    spider.settings = settings(tmp_path)
+    with pytest.raises(OSError, match="checkpoint has stopped"):
+        spider.run(output=str(out))
+    assert 0 < len(names_in(out)) < len(ALL)
+    monkeypatch.setattr(netweir._crawl._Run, "watch_checkpoint", real)
+    spider = Items()
+    spider.settings = settings(tmp_path)
+    assert "checkpoint_failures" in spider.run(output=str(out))
+    assert names_in(out) == ALL
 
 
 def test_a_rule_with_extract_and_callback_keeps_both_items(base, tmp_path):

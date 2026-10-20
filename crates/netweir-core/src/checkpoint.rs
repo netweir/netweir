@@ -120,14 +120,75 @@ enum Op {
     Flush(Sender<Result<(), String>>),
 }
 
+/// How many writes a failing checkpoint holds back to try again before
+/// it stops: about 300 MB of them, at some 290 bytes each, and several
+/// hundred thousand pages' worth of work that a resume does again. A
+/// write that fails for a moment (a file a virus scanner or a dead
+/// process still holds, on Windows) is long through by then; one that
+/// has failed for that long (a full disk, a file that went away) isn't
+/// going to start working, and holding on would end the process for
+/// want of memory instead, with no word of why.
+const MAX_HELD: usize = 1_000_000;
+
 /// The open checkpoint. Writes are queued and committed by its thread;
 /// dropping it commits what's left.
 pub struct Checkpoint {
     ops: Mutex<Option<Sender<Op>>>,
     writer: Mutex<Option<JoinHandle<()>>>,
+    health: Arc<Mutex<Health>>,
+}
+
+/// What the writer has made of its commits, for the crawl to read
+/// without waiting on one.
+#[derive(Default)]
+struct Health {
     /// Why the writes not yet committed failed, while they wait to go
     /// again with the next commit.
-    failed: Arc<Mutex<Option<String>>>,
+    failed: Option<String>,
+    /// Commits that have failed.
+    failures: u64,
+    /// Whether the writer has given up: it held more than it may, and
+    /// now drops every write.
+    stopped: bool,
+}
+
+/// The writes whose commit failed, in order, each to go again with the
+/// next. Those a later write replaces whole are let go: the counters,
+/// and a cookie jar's snapshot.
+#[derive(Default)]
+struct Held {
+    ops: Vec<Option<Op>>,
+    /// Rows the ops would write: a settle's items count one each.
+    rows: usize,
+    counters: Option<usize>,
+    jars: std::collections::HashMap<(&'static str, String), usize>,
+}
+
+impl Held {
+    fn push(&mut self, op: Op) {
+        let at = self.ops.len();
+        let replaced = match &op {
+            Op::Counters(_) => self.counters.replace(at),
+            Op::Jar(kind, name, ..) => self.jars.insert((*kind, name.clone()), at),
+            _ => None,
+        };
+        if let Some(old) = replaced.and_then(|i| self.ops[i].take()) {
+            self.rows -= rows(&old);
+        }
+        self.rows += rows(&op);
+        self.ops.push(Some(op));
+    }
+
+    fn clear(&mut self) {
+        *self = Held::default();
+    }
+}
+
+fn rows(op: &Op) -> usize {
+    match op {
+        Op::Settle(ids, _) => ids.len() + 1,
+        _ => 1,
+    }
 }
 
 #[derive(Debug)]
@@ -176,6 +237,12 @@ impl Checkpoint {
     /// Opens or creates the checkpoint at `path` and reads back what it
     /// holds.
     pub fn open(path: &Path) -> Result<(Checkpoint, Saved), CheckpointError> {
+        Checkpoint::open_holding(path, MAX_HELD)
+    }
+
+    /// As `open`, with the writer giving up past `max_held` writes held
+    /// back.
+    fn open_holding(path: &Path, max_held: usize) -> Result<(Checkpoint, Saved), CheckpointError> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)
                 .map_err(|e| CheckpointError(format!("can't create {}: {e}", dir.display())))?;
@@ -255,17 +322,17 @@ impl Checkpoint {
         }
         let saved = read(&conn).map_err(sql)?;
         let (ops, inbox) = channel();
-        let failed = Arc::new(Mutex::new(None));
-        let writer_failed = failed.clone();
+        let health = Arc::new(Mutex::new(Health::default()));
+        let writer_health = health.clone();
         let writer = std::thread::Builder::new()
             .name("netweir-checkpoint".into())
-            .spawn(move || write_loop(conn, inbox, writer_failed))
+            .spawn(move || write_loop(conn, inbox, writer_health, max_held))
             .map_err(|e| CheckpointError(format!("can't start the checkpoint writer: {e}")))?;
         Ok((
             Checkpoint {
                 ops: Mutex::new(Some(ops)),
                 writer: Mutex::new(Some(writer)),
-                failed,
+                health,
             },
             saved,
         ))
@@ -336,10 +403,30 @@ impl Checkpoint {
         let (tx, rx) = channel();
         self.send(Op::Flush(tx));
         let _ = rx.recv();
-        match &*self.failed.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some(e) => Err(e.clone()),
+        match self.failing() {
+            Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    fn health(&self) -> std::sync::MutexGuard<'_, Health> {
+        self.health.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Why the last commit failed, if it did, without waiting on one.
+    pub fn failing(&self) -> Option<String> {
+        self.health().failed.clone()
+    }
+
+    /// Whether the writer has stopped for good, having held back more
+    /// failed writes than it may. `failing` says why.
+    pub fn stopped(&self) -> bool {
+        self.health().stopped
+    }
+
+    /// Commits that have failed so far.
+    pub fn failures(&self) -> u64 {
+        self.health().failures
     }
 
     /// As `flush`, but an error too when the writer has stopped, as
@@ -503,7 +590,12 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
 }
 
 /// Commits the queued writes in order, a batch per transaction.
-fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Option<String>>>) {
+fn write_loop(
+    mut conn: Connection,
+    inbox: Receiver<Op>,
+    health: Arc<Mutex<Health>>,
+    max_held: usize,
+) {
     // Waits for the first write, then takes whatever else arrives within
     // this long, so a busy crawl commits in batches rather than per row.
     const GATHER: Duration = Duration::from_millis(50);
@@ -511,10 +603,10 @@ fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Optio
     // Committed without them, a later batch would leave the file
     // inconsistent: counters saying how long the output files are with
     // items in them that the items table doesn't have, whose requests
-    // aren't done either, so a resume would write them again.
-    // ponytail: every commit tries them all again, so a write that can
-    // never be made slows each one down; the crawl reports it at its end.
-    let mut held: Vec<Op> = Vec::new();
+    // aren't done either, so a resume would write them again. So a
+    // write that can never be made stops the checkpoint where it was
+    // until the writer gives up, past max_held.
+    let mut held = Held::default();
     while let Ok(first) = inbox.recv() {
         let waited_on = matches!(first, Op::Flush(_));
         let mut batch = vec![first];
@@ -535,19 +627,51 @@ fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Optio
         // when it fails part way.
         let (flushes, writes): (Vec<Op>, Vec<Op>) =
             batch.into_iter().partition(|op| matches!(op, Op::Flush(_)));
-        held.extend(writes);
-        let result = commit(&mut conn, &held).map_err(|e| format!("checkpoint write failed: {e}"));
-        let mut failure = failed.lock().unwrap_or_else(|e| e.into_inner());
-        match &result {
-            Ok(()) => {
-                held.clear();
-                *failure = None;
+        let stopped = health.lock().unwrap_or_else(|e| e.into_inner()).stopped;
+        let result = if stopped {
+            // Given up: the file stays as the last commit that worked
+            // left it, which a resume carries on from.
+            Err(health
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .failed
+                .clone()
+                .unwrap_or_default())
+        } else {
+            for op in writes {
+                held.push(op);
             }
-            // The crawl goes on, and every flush says so until a commit
-            // with these writes in it works.
-            Err(e) => *failure = Some(e.clone()),
-        }
-        drop(failure);
+            let result = commit(&mut conn, held.ops.iter().flatten())
+                .map_err(|e| format!("checkpoint write failed: {e}"));
+            let mut health = health.lock().unwrap_or_else(|e| e.into_inner());
+            match result {
+                Ok(()) => {
+                    held.clear();
+                    health.failed = None;
+                    Ok(())
+                }
+                // The crawl goes on, and every flush says so until a
+                // commit with these writes in it works.
+                Err(e) => {
+                    health.failures += 1;
+                    let e = if held.rows > max_held {
+                        health.stopped = true;
+                        let e = format!(
+                            "{e}, and {} checkpoint writes are held back waiting on it, \
+                             more than the {max_held} it keeps: the checkpoint has \
+                             stopped, as it was at its last commit that worked",
+                            held.rows
+                        );
+                        held.clear();
+                        e
+                    } else {
+                        e
+                    };
+                    health.failed = Some(e.clone());
+                    Err(e)
+                }
+            }
+        };
         for op in flushes {
             if let Op::Flush(reply) = op {
                 let _ = reply.send(result.clone());
@@ -556,7 +680,10 @@ fn write_loop(mut conn: Connection, inbox: Receiver<Op>, failed: Arc<Mutex<Optio
     }
 }
 
-fn commit(conn: &mut Connection, batch: &[Op]) -> rusqlite::Result<()> {
+fn commit<'a>(
+    conn: &mut Connection,
+    batch: impl IntoIterator<Item = &'a Op>,
+) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     {
         let mut request = tx.prepare_cached(
@@ -938,6 +1065,76 @@ mod tests {
         assert_eq!(saved.pending, vec![pending(1, "https://e.com/a")]);
         assert!(saved.items.contains("first") && saved.items.contains("second"));
         assert_eq!(saved.counters.as_deref(), Some(r#"{"files":2}"#));
+        drop(cp);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_checkpoint_holds_one_counters_and_one_snapshot_per_jar() {
+        let mut held = Held::default();
+        held.push(Op::Counters("1".into()));
+        held.push(Op::Jar("jar", "a".into(), "a1".into(), None));
+        held.push(Op::Settle(vec!["x".into(), "y".into()], "2".into()));
+        held.push(Op::Jar("jar", "a".into(), "a2".into(), None));
+        held.push(Op::Jar("host", "a".into(), "h1".into(), None));
+        held.push(Op::Counters("3".into()));
+        let kept: Vec<String> = held
+            .ops
+            .iter()
+            .flatten()
+            .map(|op| match op {
+                Op::Counters(c) => format!("counters {c}"),
+                Op::Settle(ids, c) => format!("settle {} {c}", ids.len()),
+                Op::Jar(kind, _, snapshot, _) => format!("{kind} {snapshot}"),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(kept, ["settle 2 2", "jar a2", "host h1", "counters 3"]);
+        assert_eq!(held.rows, 6);
+    }
+
+    #[test]
+    fn a_checkpoint_that_holds_back_too_much_stops_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-cap-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cp, _) = Checkpoint::open_holding(&path, 3).unwrap();
+        cp.item("before".into());
+        cp.commit().unwrap();
+        assert_eq!(
+            (cp.failing(), cp.stopped(), cp.failures()),
+            (None, false, 0)
+        );
+        Connection::open(&path)
+            .unwrap()
+            .execute("DROP TABLE requests", [])
+            .unwrap();
+        cp.request([1; 16], pending(1, "https://e.com/a"));
+        assert!(cp.commit().is_err());
+        assert!(cp.failing().unwrap().contains("requests") && !cp.stopped());
+        cp.item("one".into());
+        cp.item("two".into());
+        cp.item("three".into());
+        let err = cp.commit().unwrap_err();
+        assert!(cp.stopped() && cp.failures() == 2, "{err}");
+        assert!(err.contains("4 checkpoint writes are held back"), "{err}");
+        assert_eq!(cp.failing().as_ref(), Some(&err));
+        // Stopped for good, the table back or not.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(SCHEMA)
+            .unwrap();
+        cp.item("after".into());
+        assert_eq!(cp.commit().unwrap_err(), err);
+        assert_eq!(cp.flush().unwrap_err(), err);
+        drop(cp);
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        let items: HashSet<&str> = saved.items.iter().map(String::as_str).collect();
+        assert_eq!(
+            items,
+            HashSet::from(["before"]),
+            "as at its last good commit"
+        );
         drop(cp);
         std::fs::remove_dir_all(&dir).unwrap();
     }
