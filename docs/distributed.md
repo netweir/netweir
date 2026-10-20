@@ -232,7 +232,10 @@ or give the crawl a new `queue_key`.
   and login (`timeout=`, `allow_redirects=`, `auth=` and Scrapy's meta
   keys for them) travel with it in the queue, and a process from 0.3.1 or
   earlier ignores them: it would send the request without its login.
-  Upgrade every process before your requests use them.
+  The same goes for a request's [steps](steps.md): a 0.3.1 process
+  ignores them and renders the page without them, with no warning, so a
+  callback expecting the page after a "Load more" gets the page before
+  it. Upgrade every process before your requests use them.
 
 One thing no setting fixes: a callback that hangs for ever (waiting on
 something that never answers, say). Its process is alive, so it keeps
@@ -259,6 +262,20 @@ the path, password included.
 Requests given a login (`auth=`, or `http_user` in meta) carry it in the
 queue, readable by anyone who can read Redis. The crawl's own
 `http_auth` setting never goes there.
+
+A request's [steps](steps.md) travel in the queue too, and they act in
+Chrome with the crawl's sessions:
+
+- A step list can run JavaScript (`evaluate`) on any page it has the
+  crawl fetch, with that site's cookies, and read or send whatever that
+  page can see. Netweir allows it, so whoever can write to the queue can
+  run script on your crawl's pages.
+- `set_input_files` would upload files from the machine running Chrome.
+  From the queue it may only upload from inside
+  `Settings.browser_upload_dir`, and without that setting a request that
+  uploads is dropped.
+- A callback, errback or call step named in the queue must be a method
+  the spider's class defines, not a dunder or a private `_name`.
 
 So give Redis a password (`requirepass`, and `redis://:password@host`
 here), keep it on a network only your crawlers can reach, and don't

@@ -162,23 +162,51 @@ phone taps. The runner only adds what a list needs:
 
 `type` is new for this milestone, as `Page::type_text` and Python's
 `page.type()`. `fill` inserts the text in one go, the way pasting does.
-Zyte's `type` and the stealth rules both wanted real keystrokes: one
-`press` per character, through the existing key path (an on-screen
-keyboard's events on a phone), with a pause from `steps::TYPING` (80 to
-250 ms) between keys. The field is found and focused by the code `fill`
-uses, now shared as `Frame::focus_field`.
+Zyte's `type` and the stealth rules both wanted real keystrokes, and a
+first version that only pressed one key per character didn't look like
+a person. A page logging its key events saw every key held 0 to 2 ms,
+"A" with no Shift, `.` and `@` with an empty `code` and `keyCode` 0, the
+field focused by script with no click, and the first key in the same
+millisecond as the focus. Now:
+
+- The field is clicked (tapped on a phone) through `click`'s path, then
+  there's a 150 to 400 ms pause. If the field isn't empty, its contents
+  are selected with Control-A, or Command-A where the page's
+  `navigator.platform` is a Mac, sent as key events with CDP's
+  `selectAll` command. On a phone, which has no such keys, they're
+  selected from script.
+- `Page::press` holds each key for a log-normal time (median 85 ms,
+  45 to 180), with the long tail measured key holds have.
+  Mouse buttons are held 50 to 120 ms too, where they had been let go in
+  the same instant.
+- `Key::of` knows the US layout for printable ASCII: `code` and
+  `keyCode` for every character, and Shift down and up around shifted
+  ones (`modifiers` 8). A character the layout lacks goes through
+  `Input.insertText` with no key events, as an OS's character picker
+  sends it. An IME composition would fake a keyboard the page can't
+  check either way.
+- The gap between keys is log-normal around the geometric mean of
+  `delay`'s two ends, clipped to them, rather than uniform.
+  `steps::TYPING` (80 to 250 ms) is the default.
+
+`typing_time()` is the most that typing a text can take, which the
+budget and the run's limit use, so a long text isn't cut off at the
+step's timeout. The timeout covers getting to the field.
 
 ## Outcomes
 
 `netweir_browser::steps::Outcome` has `action`, `status` (`ok`, `failed`,
-`skipped`), `error`, `elapsed`, `value` (JSON) and `png`. A `Report` holds
+`skipped`), `error`, `elapsed`, `value` (JSON) and `image` (a
+screenshot's PNG, or a JPEG with `quality`). A `Report` holds
 them, along with which step failed the list, if one did.
 
 They ride on the response: `netweir_core::Response::steps` is an
 `Arc<[Outcome]>`, empty for every response that isn't from Chrome. That
 puts them wherever a response goes. Python reads them as `page.steps`, and
 a rules page that goes to a worker process takes them along in
-`Response.__reduce__`, as JSON with the PNG in base64. For a request the
+`Response.__reduce__`, as JSON with the image in base64. The Python
+list is made once per response and kept, so reading `page.steps` twice
+doesn't copy a screenshot twice. For a request the
 steps failed, `FetchError::steps` carries them to the errback, so a
 screenshot taken before the failure can still be looked at.
 
@@ -229,7 +257,18 @@ the step's error. A StepCall dropped unanswered fails the step at once, and an
 answer that doesn't come in time fails it at its timeout; Python also
 cancels its side then. A crawl with
 nobody taking the calls (the engine driven from Rust alone) fails a call
-step at once rather than waiting out its timeout.
+step at once rather than waiting out its timeout. So does one that comes
+after Python's task has stopped (`close_calls()`, called as it ends),
+where it used to sit in the channel until its timeout.
+
+A rule's request exists only in Rust, so a `StepCall` also carries the
+request's URL and depth, and Python adds the rule from the engine's tags.
+The function gets a `Request` with that URL, depth, the rule's callback
+and its steps.
+
+A plain (not `async`) function blocks the event loop for as long as it
+runs, every callback and other call with it. The crawl warns once per
+function.
 
 How it travels, compared with callbacks:
 
@@ -258,6 +297,12 @@ and `meta["download_timeout"]`). A request that wants both can say
 `[*settings.browser_steps, ...]`. Merging would leave no way to switch
 the crawl's steps off for one request.
 
+On the one go a blocked request gets, the crawl's steps run with every
+`on_error="fail"` read as `"continue"` (`lenient()` in crawl.rs). The
+request didn't ask for them, and a banner one site lacks would otherwise
+turn getting past the block into a failed request. Their errors still
+show in `page.steps`.
+
 A request with steps is fetched in Chrome without `browser=True`, as a
 Zyte request with `actions` gets a browser. A `Follow` with steps has its
 pages fetched in Chrome too. That needed `Follow(browser=)`, which didn't
@@ -266,32 +311,112 @@ exist: a rules spider's followed pages could only be rendered with
 
 ## Fingerprints
 
-Steps are not part of a request's fingerprint, its deltafetch key or its
-cache key. Scrapy's default fingerprint hashes the method, the
-canonical URL, the body and any `include_headers`, and leaves `meta` out.
-scrapy-playwright's page methods live in `meta`, so they're left out too.
-Netweir does what those two do.
+A request's own steps are part of its fingerprint, and through it of
+its deltafetch key and cache key. This follows scrapy-zyte-api, whose
+fingerprinter keeps `actions` in, rather than Scrapy and
+scrapy-playwright. Scrapy's default fingerprint hashes the method, the
+canonical URL, the body and any `include_headers`, and leaves `meta`
+out, and scrapy-playwright's page methods live in `meta`.
 
-scrapy-zyte-api decided the other way, and it has a case. The same URL
-with "click page 2" and without it are different pages. But Netweir's
-duplicate filter is about what's asked of the server, and a request
-whose steps differ asks the server for the same page.
-`dont_filter=True`, and `meta["deltafetch_key"]` for deltafetch, are the
-ways to say otherwise. docs/steps.md says so.
+The first version of this milestone did what Scrapy does, and that
+turned out to cost too much. A spider yielding the same URL plain and with
+"click page 2" got only the first, and the second was dropped without a
+word. The way round it, `dont_filter=True`, also skips the offsite
+filter, so the fix for one silent loss was to switch off a safety check.
+Different steps leave a different page, which is what the duplicate
+filter, deltafetch and the cache are meant to tell apart.
 
-The cache question doesn't come up. Pages from Chrome are never cached or
-archived.
+The key is `steps::key()`: each step's action and what it acts on
+(selector, text, key, URL glob, frame...) as JSON in a fixed order.
+Timeouts, `on_error` and `type`'s pace are left out, as they change how
+long a step may take but not the page it leaves. The order is written
+out field by field rather than taken from a struct's `Debug` text or a
+map, so a fingerprint kept in a checkpoint or a deltafetch record means
+the same in the next version, and a unit test pins it.
+`canonical::with_steps` mixes the key into the fingerprint after the
+cookie jar, as `in_jar` does the jar. No steps, `steps=[]` included,
+leave the fingerprint as it was, so checkpoints and records from before
+steps stay valid.
+
+Only a request's own steps count. The crawl's `browser_steps` apply to
+every page in Chrome alike, and whether a page goes to Chrome at all
+under `browser="on_block"` isn't known when it's submitted.
+`meta["steps_in_fingerprint"] = False` leaves a request's steps out,
+named like the other flags of a request's meta.
+
+Pages from Chrome are never cached or archived, so for now the cache key
+only matters if that changes.
+
+## Limits
+
+Each `timeout`, `wait` and `idle` is at most a day, and `type`'s
+`delay` at most 10 s. A `timeout` of 1e19 seconds used to overflow:
+`Duration` arithmetic in `browser_fetch` panicked outside the task's
+catch, so the crawl never ended, and `Instant` additions in the runner
+panicked too. Every addition in the step code now saturates, and
+deadlines go through `after()`, which falls back to a year away.
+
+A day is still far too long for a page slot to be held, so
+`Settings.browser_steps_max` caps all of one page's steps, 120 s by
+default. Zyte API's own caps, 15 s for one wait and 60 s for all of a
+request's actions, were the guide. The default is four of the browser's
+30 s timeouts. It's enforced in two places:
+
+- `steps::within()` refuses, where the steps are written, a list that
+  asks outright for more: its waits, the timeouts it gives and its
+  typing. Steps on the browser's default timeout don't count, since
+  counting each as 30 s would refuse any list of five clicks.
+- `steps::run()` holds every step to what's left of the cap, and a step
+  that reaches it fails the list, whatever its `on_error`, with a
+  `FetchError` of kind `step` naming `browser_steps_max`.
+  `steps::budget()` never counts more than the cap, so the crawl's limit
+  on a Chrome fetch has a ceiling too.
+
+## Steps from data
+
+A step list can come from a checkpoint or from the shared queue, which
+anyone who can reach that Redis writes to. Two things there reach past
+the page:
+
+- `set_input_files` reads files on the machine running Chrome, and a
+  form on the attacker's own page would send them off: a queue entry
+  with `/etc/hosts` and a form that submits on change did just that in
+  the repro for this. `from_data()` in `_crawl.py` refuses such a request, from
+  the queue or a checkpoint, unless every path resolves inside
+  `Settings.browser_upload_dir`, which is None (nothing allowed) by
+  default. Steps made in the process's own code aren't limited: the code
+  could read the file anyway.
+- `evaluate` is allowed. It runs in the page's own sandbox, with that
+  site's cookies, which is what a page's own scripts can do. The risk
+  (script on your crawl's pages and sessions) is set out in "Keeping
+  Redis safe" in docs/distributed.md, along with the upload rule.
+
+Names from data were checked by `getattr(spider, name)`, so a queue entry
+could name `__init__` or any attribute. `from_data()` now wants a
+function the spider's class (or a base short of `object`) defines, never
+a dunder, and from the shared queue never a `_private` name. That applies
+to callbacks and errbacks as well as call steps, since they come down
+the same path. A checkpoint is the crawl's own file and may name a
+private method, which keeps resuming a crawl whose callbacks are
+`_parse_item` working.
 
 ## Stealth
 
 No step does anything a page method doesn't. The input goes through
 `Input.dispatchMouseEvent`, `Input.dispatchTouchEvent` and
 `Input.dispatchKeyEvent`, nothing goes through `element.click()`, and the
-helpers stay in the isolated world. The two exceptions are the existing
-ones: `select_option`, and an empty `set_input_files`, set the element
-from script, as docs/browser.md says. `type`'s default cadence is there
-for the same reason as the dialog pause: a page can time keystrokes, and
-nobody types at 1 ms a key.
+helpers stay in the isolated world. The exceptions are listed in
+docs/steps.md: `fill` focuses from script and inserts its text at once,
+`type` on a phone selects the field's contents from script, a character
+off the US layout comes with no key, and `select_option` and an empty
+`set_input_files` set the element from script. `type`'s holds and gaps
+are there for the same reason as the dialog pause: a page can time
+keystrokes, and nobody types at 1 ms a key.
+
+Selectors take `xpath=` as well as CSS. `__netweir.find()` in the
+isolated world is the one place every helper finds its element, so XPath
+cost one function. It lets Zyte's `{"type": "xpath"}` selectors carry
+over, and it works for the page methods too.
 
 ## Tests
 
@@ -326,6 +451,10 @@ nobody types at 1 ms a key.
 - No `wait_for_request`. `wait_for_response` covers what the Zyte
   examples use it for, and a request whose response never comes is
   better caught by its own timeout.
-- No `doubleClick`, `hide` or `scrollTo` step. `evaluate` does `hide` and
-  `scrollTo` without moving input. A double click needs a `Page` method
-  first, and steps add nothing that method wouldn't have.
+- No `hide` step. `evaluate` hides an element, as Zyte's `hide` does
+  from script anyway.
+- Zyte's `scrollTo` is `scroll(selector)`, which wheels the element into
+  view, or `scroll(y=...)` for pixels. It's not a step of its own.
+- `double_click` came with `Page::dblclick` (Python `page.dblclick`): a
+  press and release with `clickCount` 1, a 70 to 160 ms pause, and again
+  with `clickCount` 2; two taps on a phone.

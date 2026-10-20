@@ -46,13 +46,15 @@ shared queue to another machine, back again on resume.
 
 Each step uses the page method of the same name, so it behaves the same
 way, waits the same way and fails with the same messages. See
-[Browser](browser.md#acting-on-the-page) for those.
+[Browser](browser.md#acting-on-the-page) for those. Selectors are CSS, or
+XPath after `xpath=`: `steps.click("xpath=//button[text()='More']")`.
 
 | Step | Does | Its `result` |
 |---|---|---|
 | `click(selector)` | clicks the element with the mouse (taps it on a phone) once it's visible, still, enabled and not covered | |
+| `double_click(selector)` | double-clicks it the same way (taps twice on a phone) | |
 | `fill(selector, text)` | replaces what's in a field with `text` in one go, the way pasting does | |
-| `type(selector, text, delay=None)` | types `text` one key at a time, replacing what's there, with a pause of `delay` seconds between keys (a `(least, most)` pair picks one at random each time; 0.08 to 0.25 by default) | |
+| `type(selector, text, delay=None)` | clicks the field and types `text` one key at a time, replacing what's there; see [Typing](#typing) | |
 | `press(key)` | presses a key in whatever has focus: `"Enter"`, `"Tab"`, `"Escape"`, a character... | |
 | `hover(selector)` | moves the mouse over the element | |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` | |
@@ -64,13 +66,15 @@ way, waits the same way and fails with the same messages. See
 | `check(selector)`, `uncheck(selector)` | ticks or unticks a checkbox or radio button, if it needs it | |
 | `set_input_files(selector, files)` | puts files in an `<input type=file>`; the paths are read when the step runs | |
 | `evaluate(js)` | runs JavaScript in the page | what it returned |
-| `screenshot(full_page=False)` | takes a PNG of the window, or of the whole page | the PNG's bytes |
+| `screenshot(full_page=False, quality=None)` | takes a PNG of the window, or of the whole page; with `quality` (1 to 100), a JPEG, often a tenth the size | the image's bytes |
 | `answer_dialogs(accept=True, text=None)` | from here to the last step, answers every `alert()`, `confirm()` and `prompt()`: OK if `accept`, with `text` in a prompt's box, Cancel if not | |
 | `call(method)` | runs a function of yours with the page; see [Your own code](#your-own-code) | what it returned |
 
 A `wait_for_navigation` or `wait_for_response` belongs straight after the
 step that sets it off. It looks back to the start of that step, so a
-navigation or response that has already happened still counts:
+navigation or response that has already happened still counts. Each
+`wait_for_response` takes the response it matched, so two of them for the
+same URL wait for two responses:
 
 ```python
 steps=[
@@ -93,23 +97,61 @@ timeout:
 steps.click("button.accept-all", frame={"url": "**/cmp/**"}, timeout=5, on_error="continue")
 ```
 
+## Typing
+
+`type` goes about it as a person does. It clicks the field (taps it on a
+phone) and waits a moment, as you'd wait to see the caret. If there's
+something in the field, it selects it with Control-A, or Command-A when
+the page's platform is a Mac, so the first key replaces it. Then it
+presses each key, holding each one down for a person's time (about
+85 ms, more often longer than shorter). Capitals and symbols go with
+Shift, with the key codes of a US keyboard. A newline is Enter and a tab
+is Tab. A character that isn't on that keyboard, such as é, arrives as
+text with no key, the way an OS's character picker sends it.
+
+Between one key and the next there's a pause within `delay`: seconds, or
+a `(least, most)` pair, 0.08 to 0.25 by default. Pauses come most often
+near the middle of the range and now and then near its ends, the way
+people's do, rather than spread evenly. `delay=0` leaves out the pause,
+but each key is still held.
+
 ## Time limits
 
-Every step has a time limit. `timeout=` sets it in seconds, and a step
-without one gets the browser's own, which is 30 seconds. That includes
-`scroll` with `times=` and `evaluate`, which have no limit when you call
-them yourself.
+Every step has a time limit. `timeout=` sets it in seconds, a day at
+most, and a step without one gets the browser's own, which is 30 seconds.
+That includes `scroll` with `times=` and `evaluate`, which have no limit
+when you call them yourself.
 
 A step waiting for something that never comes uses all of its time limit.
 For a banner that only some pages show, a 30-second wait on every other
 page adds up fast, so give an optional step a short timeout.
 
-`type` is the exception. Its timeout covers finding the field, and the
-typing itself takes as long as the text needs.
+`type` has time of its own for the keys. Its timeout covers getting to
+the field, and the typing then gets as long as its text needs: each key
+held its longest, plus the longest pause after it.
+
+All of a page's steps together get at most `browser_steps_max`: 120
+seconds by default, or `None` for no limit. Every page in Chrome holds
+one of the crawl's `browser_pages` slots while its steps run. Without a
+limit, one `wait(86400)` would hold a slot for a day, and a few of them
+would stop every page that needs Chrome. For comparison, Zyte API gives
+one wait 15 seconds at most and all of a request's actions 60. The limit
+is checked twice:
+
+- When a request (or `browser_steps`, or a rule) is written, steps that
+  ask outright for more than the limit are refused. Asking outright means
+  their waits, the timeouts they give and the time `type` needs for its
+  keys. A request like that is skipped with an error, as a request with
+  a bad URL is. Steps that take the browser's 30-second timeout don't
+  count here, since a page's steps rarely use all of it.
+- While the steps run, a step that reaches the limit fails, and so do
+  the steps after it, whatever their `on_error`. The request fails with
+  a `FetchError` of kind `"step"` that says `browser_steps_max` was
+  reached.
 
 The crawl allows a page in Chrome time for the page itself and then time
-for its steps: the sum of their limits, plus time for a challenge they
-lead to.
+for its steps: the sum of their limits, never more than
+`browser_steps_max`, plus time for a challenge they lead to.
 
 ## When a step fails
 
@@ -139,6 +181,8 @@ timeout for the page to be ready.
 `status` is `"ok"`, `"failed"` or `"skipped"`. A skipped step comes after
 one that stopped the steps, or belongs to a page the steps never ran on.
 `elapsed` is in seconds. `result` is what the table above says, or None.
+The list is made the first time you read it and kept, so reading it again
+copies nothing.
 
 ```python
 def parse(self, page):
@@ -146,6 +190,12 @@ def parse(self, page):
     with open("catalogue.png", "wb") as f:
         f.write(page.steps[0]["result"])  # a screenshot's PNG
 ```
+
+A screenshot's bytes stay in memory with the page until the callback is
+done with it: a full-page PNG of a long page can be several megabytes.
+When the page goes to a worker process (a rules spider's pages do), its
+steps' results go with it, the images as base64, a third larger again.
+`quality=` makes a JPEG instead, which is usually far smaller.
 
 The stats count `browser_steps`, the steps that ran, and
 `browser_steps_failed`, the ones among them that failed, whatever their
@@ -169,7 +219,11 @@ is what you hear about.
 With `browser="on_block"`, a request blocked over HTTP gets one go in
 Chrome. That go runs the crawl's `browser_steps`, so a cookie banner is
 dismissed there too, and the cookies Chrome hands back to the HTTP client
-are the ones it had after the steps.
+are the ones it had after the steps. On that go, a crawl-wide step that
+would fail the request goes on to the next step instead, as if its
+`on_error` were `"continue"`. Its error is still in `page.steps`. The
+request wasn't asking for those steps, and a banner one site doesn't
+show shouldn't undo getting past the block.
 
 ## Steps for every page
 
@@ -216,6 +270,10 @@ class Shops(netweir.Spider):
 its own renders the pages without steps, or with the crawl's
 `browser_steps`. See [Declarative spiders](declarative.md#rules).
 
+A call step in a rule's steps gets a `Request` as the rule made it: its
+URL, its depth and the rule's callback. A rule's requests have no meta
+of their own to pass on.
+
 ## Your own code
 
 When a step list can't say it, write a function. It gets the live
@@ -241,6 +299,11 @@ the step's timeout, it runs alongside the crawl's callbacks rather than
 waiting for one to finish, and an exception it raises fails the step,
 which then does what its `on_error` says. What it returns must be JSON,
 the same as the other results.
+
+Write it with `async def`. A plain function runs on the crawl's event
+loop, so while it runs, nothing else in the crawl does, and a slow one
+holds up every callback and every other page's call steps. The crawl
+warns once for each plain function it calls.
 
 Where it can go depends on how the request travels:
 
@@ -273,40 +336,87 @@ don't get `page.browser`, so they still go to the workers, and
 
 ## Duplicates and the cache
 
-Steps aren't part of a request's fingerprint. That follows Scrapy, which
-leaves `meta` out of the fingerprint and fingerprints what's sent to the
-server. scrapy-playwright follows the same rule, since its page methods
-live in `meta`. So two requests for the same URL with different steps are
-duplicates, and the second is dropped. To fetch a URL again with other
-steps, give the request `dont_filter=True`. deltafetch knows a request by
-the same fingerprint, so give it `meta["deltafetch_key"]` if each set of
-steps should count on its own.
+A request's own steps are part of its fingerprint, as Zyte API's actions
+are with scrapy-zyte-api: the same URL with other steps leaves another
+page, so it's another request. Only what the steps do counts, not how
+long they may take: the same clicks with another `timeout` or `on_error`,
+or `type` at another pace, are the same request. A request with no steps
+of its own, or `steps=[]`, has its plain fingerprint, whatever the
+crawl's `browser_steps`.
 
-Pages fetched in Chrome are never kept in the development cache or in a
-WARC or HAR archive, with steps or without.
+The same fingerprint is what the duplicate filter, deltafetch and the
+development cache go by, so all three tell a URL with steps apart from
+the same URL without. (Pages fetched in Chrome aren't kept in the cache or
+in a WARC or HAR archive, with steps or without.)
+
+To have steps left out, as Scrapy leaves `meta` out of its fingerprint
+and scrapy-playwright's page methods are left out with it, set
+`meta["steps_in_fingerprint"] = False`. The request is then a duplicate
+of the same URL without steps.
 
 ## Not looking automated
 
 Steps use the same input as the page methods: real mouse movement over
-an element before a click, a tap on a phone, key presses from Chrome's
-input pipeline rather than script events, and a wheel that turns 100
-pixels at a time. `type` pauses between keys the way a person does. A
-dialog's answer waits as long as a person would take to read it, the same
-as when you answer it yourself. Nothing in a step list calls
-`element.click()` or dispatches a synthetic event.
+an element before a click, a button held for a moment, a tap on a phone,
+key presses from Chrome's input pipeline rather than script events, and a
+wheel that turns 100 pixels at a time. `type` clicks into its field and
+holds and spaces its keys as described in [Typing](#typing). A dialog's
+answer waits as long as a person would take to read it, the same as when
+you answer it yourself. No step calls `element.click()` or dispatches a
+synthetic event.
 
-`select_option` and `set_input_files` are the exceptions, as they are
-when you call them yourself: they set the element from a script and send
-the `input` and `change` events a person's choice would. See
-[Not looking automated](browser.md#not-looking-automated).
+The exceptions, which are the same when you call the methods yourself:
+
+- `fill` focuses its field from a script and inserts the whole text at
+  once, as pasting does, with no keys pressed. Use `type` where a page
+  watches the keys.
+- `type` on a phone selects what's in the field from a script, since a
+  phone has no Control-A. A character off the US keyboard arrives as
+  text with no key on any device.
+- `select_option`, and `set_input_files` clearing a field, set the
+  element from a script and send the `input` and `change` events a
+  person's choice would.
+
+See [Not looking automated](browser.md#not-looking-automated).
+
+## Steps from data
+
+A step list is JSON, and JSON can come from anywhere a request can: a
+checkpoint file, or a shared queue in Redis that any of your machines,
+or anyone who can reach that Redis, writes to. Most steps only act on a
+page the crawl was going to fetch anyway. Two can reach further:
+
+- `set_input_files` uploads files from the machine running Chrome, and
+  a step list naming `/etc/passwd` and a form on the attacker's site
+  would send them that file. So a request read back from data (the
+  shared queue, or a checkpoint) may upload only from inside
+  `Settings.browser_upload_dir`. Without that setting, such a request is
+  refused: dropped with a warning from the queue, or skipped with an
+  error on resume. Steps your own spider code makes may upload from
+  anywhere.
+- `evaluate` runs any JavaScript in the page, with the page's cookies
+  and the crawl's session for that site. It's held to the page, as the
+  site's own scripts are, so it can't reach your files. But it can read
+  or send what the page can see. Netweir allows it from data; treat
+  write access to the queue as the power to run script on your crawl's
+  pages.
+
+A call step, callback or errback from data must also name a method the
+spider's class defines: not a dunder (`__init__`), not something that
+isn't a method (`settings`), and from the shared queue not a private
+`_name` either. A checkpoint, being this crawl's own file, may name a
+private method. See
+[Keeping Redis safe](distributed.md#keeping-redis-safe).
 
 ## Coming from Zyte API, scrapy-playwright, Scrapling or Crawlee
 
 | You wrote | In Netweir |
 |---|---|
 | Zyte API `"actions": [{"action": "click", "selector": {"type": "css", "value": "#more"}}]` | `steps=[steps.click("#more")]` |
-| Zyte `type`, `select`, `hover`, `keyPress` | `steps.type`, `steps.select_option`, `steps.hover`, `steps.press` |
-| Zyte `scrollBottom` | `steps.scroll()`, with `times=` and `idle=` for `maxScrollCount` and `maxScrollDelay` |
+| Zyte `{"type": "xpath", "value": "//a"}` | `"xpath=//a"`; Zyte's `state` is `wait_for`'s `state` |
+| Zyte `doubleClick`, `type`, `select`, `hover`, `keyPress` | `steps.double_click`, `steps.type`, `steps.select_option`, `steps.hover`, `steps.press` |
+| Zyte `scrollBottom` | `steps.scroll()`. `times=` is `maxScrollCount`. `idle=` is how long to wait after each turn for the page to grow, which is what `maxScrollDelay` caps. `maxPageHeight` has no counterpart: use `times=`. `scrollStep` has none either, as the wheel turns 100 pixels a notch |
+| Zyte `scrollTo` with a selector | `steps.scroll("#reviews")`, which wheels the element into view; for a `top`/`left` in pixels, `steps.scroll(y=...)` turns by that much |
 | Zyte `waitForSelector`, `waitForTimeout`, `waitForNavigation`, `waitForResponse` | `steps.wait_for`, `steps.wait`, `steps.wait_for_navigation`, `steps.wait_for_response` (a glob in place of `urlPattern` and `urlMatchingOptions`) |
 | Zyte `evaluate` | `steps.evaluate`, and its return value is the step's `result` (Zyte returns none) |
 | Zyte `onError: "return"` (its default), `"continue"` | `on_error="stop"`, `"continue"`; Netweir's default is `"fail"` |
@@ -322,7 +432,8 @@ the `input` and `change` events a person's choice would. See
 | Crawlee `preNavigationHooks` | what the page starts with: the request's `cookies`, `browser_block`, and `browser_environment` for its screen, language and the rest |
 
 Some of them don't carry over. Zyte's site-specific actions (`searchKeyword`,
-`setLocation`) and its browser scripts have no steps, so use a call step.
-Zyte's `goto` and `reload` have none either: a new page is a new
-`Request`, which the crawl schedules, checks against robots.txt and
-deduplicates.
+`setLocation`), `hide` and its browser scripts have no steps, so use
+`evaluate` or a call step. Zyte's `goto` and `reload` have none either: a
+new page is a new `Request`, which the crawl schedules, checks against
+robots.txt and deduplicates. Zyte's `waitForRequest` has none: wait for
+the response instead.

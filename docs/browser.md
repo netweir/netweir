@@ -213,14 +213,16 @@ response = await moved
 | Method | Does |
 |---|---|
 | `click(selector)` | clicks the middle of the element with the mouse |
+| `dblclick(selector)` | double-clicks it the same way |
 | `fill(selector, text)` | replaces what's in a field with `text` in one go, as pasting would |
-| `type(selector, text, delay=None)` | replaces what's in a field by typing `text` a key at a time, with a pause between keys: `delay` seconds, or a `(least, most)` pair to pick from each time (0.08 to 0.25 by default) |
+| `type(selector, text, delay=None)` | clicks the field and replaces what's in it by typing `text` a key at a time, each held for a person's time, Shift and all; between keys a pause within `delay` (seconds, or a `(least, most)` pair; 0.08 to 0.25 by default). See [Typing](steps.md#typing) |
 | `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
 | `hover(selector)` | moves the mouse over the element |
 | `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
 
-Selectors are CSS. You don't need to wait before acting: `click` and
+Selectors are CSS, or XPath after `xpath=` (`page.click("xpath=//button[2]")`).
+You don't need to wait before acting: `click` and
 `fill` keep trying until the element can take the action, up to the
 timeout. A click waits for the element to exist, be visible, stop moving,
 be enabled and not be covered by anything else; `fill` waits for a
@@ -549,7 +551,8 @@ waits forever. Wrap it in `asyncio.wait_for` if that can happen.
 ## Screenshots and cookies
 
 `await page.screenshot("page.png", full_page=True)` saves a PNG and returns
-its bytes; leave out the path to get only the bytes.
+its bytes; leave out the path to get only the bytes. `quality=` (1 to 100)
+makes a JPEG of that quality instead, often a tenth the size.
 
 `await page.cookies()` returns the cookies of the page's context as dicts
 with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`,
