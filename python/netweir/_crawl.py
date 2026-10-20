@@ -223,8 +223,9 @@ class Settings:
     #: that reach it stop there, failing the request.
     browser_steps_max: float | None = 120.0
     #: The only folder a ``set_input_files`` step from data (the shared
-    #: queue, or a checkpoint) may upload files from; None for none. Steps
-    #: made in this process's own code may upload from anywhere.
+    #: queue, or a checkpoint) may upload files from; None for none. With a
+    #: shared queue, that's every request, the spider's own included;
+    #: without one, steps the spider makes may upload from anywhere.
     browser_upload_dir: str | None = None
     #: Seconds between progress lines in the log ("crawled 120 pages (at
     #: 60 pages/min), ..."); None for none.
@@ -1317,11 +1318,13 @@ class _Run:
 
     def from_data(self, request: Request, source: str) -> None:
         """Refuses a request read back from data (``source`` is "queue" or
-        "checkpoint") that would name what it shouldn't: a callback,
-        errback or call step that isn't a method the spider's class
-        defines, a dunder, or (from the shared queue, which anyone who can
-        reach Redis writes to) a private name; or a set_input_files step
-        whose files aren't in ``browser_upload_dir``."""
+        "checkpoint"; with a shared queue, every request is, the spider's
+        own included) that names what it shouldn't: a callback, errback or
+        call step that isn't a method of the spider's own classes, or one
+        of netweir.Spider's that netweir itself calls as a callback; or a
+        set_input_files step whose files aren't in ``browser_upload_dir``.
+        A set_input_files step that passes is given the folder, which the
+        engine checks again just before it uploads."""
         names = [("callback", request.callback), ("errback", request.errback)]
         for step in request.steps or ():
             if step.get("action") == "call":
@@ -1329,27 +1332,33 @@ class _Run:
         for what, name in names:
             if name is None:
                 continue
-            if not isinstance(name, str) or not _spider_method(
-                self.spider, name, private=source != "queue"
-            ):
-                raise ValueError(f"its {what} {name!r} isn't a method the spider defines")
-        for step in request.steps or ():
-            if step.get("action") != "set_input_files":
-                continue
+            if not isinstance(name, str):
+                raise ValueError(f"its {what} is {name!r}, not a method's name")
+            why = _not_a_callback(self.spider, name)
+            if why is not None:
+                raise ValueError(f"its {what} {name!r} {why}")
+        uploads = [s for s in request.steps or () if s.get("action") == "set_input_files"]
+        if not uploads:
+            return
+        folder = self.settings.browser_upload_dir
+        if folder is None:
+            raise ValueError(
+                "it uploads files (set_input_files), and a request read back from the"
+                f" {source} (with a shared queue, every request is) may upload only from"
+                " Settings.browser_upload_dir, which isn't set"
+            )
+        root = os.path.normcase(os.path.realpath(folder))
+        for step in uploads:
             files = step.get("files")
             files = [files] if isinstance(files, str) else list(files or ())
-            folder = self.settings.browser_upload_dir
-            if folder is None:
-                raise ValueError(
-                    "it uploads files (set_input_files), which a request from data may do only"
-                    " from browser_upload_dir, and that isn't set"
-                )
-            root = os.path.normcase(os.path.realpath(folder))
             for path in files:
                 if not _inside(root, os.path.normcase(os.path.realpath(path))):
                     raise ValueError(
-                        f"it uploads {path!r}, which isn't in browser_upload_dir ({folder!r})"
+                        f"it uploads {path!r}, which isn't in Settings.browser_upload_dir"
+                        f" ({folder!r})"
                     )
+            # Whatever the data said, the engine holds it to this folder.
+            step["within"] = os.path.realpath(folder)
 
     def step_name(self, fn: Callable[..., Any]) -> str:
         """The name a checkpoint or the shared queue keeps for a call
@@ -3065,19 +3074,38 @@ def _steps_in_fingerprint(meta: dict[str, Any]) -> bool:
     return flag
 
 
-def _spider_method(spider: Any, name: str, private: bool = False) -> bool:
-    """Whether ``name`` is a method ``spider``'s class defines (or one it
-    inherits), and not a dunder; with ``private`` False, nor a name
-    starting with an underscore."""
-    if name.startswith("__") or (not private and name.startswith("_")):
-        return False
-    for klass in type(spider).__mro__:
-        if klass is object:
-            break
-        if name in vars(klass):
-            attr = vars(klass)[name]
-            return inspect.isfunction(attr) or isinstance(attr, (staticmethod, classmethod))
-    return False
+#: The methods of netweir's own spider classes that a request may name as
+#: its callback: netweir names parse and _sitemap itself, and on_block is
+#: a callback in all but name. Any other (closed, crawl, run, start...)
+#: is the spider's machinery, which a request from data mustn't call.
+_NETWEIR_CALLBACKS = frozenset({"parse", "on_block", "_sitemap"})
+
+
+def _not_a_callback(spider: Any, name: str) -> str | None:
+    """Why ``name`` can't be a callback of ``spider`` for a request read
+    back from data, or None if it can: a method of the spider's own
+    classes, or one of netweir's spiders' in _NETWEIR_CALLBACKS. A name
+    netweir's spider classes give their machinery (closed, crawl, start...)
+    is refused even where the spider overrides it: it's still a hook
+    netweir calls at its own time, not a callback."""
+    if name.startswith("__"):
+        return "is a dunder or a name-mangled attribute, which is never a callback"
+    mro = [k for k in type(spider).__mro__ if k is not object]
+    ours = [k for k in mro if k.__module__.split(".")[0] == "netweir"]
+    machinery = next((k for k in ours if name in vars(k)), None)
+    if machinery is not None and name not in _NETWEIR_CALLBACKS:
+        return (
+            f"is netweir.{machinery.__name__}'s own {name}, which netweir calls itself, not a"
+            " callback"
+        )
+    for klass in mro:
+        if name not in vars(klass):
+            continue
+        attr = vars(klass)[name]
+        if inspect.isfunction(attr) or isinstance(attr, (staticmethod, classmethod)):
+            return None
+        return f"is {type(attr).__name__} on {klass.__name__}, not a method"
+    return f"isn't defined on {type(spider).__name__}"
 
 
 def _rule_method(spider: Any, fn: Callable[..., Any]) -> str:

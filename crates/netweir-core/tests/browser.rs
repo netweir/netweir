@@ -1506,3 +1506,33 @@ async fn a_call_after_the_calls_closed_fails_at_once() {
     let error = response.steps[0].error.as_deref().unwrap();
     assert!(error.contains("nothing here runs call steps"), "{error}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_fetched_with_steps_leaves_the_plain_one_unseen() {
+    let Some(_chrome) = chrome().await else {
+        return;
+    };
+    let site = Site::start(vec![("/", Page::html(LOAD_MORE))]).await;
+    let c = crawler(settings(BrowserMode::Off));
+    let more = || own(serde_json::json!([{"action": "click", "selector": "#more"}]));
+    c.submit(CrawlRequest {
+        steps: Some(more()),
+        ..request(1, site.url("/"), true)
+    });
+    // Fetched, so where Chrome ended up counts as seen: with the steps.
+    let _ = drain_closing(&c).await;
+    assert_eq!(
+        c.submit(request(2, site.url("/"), true)),
+        netweir_core::Submitted::Queued,
+        "the URL without the steps is another page"
+    );
+    assert_eq!(
+        c.submit(CrawlRequest {
+            steps: Some(more()),
+            ..request(3, site.url("/"), true)
+        }),
+        netweir_core::Submitted::Duplicate
+    );
+    let _ = drain_closing(&c).await;
+    assert_eq!(site.paths().iter().filter(|p| *p == "/").count(), 2);
+}

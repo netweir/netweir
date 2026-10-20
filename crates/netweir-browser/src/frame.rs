@@ -663,22 +663,45 @@ impl Frame {
         timeout: Option<Duration>,
     ) -> Result<()> {
         let deadline = self.page.deadline(timeout);
-        self.click_as("type", selector, timeout).await?;
-        let left = Some(deadline.saturating_duration_since(Instant::now()));
         let sel = Value::from(selector);
         let checks = ["attached", "visible", "enabled", "editable"];
-        let call = format!("__netweir.check({sel}, {}, false)", json!(checks));
-        self.attempt("type", selector, &call, None, left).await?;
-        // The click put the caret there; a page that moved focus elsewhere
-        // on mousedown gets it back as a script would give it.
-        if self.helper(&format!("__netweir.focused({sel})")).await? != true {
-            self.focus_field("type", selector, left).await?;
-        } else if self.helper(&format!("__netweir.hasText({sel})")).await? == true {
-            tokio::time::sleep(crate::events::pause(REACTION)).await;
-            if self.page.touches() {
-                self.helper(&format!("__netweir.focus({sel})")).await?;
-            } else {
-                self.page.select_all().await?;
+        let ready = format!("__netweir.check({sel}, {}, true)", json!(checks));
+        self.attempt("type", selector, &ready, None, timeout)
+            .await?;
+        let left = || Some(deadline.saturating_duration_since(Instant::now()));
+        // Clicked into, as a person gets there: through a floating label
+        // laid over the field too. Something else covering it (a field
+        // styled away under its own widget) leaves the click nowhere to
+        // land, and the field is focused from script instead.
+        let covered = self
+            .helper(&format!(
+                "__netweir.check({sel}, [\"receives events\"], false)"
+            ))
+            .await?["failed"]
+            == "receives events";
+        if covered {
+            self.focus_field("type", selector, left()).await?;
+        } else {
+            self.click_as("type", selector, left()).await?;
+            // A page that moved focus elsewhere on mousedown gets it back
+            // as a script would give it.
+            if self.helper(&format!("__netweir.focused({sel})")).await? != true {
+                self.focus_field("type", selector, left()).await?;
+            } else if self.helper(&format!("__netweir.hasText({sel})")).await? == true {
+                tokio::time::sleep(crate::events::pause(REACTION)).await;
+                if !self.page.touches() {
+                    self.page.select_all().await?;
+                }
+                // A phone has no Control-A, and a page may swallow it (a
+                // masked field): what's left unselected is selected from
+                // script, so the first key still replaces it.
+                if self
+                    .helper(&format!("__netweir.allSelected({sel})"))
+                    .await?
+                    != true
+                {
+                    self.helper(&format!("__netweir.focus({sel})")).await?;
+                }
             }
         }
         tokio::time::sleep(crate::events::pause(REACTION)).await;

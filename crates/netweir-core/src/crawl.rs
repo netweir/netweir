@@ -317,8 +317,8 @@ pub struct CrawlRequest {
 
 /// A request's own steps, and whether they're part of its fingerprint.
 /// They are by default, as different steps leave a different page: the
-/// duplicate filter, the cache and deltafetch then tell the same URL
-/// with other steps apart.
+/// duplicate filter and deltafetch then tell the same URL with other steps
+/// apart.
 #[derive(Debug, Clone)]
 pub struct RequestSteps {
     pub steps: Arc<[Step]>,
@@ -3520,9 +3520,15 @@ async fn browser_fetch(shared: Arc<Shared>, mut q: Queued, permit: OwnedSemaphor
         }
         (Ok((response, page, cookies, _, version)), outcome) => {
             // Chrome follows redirects itself: where it ended up counts as
-            // seen, as a redirect the HTTP client followed would.
+            // seen, as a redirect the HTTP client followed would. With the
+            // steps that got it there when they count toward the request's
+            // fingerprint: the same URL without them is another page.
             if let Some(fp) = fingerprint("GET", &response.url)
                 .map(|fp| in_jar(fp, q.request.cookies.jar.as_deref()))
+                .map(|fp| match &q.request.steps {
+                    Some(own) if own.in_fingerprint => with_steps(fp, &own.steps),
+                    _ => fp,
+                })
                 && state.seen.insert(fp)
                 && let Some(cp) = &shared.checkpoint
             {

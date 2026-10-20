@@ -107,6 +107,9 @@ pub enum Action {
     SetInputFiles {
         selector: String,
         files: Vec<PathBuf>,
+        /// The folder the files must be in, checked on their resolved
+        /// paths just before they're uploaded: for steps read from data.
+        within: Option<PathBuf>,
     },
     Evaluate {
         js: String,
@@ -444,7 +447,12 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
                     .ok_or("files must be a path, or a list of paths")?,
                 _ => return Err("set_input_files needs \"files\": a path, or a list".into()),
             };
-            Action::SetInputFiles { selector, files }
+            let within = f.opt_string("within")?.map(PathBuf::from);
+            Action::SetInputFiles {
+                selector,
+                files,
+                within,
+            }
         }
         "evaluate" => {
             f.allow("frame");
@@ -558,6 +566,7 @@ const FIELDS: &[&str] = &[
     "label",
     "index",
     "files",
+    "within",
     "js",
     "full_page",
     "quality",
@@ -766,7 +775,14 @@ pub fn key(steps: &[Step]) -> String {
                 Action::WaitFor { selector, state } => json!(["wait_for", selector, state]),
                 Action::Wait { seconds } => json!(["wait", seconds.as_secs_f64()]),
                 Action::WaitForNavigation { wait } => {
-                    json!(["wait_for_navigation", format!("{wait:?}")])
+                    // Written out, so a fingerprint never hangs on how
+                    // Rust happens to print the enum.
+                    let wait = match wait {
+                        WaitUntil::Load => "load",
+                        WaitUntil::DomContentLoaded => "domcontentloaded",
+                        WaitUntil::NetworkIdle => "networkidle",
+                    };
+                    json!(["wait_for_navigation", wait])
                 }
                 Action::WaitForResponse { url } => json!(["wait_for_response", url]),
                 Action::Scroll {
@@ -785,7 +801,9 @@ pub fn key(steps: &[Step]) -> String {
                     json!(["select_option", selector, pick])
                 }
                 Action::Check { selector, .. } => json!([step.action.name(), selector]),
-                Action::SetInputFiles { selector, files } => {
+                Action::SetInputFiles {
+                    selector, files, ..
+                } => {
                     let files: Vec<String> =
                         files.iter().map(|f| f.display().to_string()).collect();
                     json!(["set_input_files", selector, files])
@@ -1063,6 +1081,31 @@ async fn frame_of(page: &Page, sel: &FrameSel, deadline: Instant) -> Result<Fram
     }
 }
 
+/// `files` resolved (links followed, `..` gone), each refused unless it's
+/// inside `root`, resolved too: the paths Chrome is handed, so a link
+/// swapped in after this check can't send it elsewhere.
+fn held_to(root: &std::path::Path, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| Error::Invalid(format!("the upload folder {}: {e}", root.display())))?;
+    files
+        .iter()
+        .map(|f| {
+            let real = std::fs::canonicalize(f)
+                .map_err(|e| Error::Invalid(format!("{}: {e}", f.display())))?;
+            if real.starts_with(&root) {
+                Ok(real)
+            } else {
+                Err(Error::Invalid(format!(
+                    "{} is {}, outside the upload folder {}",
+                    f.display(),
+                    real.display(),
+                    root.display()
+                )))
+            }
+        })
+        .collect()
+}
+
 /// Does one of the page's own actions, for a step.
 async fn act(
     page: &Page,
@@ -1135,11 +1178,19 @@ async fn act(
             frame.set_checked(selector, *on, left).await?;
             None
         }
-        Action::SetInputFiles { selector, files } => {
+        Action::SetInputFiles {
+            selector,
+            files,
+            within,
+        } => {
             if let Some(missing) = files.iter().find(|f| !f.is_file()) {
                 return Err(Error::Invalid(format!("no file at {}", missing.display())));
             }
-            frame.set_input_files(selector, files, left).await?;
+            let files = match within {
+                Some(root) => held_to(root, files)?,
+                None => files.clone(),
+            };
+            frame.set_input_files(selector, &files, left).await?;
             None
         }
         Action::Evaluate { js } => Some(frame.evaluate(js).await?).filter(|v| !v.is_null()),
@@ -1399,6 +1450,58 @@ mod tests {
         // Fixed: a fingerprint kept in a checkpoint must mean the same
         // thing in the next version.
         assert_eq!(base, r##"[["click","#more"]]"##);
+    }
+
+    #[test]
+    fn an_upload_held_to_a_folder_follows_links_and_dots_first() {
+        let dir = std::env::temp_dir().join(format!("netweir-held-{}", std::process::id()));
+        let inside = dir.join("up");
+        std::fs::create_dir_all(&inside).unwrap();
+        let outside = dir.join("secret.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::write(inside.join("cv.txt"), "cv").unwrap();
+        let ok = held_to(&inside, &[inside.join("cv.txt")]).unwrap();
+        assert_eq!(ok, [std::fs::canonicalize(inside.join("cv.txt")).unwrap()]);
+        // A real file reached with "..".
+        let err = held_to(&inside, &[inside.join("..").join("secret.txt")]).unwrap_err();
+        assert!(
+            err.to_string().contains("outside the upload folder"),
+            "{err}"
+        );
+        #[cfg(unix)]
+        {
+            let link = inside.join("link.txt");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let err = held_to(&inside, &[link]).unwrap_err();
+            assert!(
+                err.to_string().contains("outside the upload folder"),
+                "{err}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        let s = one(
+            json!({"action": "set_input_files", "selector": "f", "files": "a", "within": "/up"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(s.action, Action::SetInputFiles { within: Some(ref w), .. } if w == std::path::Path::new("/up"))
+        );
+        // The folder is the crawl's to say, not part of what the step does.
+        assert_eq!(
+            key(&[s]),
+            key(
+                &parse(&json!([{"action": "set_input_files", "selector": "f", "files": "a"}]))
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            key(
+                &parse(&json!([{"action": "wait_for_navigation", "wait": "domcontentloaded"}]))
+                    .unwrap()
+            ),
+            r#"[["wait_for_navigation","domcontentloaded"]]"#
+        );
     }
 
     #[test]

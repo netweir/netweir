@@ -416,3 +416,50 @@ async fn the_steps_stop_at_their_cap_whatever_their_on_error() {
     assert_eq!(report.outcomes[2].status, Status::Skipped);
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn typing_gets_past_a_floating_label_and_a_field_that_swallows_select_all() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<div style="position: relative; width: 300px">
+  <input id=q style="width: 300px; height: 40px">
+  <label for=q style="position: absolute; left: 0; top: 0; width: 300px; height: 40px">Search</label>
+</div>
+<input id=phone value="555-0100">
+<div style="position: relative; width: 200px">
+  <input id=hidden style="width: 200px; height: 30px">
+  <div style="position: absolute; inset: 0; background: white">a widget over it</div>
+</div>
+<script>
+  document.querySelector('#q').addEventListener('focus', () => document.querySelector('label').style.display = 'none');
+  document.querySelector('#phone').addEventListener('keydown', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); });
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let fast = (Duration::from_millis(5), Duration::from_millis(10));
+    // The label covers the field's centre; a click there reaches it.
+    page.type_text("#q", "tea", fast, Some(Duration::from_secs(3)))
+        .await
+        .unwrap();
+    // Control-A is swallowed: the old number still goes.
+    page.type_text("#phone", "555-0199", fast, Some(Duration::from_secs(3)))
+        .await
+        .unwrap();
+    // Nothing can click it: it's focused from script, and still typed in.
+    page.type_text("#hidden", "x", fast, Some(Duration::from_secs(3)))
+        .await
+        .unwrap();
+    let values = page
+        .evaluate("['q', 'phone', 'hidden'].map(id => document.getElementById(id).value)")
+        .await
+        .unwrap();
+    assert_eq!(values, json!(["tea", "555-0199", "x"]));
+    browser.close().await.unwrap();
+}

@@ -47,6 +47,15 @@
     return node instanceof Element ? node : null;
   };
 
+  // Whether a click on `hit` reaches `el`: it's `el`, inside it, or in a
+  // label of `el` (a floating label laid over its field), which passes
+  // the click on to it as a person's click would.
+  const reaches = (el, hit) =>
+    !!hit &&
+    (hit === el ||
+      el.contains(hit) ||
+      [...(el.labels || [])].some((label) => label === hit || label.contains(hit)));
+
   const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
 
   globalThis.__netweir = {
@@ -109,7 +118,7 @@
         }
         if (check === "receives events") {
           const hit = document.elementFromPoint(b[0] + b[2] / 2, b[1] + b[3] / 2);
-          if (!hit || (hit !== el && !el.contains(hit))) return { failed: "receives events" };
+          if (!reaches(el, hit)) return { failed: "receives events" };
         }
       }
       return { x: b[0] + b[2] / 2, y: b[1] + b[3] / 2 };
@@ -139,9 +148,11 @@
       const seen = () => {
         this.over = true;
       };
-      el.addEventListener("mouseover", seen, true);
+      // Its labels too: the mouse comes over a field's floating label.
+      const targets = [el, ...(el.labels || [])];
+      for (const t of targets) t.addEventListener("mouseover", seen, true);
       this.disarm = () => {
-        el.removeEventListener("mouseover", seen, true);
+        for (const t of targets) t.removeEventListener("mouseover", seen, true);
         this.disarm = null;
       };
     },
@@ -183,6 +194,17 @@
     focused(selector) {
       const el = find(selector);
       return !!el && (document.activeElement === el || el.contains(document.activeElement));
+    },
+
+    // Whether all of the field's contents are selected.
+    allSelected(selector) {
+      const el = find(selector);
+      if (!el) return false;
+      if ("value" in el && typeof el.selectionStart === "number") {
+        return el.selectionStart === 0 && el.selectionEnd === el.value.length;
+      }
+      const selection = getSelection();
+      return selection.toString() === (el.textContent || "");
     },
 
     // Whether there's anything in the field to replace.

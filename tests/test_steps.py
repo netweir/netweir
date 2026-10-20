@@ -182,6 +182,17 @@ FEED = """<!DOCTYPE html><style>li { height: 200px; }</style><ul id=feed></ul>
 
 CHALLENGE = "<title>Just a moment...</title><p>checking your browser</p>"
 
+UPLOADS: list[bytes] = []
+
+UPLOAD = """<form id=f method=post action=/upload enctype=multipart/form-data>
+<input type=file id=file name=file></form>
+<script>document.querySelector('#file').addEventListener('change',
+  () => document.querySelector('#f').submit())</script>"""
+
+MASK = """<input id=q value="555-0100">
+<script>document.querySelector('#q').addEventListener('keydown',
+  e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); });</script>"""
+
 TYPING = """<!DOCTYPE html><input id=q value="old"><textarea id=long></textarea>
 <p id=cell ondblclick="this.textContent = 'edited'">cell</p>
 <script>
@@ -222,6 +233,17 @@ class Handler(BaseHTTPRequestHandler):
             kind = "application/json"
         elif url.path == "/typing":
             body = TYPING
+        elif url.path == "/sitemap.xml":
+            host = f"http://{self.headers['Host']}"
+            body = (
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                f"<url><loc>{host}/plain/from-sitemap</loc></url></urlset>"
+            )
+            kind = "application/xml"
+        elif url.path == "/up":
+            body = UPLOAD
+        elif url.path == "/mask":
+            body = MASK
         elif url.path == "/to-gate":
             body = "<a id=go href=/gate>go</a>"
         elif url.path == "/gate":
@@ -233,6 +255,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", kind)
         for k, v in extra.items():
             self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        size = int(self.headers.get("Content-Length", 0))
+        UPLOADS.append(self.rfile.read(size))
+        data = b"<p id=done>got it</p>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -712,6 +744,23 @@ def test_other_steps_on_the_same_url_are_another_request(base):
     assert stats["duplicates"] == 2, "a timeout doesn't make another page, nor a flag's steps"
 
 
+def test_a_plain_request_after_one_with_steps_is_still_fetched(base):
+    class Then(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(base + "/shop", steps=[steps.click("#accept")])
+
+        def parse(self, page):
+            yield {"steps": [s["action"] for s in page.steps]}
+            if page.steps:
+                # Chrome ended at /shop, with the steps: the plain page
+                # hasn't been seen.
+                yield netweir.Request(base + "/shop", browser=True)
+
+    items, stats = run(Then())
+    assert [i["steps"] for i in items] == [["click"], []]
+    assert stats["duplicates"] == 0
+
+
 def test_deltafetch_keys_a_page_by_its_steps(base, tmp_path):
     delta = str(tmp_path / "delta")
 
@@ -747,59 +796,177 @@ def test_deltafetch_keys_a_page_by_its_steps(base, tmp_path):
     assert len(items) == 2 and stats.get("skipped_delta", 0) == 0
 
 
-def _from_data(spider, request, source, **settings):
-    from types import SimpleNamespace
+def queued(spider, **kw):
+    """Runs ``spider`` with a shared queue (the stand-in for Redis), where
+    every request, the spider's own too, is read back from the queue."""
+    from fake_redis import FakeRedis
 
-    from netweir._crawl import _Run
+    fake = FakeRedis()
+    try:
+        return run(spider, queue=fake.url, queue_key="steps", queue_idle=1.0, **kw)
+    finally:
+        fake.close()
 
-    run = SimpleNamespace(spider=spider, settings=netweir.Settings(**settings))
-    _Run.from_data(run, request, source)
 
+def test_with_a_queue_a_spiders_own_callbacks_go_through(base, caplog):
+    class Own(netweir.Spider):
+        sitemap_urls = [base + "/sitemap.xml"]
 
-def test_a_request_from_data_names_only_the_spiders_own_methods(tmp_path):
-    class Spider(netweir.Spider):
-        def item(self, page):
+        def parse(self, page):
+            yield {"parse": page.url}
+            if page.url.endswith("/from-sitemap"):
+                yield netweir.Request(base + "/plain/private", callback=self._detail)
+                yield netweir.Request(base + "/plain/lost", errback=self._lost)
+
+        def _detail(self, page):
+            yield {"private": page.url}
+
+        def _lost(self, request, error):
             pass
 
-        def _private(self, page):
-            pass
-
-    spider = Spider()
-    url = "https://a.test/"
-    _from_data(spider, netweir.Request(url, callback="item"), "queue")
-    for bad in ("__init__", "__class__", "_private", "missing", "settings", "run_call"):
-        with pytest.raises(ValueError, match="isn't a method the spider defines"):
-            _from_data(spider, netweir.Request(url, callback=bad), "queue")
-    # A checkpoint is this crawl's own file: a private method may be named.
-    _from_data(spider, netweir.Request(url, callback="_private"), "checkpoint")
-    with pytest.raises(ValueError, match="isn't a method"):
-        _from_data(spider, netweir.Request(url, callback="__init__"), "checkpoint")
-    with pytest.raises(ValueError, match="call step"):
-        _from_data(spider, netweir.Request(url, steps=[steps.call("__reduce__")]), "queue")
-    with pytest.raises(ValueError, match="errback"):
-        _from_data(spider, netweir.Request(url, errback="_private"), "queue")
+    with caplog.at_level("WARNING", logger="netweir"):
+        items, stats = queued(Own())
+    assert sorted(next(iter(i.values())) for i in items) == [
+        base + "/plain/from-sitemap",
+        base + "/plain/lost",
+        base + "/plain/private",
+    ], caplog.text
+    assert stats.get("queue_bad", 0) == 0
 
 
-def test_a_request_from_data_uploads_only_from_browser_upload_dir(tmp_path):
-    spider = netweir.Spider()
-    allowed = tmp_path / "uploads"
-    allowed.mkdir()
-    (allowed / "cv.pdf").write_bytes(b"%PDF")
-    upload = netweir.Request("https://a.test/", steps=[steps.set_input_files("#f", "/etc/hosts")])
-    with pytest.raises(ValueError, match="browser_upload_dir"):
-        _from_data(spider, upload, "queue")
-    with pytest.raises(ValueError, match="isn't in browser_upload_dir"):
-        _from_data(spider, upload, "queue", browser_upload_dir=str(allowed))
-    sneaky = netweir.Request(
-        "https://a.test/",
-        steps=[steps.set_input_files("#f", str(allowed / ".." / "outside.pdf"))],
-    )
-    with pytest.raises(ValueError, match="isn't in"):
-        _from_data(spider, sneaky, "checkpoint", browser_upload_dir=str(allowed))
-    fine = netweir.Request(
-        "https://a.test/", steps=[steps.set_input_files("#f", [str(allowed / "cv.pdf")])]
-    )
-    _from_data(spider, fine, "queue", browser_upload_dir=str(allowed))
+def test_with_a_queue_netweirs_own_machinery_is_never_a_callback(base, caplog):
+    class Steered(netweir.Spider):
+        async def start(self):
+            # start and closed are this spider's own, and still netweir's
+            # hooks: never a callback.
+            for name in (
+                "closed",
+                "crawl",
+                "run",
+                "opened",
+                "start",
+                "sitemap_filter",
+                "logger",
+            ):
+                yield netweir.Request(base + f"/plain/{name}", callback=name, dont_filter=True)
+            yield netweir.Request(base + "/plain/dunder", callback="__init__")
+            yield netweir.Request(base + "/plain/none", callback="nowhere")
+            yield netweir.Request(base + "/plain/call", steps=[steps.call("closed")])
+            yield netweir.Request(base + "/plain/fine", callback="on_block")
+
+        def on_block(self, request, page=None):
+            yield {"on_block": True}
+
+        def closed(self, reason):
+            CLOSED.append(reason)
+
+    CLOSED = []
+    with caplog.at_level("WARNING", logger="netweir"):
+        items, stats = queued(Steered())
+    assert items == [{"on_block": True}]
+    assert stats["queue_bad"] == 10
+    assert CLOSED == ["finished"], "closed() only ever runs as the crawl ends"
+    said = caplog.text
+    assert "netweir.Spider's own closed, which netweir calls itself" in said
+    assert "netweir.Spider's own start" in said
+    assert "netweir.Spider's own crawl" in said and "netweir.Spider's own run" in said
+    assert "'__init__' is a dunder" in said
+    assert "'nowhere' isn't defined on Steered" in said
+    assert "its call step 'closed'" in said
+
+
+def test_with_a_queue_every_upload_needs_browser_upload_dir(base, tmp_path, caplog):
+    folder = tmp_path / "uploads"
+    folder.mkdir()
+    (folder / "cv.txt").write_text("MY-CV")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET")
+    (folder / "link.txt").symlink_to(outside)
+
+    def uploader(*paths):
+        class Up(netweir.Spider):
+            async def start(self):
+                for i, path in enumerate(paths):
+                    yield netweir.Request(
+                        base + f"/up?{i}",
+                        steps=[steps.set_input_files("#file", str(path)), steps.wait_for("#done")],
+                    )
+
+            def parse(self, page):
+                yield {"done": page.css("#done::text").get()}
+
+        return Up()
+
+    UPLOADS.clear()
+    with caplog.at_level("WARNING", logger="netweir"):
+        items, stats = queued(uploader(folder / "cv.txt"))
+    assert items == [] and stats["queue_bad"] == 1
+    assert "Settings.browser_upload_dir, which isn't set" in caplog.text
+    assert "with a shared queue, every request is" in caplog.text
+
+    caplog.clear()
+    escapes = [folder / "link.txt", folder / ".." / "secret.txt"]
+    with caplog.at_level("WARNING", logger="netweir"):
+        items, stats = queued(uploader(folder / "cv.txt", *escapes), browser_upload_dir=str(folder))
+    assert items == [{"done": "got it"}]
+    assert stats["queue_bad"] == 2, caplog.text
+    assert caplog.text.count("isn't in Settings.browser_upload_dir") == 2
+    assert len(UPLOADS) == 1 and b"MY-CV" in UPLOADS[0] and b"SECRET" not in UPLOADS[0]
+
+
+def test_an_upload_swapped_for_a_link_after_the_check_is_refused(base, tmp_path):
+    folder = tmp_path / "uploads"
+    folder.mkdir()
+    cv = folder / "cv.txt"
+    cv.write_text("MY-CV")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET")
+
+    class Swap(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/up",
+                steps=[
+                    steps.call("swap"),
+                    steps.set_input_files("#file", str(cv)),
+                    steps.wait_for("#done", timeout=2),
+                ],
+                errback=self.lost,
+            )
+
+        async def swap(self, page, request):
+            # After the check made as the request came back from the queue.
+            cv.unlink()
+            cv.symlink_to(outside)
+
+        def parse(self, page):
+            yield {"done": True}
+
+        def lost(self, request, error):
+            yield {"error": str(error)}
+
+    UPLOADS.clear()
+    items, _ = queued(Swap(), browser_upload_dir=str(folder))
+    assert len(items) == 1 and "outside the upload folder" in items[0]["error"], items
+    assert UPLOADS == []
+
+
+def test_type_replaces_a_field_that_swallows_select_all(base):
+    class Mask(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/mask",
+                steps=[
+                    steps.type("#q", "555-0199", delay=0.01),
+                    steps.evaluate("document.querySelector('#q').value"),
+                ],
+            )
+
+        def parse(self, page):
+            yield {"value": page.steps[1]["result"]}
+
+    items, _ = run(Mask())
+    assert items == [{"value": "555-0199"}]
 
 
 def test_an_upload_on_another_windows_drive_is_outside_the_folder(monkeypatch):
