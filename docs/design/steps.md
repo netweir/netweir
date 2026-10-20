@@ -312,7 +312,8 @@ exist: a rules spider's followed pages could only be rendered with
 ## Fingerprints
 
 A request's own steps are part of its fingerprint, and through it of
-its deltafetch key and cache key. This follows scrapy-zyte-api, whose
+its deltafetch key. (The development cache would key by it too, but it
+keeps no page fetched in Chrome.) This follows scrapy-zyte-api, whose
 fingerprinter keeps `actions` in, rather than Scrapy and
 scrapy-playwright. Scrapy's default fingerprint hashes the method, the
 canonical URL, the body and any `include_headers`, and leaves `meta`
@@ -324,7 +325,14 @@ turned out to cost too much. A spider yielding the same URL plain and with
 word. The way round it, `dont_filter=True`, also skips the offsite
 filter, so the fix for one silent loss was to switch off a safety check.
 Different steps leave a different page, which is what the duplicate
-filter, deltafetch and the cache are meant to tell apart.
+filter and deltafetch are meant to tell apart.
+
+The other order needed a fix of its own. Once Chrome has fetched a page,
+the URL it ended at is marked seen, as a redirect's target is. Marked
+with its bare fingerprint, that made a plain request for the same URL,
+after one with steps, a duplicate, and the checkpoint kept it so. The
+mark now carries the steps too, when they count toward the request's
+fingerprint.
 
 The key is `steps::key()`: each step's action and what it acts on
 (selector, text, key, URL glob, frame...) as JSON in a fixed order.
@@ -344,8 +352,8 @@ under `browser="on_block"` isn't known when it's submitted.
 `meta["steps_in_fingerprint"] = False` leaves a request's steps out,
 named like the other flags of a request's meta.
 
-Pages from Chrome are never cached or archived, so for now the cache key
-only matters if that changes.
+Pages from Chrome are never cached or archived, so steps change no
+cache key: the cache never sees a request with steps.
 
 ## Limits
 
@@ -384,21 +392,43 @@ the page:
   the repro for this. `from_data()` in `_crawl.py` refuses such a request, from
   the queue or a checkpoint, unless every path resolves inside
   `Settings.browser_upload_dir`, which is None (nothing allowed) by
-  default. Steps made in the process's own code aren't limited: the code
-  could read the file anyway.
+  default. The check runs again in Rust (`held_to()`) just before
+  `DOM.setFileInputFiles`, on canonicalised paths, which are what Chrome
+  is handed: a file swapped for a link after the first check is refused
+  there. `from_data()` writes the folder into the step as `within`,
+  overwriting whatever the data said.
+
+  With a shared queue, every request comes back through `from_data()`,
+  the spider's own included: the queue's members carry nothing that says
+  which process made them, and a "made here" marker would be one more
+  field for the data to forge. So with a queue, every upload needs
+  `browser_upload_dir`, and the refusal says so. Without a queue, steps
+  the process's own code makes aren't limited: the code could read the
+  file anyway.
 - `evaluate` is allowed. It runs in the page's own sandbox, with that
   site's cookies, which is what a page's own scripts can do. The risk
   (script on your crawl's pages and sessions) is set out in "Keeping
   Redis safe" in docs/distributed.md, along with the upload rule.
 
 Names from data were checked by `getattr(spider, name)`, so a queue entry
-could name `__init__` or any attribute. `from_data()` now wants a
-function the spider's class (or a base short of `object`) defines, never
-a dunder, and from the shared queue never a `_private` name. That applies
-to callbacks and errbacks as well as call steps, since they come down
-the same path. A checkpoint is the crawl's own file and may name a
-private method, which keeps resuming a crawl whose callbacks are
-`_parse_item` working.
+could name `__init__` or any attribute. `_not_a_callback()` now wants a
+function defined on the spider's own classes, or one of
+`_NETWEIR_CALLBACKS`: `parse`, `on_block` and `_sitemap`, the methods of
+netweir.Spider that netweir names as callbacks itself. Any other name
+netweir's spider classes define (`closed`, `crawl`, `start`...) is
+refused even where the spider overrides it, since an override is still
+a hook netweir calls at its own time: a queue entry naming the
+spider's own `closed` ran it mid-crawl. Dunders are never taken. That applies
+to callbacks and errbacks as well as call steps, from the queue and
+checkpoints alike, since they come down the same path.
+
+A first version refused private `_names` from the queue and walked the
+whole MRO. With a queue every request comes back through it, so that
+refused a sitemap spider's own `_sitemap` and a spider's own `_detail`
+callbacks, while letting an entry name netweir.Spider's `closed`, which
+then ran mid-crawl, or `crawl`, which started a crawl inside the crawl
+and hung. Each refusal now says which rule it broke: a dunder, netweir's
+own machinery, not a method, or not defined.
 
 ## Stealth
 

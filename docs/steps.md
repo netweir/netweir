@@ -100,9 +100,14 @@ steps.click("button.accept-all", frame={"url": "**/cmp/**"}, timeout=5, on_error
 ## Typing
 
 `type` goes about it as a person does. It clicks the field (taps it on a
-phone) and waits a moment, as you'd wait to see the caret. If there's
+phone) and waits a moment, as you'd wait to see the caret. A floating
+label laid over the field takes the click and passes it on, as it does
+for a person. If something else covers the field, so no click could
+reach it, the field is focused from a script instead. If there's
 something in the field, it selects it with Control-A, or Command-A when
-the page's platform is a Mac, so the first key replaces it. Then it
+the page's platform is a Mac, so the first key replaces it. A page that
+swallows those keys (a masked phone-number field, say) has the field's
+contents selected from a script instead, so the old text still goes. Then it
 presses each key, holding each one down for a person's time (about
 85 ms, more often longer than shorter). Capitals and symbols go with
 Shift, with the key codes of a US keyboard. A newline is Enter and a tab
@@ -334,7 +339,7 @@ there, because `page.browser` is a live page. A rules spider's callbacks
 don't get `page.browser`, so they still go to the workers, and
 `page.steps` goes with them.
 
-## Duplicates and the cache
+## Duplicates
 
 A request's own steps are part of its fingerprint, as Zyte API's actions
 are with scrapy-zyte-api: the same URL with other steps leaves another
@@ -344,10 +349,12 @@ or `type` at another pace, are the same request. A request with no steps
 of its own, or `steps=[]`, has its plain fingerprint, whatever the
 crawl's `browser_steps`.
 
-The same fingerprint is what the duplicate filter, deltafetch and the
-development cache go by, so all three tell a URL with steps apart from
-the same URL without. (Pages fetched in Chrome aren't kept in the cache or
-in a WARC or HAR archive, with steps or without.)
+The same fingerprint is what the duplicate filter and deltafetch go by,
+so both tell a URL with steps apart from the same URL without, in either
+order: once a request with steps has been fetched, the same URL without
+them is still a page to fetch. Pages fetched in Chrome aren't kept in the
+development cache at all, nor in a WARC or HAR archive, with steps or
+without.
 
 To have steps left out, as Scrapy leaves `meta` out of its fingerprint
 and scrapy-playwright's page methods are left out with it, set
@@ -370,9 +377,11 @@ The exceptions, which are the same when you call the methods yourself:
 - `fill` focuses its field from a script and inserts the whole text at
   once, as pasting does, with no keys pressed. Use `type` where a page
   watches the keys.
-- `type` on a phone selects what's in the field from a script, since a
-  phone has no Control-A. A character off the US keyboard arrives as
-  text with no key on any device.
+- `type` selects what's in the field from a script on a phone, which has
+  no Control-A, and on a page that swallows Control-A. It focuses the
+  field from a script when something other than its label covers it. A
+  character off the US keyboard arrives as text with no key on any
+  device.
 - `select_option`, and `set_input_files` clearing a field, set the
   element from a script and send the `input` and `change` events a
   person's choice would.
@@ -392,8 +401,18 @@ page the crawl was going to fetch anyway. Two can reach further:
   shared queue, or a checkpoint) may upload only from inside
   `Settings.browser_upload_dir`. Without that setting, such a request is
   refused: dropped with a warning from the queue, or skipped with an
-  error on resume. Steps your own spider code makes may upload from
-  anywhere.
+  error on resume. The paths are checked when the request is read back,
+  and again, with links followed and `..` resolved, just before Chrome
+  is handed the files, so a file swapped for a link in between gets
+  nowhere.
+
+  With a shared queue, every request is read back from data, your
+  spider's own included: a request goes into Redis when it's made and
+  comes out wherever it's fetched, and nothing on the way out says
+  which process made it. So with a queue, any upload at all needs
+  `browser_upload_dir`, set to the folder your files are in. Without a
+  queue, the steps your spider makes may upload from anywhere, except on
+  resuming from a checkpoint.
 - `evaluate` runs any JavaScript in the page, with the page's cookies
   and the crawl's session for that site. It's held to the page, as the
   site's own scripts are, so it can't reach your files. But it can read
@@ -401,11 +420,14 @@ page the crawl was going to fetch anyway. Two can reach further:
   write access to the queue as the power to run script on your crawl's
   pages.
 
-A call step, callback or errback from data must also name a method the
-spider's class defines: not a dunder (`__init__`), not something that
-isn't a method (`settings`), and from the shared queue not a private
-`_name` either. A checkpoint, being this crawl's own file, may name a
-private method. See
+A call step, callback or errback from data must also name a method of
+your own spider's classes, private `_names` included, or one of the few
+of netweir.Spider's that netweir itself calls as callbacks: `parse`,
+`on_block` and `_sitemap`. A dunder (`__init__`) is refused, and so is
+the rest of netweir.Spider: a queue entry naming `closed`, `crawl` or
+`run` would otherwise call the spider's own machinery mid-crawl. That
+holds for your own `closed` or `start` too: overriding a hook doesn't
+make it a callback. The warning for a refused request says which rule it broke. See
 [Keeping Redis safe](distributed.md#keeping-redis-safe).
 
 ## Coming from Zyte API, scrapy-playwright, Scrapling or Crawlee

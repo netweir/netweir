@@ -273,9 +273,13 @@ Chrome with the crawl's sessions:
 - `set_input_files` would upload files from the machine running Chrome.
   From the queue it may only upload from inside
   `Settings.browser_upload_dir`, and without that setting a request that
-  uploads is dropped.
+  uploads is dropped. Every request in a shared crawl comes back out of
+  the queue, your spider's own included, so with a queue any upload at
+  all needs `browser_upload_dir`.
 - A callback, errback or call step named in the queue must be a method
-  the spider's class defines, not a dunder or a private `_name`.
+  of your spider's own classes, or `parse`, `on_block` or `_sitemap`.
+  Dunders, and the rest of netweir.Spider (`closed`, `crawl`, `run`...),
+  are refused.
 
 So give Redis a password (`requirepass`, and `redis://:password@host`
 here), keep it on a network only your crawlers can reach, and don't
