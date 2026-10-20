@@ -669,20 +669,23 @@ impl Frame {
         self.attempt("type", selector, &ready, None, timeout)
             .await?;
         let left = || Some(deadline.saturating_duration_since(Instant::now()));
-        // Clicked into, as a person gets there: through a floating label
-        // laid over the field too. Something else covering it (a field
-        // styled away under its own widget) leaves the click nowhere to
-        // land, and the field is focused from script instead.
-        let covered = self
-            .helper(&format!(
-                "__netweir.check({sel}, [\"receives events\"], false)"
-            ))
-            .await?["failed"]
-            == "receives events";
-        if covered {
+        // Clicked into, as a person gets there, through a floating label
+        // laid over the field too. Something covering it (a loading
+        // overlay) is waited out for most of what's left of the time, as
+        // a click waits; a field still covered then (one styled away under
+        // a widget of its own) is focused from script with the rest.
+        let rest = deadline.saturating_duration_since(Instant::now());
+        let clicked = match self
+            .click_as("type", selector, Some(rest.mul_f64(0.8)))
+            .await
+        {
+            Ok(()) => true,
+            Err(Error::Timeout(m)) if m.contains(never("receives events")) => false,
+            Err(e) => return Err(e),
+        };
+        if !clicked {
             self.focus_field("type", selector, left()).await?;
         } else {
-            self.click_as("type", selector, left()).await?;
             // A page that moved focus elsewhere on mousedown gets it back
             // as a script would give it.
             if self.helper(&format!("__netweir.focused({sel})")).await? != true {
@@ -875,10 +878,10 @@ impl Frame {
         files: &[PathBuf],
         timeout: Option<Duration>,
     ) -> Result<()> {
+        // Chrome wants whole paths, and says nothing of a missing file
+        // until the page reads it.
         let mut paths = Vec::new();
         for file in files {
-            // Chrome wants whole paths, and says nothing of a missing file
-            // until the page reads it.
             let path = std::fs::canonicalize(file)
                 .map_err(|_| Error::Invalid(format!("no file at {}", file.display())))?;
             if !path.is_file() {
@@ -887,8 +890,20 @@ impl Frame {
                     file.display()
                 )));
             }
-            paths.push(path_text(&path));
+            paths.push(path);
         }
+        self.set_files_at(selector, &paths, timeout).await
+    }
+
+    /// `set_input_files` with `paths` taken as they are: whole paths,
+    /// already checked, which are what Chrome is handed.
+    pub(crate) async fn set_files_at(
+        &self,
+        selector: &str,
+        files: &[PathBuf],
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        let paths: Vec<String> = files.iter().map(|p| path_text(p)).collect();
         self.page.to_front().await?;
         let call = format!(
             "__netweir.fileInput({}, {})",
@@ -1259,5 +1274,64 @@ fn never(check: &str) -> &'static str {
         "editable" => "it never became editable",
         "receives events" => "something else was always at its centre, covering it",
         _ => "it never became actionable",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// After a real Control-A (Command-A), the field counts as all
+    /// selected, whatever kind it is, so `type` selects nothing from
+    /// script on top.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_a_counts_as_all_selected_in_every_kind_of_field() {
+        let Ok(chrome) = crate::find_chrome() else {
+            assert!(
+                std::env::var_os("NETWEIR_REQUIRE_CHROME").is_none(),
+                "no Chrome"
+            );
+            return;
+        };
+        let browser = crate::Browser::launch(crate::LaunchOptions {
+            executable: Some(chrome),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let page = browser.new_page().await.unwrap();
+        let html = "<input id=t value=abc><input id=e type=email value=a@b.co>\
+            <input id=n type=number value=123>\
+            <div id=ce contenteditable><p>one</p><p>two</p></div>";
+        page.goto(
+            &format!("data:text/html,{html}"),
+            crate::WaitUntil::Load,
+            None,
+        )
+        .await
+        .unwrap();
+        let frame = page.main_frame();
+        for id in ["#t", "#e", "#n", "#ce"] {
+            page.click(id, None).await.unwrap();
+            let sel = Value::from(id);
+            assert_eq!(
+                frame
+                    .helper(&format!("__netweir.allSelected({sel})"))
+                    .await
+                    .unwrap(),
+                false,
+                "{id}: nothing selected yet"
+            );
+            page.select_all().await.unwrap();
+            assert_eq!(
+                frame
+                    .helper(&format!("__netweir.allSelected({sel})"))
+                    .await
+                    .unwrap(),
+                true,
+                "{id}"
+            );
+        }
+        browser.close().await.unwrap();
     }
 }

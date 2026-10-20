@@ -200,11 +200,25 @@
     allSelected(selector) {
       const el = find(selector);
       if (!el) return false;
-      if ("value" in el && typeof el.selectionStart === "number") {
-        return el.selectionStart === 0 && el.selectionEnd === el.value.length;
+      if ("value" in el) {
+        // An email or number field has no selection API: what's selected
+        // in it is still the document's selection.
+        if (typeof el.selectionStart === "number") {
+          return el.selectionStart === 0 && el.selectionEnd === el.value.length;
+        }
+        return document.activeElement === el && String(getSelection()) === el.value;
       }
       const selection = getSelection();
-      return selection.toString() === (el.textContent || "");
+      if (!selection.rangeCount) return false;
+      const range = selection.getRangeAt(0);
+      const all = document.createRange();
+      all.selectNodeContents(el);
+      // Covering it, boundaries and all; or, as Chrome's select-all leaves
+      // a range from the first text to the last, all of its text.
+      const covers =
+        range.compareBoundaryPoints(Range.START_TO_START, all) <= 0 &&
+        range.compareBoundaryPoints(Range.END_TO_END, all) >= 0;
+      return covers || (el.contains(range.commonAncestorContainer) && range.toString() === all.toString());
     },
 
     // Whether there's anything in the field to replace.

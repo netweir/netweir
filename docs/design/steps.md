@@ -160,6 +160,12 @@ phone taps. The runner only adds what a list needs:
   step's deadline, since a consent manager's frame often loads after the
   page.
 
+A field covered by something that isn't its label is waited out by
+`click_as`'s own retry for four fifths of what's left of the step's
+time, as a click is, before `type` focuses it from script with the
+rest: a loading overlay that lifts in a second got a script focus when
+the check was made only once.
+
 `type` is new for this milestone, as `Page::type_text` and Python's
 `page.type()`. `fill` inserts the text in one go, the way pasting does.
 Zyte's `type` and the stealth rules both wanted real keystrokes, and a
@@ -392,11 +398,21 @@ the page:
   the repro for this. `from_data()` in `_crawl.py` refuses such a request, from
   the queue or a checkpoint, unless every path resolves inside
   `Settings.browser_upload_dir`, which is None (nothing allowed) by
-  default. The check runs again in Rust (`held_to()`) just before
-  `DOM.setFileInputFiles`, on canonicalised paths, which are what Chrome
-  is handed: a file swapped for a link after the first check is refused
-  there. `from_data()` writes the folder into the step as `within`,
-  overwriting whatever the data said.
+  default. `from_data()` writes the folder into the step as `within`,
+  overwriting whatever the data said, and the engine holds the upload to
+  it (uploads.rs). Checking a path just before `DOM.setFileInputFiles`
+  wasn't enough: Chrome reads an upload's file when the form is sent,
+  which can be steps (or a callback) later, and a file swapped for a
+  link in between was sent. So each resolved path is opened without
+  following a link at its end (`O_NOFOLLOW`, or
+  `FILE_FLAG_OPEN_REPARSE_POINT` and a reparse-point check on Windows),
+  checked to be the same file (device and inode on Unix) and to resolve
+  the same way still, and copied from the open file into a 0700 folder
+  of netweir's own under its original name, which the form shows.
+  Chrome is given the copy's path, as it is, and the folder is removed
+  when the page closes or is dropped. Uploads not held to a folder
+  (steps in a process's own code, without a queue) still give Chrome
+  the file's own path.
 
   With a shared queue, every request comes back through `from_data()`,
   the spider's own included: the queue's members carry nothing that says

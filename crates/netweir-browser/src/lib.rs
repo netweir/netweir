@@ -15,6 +15,7 @@ mod network;
 mod page;
 pub mod steps;
 mod storage;
+mod uploads;
 mod window;
 
 pub use browser::{Brands, Browser, Context, Guard, LaunchOptions};

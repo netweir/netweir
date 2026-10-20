@@ -102,8 +102,9 @@ steps.click("button.accept-all", frame={"url": "**/cmp/**"}, timeout=5, on_error
 `type` goes about it as a person does. It clicks the field (taps it on a
 phone) and waits a moment, as you'd wait to see the caret. A floating
 label laid over the field takes the click and passes it on, as it does
-for a person. If something else covers the field, so no click could
-reach it, the field is focused from a script instead. If there's
+for a person. Something else over the field (a loading overlay) is
+waited out, for most of the step's time, as a click waits; if the field
+is still covered then, it's focused from a script instead. If there's
 something in the field, it selects it with Control-A, or Command-A when
 the page's platform is a Mac, so the first key replaces it. A page that
 swallows those keys (a masked phone-number field, say) has the field's
@@ -379,9 +380,9 @@ The exceptions, which are the same when you call the methods yourself:
   watches the keys.
 - `type` selects what's in the field from a script on a phone, which has
   no Control-A, and on a page that swallows Control-A. It focuses the
-  field from a script when something other than its label covers it. A
-  character off the US keyboard arrives as text with no key on any
-  device.
+  field from a script when something other than its label still covers
+  it after most of the step's time. A character off the US keyboard
+  arrives as text with no key on any device.
 - `select_option`, and `set_input_files` clearing a field, set the
   element from a script and send the `input` and `change` events a
   person's choice would.
@@ -402,9 +403,14 @@ page the crawl was going to fetch anyway. Two can reach further:
   `Settings.browser_upload_dir`. Without that setting, such a request is
   refused: dropped with a warning from the queue, or skipped with an
   error on resume. The paths are checked when the request is read back,
-  and again, with links followed and `..` resolved, just before Chrome
-  is handed the files, so a file swapped for a link in between gets
-  nowhere.
+  and again, with links followed and `..` resolved, as the step runs.
+  Chrome doesn't read an upload until the form is sent, which can be
+  later, so it isn't handed your file: each file is opened without
+  following links, checked to be the one that was resolved, and copied
+  into a private folder (only you can open it), under its own name, as
+  the form shows it. Chrome sends the copy, so a file swapped for a link
+  after the check gets nowhere. The copies go when the page closes.
+  Steps your spider makes without a queue upload the file itself.
 
   With a shared queue, every request is read back from data, your
   spider's own included: a request goes into Redis when it's made and

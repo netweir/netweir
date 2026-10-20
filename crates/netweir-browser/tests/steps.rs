@@ -463,3 +463,48 @@ async fn typing_gets_past_a_floating_label_and_a_field_that_swallows_select_all(
     assert_eq!(values, json!(["tea", "555-0199", "x"]));
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn typing_waits_out_an_overlay_and_replaces_every_kind_of_field() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<input id=q value="old" style="width: 300px; height: 40px">
+<input id=e type=email value="a@b.co"><input id=n type=number value="123">
+<div id=ce contenteditable><p>one</p><p>two</p></div>
+<div id=ov style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5)">loading</div>
+<script>
+  window.log = [];
+  document.querySelector('#q').addEventListener('mousedown', () => log.push('down:' + !!document.querySelector('#ov')));
+  setTimeout(() => document.querySelector('#ov').remove(), 800);
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let fast = (Duration::from_millis(5), Duration::from_millis(10));
+    // Covered for a moment: the click waits for it, rather than focusing
+    // the field from script.
+    page.type_text("#q", "new", fast, Some(Duration::from_secs(5)))
+        .await
+        .unwrap();
+    for (id, text) in [("e", "x@y.z"), ("n", "9"), ("ce", "z")] {
+        page.type_text(&format!("#{id}"), text, fast, Some(Duration::from_secs(5)))
+            .await
+            .unwrap();
+    }
+    let got = page
+        .evaluate("[log, q.value, e.value, n.value, ce.innerText.trim()]")
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        json!([["down:false"], "new", "x@y.z", "9", "z"]),
+        "{got}"
+    );
+    browser.close().await.unwrap();
+}

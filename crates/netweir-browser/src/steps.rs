@@ -1081,31 +1081,6 @@ async fn frame_of(page: &Page, sel: &FrameSel, deadline: Instant) -> Result<Fram
     }
 }
 
-/// `files` resolved (links followed, `..` gone), each refused unless it's
-/// inside `root`, resolved too: the paths Chrome is handed, so a link
-/// swapped in after this check can't send it elsewhere.
-fn held_to(root: &std::path::Path, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let root = std::fs::canonicalize(root)
-        .map_err(|e| Error::Invalid(format!("the upload folder {}: {e}", root.display())))?;
-    files
-        .iter()
-        .map(|f| {
-            let real = std::fs::canonicalize(f)
-                .map_err(|e| Error::Invalid(format!("{}: {e}", f.display())))?;
-            if real.starts_with(&root) {
-                Ok(real)
-            } else {
-                Err(Error::Invalid(format!(
-                    "{} is {}, outside the upload folder {}",
-                    f.display(),
-                    real.display(),
-                    root.display()
-                )))
-            }
-        })
-        .collect()
-}
-
 /// Does one of the page's own actions, for a step.
 async fn act(
     page: &Page,
@@ -1186,11 +1161,16 @@ async fn act(
             if let Some(missing) = files.iter().find(|f| !f.is_file()) {
                 return Err(Error::Invalid(format!("no file at {}", missing.display())));
             }
-            let files = match within {
-                Some(root) => held_to(root, files)?,
-                None => files.clone(),
-            };
-            frame.set_input_files(selector, &files, left).await?;
+            match within {
+                // Copies Chrome reads, made from the files as they were
+                // checked: nothing swapped in later reaches it.
+                Some(root) => {
+                    let (dir, copies) = crate::uploads::held_copies(root, files)?;
+                    page.inner.uploads.keep(dir);
+                    frame.set_files_at(selector, &copies, left).await?;
+                }
+                None => frame.set_input_files(selector, files, left).await?,
+            }
             None
         }
         Action::Evaluate { js } => Some(frame.evaluate(js).await?).filter(|v| !v.is_null()),
@@ -1453,33 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn an_upload_held_to_a_folder_follows_links_and_dots_first() {
-        let dir = std::env::temp_dir().join(format!("netweir-held-{}", std::process::id()));
-        let inside = dir.join("up");
-        std::fs::create_dir_all(&inside).unwrap();
-        let outside = dir.join("secret.txt");
-        std::fs::write(&outside, "secret").unwrap();
-        std::fs::write(inside.join("cv.txt"), "cv").unwrap();
-        let ok = held_to(&inside, &[inside.join("cv.txt")]).unwrap();
-        assert_eq!(ok, [std::fs::canonicalize(inside.join("cv.txt")).unwrap()]);
-        // A real file reached with "..".
-        let err = held_to(&inside, &[inside.join("..").join("secret.txt")]).unwrap_err();
-        assert!(
-            err.to_string().contains("outside the upload folder"),
-            "{err}"
-        );
-        #[cfg(unix)]
-        {
-            let link = inside.join("link.txt");
-            let _ = std::fs::remove_file(&link);
-            std::os::unix::fs::symlink(&outside, &link).unwrap();
-            let err = held_to(&inside, &[link]).unwrap_err();
-            assert!(
-                err.to_string().contains("outside the upload folder"),
-                "{err}"
-            );
-        }
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn an_upload_step_names_its_folder_but_isnt_keyed_by_it() {
         let s = one(
             json!({"action": "set_input_files", "selector": "f", "files": "a", "within": "/up"}),
         )

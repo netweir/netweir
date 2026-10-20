@@ -3089,7 +3089,7 @@ def _not_a_callback(spider: Any, name: str) -> str | None:
     is refused even where the spider overrides it: it's still a hook
     netweir calls at its own time, not a callback."""
     if name.startswith("__"):
-        return "is a dunder or a name-mangled attribute, which is never a callback"
+        return "starts with two underscores (a dunder, or private to its class), never a callback"
     mro = [k for k in type(spider).__mro__ if k is not object]
     ours = [k for k in mro if k.__module__.split(".")[0] == "netweir"]
     machinery = next((k for k in ours if name in vars(k)), None)

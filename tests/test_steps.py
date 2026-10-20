@@ -189,6 +189,19 @@ UPLOAD = """<form id=f method=post action=/upload enctype=multipart/form-data>
 <script>document.querySelector('#file').addEventListener('change',
   () => document.querySelector('#f').submit())</script>"""
 
+LATER = """<form id=f method=post action=/upload enctype=multipart/form-data>
+<input type=file id=file name=file><button id=go>go</button></form>"""
+
+OVERLAY = """<input id=q value="old" style="width: 300px; height: 40px">
+<div id=ov style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5)">loading</div>
+<script>
+window.log = [];
+const q = document.querySelector('#q');
+for (const t of ['mousedown', 'focus'])
+  q.addEventListener(t, () => log.push(t + ':' + !!document.querySelector('#ov')));
+setTimeout(() => document.querySelector('#ov').remove(), 800);
+</script>"""
+
 MASK = """<input id=q value="555-0100">
 <script>document.querySelector('#q').addEventListener('keydown',
   e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); });</script>"""
@@ -244,6 +257,10 @@ class Handler(BaseHTTPRequestHandler):
             body = UPLOAD
         elif url.path == "/mask":
             body = MASK
+        elif url.path == "/later":
+            body = LATER
+        elif url.path == "/overlay":
+            body = OVERLAY
         elif url.path == "/to-gate":
             body = "<a id=go href=/gate>go</a>"
         elif url.path == "/gate":
@@ -870,7 +887,7 @@ def test_with_a_queue_netweirs_own_machinery_is_never_a_callback(base, caplog):
     assert "netweir.Spider's own closed, which netweir calls itself" in said
     assert "netweir.Spider's own start" in said
     assert "netweir.Spider's own crawl" in said and "netweir.Spider's own run" in said
-    assert "'__init__' is a dunder" in said
+    assert "'__init__' starts with two underscores" in said
     assert "'nowhere' isn't defined on Steered" in said
     assert "its call step 'closed'" in said
 
@@ -1083,3 +1100,59 @@ def test_double_clicks_xpath_jpeg_and_cached_steps(base):
 
     items, _ = run(Cell())
     assert items == [{"cell": "edited", "jpeg": True, "cached": True}]
+
+
+def test_an_upload_swapped_after_it_was_set_still_sends_what_was_checked(base, tmp_path):
+    folder = tmp_path / "uploads"
+    folder.mkdir()
+    cv = folder / "cv.txt"
+    cv.write_text("MY-CV")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET")
+
+    class Later(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/later",
+                steps=[
+                    steps.set_input_files("#file", str(cv)),
+                    # Chrome reads the file only as the form goes.
+                    steps.call("swap"),
+                    steps.click("#go"),
+                    steps.wait_for("#done", timeout=5),
+                ],
+            )
+
+        async def swap(self, page, request):
+            cv.unlink()
+            cv.symlink_to(outside)
+
+        def parse(self, page):
+            yield {"done": page.css("#done::text").get()}
+
+    UPLOADS.clear()
+    items, _ = queued(Later(), browser_upload_dir=str(folder))
+    assert items == [{"done": "got it"}]
+    (sent,) = UPLOADS
+    assert b"MY-CV" in sent and b"SECRET" not in sent
+    assert b'filename="cv.txt"' in sent, "the copy keeps the file's own name"
+
+
+def test_type_waits_for_an_overlay_rather_than_focusing_from_script(base):
+    class Overlay(netweir.Spider):
+        async def start(self):
+            yield netweir.Request(
+                base + "/overlay",
+                steps=[
+                    steps.type("#q", "new", delay=0.01),
+                    steps.evaluate("[log, document.querySelector('#q').value]"),
+                ],
+            )
+
+        def parse(self, page):
+            yield {"r": page.steps[1]["result"]}
+
+    items, _ = run(Overlay())
+    ((log, value),) = [i["r"] for i in items]
+    assert value == "new"
+    assert log[0] == "mousedown:false", "clicked once the overlay had gone"

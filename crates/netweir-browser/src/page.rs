@@ -194,6 +194,8 @@ pub(crate) struct PageInner {
     pub(crate) shown: Mutex<Option<Size>>,
     /// Service workers of its context it attached to keep offline.
     offline_workers: Mutex<Vec<String>>,
+    /// Where its steps' held uploads were copied, removed when it closes.
+    pub(crate) uploads: crate::uploads::UploadDirs,
 }
 
 /// A page's environment, and the user agent override every session of it
@@ -684,6 +686,7 @@ impl Page {
                 insets: Mutex::default(),
                 shown: Mutex::default(),
                 offline_workers: Mutex::default(),
+                uploads: Default::default(),
             }),
         };
         {
@@ -1924,6 +1927,8 @@ impl Page {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return Ok(());
         }
+        // Chrome may read an upload until the page goes, and not after.
+        self.inner.uploads.clear();
         // Whoever takes the page's routes hears there are no more.
         lock(&self.inner.rules).routes = None;
         let conn = &self.inner.browser.conn;
