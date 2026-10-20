@@ -241,7 +241,7 @@ Chrome lets DevTools change a great deal, but not everything:
   phone stays running while the page is open, where Chrome would stop an
   idle one after about 30 seconds.
 - **Windows' invisible window border**: a restored window on Windows is
-  said to have one, a maximised one has none (measured), and a headless
+  said to have one (not measured), a maximised one has none (measured), and a headless
   window has none either way, so `outerWidth` is `innerWidth`.
 - **A permission prompt** is turned down at once, where a person would
   take a moment.
