@@ -56,6 +56,8 @@ from every page the rules apply to:
 | `priority=` | the priority of the requests the rule makes |
 | `allow=`, `deny=` | regexes matched against each absolute link: it's taken if it matches one of `allow` (or there are none) and none of `deny` |
 | `allow_domains=`, `deny_domains=` | the same by site; a domain covers its subdomains |
+| `browser=` | True fetches the pages the rule leads to in Chrome, so the item and links come from the page its scripts built |
+| `steps=` | what to do on those pages in Chrome before they're read, such as `[steps.click("button.load-more")]`; implies `browser=True`. See [Steps](steps.md#in-rules) |
 
 A matched element gives its `href`; a query ending in `::attr(...)` or
 `@attr` gives that value instead. Links are resolved the way a browser

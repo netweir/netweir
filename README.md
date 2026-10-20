@@ -153,6 +153,13 @@ Working today:
   crawl, it can take over a request a site keeps blocking, and hand the
   cookies it earns back to the fast HTTP client. `netweir install chrome`
   fetches the Chrome it's tuned for.
+- Steps: a request, a rule or a whole crawl can carry a list of things
+  for Chrome to do before the callback reads the page, such as
+  dismissing a banner, clicking "Load more", typing a search, scrolling a
+  feed to its end, taking a screenshot or running your own function. The
+  list is JSON, so it survives checkpoints and shared queues. Each step's
+  outcome comes back to the callback, and the input is the same human
+  mouse, touch and keys as the driver's. See [docs/steps.md](docs/steps.md).
 - A page's environment, with Playwright's names: viewport and screen,
   phones (`device="Galaxy S23"`), language, time zone, location and
   permissions, dark mode, extra headers, offline and init scripts, per

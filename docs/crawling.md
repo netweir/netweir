@@ -61,6 +61,7 @@ netweir.Request(
     headers={"Accept-Language": "de-DE"},
     dont_filter=False,          # True fetches it even if seen before
     browser=False,              # True fetches it in Chrome
+    steps=[steps.click("#more")],    # done in Chrome before the callback (netweir.steps)
     method="GET",               # or POST, PUT...; with one of form=, json=, body=
     referer="https://example.com/",  # the page it comes from; page.follow sets it
     proxy="http://10.0.0.9:8080",    # this one request goes through this proxy
@@ -101,7 +102,10 @@ crawl and starting a crawl logged in are in [Sessions and cookies](sessions.md).
 A request with `browser=True` is loaded in Chrome, so the callback sees the
 page after its JavaScript ran, and `page.browser` is the live page for
 clicking and typing until the callback returns. See
-[Browser](browser.md#in-a-crawl).
+[Browser](browser.md#in-a-crawl). For the clicking and typing every page
+needs (a cookie banner, "Load more", a search box), give the request
+`steps` instead, and Chrome does them before the callback sees the page.
+See [Steps](steps.md).
 
 ## Sitemaps
 

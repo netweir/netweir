@@ -213,7 +213,8 @@ response = await moved
 | Method | Does |
 |---|---|
 | `click(selector)` | clicks the middle of the element with the mouse |
-| `fill(selector, text)` | replaces what's in a field with `text`, as typing would |
+| `fill(selector, text)` | replaces what's in a field with `text` in one go, as pasting would |
+| `type(selector, text, delay=None)` | replaces what's in a field by typing `text` a key at a time, with a pause between keys: `delay` seconds, or a `(least, most)` pair to pick from each time (0.08 to 0.25 by default) |
 | `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
 | `hover(selector)` | moves the mouse over the element |
@@ -779,6 +780,11 @@ A declarative spider's rules read the rendered HTML, so callbacks the rules
 call, and a rules spider's own `parse`, get the rendered page but not
 `page.browser`.
 
+For what most pages need before they're read, such as a banner to
+dismiss, a button to click or a feed to scroll, a request can carry
+`steps`, which Chrome does before the callback, and a rule can carry them
+too. See [Steps](steps.md).
+
 A page Chrome answers with a server error (500, 502, 503, 504, 408, 522 or
 524) is tried again in Chrome, up to `retries` times, as the HTTP client
 would; other error statuses go to the callback as they are.
@@ -810,7 +816,8 @@ its cookies to goes through that one too.
 
 The stats count `browser_fetches`, pages Chrome fetched, and
 `browser_unblocked`, blocked requests it got through. Each hand-back counts
-in `sessions_replaced` too.
+in `sessions_replaced` too. `browser_steps` and `browser_steps_failed`
+count the [steps](steps.md) run on those pages, and the ones that failed.
 
 ## Not looking automated
 
