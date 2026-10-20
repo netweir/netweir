@@ -1782,9 +1782,10 @@ async fn the_language_page_script_reads_is_the_one_intl_formats_in() {
 
 /// A phone scrolls as far as it's asked and no further, up and down, on a
 /// page laid out for it and on one zoomed out to fit a desktop layout (no
-/// viewport meta tag), where a finger's pixels are bigger than the page's.
-/// The finger stays inside what it drags, a short box at the top too, and
-/// a whole page goes by in good time.
+/// viewport meta tag), where a finger's pixels are bigger than the page's,
+/// and on one whose script keeps its main thread busy, which hears of a
+/// scroll late. The finger stays inside what it drags, a short box at the
+/// top too, and a whole page goes by in good time.
 #[tokio::test]
 async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
     let Some(options) = launch_options() else {
@@ -1797,6 +1798,11 @@ async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
         "<meta name=viewport content='width=device-width'><body style='margin:0;height:9000px'>{watch}"
     );
     let zoomed = format!("<body style='margin:0;height:9000px'>{watch}");
+    // Busy 120 ms in every 130, as a heavy page's script is.
+    let busy = format!(
+        "{zoomed}<script>setInterval(() => {{ const t = performance.now(); \
+         while (performance.now() - t < 120); }}, 130);</script>"
+    );
     let boxed = format!(
         "<meta name=viewport content='width=device-width'><body style='margin:0;height:3000px'>\
          <div id=box style='height:100px;overflow:auto'><div style='height:3000px'>x</div></div>{watch}"
@@ -1806,6 +1812,7 @@ async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
     let server = serve(vec![
         ("/fits", html(&fits)),
         ("/zoomed", html(&zoomed)),
+        ("/busy", html(&busy)),
         ("/box", html(&boxed)),
         ("/long", html(long)),
     ]);
@@ -1813,7 +1820,7 @@ async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
         .new_page_with(Environment::device("Galaxy S23").unwrap())
         .await
         .unwrap();
-    for path in ["/fits", "/zoomed"] {
+    for path in ["/fits", "/zoomed", "/busy"] {
         page.goto(&format!("{}{path}", server.url), WaitUntil::Load, None)
             .await
             .unwrap();

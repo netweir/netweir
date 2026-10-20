@@ -40,15 +40,31 @@
   const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
 
   globalThis.__netweir = {
+    // Where what a finger at (x, y) drags is scrolled to, and as far as
+    // it can go: [left, top, most left, most top]. With `still`, once it
+    // has stopped: the same two frames running, for half a second at
+    // most, since the page's script hears of a finger's scroll a frame or
+    // more after Chrome has drawn it.
+    async swipeMark(x, y, still) {
+      const read = () => {
+        const el = document.elementFromPoint(x, y);
+        const s = el && scrollers(el)[0];
+        if (s) return [s.scrollLeft, s.scrollTop, s.scrollWidth - s.clientWidth, s.scrollHeight - s.clientHeight];
+        const d = document.scrollingElement || document.documentElement;
+        return [scrollX, scrollY, d.scrollWidth - d.clientWidth, d.scrollHeight - d.clientHeight];
+      };
+      let last = read();
+      for (let i = 0, same = 0; still && same < 2 && i < 30; i++) {
+        await frame();
+        const now = read();
+        same = now.join() === last.join() ? same + 1 : 0;
+        last = now;
+      }
+      return last;
+    },
     // The box a finger at (x, y) would drag: the nearest one that scrolls
     // by itself, or a frame, as [left, top, right, bottom]; null for the
     // page's own.
-    // Where what a finger at (x, y) drags is scrolled to.
-    swipeMark(x, y) {
-      const el = document.elementFromPoint(x, y);
-      const s = el && scrollers(el)[0];
-      return s ? [s.scrollLeft, s.scrollTop] : [scrollX, scrollY];
-    },
     swipeArea(x, y) {
       const el = document.elementFromPoint(x, y);
       if (!el) return null;

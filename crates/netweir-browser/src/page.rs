@@ -1505,29 +1505,66 @@ impl Page {
     /// as touch points are; on a page zoomed out (no viewport meta tag)
     /// those are smaller than a finger's, so Chrome's 15-pixel slop
     /// before scrolling starts is 15 / scale of them.
+    ///
+    /// A finger lands a few pixels short or long now and then, and a
+    /// person nudges the page the rest of the way: up to three times, each
+    /// measured once the page has stopped. Where it can't go further (an
+    /// end of the page, or a page that won't follow a finger: two nudges
+    /// running that move nothing), it stops there; a page still more than
+    /// 5 pixels off after the nudges is an error, saying how far it went.
     async fn swipe(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
-        let mark = format!("__netweir.swipeMark({x}, {y})");
+        let mark = |still: bool| format!("__netweir.swipeMark({x}, {y}, {still})");
         let frame = self.main_frame();
         let at = |v: &Value, i: usize| v[i].as_f64().unwrap_or(0.0);
-        let start = frame.helper(&mark).await.unwrap_or(Value::Null);
+        let start = frame.helper(&mark(false)).await.unwrap_or(Value::Null);
         self.drag(x, y, dx, dy).await?;
-        // A finger lands a few pixels short or long now and then; a
-        // person nudges the page the rest of the way. Twice at most, and
-        // not again once a nudge moves nothing: the page is at its end.
-        let mut last = start.clone();
-        for _ in 0..2 {
-            let now = frame.helper(&mark).await.unwrap_or(Value::Null);
-            if !now.is_array() || now == last {
-                break;
+        if !start.is_array() {
+            // Nothing to measure by: the page went while it was asked.
+            return Ok(());
+        }
+        // How much of `left` there's room for, from `pos`, short of `most`.
+        let room = |left: f64, pos: f64, most: f64| {
+            if left > 0.0 {
+                left.min((most - pos).max(0.0))
+            } else {
+                left.max(-pos.max(0.0))
             }
-            last = now.clone();
-            let (left_x, left_y) = (
-                dx - (at(&now, 0) - at(&start, 0)),
-                dy - (at(&now, 1) - at(&start, 1)),
-            );
+        };
+        let (mut last, mut idle) = (start.clone(), 0);
+        for nudge in 0..=3 {
+            let now = frame.helper(&mark(true)).await.unwrap_or(Value::Null);
+            if !now.is_array() {
+                return Ok(());
+            }
+            let (moved_x, moved_y) = (at(&now, 0) - at(&start, 0), at(&now, 1) - at(&start, 1));
+            let left_x = room(dx - moved_x, at(&now, 0), at(&now, 2));
+            let left_y = room(dy - moved_y, at(&now, 1), at(&now, 3));
             if left_x.abs() <= 2.0 && left_y.abs() <= 2.0 {
-                break;
+                return Ok(());
             }
+            idle = if nudge > 0 && now == last {
+                idle + 1
+            } else {
+                0
+            };
+            if idle >= 2 {
+                // The page doesn't follow the finger here (it snaps, say,
+                // or its script holds it): as far as it goes.
+                return Ok(());
+            }
+            if nudge == 3 {
+                if left_x.abs() <= 5.0 && left_y.abs() <= 5.0 {
+                    return Ok(());
+                }
+                return Err(Error::Protocol {
+                    method: "Input.dispatchTouchEvent".into(),
+                    message: format!(
+                        "a finger dragged the page by ({dx}, {dy}) and three nudges after, \
+                         and it moved ({moved_x}, {moved_y})"
+                    ),
+                });
+            }
+            last = now;
             self.drag(x, y, left_x, left_y).await?;
         }
         Ok(())
@@ -1598,10 +1635,10 @@ impl Page {
         let length = part_x.hypot(part_y);
         let (ux, uy) = (part_x / length, part_y / length);
         let travel = length + slop;
-        let mark = format!("__netweir.swipeMark({sx}, {sy})");
+        let mark = |still: bool| format!("__netweir.swipeMark({sx}, {sy}, {still})");
         let frame = self.main_frame();
         for _ in 0..parts as u32 {
-            let before = frame.helper(&mark).await.unwrap_or(Value::Null);
+            let before = frame.helper(&mark(false)).await.unwrap_or(Value::Null);
             // This finger, this time: its size, how hard it presses, and
             // which way it drifts.
             let radius = 8.0 + 6.0 * random();
@@ -1659,15 +1696,19 @@ impl Page {
             // it should be, as an eye on the page would: Chrome carries a
             // fast drag a few pixels past the finger (6 on a page at scale
             // 1, about 7 of a finger's on one zoomed out), a slow one not.
+            // Only those few: a page further off than the slop is left to
+            // the nudges after (see [`Page::swipe`]), not dragged after
+            // with the finger.
             let hold = (Duration::from_millis(80), Duration::from_millis(120));
             tokio::time::sleep(crate::events::pause(hold)).await;
             if before.is_array() {
-                let now = frame.helper(&mark).await.unwrap_or(Value::Null);
+                let now = frame.helper(&mark(true)).await.unwrap_or(Value::Null);
                 if now.is_array() {
                     let at = |v: &Value, i: usize| v[i].as_f64().unwrap_or(0.0);
                     let off_x = part_x - (at(&now, 0) - at(&before, 0));
                     let off_y = part_y - (at(&now, 1) - at(&before, 1));
-                    if off_x.abs() > 1.0 || off_y.abs() > 1.0 {
+                    let near = off_x.abs() <= slop && off_y.abs() <= slop;
+                    if near && (off_x.abs() > 1.0 || off_y.abs() > 1.0) {
                         px = (px - off_x).clamp(left, right);
                         py = (py - off_y).clamp(top, bottom);
                         touch("touchMove", point(px, py, 0.2)).await?;
@@ -1678,7 +1719,7 @@ impl Page {
             touch("touchMove", point(px, py, 0.0)).await?;
             touch("touchEnd", point(px, py, 0.0)).await?;
             // At its end already: more drags would move nothing either.
-            if parts > 1.0 && frame.helper(&mark).await.unwrap_or(Value::Null) == before {
+            if parts > 1.0 && frame.helper(&mark(true)).await.unwrap_or(Value::Null) == before {
                 break;
             }
         }

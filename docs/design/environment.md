@@ -270,17 +270,30 @@ The rest of the identity goes everywhere:
   380). While it holds, it reads where the page got to and moves the
   last few pixels: Chrome carries a fast drag about 6 pixels past the
   finger at scale 1. The moves are sent without waiting for each answer,
-  since waiting for each made them 33 ms apart. A drag too long for the
-  box goes as several, each kept inside it, so a finger on a 100-pixel
+  since waiting for each made them 33 ms apart. Chrome doesn't always
+  scroll as far as the finger goes: given the times a finger would have
+  made them at, out of step with when they arrived (as a loaded machine
+  delivers them), a 615-pixel drag on the zoomed page scrolled anything
+  from 91 to 565. So after the drag the page is measured once it has
+  stopped (the same two frames running: its script hears of a finger's
+  scroll a frame or more after Chrome draws it) and nudged up to three
+  times; a page that's still more than 5 pixels off is an error saying
+  how far it went. Measured too soon, as it was, a page that hadn't yet
+  heard of the scroll looked unmoved and the nudges were skipped, which
+  is how, most likely, a 600-pixel swipe on CI stopped at 171. Where a
+  nudge would pass an end of the page, it stops at the end; two nudges
+  in a row that move nothing mean the page won't follow a finger there.
+  A drag too long for the box goes as several, each kept inside it, so a finger on a 100-pixel
   box at the top of the page never leaves the screen; a box with no
   room for the slop isn't dragged. Touch points are in the page's CSS
   pixels, so on a page zoomed out to fit (no viewport meta tag, a scale
   of about 0.37 on a Galaxy) the slop and the margins are divided by
   the visual viewport's scale. Measured on a Galaxy S23, to the bottom
-  of a 15000-pixel page: 13.9 s, where `synthesizeScrollGesture` took
-  15.5 and a desktop's wheel 6.1; 600 pixels up or down lands within 5
-  pixels (the test's bound), zoomed or not, and stays there. The page gets touches
-  and no `wheel` events, and its pointer is a fingertip's size all the
+  of a 15000-pixel page: 15.8 s (13.9 before the page was measured once
+  still), where `synthesizeScrollGesture` took 15.5 and a desktop's
+  wheel 6.1; 600 pixels up or down lands within 5 pixels (the test's
+  bound), zoomed or not, busy or not, and stays there. The page gets
+  touches and no `wheel` events, and its pointer is a fingertip's size all the
   way; `Input.synthesizeScrollGesture`, used before, gave it a width
   of 1. A key pressed is what an
   on-screen keyboard sends: `keydown` and `keyup` "Unidentified" with
