@@ -764,6 +764,53 @@ async fn offline_fails_requests_and_says_so_everywhere() {
     browser.close().await.unwrap();
 }
 
+/// Once a context's set_offline returns, and once a page made in an
+/// offline context is, each page is offline, and stays so: a session
+/// netweir let go of a new page took the whole renderer process back
+/// online now and then, after the fact.
+#[tokio::test]
+async fn an_offline_contexts_pages_stay_offline() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let probe = Probe::new();
+    let fetch = format!(
+        "fetch('{}').then((r) => r.status, () => 'failed')",
+        probe.url("/worker-fetch")
+    );
+    for round in 0..5 {
+        let context = browser
+            .new_context_with(Environment::default())
+            .await
+            .unwrap();
+        let first = context.new_page_with(Environment::default()).await.unwrap();
+        first
+            .goto(&probe.url("/style.css"), WaitUntil::Load, None)
+            .await
+            .unwrap();
+        context.set_offline(true).await.unwrap();
+        let second = context.new_page_with(Environment::default()).await.unwrap();
+        for when in ["at once", "a moment later"] {
+            for (name, page) in [("first", &first), ("second", &second)] {
+                let on = page.evaluate("navigator.onLine").await.unwrap();
+                assert_eq!(
+                    on, false,
+                    "round {round}, {when}: the {name} page is online"
+                );
+            }
+            let got = first.evaluate(&fetch).await.unwrap();
+            assert_eq!(
+                got, "failed",
+                "round {round}, {when}: the first page fetched"
+            );
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        context.close().await.unwrap();
+    }
+    browser.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn settings_changed_later_reach_the_page() {
     let Some(options) = launch_options() else {

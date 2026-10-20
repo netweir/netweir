@@ -202,8 +202,8 @@ async def test_a_context_s_settings_change_for_all_its_pages(browser, base):
     await context.set_geolocation({"latitude": 1, "longitude": 2, "accuracy": 3})
     await context.grant_permissions(["geolocation"])
     second = await context.new_page()
-    for page in (first, second):
-        assert await page.evaluate("navigator.onLine") is False
+    for name, page in (("first", first), ("second", second)):
+        assert await page.evaluate("navigator.onLine") is False, f"the {name} page is online"
     await context.set_offline(False)
     await second.goto(base + "/second")
     assert await second.evaluate("window.everyPage") == 1

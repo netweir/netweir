@@ -511,7 +511,19 @@ would grant:
   lets requests through. Both, in every session, make a page whose fetch
   fails while it says it's offline, which is what a person's offline
   Chrome shows. Turned off, `overrideNetworkState` with no limits left
-  `navigator.connection` as Chrome reports it.
+  `navigator.connection` as Chrome reports it. The override is the
+  renderer process's, not the page's, and set as the command is
+  answered, so a page, its frames in that process and its workers all
+  read it once `set_offline` returns. Any session leaving that process
+  clears it, though: Blink's network agent clears it as the session goes,
+  whether or not that session set it (measured: a second session
+  attached to an offline page and detached again left `onLine` true).
+  The browser's session, which Chrome attaches to every new page and
+  Netweir used to let go of at once, left by another pipe than the
+  page's own commands came by, so it could land after them: a page
+  in an offline context read `onLine` true on Windows CI. That session
+  is kept now, unused, until the page closes. Closing a page doesn't
+  clear it for others in its process (measured with a popup).
 - **Init scripts**: `Page.addScriptToEvaluateOnNewDocument`, in the main
   world, in the page's session and each frame's. A frame's session needs
   the Page domain for it (without, the script didn't run there), so a

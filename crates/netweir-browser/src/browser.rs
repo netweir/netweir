@@ -935,10 +935,17 @@ impl Browser {
 /// Chrome holds: one opened by a page of netweir's, or by a frame from
 /// another site in one, is a popup, taken on by its opener; anything else
 /// (a page netweir made, which it attaches to itself, or someone else's
-/// tab) is let go and left. A page that was there already, which Chrome
-/// attaches without holding (a tab of a browser netweir connected to,
-/// say), is left too. Netweir attaching to a page it made is heard here
-/// as well, and kept.
+/// tab) is let go, and its session kept but unused. Left, it would take
+/// the page offline back online: a session leaving a renderer clears
+/// `Network.overrideNetworkState` for every page in that process (Blink's
+/// network agent clears it as it goes, whether or not it set it). This
+/// session's leaving reaches the renderer by another pipe than the page's
+/// own commands, so it could land after the page had gone offline: a
+/// page in an offline context read online now and then on Windows CI.
+/// A page that was there already, which Chrome attaches without holding
+/// (a tab of a browser netweir connected to, say), is left, before
+/// netweir sets anything on it. Netweir
+/// attaching to a page it made is heard here as well, and kept.
 fn popped(
     conn: &Connection,
     pages: &Mutex<Vec<Weak<PageInner>>>,
@@ -982,10 +989,7 @@ fn popped(
                 Page::adopt(opener, str_of(info, "targetId"), session),
             );
         }
-        None => {
-            conn.send(&session, "Runtime.runIfWaitingForDebugger", json!({}));
-            conn.send("", "Target.detachFromTarget", json!({"sessionId": session}));
-        }
+        None => conn.send(&session, "Runtime.runIfWaitingForDebugger", json!({})),
     }
 }
 
