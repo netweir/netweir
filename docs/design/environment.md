@@ -152,10 +152,24 @@ built-in display, labelled, internal and 30 bits deep; others are
 external monitors named for their size (a common model's EDID name).
 The menu bar comes from the macOS version: 33 beside a notch and 30
 otherwise on macOS 26, measured; 37 and 25 before it, which couldn't be
-measured here. The Dock is on the first screen. On Windows the taskbar
-is 48 on Windows 11 (build 22000 and later) and 40 on 10, on every
-screen, as Windows shows it by default; that, too, couldn't be measured
-here. On Linux a screen is its whole: its desktops put a bar, a dock or
+measured here. The Dock is on the first screen.
+
+On Windows, measured on a Dell XPS laptop with Windows 11 and Google
+Chrome 155.0.8059.85, its display at 125%: the screen is 1536×960 at a
+ratio of 1.25, the work area 1536×912 with the taskbar's 48 at the
+bottom (`availTop` 0), 24 bits deep, and `getScreenDetails()` names it
+`"160WUX\n"`, the panel's model, newline and all, internal. A maximised
+window is the work area exactly, 1536×912 at 0, 0: no invisible border
+when maximised. Netweir's Windows screens follow that: the taskbar's 48
+at the bottom of every screen (40 before build 22000, Windows 10's
+default, not measured), and a laptop's own panel sizes at 125% or 150%
+internal and named for a panel model (`160WUX\n` for 1920×1200, as
+measured, and `B156HAN02.1\n`, a common 15.6-inch 1920×1080 panel's).
+The `Desktop 1536x960 125%` preset is that laptop; its ratio can only
+be a whole browser's, since an added screen is rounded to a whole one.
+A work area at a ratio like 1.25 is given in whole pixels rounded down,
+since Chrome shows the whole CSS pixels inside it (30 at 1.25 given as
+38 device pixels came out as 31). On Linux a screen is its whole: its desktops put a bar, a dock or
 a panel anywhere, or nothing at all on a server, and no one shape is
 more like a person's.
 
@@ -169,10 +183,22 @@ gives a new window the size of the last one, so one page's viewport
 would otherwise become the next one's. A `--window-size` switch is every
 page's window unless the environment names a viewport, made to fit the
 work area as Chrome makes its own; `viewport=None` leaves the window as
-Chrome opens it. Known limit: a window on Windows has an invisible
-border, which makes `outerWidth` 16 more than `innerWidth` (as reported;
-not measured here); a headless window has none, and nothing can give it
-one.
+Chrome opens it. Known limit: a restored (not maximised) window on
+Windows is said to have an invisible border, which would make
+`outerWidth` 16 more than `innerWidth`; a maximised one has none, as
+measured, and a headless window has none either way. The restored
+window's border and the frame's height on Windows are still to be
+measured.
+
+Headless Chrome on Linux takes `Browser.setWindowBounds` in the device
+pixels of the screen the window is on and gives them back in those of
+the screen it lands on. Measured with Google Chrome 155.0.8059.84 on
+Ubuntu 24.04: a window on the 1920×1080 screen at ratio 1, asked to be
+1200×787 at x 1920 on an added 1440×900 screen at ratio 2, came out
+600×394 at x 960; moved back, it came out twice the size. Asked again
+from the screen it's now on, it's where it was asked to be, so Netweir
+reads the bounds back after setting them and sets them once more when
+they differ. macOS takes them in CSS pixels throughout.
 
 **A default that fits.** Headless Chrome's own screen is 800×600, while
 the windows it opens for new contexts are 1280×600: `outerWidth` bigger
@@ -227,12 +253,28 @@ The rest of the identity goes everywhere:
   `pointerdown` with `pointerType` `touch`, `touchstart`, `touchend`
   and a `click` from a touch. (Chrome gives the lifted touch's
   `pointerup` a width of 1 however the tap is sent, `touchEnd` with its
-  point or without, or `synthesizeTapGesture`.) Scrolling is a finger dragging the page,
-  as touch events: it lands, moves in steps of 20 pixels every 16 ms,
-  15 pixels further than the distance (what Chrome takes as a tap's
-  wobble before it scrolls), holds still 120 ms and lifts, so the page
-  doesn't fling on (lifted without the hold, a 300-pixel drag went 380).
-  A drag too long for the screen goes as several. The page gets touches
+  point or without, or `synthesizeTapGesture`.) Scrolling is a finger
+  dragging the page, as touch events. It lands near the far edge of
+  what it drags (the box that scrolls under the point, or the screen),
+  a few pixels off from last time, and moves every 16 ms by the clock:
+  past Chrome's 15-pixel slop (a tap's wobble) in its first move, then
+  speeding up and slowing down over 60 ms plus a quarter of a
+  millisecond a pixel, drifting a pixel or two sideways, its fingertip
+  growing as it presses. It holds still 80 to 120 ms and lifts, so the
+  page doesn't fling on (lifted without the hold, a 300-pixel drag went
+  380). While it holds, it reads where the page got to and moves the
+  last few pixels: Chrome carries a fast drag about 6 pixels past the
+  finger at scale 1. The moves are sent without waiting for each answer,
+  since waiting for each made them 33 ms apart. A drag too long for the
+  box goes as several, each kept inside it, so a finger on a 100-pixel
+  box at the top of the page never leaves the screen; a box with no
+  room for the slop isn't dragged. Touch points are in the page's CSS
+  pixels, so on a page zoomed out to fit (no viewport meta tag, a scale
+  of about 0.37 on a Galaxy) the slop and the margins are divided by
+  the visual viewport's scale. Measured on a Galaxy S23, to the bottom
+  of a 15000-pixel page: 13.9 s, where `synthesizeScrollGesture` took
+  15.5 and a desktop's wheel 6.1; 600 pixels up or down lands within 5
+  pixels (the test's bound), zoomed or not, and stays there. The page gets touches
   and no `wheel` events, and its pointer is a fingertip's size all the
   way; `Input.synthesizeScrollGesture`, used before, gave it a width
   of 1. A key pressed is what an

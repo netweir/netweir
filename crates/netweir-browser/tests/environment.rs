@@ -200,10 +200,16 @@ async fn surfaces(page: &netweir_browser::Page, probe: &Probe) -> Value {
     page.goto(&probe.url("/"), WaitUntil::Load, None)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(30), page.evaluate("surfaces"))
+    let s = tokio::time::timeout(Duration::from_secs(30), page.evaluate("surfaces"))
         .await
         .expect("the surfaces were never read")
-        .unwrap()
+        .unwrap();
+    // Every one, on every system: a surface missing would leave its
+    // checks unmade without a word.
+    for w in ["main", "worker", "shared", "frame", "frameWorker"] {
+        assert!(s[w].is_object(), "no {w}: {s:#}");
+    }
+    s
 }
 
 fn launch_options() -> Option<LaunchOptions> {
@@ -550,8 +556,11 @@ const DETECT: &str = r#"
   }
   if (Object.getOwnPropertyNames(navigator).length || Object.getOwnPropertyNames(screen).length) flag('own properties');
   if (!m.hints.uaFullVersion || m.hints.uaFullVersion !== m.hints.chromium) flag('uaFullVersion');
-  // The language page script reads against the one Intl formats in.
-  if (navigator.language !== Intl.DateTimeFormat().resolvedOptions().locale) flag('language vs Intl locale');
+  // The language page script reads against the one Intl formats in. Only
+  // the language: Chrome on a German Mac says de-DE to one and de to the
+  // other, as it ships.
+  const base = (l) => l.split('-')[0];
+  if (base(navigator.language) !== base(Intl.DateTimeFormat().resolvedOptions().locale)) flag('language vs Intl locale');
   if (!/\[native code\]/.test(Function.prototype.toString.call(Date.prototype.getTimezoneOffset))) flag('patched getTimezoneOffset');
   if (!/\[native code\]/.test(Function.prototype.toString.call(Intl.DateTimeFormat))) flag('patched Intl');
   if (!/\[native code\]/.test(Function.prototype.toString.call(window.matchMedia))) flag('patched matchMedia');
@@ -902,7 +911,10 @@ async fn a_phone_is_tapped_and_scrolled_by_touch() {
         .await
         .unwrap();
     let y = page.evaluate("scrollY").await.unwrap().as_f64().unwrap();
-    assert!((500.0..=700.0).contains(&y), "scrolled to {y}");
+    assert!((595.0..=605.0).contains(&y), "scrolled to {y}");
+    // And it stays there: no fling carried it on.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(page.evaluate("scrollY").await.unwrap().as_f64().unwrap(), y);
     let seen: Vec<String> = serde_json::from_value(page.evaluate("seen").await.unwrap()).unwrap();
     assert!(!seen.iter().any(|s| s == "wheel"), "{seen:?}");
     assert!(seen.iter().any(|s| s == "touchstart"), "{seen:?}");
@@ -1343,6 +1355,83 @@ async fn screens_look_like_a_macs() {
     browser.close().await.unwrap();
 }
 
+/// Windows' build number, if it's Windows.
+fn windows_build() -> Option<u32> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "ver"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split('.')
+        .nth(2)?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The Windows laptop preset, measured on a Dell XPS with Windows 11 and
+/// Google Chrome 155: 1536 by 960 at 125%, the taskbar's 48 below, its
+/// own panel named for its model. On a Mac it's an external monitor with
+/// the menu bar and the Dock; on Linux, the whole screen. Its ratio can
+/// only be the whole browser's.
+#[tokio::test]
+async fn a_windows_laptops_screen_is_the_whole_browsers() {
+    let Some(mut options) = launch_options() else {
+        return;
+    };
+    let preset = Environment::device("Desktop 1536x960 125%").unwrap();
+    options.environment = preset.clone();
+    let browser = common::launch(options).await;
+    let server = serve(vec![("/", html("<p>x</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let (top, bottom, label, internal) = if let Some(major) = macos_major() {
+        (if major >= 26 { 30 } else { 25 }, 60, "DELL P2422H", false)
+    } else if let Some(build) = windows_build() {
+        (0, if build >= 22000 { 48 } else { 40 }, "160WUX\n", true)
+    } else {
+        (0, 0, "DELL P2422H", false)
+    };
+    let avail = 960 - top - bottom;
+    let seen = screens(&page, &server.url).await;
+    assert_eq!(
+        seen["screen"],
+        json!([1536, 960, 1536, avail, top, 24, 24]),
+        "{seen}"
+    );
+    assert_eq!(
+        seen["details"],
+        json!([[label, internal, true, 24, top, avail]]),
+        "{seen}"
+    );
+    assert_eq!(
+        page.evaluate("devicePixelRatio").await.unwrap(),
+        json!(1.25)
+    );
+    // The same screen again is the browser's own; another at 1.25 can't
+    // be one page's, since Chrome would round it to a whole ratio.
+    let same = browser.new_page_with(preset.clone()).await.unwrap();
+    assert_eq!(
+        same.evaluate("devicePixelRatio").await.unwrap(),
+        json!(1.25)
+    );
+    let other = Environment {
+        screen: Some(Size {
+            width: 1440,
+            height: 900,
+        }),
+        ..preset
+    };
+    let Err(err) = browser.new_page_with(other).await else {
+        panic!("a page had a ratio of 1.25 of its own");
+    };
+    assert!(err.to_string().contains("whole browser"), "{err}");
+    browser.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_window_size_given_as_a_switch_is_the_default_viewport_and_frame() {
     let Some(mut options) = launch_options() else {
@@ -1687,12 +1776,114 @@ async fn the_language_page_script_reads_is_the_one_intl_formats_in() {
             .evaluate("[navigator.language, Intl.DateTimeFormat().resolvedOptions().locale, Intl.NumberFormat().resolvedOptions().locale]")
             .await
             .unwrap();
-        assert_eq!(said[0], said[1], "{env:?}: {said}");
-        assert_eq!(said[0], said[2], "{env:?}: {said}");
+        // The same language. Not always the same tag: Chrome on a German
+        // machine reads de-DE to script and formats in de, as it ships.
+        let base = |v: &Value| v.as_str().unwrap().split('-').next().unwrap().to_string();
+        assert_eq!(base(&said[0]), base(&said[1]), "{env:?}: {said}");
+        assert_eq!(base(&said[0]), base(&said[2]), "{env:?}: {said}");
         if let Some(locale) = &env.locale {
-            assert_eq!(said[0], locale.as_str());
+            // A locale named is the one both read, tag and all.
+            assert_eq!(said[0], locale.as_str(), "{said}");
+            assert_eq!(said[1], locale.as_str(), "{said}");
         }
         page.close().await.unwrap();
     }
+    browser.close().await.unwrap();
+}
+
+/// A phone scrolls as far as it's asked and no further, up and down, on a
+/// page laid out for it and on one zoomed out to fit a desktop layout (no
+/// viewport meta tag), where a finger's pixels are bigger than the page's.
+/// The finger stays inside what it drags, a short box at the top too, and
+/// a whole page goes by in good time.
+#[tokio::test]
+async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
+    let Some(options) = launch_options() else {
+        return;
+    };
+    let browser = common::launch(options).await;
+    let watch = "<script>window.ys = []; for (const k of ['touchstart', 'touchmove']) \
+                 addEventListener(k, (e) => ys.push(e.touches[0].clientY), {passive: true});</script>";
+    let fits = format!(
+        "<meta name=viewport content='width=device-width'><body style='margin:0;height:9000px'>{watch}"
+    );
+    let zoomed = format!("<body style='margin:0;height:9000px'>{watch}");
+    let boxed = format!(
+        "<meta name=viewport content='width=device-width'><body style='margin:0;height:3000px'>\
+         <div id=box style='height:100px;overflow:auto'><div style='height:3000px'>x</div></div>{watch}"
+    );
+    let long =
+        "<meta name=viewport content='width=device-width'><body style='margin:0;height:15000px'>";
+    let server = serve(vec![
+        ("/fits", html(&fits)),
+        ("/zoomed", html(&zoomed)),
+        ("/box", html(&boxed)),
+        ("/long", html(long)),
+    ]);
+    let page = browser
+        .new_page_with(Environment::device("Galaxy S23").unwrap())
+        .await
+        .unwrap();
+    for path in ["/fits", "/zoomed"] {
+        page.goto(&format!("{}{path}", server.url), WaitUntil::Load, None)
+            .await
+            .unwrap();
+        page.evaluate("scrollTo(0, 3000)").await.unwrap();
+        for (dy, want) in [(600.0, 3600.0), (-600.0, 3000.0)] {
+            page.scroll(None, 0.0, Some(dy), None, Duration::from_secs(1), None)
+                .await
+                .unwrap();
+            let y = page.evaluate("scrollY").await.unwrap().as_f64().unwrap();
+            assert!(
+                (y - want).abs() <= 5.0,
+                "{path} by {dy}: at {y}, not {want}"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let later = page.evaluate("scrollY").await.unwrap().as_f64().unwrap();
+            assert_eq!(later, y, "{path} by {dy}: flung on");
+        }
+    }
+    // A short box at the top: the finger stays in it, on the screen.
+    page.goto(&format!("{}/box", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    page.scroll(
+        Some("#box"),
+        0.0,
+        Some(300.0),
+        None,
+        Duration::from_secs(1),
+        None,
+    )
+    .await
+    .unwrap();
+    let r = page
+        .evaluate("[box.scrollTop, scrollY, Math.min(...ys), Math.max(...ys)]")
+        .await
+        .unwrap();
+    let top = r[0].as_f64().unwrap();
+    assert!((top - 300.0).abs() <= 5.0, "{r}");
+    assert_eq!(r[1], 0, "{r}");
+    assert!(
+        r[2].as_f64().unwrap() >= 0.0 && r[3].as_f64().unwrap() <= 100.0,
+        "{r}"
+    );
+    // A whole page, to its bottom, well within the timeout.
+    page.goto(&format!("{}/long", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let began = std::time::Instant::now();
+    page.scroll(None, 0.0, None, None, Duration::from_millis(500), None)
+        .await
+        .unwrap();
+    let took = began.elapsed();
+    let y = page
+        .evaluate("scrollY + innerHeight")
+        .await
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(y >= 14995.0, "{y}");
+    assert!(took < Duration::from_secs(20), "{took:?}");
     browser.close().await.unwrap();
 }

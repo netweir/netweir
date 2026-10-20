@@ -65,7 +65,9 @@ a `--window-size` switch gives; a headless Chrome Netweir starts has a
 1920 by 1080 screen, which every window fits on. Screens look like a
 person's: on a Mac, the menu bar and the Dock are taken from the work
 area, and a MacBook's own screen (the HiDPI presets) is the "Built-in
-Retina Display", 30 bits deep; on Windows the taskbar is.
+Retina Display", 30 bits deep; on Windows the taskbar's 48 pixels are,
+and a laptop's own panel is named for its model, as Windows 11 shows
+them.
 
 ## Devices
 
@@ -80,6 +82,7 @@ stands for, so `browser.new_context(**netweir.devices["Galaxy S23"])` and
 | `Desktop 1366x768` | 1366 × 768 | 1 | as unset: it fills the screen |
 | `Desktop 1440x900 HiDPI` | 1440 × 900 | 2 | as unset |
 | `Desktop 1512x982 HiDPI` | 1512 × 982 | 2 | as unset |
+| `Desktop 1536x960 125%` | 1536 × 960 | 1.25 | as unset; the whole browser's only |
 | `Galaxy S21` | 360 × 800 | 3 | 360 × 724 |
 | `Galaxy S22` | 360 × 780 | 3 | 360 × 704 |
 | `Galaxy S23` | 360 × 780 | 3 | 360 × 704 |
@@ -87,6 +90,13 @@ stands for, so `browser.new_context(**netweir.devices["Galaxy S23"])` and
 A desktop preset changes the screen and nothing else: the page is still
 the system Chrome runs on, since its fonts and its graphics card would
 say so whatever its user agent claimed.
+
+`Desktop 1536x960 125%` is the commonest kind of Windows laptop, a
+1920 by 1200 panel at 125%, as measured on a Dell XPS. A ratio of 1.25
+can only be the whole browser's, so give it at launch,
+`netweir.browser(environment={"device": "Desktop 1536x960 125%"})`; a
+page or context given it in a browser launched without it raises
+`ValueError`.
 
 A phone is an Android phone running Chrome, in every client hint and
 every header: `Sec-CH-UA-Mobile: ?1`, the platform `"Android"`, its model
@@ -230,8 +240,9 @@ Chrome lets DevTools change a great deal, but not everything:
 - **A service worker kept** for a page's language, clock, headers or
   phone stays running while the page is open, where Chrome would stop an
   idle one after about 30 seconds.
-- **Windows' invisible window border**: a headless window has none, so
-  `outerWidth` is `innerWidth` there too.
+- **Windows' invisible window border**: a restored window on Windows is
+  said to have one, a maximised one has none (measured), and a headless
+  window has none either way, so `outerWidth` is `innerWidth`.
 - **A permission prompt** is turned down at once, where a person would
   take a moment.
 - **A worker's script request** has its User-Agent early among its

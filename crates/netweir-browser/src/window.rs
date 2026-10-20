@@ -49,6 +49,17 @@ const MAC_BUILT_IN: [(u32, u32, bool); 7] = [
     (1536, 960, false),
 ];
 
+/// A Windows laptop's own panels, by the size they show at the ratio
+/// Windows gives them, and the name their EDID gives (newline and all, as
+/// Chrome reads it). The first was measured: a Dell XPS's 1920×1200 panel
+/// at 125%, "160WUX\n". The 1920×1080 one is a common 15.6-inch panel's.
+const WINDOWS_BUILT_IN: [(u32, u32, f64, &str); 4] = [
+    (1536, 960, 1.25, "160WUX\n"),
+    (1280, 800, 1.5, "160WUX\n"),
+    (1536, 864, 1.25, "B156HAN02.1\n"),
+    (1280, 720, 1.5, "B156HAN02.1\n"),
+];
+
 /// What a screen a person might have is called: a common monitor's name
 /// for its size, as its EDID gives it.
 fn monitor(size: Size) -> &'static str {
@@ -70,8 +81,10 @@ fn monitor(size: Size) -> &'static str {
 ///   its depth 24. The Dock is on the first screen only. Before macOS 26
 ///   the bar was 24 points and a line (25), 37 beside a notch (not
 ///   measured here).
-/// - Windows: the taskbar, 48 on Windows 11 and 40 on 10, on every
-///   screen, as Windows shows it by default (not measured here).
+/// - Windows, measured on 11 with Google Chrome 155: the taskbar, 48 at
+///   the bottom, on every screen, as Windows shows it by default (40 on
+///   Windows 10, not measured); a laptop's own panel is internal, 24 bits
+///   deep and named for its model.
 /// - Linux: the whole screen. Its desktops differ (a top bar, a dock, a
 ///   panel at any edge, or none on a server), so no one shape is more
 ///   like a person's than another.
@@ -120,7 +133,18 @@ fn look(size: Size, scale: f64, primary: bool, phone: bool) -> Look {
     }
     if cfg!(windows) {
         let bottom = if os_major() >= 22000 { 48 } else { 40 };
-        return Look { bottom, ..external };
+        let built_in = WINDOWS_BUILT_IN
+            .iter()
+            .find(|(w, h, s, _)| *w == size.width && *h == size.height && *s == scale);
+        return match built_in {
+            Some((.., label)) => Look {
+                bottom,
+                internal: true,
+                label,
+                ..external
+            },
+            None => Look { bottom, ..external },
+        };
     }
     external
 }
@@ -191,11 +215,14 @@ pub(crate) fn launch_switches(env: &Environment, args: &[String]) -> Vec<String>
     {
         out.push(format!("--force-device-scale-factor={scale}"));
     }
+    // Rounded down: Chrome shows a work area of a part pixel as the whole
+    // pixels inside it, so 30 at 1.25 rounded up to 38 showed as 31.
+    let inset = |css: u32| (css as f64 * scale).floor() as u64;
     if top > 0 {
-        info.push_str(&format!(" workAreaTop={}", px(top)));
+        info.push_str(&format!(" workAreaTop={}", inset(top)));
     }
     if bottom > 0 {
-        info.push_str(&format!(" workAreaBottom={}", px(bottom)));
+        info.push_str(&format!(" workAreaBottom={}", inset(bottom)));
     }
     info.push('}');
     out.push(format!("--screen-info={info}"));
@@ -418,13 +445,26 @@ impl Page {
                 json!({"windowId": window, "bounds": {"windowState": "normal"}}),
             )
             .await?;
+        let set = json!({"windowId": window, "bounds": bounds});
         browser
-            .call(
-                "",
-                "Browser.setWindowBounds",
-                json!({"windowId": window, "bounds": bounds}),
-            )
+            .call("", "Browser.setWindowBounds", set.clone())
             .await?;
+        // Headless Chrome on Linux takes bounds in the pixels of the screen
+        // the window is on and gives them back in those of the screen it
+        // lands on: moved from a screen at ratio 1 to one at 2, a window
+        // asked to be 1200 wide at 1920 came out 600 wide at 960. Asked
+        // again, from the screen it's now on, it's where it was asked to be.
+        let now = browser
+            .call("", "Browser.getWindowBounds", json!({"windowId": window}))
+            .await?;
+        let differs = bounds
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(k, v)| now["bounds"][k] != *v);
+        if differs {
+            browser.call("", "Browser.setWindowBounds", set).await?;
+        }
         Ok(())
     }
 
