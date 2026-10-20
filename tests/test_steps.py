@@ -812,6 +812,8 @@ def test_an_upload_on_another_windows_drive_is_outside_the_folder(monkeypatch):
     monkeypatch.setattr(os.path, "commonpath", ntpath.commonpath)
     assert not _inside("c:\\up", "d:\\etc\\hosts")
     assert _inside("c:\\up", "c:\\up\\cv.pdf")
+    # And it writes the common path with backslashes, however it was given.
+    assert _inside("/up", "/up/cv.pdf")
 
 
 def test_a_resumed_upload_step_needs_browser_upload_dir(base, tmp_path):

@@ -3038,7 +3038,9 @@ def _inside(root: str, path: str) -> bool:
     """Whether ``path`` is ``root`` or below it, both resolved. Paths on
     two Windows drives have no common path, and aren't."""
     try:
-        return os.path.commonpath([root, path]) == root
+        # commonpath writes the result its own way (with backslashes, on
+        # Windows): compare it with the root written the same way.
+        return os.path.commonpath([root, path]) == os.path.commonpath([root])
     except ValueError:
         return False
 
