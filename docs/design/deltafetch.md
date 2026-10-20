@@ -158,12 +158,12 @@ the checkpoint's lengths, and items of pages the record already skips would
 be gone. So before pages are recorded, the run waits for the checkpoint to
 commit what it has (its writer commits at once when a flush is waiting,
 rather than gathering for 50 ms more), and if that commit failed, the pages
-wait for the next batch. The wait is on that commit alone (each flush
-gets the result of the commit it waited for), so one failed commit holds
-back only the pages of its own batch: every commit holds the latest
-counters, lengths included, so once a later one lands, recording again is
-safe. The failure itself stays reported: the flush that closes the crawl
-still fails it, as it did before anything waited mid-crawl.
+wait for the next batch. A failed commit's writes go again, first, with
+the next one, so no later commit lands without them: one that did would
+hold counters whose file lengths cover items the checkpoint doesn't have
+as delivered, and a resume would write those items again. Once a commit
+with them in it lands, recording again is safe. Until then every flush
+reports the failure, the one that closes the crawl included.
 
 ## What is recorded
 

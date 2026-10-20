@@ -1882,8 +1882,8 @@ class _Run:
         """With a checkpoint and deltafetch, waits for the checkpoint's
         commit: the deltafetch record must never be ahead of it, or a resume
         would cut the output back to the checkpoint's lengths and lose items
-        whose pages deltafetch skips. False if the commit failed (the close
-        reports it); the pages wait for the next batch."""
+        whose pages deltafetch skips. False if the commit failed (its writes
+        go again with the next); the pages wait for the next batch."""
         if not (self.saving and self.delta):
             return True
         try:

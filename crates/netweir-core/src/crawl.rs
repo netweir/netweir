@@ -1694,8 +1694,7 @@ impl Crawler {
     }
 
     /// Waits until every checkpoint write so far is committed; an error if
-    /// that commit failed (not an earlier one, which `flush` still
-    /// reports).
+    /// that commit failed, or the checkpoint has closed.
     pub fn commit(&self) -> Result<(), String> {
         match &self.shared.checkpoint {
             Some(cp) => cp.commit(),
