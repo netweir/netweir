@@ -24,7 +24,13 @@ async fn a_storage_state_carries_cookies_and_local_storage_to_a_new_context() {
     };
     let server = serve(vec![
         ("/", page_setting_storage()),
-        ("/other", common::html("<p>other</p>")),
+        // Its own icon, as the first page has, so Chrome asks for no
+        // /favicon.ico: it does after the load, a moment later or not,
+        // which is Chrome's and no request of netweir's.
+        (
+            "/other",
+            common::html("<link rel=icon href=\"data:,\"><p>other</p>"),
+        ),
     ]);
     let context = browser.new_context().await.unwrap();
     let page = context.new_page().await.unwrap();
@@ -34,7 +40,7 @@ async fn a_storage_state_carries_cookies_and_local_storage_to_a_new_context() {
     let requests = server.seen.lock().unwrap().len();
     let state = context.storage_state().await.unwrap();
     // Reading localStorage sent nothing to the site.
-    assert_eq!(server.seen.lock().unwrap().len(), requests);
+    assert_eq!(server.paths()[requests..], [] as [&str; 0]);
     assert!(
         state
             .cookies
@@ -65,7 +71,7 @@ async fn a_storage_state_carries_cookies_and_local_storage_to_a_new_context() {
     page.goto(&format!("{}/other", server.url), WaitUntil::Load, None)
         .await
         .unwrap();
-    assert_eq!(server.seen.lock().unwrap().len(), requests + 1);
+    assert_eq!(server.paths()[requests..], ["/other"]);
     let cookie = server
         .headers_for("/other")
         .into_iter()

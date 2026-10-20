@@ -47,6 +47,16 @@ pub struct Server {
 }
 
 impl Server {
+    /// The path of each request so far, in order.
+    pub fn paths(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+
     pub fn headers_for(&self, path: &str) -> Vec<(String, String)> {
         self.seen
             .lock()
