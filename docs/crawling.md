@@ -562,6 +562,16 @@ requests moves toward the site's response time, and a 429 or a block slows
 it further. Turning robots.txt off (`obey_robots=False`) logs a warning
 once per crawl.
 
+The delay is the one the site sees. A request that has to wait for a new
+connection (DNS, a TLS handshake, a proxy's tunnel) leaves when that
+connection is made, and the next request to the site goes a delay after
+that, not a delay after the first was handed out. Scrapy counts from the
+handing out, so behind a 400 ms handshake the next request, on a quicker
+connection, can reach the site well inside a 300 ms `DOWNLOAD_DELAY`;
+Netweir holds it back until the first has gone. A
+page rendered in Chrome is the exception: Chrome makes its own
+connections, and its delay still counts from when it was handed to Chrome.
+
 ## Pipelines
 
 Every item passes through the spider's pipelines, in order:

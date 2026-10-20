@@ -1063,6 +1063,103 @@ pub fn masked(proxy: &str) -> String {
 /// Chrome follows at most 20 redirects.
 pub const MAX_REDIRECTS: u32 = 20;
 
+/// What a request's connection is doing, for [`telling_connects`]: a new
+/// one being made (DNS, TCP, a proxy's tunnel, TLS), made, or failed. A
+/// request on a connection already open goes out as it's sent, and is
+/// told nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Connect {
+    Started,
+    Ready(Instant),
+    Failed,
+}
+
+/// Who hears of the connections the requests in a future make.
+pub(crate) type ConnectTold = Arc<dyn Fn(Connect) + Send + Sync>;
+
+tokio::task_local! {
+    static TOLD: ConnectTold;
+}
+
+/// Runs `future` with `tell` hearing of each new connection its requests
+/// open: when one starts and when it's made, which is when the request's
+/// bytes go out. A crawl spaces its requests to a site by that, not by
+/// when it handed them out: a request waiting 400 ms for a TLS handshake
+/// leaves 400 ms later than it was handed out, and the next one, on a
+/// connection already open, would reach the site that much sooner.
+pub(crate) async fn telling_connects<F: std::future::Future>(
+    tell: ConnectTold,
+    future: F,
+) -> F::Output {
+    TOLD.scope(tell, future).await
+}
+
+/// The connector layer that tells [`telling_connects`]'s listener.
+#[derive(Clone, Copy)]
+struct Told;
+
+impl<S> tower::Layer<S> for Told {
+    type Service = TellingConnector<S>;
+    fn layer(&self, inner: S) -> TellingConnector<S> {
+        TellingConnector(inner)
+    }
+}
+
+#[derive(Clone)]
+struct TellingConnector<S>(S);
+
+/// Says the connection failed if it's dropped before it's made, so a
+/// listener counting connections being made never counts one for good.
+struct Telling(Option<ConnectTold>);
+
+impl Drop for Telling {
+    fn drop(&mut self) {
+        if let Some(tell) = self.0.take() {
+            tell(Connect::Failed);
+        }
+    }
+}
+
+impl<S, R> tower::Service<R> for TellingConnector<S>
+where
+    S: tower::Service<R>,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<S::Response, S::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), S::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: R) -> Self::Future {
+        // Only a connection made inside `telling_connects`: one the pool
+        // goes on making in the background, after another came free for
+        // the request, is told to no one.
+        let tell = TOLD.try_with(Arc::clone).ok();
+        if let Some(tell) = &tell {
+            tell(Connect::Started);
+        }
+        let mut telling = Telling(tell);
+        let connecting = self.0.call(request);
+        Box::pin(async move {
+            let made = connecting.await;
+            if let Some(tell) = telling.0.take() {
+                tell(match &made {
+                    Ok(_) => Connect::Ready(Instant::now()),
+                    Err(_) => Connect::Failed,
+                });
+            }
+            made
+        })
+    }
+}
+
 impl Fetcher {
     pub fn new(options: FetchOptions) -> Result<Fetcher, FetchError> {
         Fetcher::made_with(options, Arc::new(Jar::new()))
@@ -1115,6 +1212,7 @@ impl Fetcher {
             if let Some(cas) = &cas {
                 builder = builder.tls_cert_store(cas.clone());
             }
+            builder = builder.connector_layer(Told);
             if options.proxy.is_none() && !options.system_proxy {
                 builder = builder.no_proxy();
             }

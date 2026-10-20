@@ -1256,6 +1256,10 @@ struct Host {
     via: Lru<Fetcher>,
     /// Whether each of the last responses was a block, newest last.
     recent: VecDeque<bool>,
+    /// New connections being made for this host's requests. While one is,
+    /// no other request is handed out: the one waiting for it hasn't left
+    /// yet, and the delay runs from when it does.
+    connecting: usize,
 }
 
 impl Host {
@@ -1279,6 +1283,7 @@ impl Host {
             options: None,
             via: Lru::new(HOST_VIA),
             recent: VecDeque::new(),
+            connecting: 0,
         }
     }
 }
@@ -2648,6 +2653,33 @@ async fn schedule_loop(s: Arc<Shared>) {
     }
 }
 
+/// Hears of a new connection made for one of `host`'s requests. Made, the
+/// request goes out now, so the host's next turn is a delay from now, not
+/// from when the request was handed out: a request that waited for a TLS
+/// handshake, a proxy's tunnel or a slow DNS answer would otherwise leave
+/// close behind it, the next on a connection already open. Scrapy spaces
+/// requests from when they're handed out; the site sees when they arrive.
+fn connected(shared: &Shared, host: &str, connect: crate::fetch::Connect) {
+    use crate::fetch::Connect;
+    let mut state = shared.lock();
+    let Some(h) = state.hosts.get_mut(host) else {
+        return;
+    };
+    match connect {
+        Connect::Started => h.connecting += 1,
+        Connect::Ready(at) => {
+            h.connecting = h.connecting.saturating_sub(1);
+            h.next_at = h.next_at.max(at + h.delay.max(h.floor));
+        }
+        Connect::Failed => h.connecting = h.connecting.saturating_sub(1),
+    }
+    if connect != Connect::Started {
+        state.make_ready(host);
+        drop(state);
+        shared.schedule.notify_one();
+    }
+}
+
 /// Whether `request` goes to Chrome. Chrome navigates to a URL; a POST
 /// stays with the HTTP client.
 fn wants_browser(settings: &CrawlSettings, request: &CrawlRequest) -> bool {
@@ -2930,6 +2962,10 @@ fn plan(
                 // Ready again when one of its fetches finishes.
                 break;
             }
+            if host.connecting > 0 && !host.delay.max(host.floor).is_zero() {
+                // Ready again when its connection is made (see `connected`).
+                break;
+            }
             if now < host.next_at {
                 if host.timer != Some(host.next_at) {
                     host.timer = Some(host.next_at);
@@ -3001,11 +3037,17 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
     let started = Instant::now();
     let (url, headers, hops) = (q.request.url.clone(), q.request.headers.clone(), q.hops);
     let outgoing = with_crawl_login(&shared.settings, &q.request.outgoing);
+    let tell: crate::fetch::ConnectTold = {
+        let (shared, host) = (shared.clone(), q.host.clone());
+        Arc::new(move |c| connected(&shared, &host, c))
+    };
     let result = match session {
         Ok(session) => {
             let session = shared.with_request_jar(session, &q.request, hops);
             guarded(
-                async move { session.hop_as(&url, &outgoing, &headers, hops).await },
+                crate::fetch::telling_connects(tell, async move {
+                    session.hop_as(&url, &outgoing, &headers, hops).await
+                }),
                 |why| {
                     Err(FetchError {
                         kind: FetchErrorKind::Other,

@@ -28,6 +28,8 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 toml = "1"
 url = "2"
 wreq-proto = { version = "0.2.6", default-features = false }
+# wreq's own, for a connector layer: its Layer and Service traits alone.
+tower = { version = "0.5.3", default-features = false }
 wreq = { version = "0.16.1", default-features = false, features = ["chromium-roots", "tokio-rt", "gzip", "brotli", "zstd", "deflate", "cookies"] }
 zstd = "0.14"
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
@@ -44,5 +46,8 @@ libc = "0.2"
 
 [dev-dependencies]
 netweir-fingerprint = { path = "../netweir-fingerprint" }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

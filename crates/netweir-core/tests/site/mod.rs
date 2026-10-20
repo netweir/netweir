@@ -104,16 +104,26 @@ impl Site {
                     loop {
                         let mut head = Vec::new();
                         let mut byte = [0u8; 1];
+                        // When the request's first byte came: read a byte
+                        // at a time, its last could come a scheduler's
+                        // turn or two later on a busy machine, and the
+                        // gap between two requests look shorter than it
+                        // was (most likely the 263 ms for 300 a CI Mac saw).
+                        let mut arrived = None;
                         while !head.ends_with(b"\r\n\r\n") {
                             match stream.read(&mut byte).await {
-                                Ok(1) => head.push(byte[0]),
+                                Ok(1) => {
+                                    arrived.get_or_insert_with(Instant::now);
+                                    head.push(byte[0]);
+                                }
                                 _ => return,
                             }
                         }
+                        let arrived = arrived.unwrap_or_else(Instant::now);
                         raw.lock().unwrap().push(head.clone());
                         let text = String::from_utf8_lossy(&head).to_string();
                         let path = text.split(' ').nth(1).unwrap_or("/").to_string();
-                        log.lock().unwrap().push((path.clone(), Instant::now()));
+                        log.lock().unwrap().push((path.clone(), arrived));
                         let headers: Vec<(String, String)> = text
                             .lines()
                             .skip(1)
