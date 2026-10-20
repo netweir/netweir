@@ -124,15 +124,30 @@ Performance) in the folder before Chrome starts, and it stays off there:
 it changes that one value in the `Preferences` file of the profile Chrome
 opens and leaves the rest as it was (see
 [Blocking and changing requests](#blocking-and-changing-requests) for
-why). Point `user_data_dir` at your everyday Chrome folder and that
-setting is off for your own browsing in that profile too; turn it back
-on in Chrome's settings if you want it. A `--user-data-dir=` switch in
+why). Point `user_data_dir` at the folder you browse with every day and
+that setting is off for your own browsing in that profile too; turn it
+back on in Chrome's settings if you want it. A `--user-data-dir=` switch in
 `args` (or `-user-data-dir=`, which Chrome reads the same) counts as
 `user_data_dir`: that folder gets the same, and is kept. It's used as
 given, as Chrome uses it: a relative path is relative to the working
 directory, and `~` isn't expanded. A profile name, from
 `--profile-directory=` or the folder's Local State, has to be one folder
 inside it; anything else (`..`, a path) fails the launch.
+
+Google Chrome won't let anything drive it with its own default profile,
+the folder it opens when started with no `--user-data-dir`:
+`~/Library/Application Support/Google/Chrome` on macOS,
+`~/.config/google-chrome` on Linux, `%LOCALAPPDATA%\Google\Chrome\User Data`
+on Windows, and the same for Beta, Dev and Canary. Chrome turns remote
+control off for that folder, so a launch with it fails at once, saying
+so. The way round it is a copy: close Chrome, copy the folder somewhere
+else and give Netweir that. The copy keeps settings and local storage,
+but Chrome encrypts cookies with a key the copy may not get, so expect
+to log in once more. Or use Chrome for Testing, which
+`netweir install chrome` installs and which takes any folder.
+Netweir refuses the launch before it touches the folder when it can tell
+that's what you've given it; when it can't, as with a Google Chrome
+installed somewhere unusual, Chrome's own refusal ends the launch.
 
 With `connect`, Netweir drives a Chrome that's already running, started
 with `--remote-debugging-port`, or anything else that speaks the DevTools

@@ -685,6 +685,17 @@ the profile as it closes, so `close()` asks it to quit and waits, as it
 always has. Known limit: two Chromes can't share a profile, so a second
 launch with a folder that's in use fails.
 
+Google Chrome (not Chrome for Testing or Chromium) won't be driven with
+its own default profile: it writes "DevTools remote debugging requires a
+non-default data directory" to stderr and runs on without listening on
+the pipe (`remote_debugging_server.cc`, since Chrome 136). The stderr
+reader watches for that line, and the launch ends on it at once rather
+than at the 30-second timeout. Before that, a folder that's the default
+profile of a Google Chrome at its installer's path (Stable, Beta, Dev or
+Canary, compared after following links) is refused before Netweir edits
+its `Preferences`. A Chrome installed anywhere else isn't recognised as
+Google's by its path, so only its own refusal catches it.
+
 ## Firefox, later
 
 Firefox has dropped CDP; its remote protocol is WebDriver BiDi. Under

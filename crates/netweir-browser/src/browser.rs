@@ -334,6 +334,9 @@ impl Browser {
                     .into(),
             ));
         }
+        if let Some(dir) = &options.user_data_dir {
+            launch::check_profile(&executable, dir)?;
+        }
         let keep_profile = options.user_data_dir.is_some();
         // Profiles left by programs that ended without closing their
         // browser.
@@ -437,6 +440,7 @@ impl Browser {
         let said = started.said.clone();
         let conn = Connection::new(started.replies, started.commands, Some(&started.child));
         let (environment, screen, screen_scale) = bare(&options);
+        let shown = profile.clone();
         let inner = Inner {
             conn,
             child: Mutex::new(Some(started.child)),
@@ -471,12 +475,17 @@ impl Browser {
             screens: tokio::sync::Mutex::new(()),
             own: tokio::sync::OnceCell::new(),
         };
-        Browser::finish(inner, &options, &executable.display().to_string(), hints)
-            .await
-            .map_err(|e| match e {
+        let what = executable.display().to_string();
+        // Google Chrome given its own default profile says so and runs on
+        // without listening; that ends the launch at once, not at the
+        // timeout.
+        tokio::select! {
+            finished = Browser::finish(inner, &options, &what, hints) => finished.map_err(|e| match e {
                 Error::Launch(message) => Error::Launch(said.explain(message)),
                 other => other,
-            })
+            }),
+            () = said.refused() => Err(launch::own_profile_refused(&shown)),
+        }
     }
 
     /// Drives a browser that's already running: a `ws://` DevTools URL, as
@@ -2024,6 +2033,40 @@ mod tests {
         // And the answer is kept.
         headless_identity(&executable, &extra).await.unwrap();
         assert_eq!(probes(&extra), 1);
+    }
+
+    /// A Chrome that says it won't be driven with its profile, and runs
+    /// on, fails the launch at once rather than at the timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn chrome_refusing_its_profile_fails_the_launch_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("netweir-refuses-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("chrome");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho 'DevTools remote debugging requires a non-default data \
+             directory. Specify this using --user-data-dir.' >&2\nexec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let launched = Browser::launch(LaunchOptions {
+            executable: Some(fake),
+            headless: false,
+            user_data_dir: Some(dir.join("profile")),
+            ..LaunchOptions::default()
+        })
+        .await;
+        let Err(Error::Launch(message)) = launched else {
+            panic!("launched, or failed some other way");
+        };
+        assert!(message.contains("own default profile"), "{message}");
+        assert!(message.contains("netweir install chrome"), "{message}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A probe that fails fails every launch waiting on it at once, and

@@ -47,6 +47,8 @@ class browser:
     survive to the next launch with the same directory, and it's never
     deleted. A leading ``~`` is your home directory. Pages from ``new_page()`` then share that profile.
     Chrome's "Preload pages" setting is turned off in it, and stays off.
+    Google Chrome's own default profile is refused: Chrome won't be
+    driven with it. Use a copy, or Chrome for Testing.
 
     ``dialog_pause`` is how long, in seconds, a person takes to react:
     no dialog is answered sooner after it opened, and a tab brought back

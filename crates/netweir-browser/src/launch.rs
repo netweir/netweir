@@ -518,11 +518,137 @@ impl Drop for Lifeline {
 /// The last lines Chrome wrote to stderr, so an error can say why it
 /// wouldn't start. Read on a thread of its own until Chrome closes it,
 /// which also keeps a chatty Chrome from filling the pipe and stalling.
-#[derive(Clone, Default)]
-pub(crate) struct Said(Arc<(Mutex<Lines>, Condvar)>);
+/// It also says, as soon as Chrome does, that Chrome won't be driven
+/// with the profile it was given (see [`refuses_its_profile`]).
+#[derive(Clone)]
+pub(crate) struct Said(Arc<(Mutex<Lines>, Condvar, tokio::sync::watch::Sender<bool>)>);
+
+impl Default for Said {
+    fn default() -> Said {
+        Said(Arc::new((
+            Mutex::default(),
+            Condvar::new(),
+            tokio::sync::watch::Sender::new(false),
+        )))
+    }
+}
 
 /// The lines kept, and whether Chrome has closed stderr.
 type Lines = (std::collections::VecDeque<String>, bool);
+
+/// Whether `line`, from Chrome's stderr, is Google Chrome refusing to be
+/// driven with its own default profile. It says so and then runs on, not
+/// listening, so without this a launch would wait out its timeout.
+pub(crate) fn refuses_its_profile(line: &str) -> bool {
+    line.contains("DevTools remote debugging requires a non-default data directory")
+}
+
+/// The error for Google Chrome given its own default profile, `dir`.
+pub(crate) fn own_profile_refused(dir: &Path) -> Error {
+    Error::Launch(format!(
+        "Google Chrome won't be driven with its own default profile ({}): it turns \
+         remote debugging off for that folder. Copy the profile to another folder and \
+         use that, or use Chrome for Testing, which `netweir install chrome` installs",
+        dir.display()
+    ))
+}
+
+/// Where Google Chrome at `executable` keeps its default profile, if
+/// it's a Google Chrome (Stable, Beta, Dev or Canary) installed where
+/// its installer puts it. Chrome for Testing, Chromium and anything
+/// installed elsewhere give None; Chrome's own refusal (see
+/// [`refuses_its_profile`]) still catches those.
+#[cfg(target_os = "macos")]
+fn own_profile_of(executable: &Path) -> Option<PathBuf> {
+    let channel = match executable.file_name()?.to_str()? {
+        "Google Chrome" => "Chrome",
+        "Google Chrome Beta" => "Chrome Beta",
+        "Google Chrome Dev" => "Chrome Dev",
+        "Google Chrome Canary" => "Chrome Canary",
+        _ => return None,
+    };
+    let home = std::env::var_os("HOME")?;
+    Some(
+        Path::new(&home)
+            .join("Library/Application Support/Google")
+            .join(channel),
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn own_profile_of(executable: &Path) -> Option<PathBuf> {
+    // /usr/bin/google-chrome and the like lead to /opt/google/<channel>.
+    let executable = executable
+        .canonicalize()
+        .unwrap_or(executable.to_path_buf());
+    let install = executable.parent()?;
+    if install.parent()? != Path::new("/opt/google") {
+        return None;
+    }
+    let folder = match install.file_name()?.to_str()? {
+        "chrome" => "google-chrome",
+        "chrome-beta" => "google-chrome-beta",
+        "chrome-unstable" => "google-chrome-unstable",
+        "chrome-canary" => "google-chrome-canary",
+        _ => return None,
+    };
+    let config = std::env::var_os("CHROME_CONFIG_HOME")
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
+    Some(config.join(folder))
+}
+
+#[cfg(windows)]
+fn own_profile_of(executable: &Path) -> Option<PathBuf> {
+    // <Program Files or LocalAppData>\Google\<channel>\Application\chrome.exe
+    if !executable.file_name()?.eq_ignore_ascii_case("chrome.exe") {
+        return None;
+    }
+    let application = executable.parent()?;
+    let channel = application.parent()?;
+    if !application.file_name()?.eq_ignore_ascii_case("Application")
+        || !channel
+            .parent()?
+            .file_name()?
+            .eq_ignore_ascii_case("Google")
+    {
+        return None;
+    }
+    let channel = channel.file_name()?.to_str()?;
+    if !["Chrome", "Chrome Beta", "Chrome Dev", "Chrome SxS"]
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(channel))
+    {
+        return None;
+    }
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        Path::new(&local)
+            .join("Google")
+            .join(channel)
+            .join("User Data"),
+    )
+}
+
+/// Refuses, before anything touches it, a `dir` that's the default
+/// profile of the Google Chrome at `executable`, which Chrome would only
+/// refuse once started.
+pub(crate) fn check_profile(executable: &Path, dir: &Path) -> Result<()> {
+    let Some(own) = own_profile_of(executable) else {
+        return Ok(());
+    };
+    let same = match (dir.canonicalize(), own.canonicalize()) {
+        (Ok(dir), Ok(own)) => dir == own,
+        _ => dir == own,
+    };
+    if same {
+        Err(own_profile_refused(dir))
+    } else {
+        Ok(())
+    }
+}
 
 impl Said {
     fn read(stderr: ChildStderr) -> Said {
@@ -532,11 +658,14 @@ impl Said {
             .name("netweir-chrome-stderr".into())
             .spawn(move || {
                 use std::io::BufRead;
-                let (lock, done) = &*writing.0;
+                let (lock, done, refused) = &*writing.0;
                 for line in std::io::BufReader::new(stderr)
                     .lines()
                     .map_while(|l| l.ok())
                 {
+                    if refuses_its_profile(&line) {
+                        refused.send_replace(true);
+                    }
                     let mut lines = lock.lock().unwrap_or_else(|e| e.into_inner());
                     if lines.0.len() == 20 {
                         lines.0.pop_front();
@@ -558,6 +687,12 @@ impl Said {
         }
     }
 
+    /// Ends once Chrome has said it won't be driven with its profile;
+    /// never, if it doesn't.
+    pub(crate) async fn refused(&self) {
+        let _ = self.0.2.subscribe().wait_for(|r| *r).await;
+    }
+
     /// What Chrome has lately written to stderr, if anything.
     pub(crate) fn recent(&self) -> Option<String> {
         let lines = self.0.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -572,7 +707,7 @@ impl Said {
     /// to a second for a Chrome that has just exited to finish saying it;
     /// only ever on the way to an error.
     pub(crate) fn explain(&self, message: String) -> String {
-        let (lock, done) = &*self.0;
+        let (lock, done, _) = &*self.0;
         let lines = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (lines, _) = done
             .wait_timeout_while(lines, std::time::Duration::from_secs(1), |l| !l.1)
@@ -1508,6 +1643,100 @@ mod tests {
         assert!(turn_off_preloading(&dir, &args).is_err());
         assert_eq!(std::fs::read(own.join("Preferences")).unwrap(), b"[1]");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn chrome_refusing_its_own_profile_is_heard() {
+        assert!(refuses_its_profile(
+            "[1019/101010.123456:ERROR:chrome/browser/devtools/remote_debugging_server.cc:\
+             143] DevTools remote debugging requires a non-default data directory. Specify \
+             this using --user-data-dir."
+        ));
+        assert!(!refuses_its_profile(
+            "DevTools listening on ws://127.0.0.1:9222/devtools/browser/x"
+        ));
+    }
+
+    /// Google Chrome where its installers put it, with each one's default
+    /// profile, and Chromes that aren't Google Chrome.
+    #[cfg(target_os = "macos")]
+    fn chromes() -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>) {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let support = home.join("Library/Application Support/Google");
+        let app =
+            |name: &str| PathBuf::from(format!("/Applications/{name}.app/Contents/MacOS/{name}"));
+        (
+            vec![
+                (app("Google Chrome"), support.join("Chrome")),
+                (app("Google Chrome Beta"), support.join("Chrome Beta")),
+                (app("Google Chrome Canary"), support.join("Chrome Canary")),
+            ],
+            vec![app("Google Chrome for Testing"), app("Chromium")],
+        )
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn chromes() -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>) {
+        let config = std::env::var_os("CHROME_CONFIG_HOME")
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".config"));
+        (
+            vec![
+                (
+                    "/opt/google/chrome/chrome".into(),
+                    config.join("google-chrome"),
+                ),
+                (
+                    "/opt/google/chrome-beta/chrome".into(),
+                    config.join("google-chrome-beta"),
+                ),
+            ],
+            vec![
+                "/usr/lib/chromium/chromium".into(),
+                "/opt/chrome/chrome".into(),
+            ],
+        )
+    }
+
+    #[cfg(windows)]
+    fn chromes() -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>) {
+        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        (
+            vec![
+                (
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe".into(),
+                    local.join(r"Google\Chrome\User Data"),
+                ),
+                (
+                    local.join(r"Google\Chrome SxS\Application\chrome.exe"),
+                    local.join(r"Google\Chrome SxS\User Data"),
+                ),
+            ],
+            vec![local.join(r"Google\Chrome for Testing\Application\chrome.exe")],
+        )
+    }
+
+    #[test]
+    fn google_chromes_own_profile_is_refused_before_launch() {
+        let elsewhere = scratch("own-profile");
+        let (google, others) = chromes();
+        for (chrome, own) in &google {
+            assert!(check_profile(chrome, own).is_err(), "{}", chrome.display());
+            assert!(check_profile(chrome, &elsewhere).is_ok());
+            // The same folder by another name, where it's there to follow.
+            if own.is_dir() {
+                assert!(check_profile(chrome, &own.join(".")).is_err());
+            }
+        }
+        // Chrome for Testing and Chromium are driven with any profile.
+        for chrome in &others {
+            for (_, own) in &google {
+                assert!(check_profile(chrome, own).is_ok(), "{}", chrome.display());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
