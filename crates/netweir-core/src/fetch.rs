@@ -1091,7 +1091,35 @@ pub(crate) async fn telling_connects<F: std::future::Future>(
     tell: ConnectTold,
     future: F,
 ) -> F::Output {
-    TOLD.scope(tell, future).await
+    // Connections still being made when the request is done (the pool
+    // found it an idle one and goes on making this one in the background)
+    // are told as failed now, and nothing of them after: no request of
+    // this scope rides them, and a background handshake that hangs would
+    // otherwise hold the host for good.
+    struct Scope(Arc<std::sync::Mutex<Option<usize>>>, ConnectTold);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let open = self.0.lock().unwrap().take().unwrap_or(0);
+            for _ in 0..open {
+                (self.1)(Connect::Failed);
+            }
+        }
+    }
+    let open = Arc::new(std::sync::Mutex::new(Some(0usize)));
+    let scope = Scope(open.clone(), tell.clone());
+    let gated: ConnectTold = Arc::new(move |c| {
+        let mut open = open.lock().unwrap();
+        let Some(n) = open.as_mut() else { return };
+        match c {
+            Connect::Started => *n += 1,
+            _ => *n = n.saturating_sub(1),
+        }
+        drop(open);
+        tell(c);
+    });
+    let out = TOLD.scope(gated, future).await;
+    drop(scope);
+    out
 }
 
 /// The connector layer that tells [`telling_connects`]'s listener.
@@ -1138,9 +1166,11 @@ where
     }
 
     fn call(&mut self, request: R) -> Self::Future {
-        // Only a connection made inside `telling_connects`: one the pool
-        // goes on making in the background, after another came free for
-        // the request, is told to no one.
+        // Told when asked for inside `telling_connects`. The pool races
+        // its checkout against this connect: if an idle connection wins,
+        // this one goes on in the background, and the scope, done with
+        // its request by then, has taken it as failed and hears nothing
+        // more of it (see `telling_connects`).
         let tell = TOLD.try_with(Arc::clone).ok();
         if let Some(tell) = &tell {
             tell(Connect::Started);
@@ -1208,6 +1238,15 @@ impl Fetcher {
                 // each hop gets its own cookies, header order and HTTP/2-only
                 // headers.
                 .redirect(redirect::Policy::none())
+                // A connection the pool goes on making in the background,
+                // after an idle one came free for its request, has no
+                // request's timeout over it: one whose handshake never
+                // answered held its socket for good. Making one gets the
+                // client's timeout, and never less than the 30 s Chrome
+                // gives a TLS handshake (net/socket/ssl_connect_job.cc;
+                // its TCP connect may take 4 minutes). A request's own
+                // longer timeout doesn't stretch its connect.
+                .connect_timeout(options.timeout.max(Duration::from_secs(30)))
                 .tls_cert_verification(options.verify_certificates);
             if let Some(cas) = &cas {
                 builder = builder.tls_cert_store(cas.clone());

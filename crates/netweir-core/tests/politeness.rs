@@ -9,10 +9,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
+/// How the test site treats its connections after the first.
+#[derive(Clone, Copy)]
+enum Later {
+    /// As the first, without its wait.
+    Answered,
+    /// Taken, and never said hello to: a TLS handshake that hangs.
+    Hung,
+}
+
 /// An HTTPS site whose first connection takes `slow` to say hello back, as
-/// a far-off or busy server's TLS handshake does. Records when the first
-/// byte of each request's head arrives, by path.
-async fn slow_first_handshake(slow: Duration) -> (String, Arc<Mutex<Vec<(String, Instant)>>>) {
+/// a far-off or busy server's TLS handshake does, and which answers /a
+/// after `hold_a`. Records when the first byte of each request's head
+/// arrives, by path.
+async fn site(
+    slow: Duration,
+    later: Later,
+    hold_a: Duration,
+) -> (String, Arc<Mutex<Vec<(String, Instant)>>>) {
     let made = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
     let cert = rustls::pki_types::CertificateDer::from(made.cert.der().to_vec());
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(made.signing_key.serialize_der().into());
@@ -35,10 +49,14 @@ async fn slow_first_handshake(slow: Duration) -> (String, Arc<Mutex<Vec<(String,
     let log = hits.clone();
     tokio::spawn(async move {
         let mut first = true;
+        let mut hung = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
             let (acceptor, log) = (acceptor.clone(), log.clone());
             let wait = if std::mem::take(&mut first) {
                 slow
+            } else if let Later::Hung = later {
+                hung.push(stream);
+                continue;
             } else {
                 Duration::ZERO
             };
@@ -62,6 +80,9 @@ async fn slow_first_handshake(slow: Duration) -> (String, Arc<Mutex<Vec<(String,
                     }
                     let text = String::from_utf8_lossy(&head).to_string();
                     let path = text.split(' ').nth(1).unwrap_or("/").to_string();
+                    if path == "/a" {
+                        tokio::time::sleep(hold_a).await;
+                    }
                     log.lock().unwrap().push((path, arrived.unwrap()));
                     let reply =
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 1\r\n\r\nx";
@@ -99,7 +120,7 @@ fn request(id: u64, url: String) -> CrawlRequest {
 /// and leaves 300 ms after it.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_delay_runs_from_when_a_slow_connection_lets_the_request_go() {
-    let (url, hits) = slow_first_handshake(Duration::from_millis(400)).await;
+    let (url, hits) = site(Duration::from_millis(400), Later::Answered, Duration::ZERO).await;
     let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
     options.verify_certificates = false;
     let delay = Duration::from_millis(300);
@@ -140,5 +161,46 @@ async fn the_delay_runs_from_when_a_slow_connection_lets_the_request_go() {
             pair[1].0,
             pair[0].0
         );
+    }
+}
+
+/// Two requests at once to a site, the first held 800 ms: the second
+/// starts a connection of its own, and while it's in the making the pool
+/// hands it the first's, now free. That connection goes on in the
+/// background, and its handshake never answers. Counted as being made
+/// for good, it held the site's other requests back for good: the crawl
+/// stalled after two. Found in review.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_left_hanging_in_the_background_holds_nothing_back() {
+    let (url, _) = site(Duration::ZERO, Later::Hung, Duration::from_millis(800)).await;
+    let mut options = FetchOptions::new(Profile::named("chrome").unwrap());
+    options.verify_certificates = false;
+    options.timeout = Duration::from_secs(5);
+    let c = Crawler::new(
+        options,
+        CrawlSettings {
+            obey_robots: false,
+            obey_tdmrep: false,
+            throttle: false,
+            min_delay: Duration::from_millis(200),
+            per_domain: 2,
+            ..CrawlSettings::default()
+        },
+    )
+    .unwrap();
+    for (id, path) in [(1, "/a"), (2, "/b"), (3, "/c")] {
+        c.submit(request(id, format!("{url}{path}")));
+    }
+    let began = Instant::now();
+    let mut fetched = 0;
+    while fetched < 3 {
+        let batch = tokio::time::timeout(Duration::from_secs(15), c.next(64))
+            .await
+            .unwrap_or_else(|_| panic!("stalled after {fetched} fetched, {:?}", began.elapsed()));
+        assert!(!batch.is_empty(), "the crawl ended early");
+        fetched += batch
+            .iter()
+            .filter(|e| matches!(e, Event::Fetched { .. }))
+            .count();
     }
 }

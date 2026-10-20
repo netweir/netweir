@@ -572,6 +572,18 @@ Netweir holds it back until the first has gone. A
 page rendered in Chrome is the exception: Chrome makes its own
 connections, and its delay still counts from when it was handed to Chrome.
 
+That costs some speed at the start, and whenever a site's connections
+close. While a new connection is being made nothing else goes to that
+site, so a crawl that needs several (up to `per_domain` of them) opens
+them one at a time, each a delay plus a handshake after the last: with
+a 300 ms delay and a 100 ms handshake, four requests that each need a
+connection of their own reach the site 1.3 s after the first was handed
+out, where Scrapy's take 1.0 s. A site with no
+delay isn't held back at all. A connection gets as long as the request
+`timeout` to be made, and never less than the 30 seconds Chrome gives a
+TLS handshake; one that never answers is given up then, even when no
+request is waiting on it any more.
+
 ## Pipelines
 
 Every item passes through the spider's pipelines, in order:
