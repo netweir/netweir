@@ -2039,23 +2039,38 @@ mod tests {
         assert_eq!(probes(&extra), 1);
     }
 
+    /// A "Chrome" in `dir` that runs `script`, run once before it's
+    /// returned: macOS checks a new executable the first time it runs,
+    /// which took up to 12 seconds with the other tests running, and the
+    /// tests that time a launch mustn't time that.
+    #[cfg(unix)]
+    fn fake_chrome(dir: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(dir).unwrap();
+        let fake = dir.join("chrome");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\n[ \"$1\" = --once ] && exit\n{script}"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ran = std::process::Command::new(&fake).arg("--once").status();
+        assert!(ran.unwrap().success());
+        fake
+    }
+
     /// A Chrome that says it won't be driven with its profile, and runs
     /// on, fails the launch at once rather than at the timeout.
     #[cfg(unix)]
     #[tokio::test]
     async fn chrome_refusing_its_profile_fails_the_launch_at_once() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = std::env::temp_dir().join(format!("netweir-refuses-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let fake = dir.join("chrome");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\necho 'DevTools remote debugging requires a non-default data \
+        let fake = fake_chrome(
+            &dir,
+            "echo 'DevTools remote debugging requires a non-default data \
              directory. Specify this using --user-data-dir.' >&2\nexec sleep 60\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let started = Instant::now();
         let launched = Browser::launch(LaunchOptions {
             executable: Some(fake),
@@ -2078,14 +2093,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_probe_fails_those_waiting_and_no_more() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = std::env::temp_dir().join(format!("netweir-probe-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         // A "Chrome" that says nothing for a second, then exits.
-        let fake = dir.join("chrome");
-        std::fs::write(&fake, "#!/bin/sh\nsleep 1\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = fake_chrome(&dir, "sleep 1\n");
         let extra = fresh_switch();
         let started = std::time::Instant::now();
         let (a, b, c) = tokio::join!(
