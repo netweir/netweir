@@ -1017,6 +1017,14 @@ impl Frame {
         let selector = selector.map_or(Value::Null, Value::from);
         let before = self.helper(&format!("__netweir.where({selector})")).await?;
         self.page.mouse_wheel(x, y, dx, dy).await?;
+        if self.page.touches() {
+            // A swipe ends once what it dragged has stopped (see
+            // [`Page::swipe`]). Waiting again for that, and where nothing
+            // moved for a start that can't come, took up to a sixth of every
+            // turn on a busy page.
+            let now = self.helper(&format!("__netweir.where({selector})")).await?;
+            return Ok(now != before || before.as_str().is_some_and(|b| b.ends_with('?')));
+        }
         let moved = self
             .helper(&format!("__netweir.settle({selector}, {before})"))
             .await?;

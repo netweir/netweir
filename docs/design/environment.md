@@ -289,10 +289,12 @@ The rest of the identity goes everywhere:
   pixels, so on a page zoomed out to fit (no viewport meta tag, a scale
   of about 0.37 on a Galaxy) the slop and the margins are divided by
   the visual viewport's scale. Measured on a Galaxy S23, to the bottom
-  of a 15000-pixel page: 15.8 s (13.9 before the page was measured once
-  still), where `synthesizeScrollGesture` took 15.5 and a desktop's
-  wheel 6.1; 600 pixels up or down lands within 5 pixels (the test's
-  bound), zoomed or not, busy or not, and stays there. The page gets
+  of a 15000-pixel page: 12.8 s (21 to 22 with the page's script busy
+  60 ms in every 70), where `synthesizeScrollGesture` took 15.5 and a
+  desktop's wheel 6.1. It was 14.2 (24 to 27 busy, near the 30-second
+  timeout) while each turn waited again, as a wheel's does, for the
+  scroll to stop, which the swipe had already seen. 600 pixels up or
+  down lands within 5 pixels (the test's bound), zoomed or not, busy or not, and stays there. The page gets
   touches and no `wheel` events, and its pointer is a fingertip's size all the
   way; `Input.synthesizeScrollGesture`, used before, gave it a width
   of 1. A key pressed is what an

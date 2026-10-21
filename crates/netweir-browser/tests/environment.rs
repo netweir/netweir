@@ -1927,8 +1927,8 @@ async fn a_phone_scrolls_as_far_as_its_asked_by_finger() {
         .as_f64()
         .unwrap();
     assert!(y >= 14995.0, "{y}");
-    // 14 s on an M-series Mac, 22.5 on a CI runner; it was over the 30 s
-    // timeout before.
+    // 13 s on an M-series Mac. It was over the 30 s timeout once, and
+    // then 22.5 s on a CI runner, now and then over it again.
     assert!(took < Duration::from_secs(30), "{took:?}");
     browser.close().await.unwrap();
 }
