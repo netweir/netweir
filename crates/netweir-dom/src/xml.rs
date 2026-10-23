@@ -1404,17 +1404,19 @@ impl<'v> Builder<'v> {
         Ok(())
     }
 
-    /// Takes a U+FEFF that starts `src` as text, and returns its length,
-    /// or 0 when there's none. quick-xml drops one there as a byte order
-    /// mark, and leaves it out of its positions, which then point three
-    /// bytes short: the document's own mark is already gone by here, so
-    /// this one is a character.
+    /// Takes the U+FEFFs that start `src` as text, and returns their
+    /// length, or 0 when there are none. quick-xml drops one there as a
+    /// byte order mark, and leaves it out of its positions, which then
+    /// point three bytes short: the document's own mark is already gone
+    /// by here, so these are characters. All of them, as a reader started
+    /// after the first would drop the second.
     fn lead(&mut self, src: &str) -> Step<usize> {
-        if !src.starts_with('\u{feff}') {
-            return Ok(0);
+        let rest = src.trim_start_matches('\u{feff}');
+        let lead = &src[..src.len() - rest.len()];
+        if !lead.is_empty() {
+            self.text(lead)?;
         }
-        self.text("\u{feff}")?;
-        Ok('\u{feff}'.len_utf8())
+        Ok(lead.len())
     }
 
     /// [`Self::lead`] for `src` from byte `start`: where a reader starts.

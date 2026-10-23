@@ -1132,21 +1132,29 @@ fn a_zero_width_no_break_space_where_reading_starts_is_kept() {
     // Found by fuzzing: quick-xml drops a U+FEFF that starts what it
     // reads, as a byte order mark, and leaves it out of its positions,
     // which then fell inside the next character, and that was a panic.
-    let crash: &[u8] = &[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x3e, 0xdd, 0x5d, 0x5d];
-    let crash = String::from_utf8_lossy(crash);
-    let _ = Document::parse_xml_with(&crash, recover());
-    let _: Vec<_> = XmlNodes::new(crash.to_string(), "x", &[], recover())
-        .unwrap()
-        .collect();
+    let crashes: [&[u8]; 2] = [
+        &[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x3e, 0xdd, 0x5d, 0x5d],
+        &[
+            0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x1c, 0x26, 0xc3, 0xef, 0x87,
+        ],
+    ];
+    for crash in crashes {
+        let crash = String::from_utf8_lossy(crash);
+        let _ = Document::parse_xml_with(&crash, recover());
+        let _: Vec<_> = XmlNodes::new(crash.to_string(), "x", &[], recover())
+            .unwrap()
+            .collect();
+    }
     // Only the document's first mark is one; a second is text, before
     // the root, where text can't be.
     assert!(Document::parse_xml("\u{feff}<r/>").is_ok());
     assert!(Document::parse_xml("\u{feff}\u{feff}<r/>").is_err());
     // At the start of an entity, and after a node handed out, it's a
     // character, and stays.
-    let doc = Document::parse_xml(r#"<!DOCTYPE r [<!ENTITY e "&#xFEFF;x">]><r>&e;</r>"#).unwrap();
-    assert_eq!(xpath(&doc, "/r/text()"), ["\u{feff}x"]);
-    let xml = "<r><x>1</x>\u{feff}<x>2</x></r>".to_string();
+    let doc =
+        Document::parse_xml(r#"<!DOCTYPE r [<!ENTITY e "&#xFEFF;&#xFEFF;x">]><r>&e;</r>"#).unwrap();
+    assert_eq!(xpath(&doc, "/r/text()"), ["\u{feff}\u{feff}x"]);
+    let xml = "<r><x>1</x>\u{feff}\u{feff}<x>2</x></r>".to_string();
     let texts: Vec<String> = XmlNodes::new(xml, "x", &[], XmlOptions::default())
         .unwrap()
         .map(|d| d.unwrap().root().text())
