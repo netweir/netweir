@@ -110,6 +110,10 @@ jobs:
         python: ["3.10", "3.14", "3.14t"]
     runs-on: ${{ matrix.os }}
     steps:
+      # As in ci.yml: Spotlight indexing what the tests write left Chrome
+      # waiting past its timeouts on macOS runners.
+      - if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
