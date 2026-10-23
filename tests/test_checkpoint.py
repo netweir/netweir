@@ -262,7 +262,7 @@ def names_in(out):
 ALL = sorted(f"{n}-{i}" for n in range(1, PAGES + 1) for i in range(PER_PAGE))
 
 
-def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplog):
+def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplog, monkeypatch):
     db = tmp_path / "state" / "crawl.sqlite3"
 
     def sql(statement):
@@ -274,25 +274,42 @@ def test_failing_commits_are_warned_of_and_so_is_their_end(base, tmp_path, caplo
             check=True,
         )  # fmt: skip
 
-    def at(n):
-        # The commits after the 4th item's batch fail, as on a full disk,
-        # until the 6th lets them through. Each pause lets the writer
-        # commit (or fail) before the batch is settled.
-        if n == 4:
+    def wait_for(check):
+        deadline = time.monotonic() + 10
+        while not check() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    # Paced by the batches the crawl settles, which is when it looks at
+    # its commits: once a batch has an item, commits fail, as on a full
+    # disk, until a batch has warned of it. Each step waits first for the
+    # commit of the batch before, so none is missed however many items a
+    # batch holds.
+    real = netweir._crawl._Run.watch_checkpoint
+    phase = 0
+
+    def watch(self):
+        nonlocal phase
+        if phase == 1:
+            wait_for(lambda: self.engine.checkpoint_failing() is not None)
+        if phase == 2:
+            wait_for(lambda: self.engine.checkpoint_failing() is None)
+        real(self)
+        if phase == 0 and Items.seen:
             sql(
                 "CREATE TRIGGER full BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'disk full'); END"
             )
-        if n == 6:
-            time.sleep(0.3)
+            phase = 1
+        elif phase == 1 and self.checkpoint_warned:
             sql("DROP TRIGGER full")
-        if n in (5, 7):
-            time.sleep(0.3)
+            phase = 2
+
+    monkeypatch.setattr(netweir._crawl._Run, "watch_checkpoint", watch)
 
     class Items(Breaking):
         start_urls = [f"{base}/page/1"]
         seen = 0
+        at = staticmethod(lambda n: None)
 
-    Items.at = staticmethod(at)
     spider = Items()
     spider.settings = settings(tmp_path)
     out = tmp_path / "items.jsonl"
