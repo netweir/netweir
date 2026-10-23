@@ -1128,6 +1128,33 @@ fn recover_mode_keeps_a_processing_instruction_its_repair_changed() {
 }
 
 #[test]
+fn a_zero_width_no_break_space_where_reading_starts_is_kept() {
+    // Found by fuzzing: quick-xml drops a U+FEFF that starts what it
+    // reads, as a byte order mark, and leaves it out of its positions,
+    // which then fell inside the next character, and that was a panic.
+    let crash: &[u8] = &[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x3e, 0xdd, 0x5d, 0x5d];
+    let crash = String::from_utf8_lossy(crash);
+    let _ = Document::parse_xml_with(&crash, recover());
+    let _: Vec<_> = XmlNodes::new(crash.to_string(), "x", &[], recover())
+        .unwrap()
+        .collect();
+    // Only the document's first mark is one; a second is text, before
+    // the root, where text can't be.
+    assert!(Document::parse_xml("\u{feff}<r/>").is_ok());
+    assert!(Document::parse_xml("\u{feff}\u{feff}<r/>").is_err());
+    // At the start of an entity, and after a node handed out, it's a
+    // character, and stays.
+    let doc = Document::parse_xml(r#"<!DOCTYPE r [<!ENTITY e "&#xFEFF;x">]><r>&e;</r>"#).unwrap();
+    assert_eq!(xpath(&doc, "/r/text()"), ["\u{feff}x"]);
+    let xml = "<r><x>1</x>\u{feff}<x>2</x></r>".to_string();
+    let texts: Vec<String> = XmlNodes::new(xml, "x", &[], XmlOptions::default())
+        .unwrap()
+        .map(|d| d.unwrap().root().text())
+        .collect();
+    assert_eq!(texts, ["1", "2"]);
+}
+
+#[test]
 fn recovering_from_runs_of_bad_markup_takes_linear_time() {
     // Each was quadratic: quick-xml read on to the next `>` for every
     // `<`; every `&` in an attribute was read on to the next `;`; and

@@ -975,6 +975,7 @@ impl<'v> Builder<'v> {
     }
 
     fn read_entity(&mut self, value: &str) -> Step {
+        let value = &value[self.lead(value)?..];
         let mut reader = reader(value, self.recover);
         loop {
             match reader.read_event().map_err(|e| e.to_string())? {
@@ -1403,11 +1404,34 @@ impl<'v> Builder<'v> {
         Ok(())
     }
 
+    /// Takes a U+FEFF that starts `src` as text, and returns its length,
+    /// or 0 when there's none. quick-xml drops one there as a byte order
+    /// mark, and leaves it out of its positions, which then point three
+    /// bytes short: the document's own mark is already gone by here, so
+    /// this one is a character.
+    fn lead(&mut self, src: &str) -> Step<usize> {
+        if !src.starts_with('\u{feff}') {
+            return Ok(0);
+        }
+        self.text("\u{feff}")?;
+        Ok('\u{feff}'.len_utf8())
+    }
+
+    /// [`Self::lead`] for `src` from byte `start`: where a reader starts.
+    fn lead_at(&mut self, src: &str, start: usize) -> Result<usize, (Stop, usize)> {
+        self.at = start;
+        match self.lead(&src[start..]) {
+            Ok(n) => Ok(start + n),
+            Err(stop) => Err((stop, start)),
+        }
+    }
+
     /// Reads `src` from byte `start` until its end, or in Nodes mode until
     /// a node is ready. Returns where it stopped, or why and where it
     /// failed.
     fn pump(&mut self, src: &str, start: usize) -> Result<usize, (Stop, usize)> {
         let mut start = start;
+        start = self.lead_at(src, start)?;
         let mut reader = reader(&src[start..], self.recover);
         loop {
             let before = start + reader.buffer_position() as usize;
@@ -1431,6 +1455,7 @@ impl<'v> Builder<'v> {
                     return Ok(src.len());
                 }
                 start = before + 1;
+                start = self.lead_at(src, start)?;
                 reader = self::reader(&src[start..], self.recover);
                 continue;
             }
@@ -1452,6 +1477,7 @@ impl<'v> Builder<'v> {
                         .and_then(|()| self.text("<"))
                         .map_err(|s| (s, before))?;
                     start = before + 1;
+                    start = self.lead_at(src, start)?;
                     reader = self::reader(&src[start..], self.recover);
                     continue;
                 }
