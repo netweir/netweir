@@ -215,3 +215,14 @@ def test_job_posting():
     assert item["job_title"] == "Senior Rust Engineer"
     assert item["base_salary"]["value_min"] == "70000"
     assert item["metadata"]["probability"] > 0.9
+
+
+def test_auto_article_leaves_netweir_article_alone():
+    p = page(fixture("article-jsonld"), "https://paper.example/2026/rivers-rise")
+    item = p.extract(netweir.auto.Article)
+    assert item["headline"] == "Rivers rise across the north"
+    assert item["authors"][0]["name"] == "Ann Lee"
+    old = p.article()
+    assert isinstance(old, netweir.Article)
+    assert old.title == "Rivers rise across the north"
+    assert set(vars(old)) == {"title", "byline", "published", "image", "language", "text", "html"}

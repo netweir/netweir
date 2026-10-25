@@ -2,7 +2,8 @@
 //! `fixtures/auto/<name>.html` has a `<name>.json` with the item type to
 //! ask for, the page's URL, every field that must have a value (the rest
 //! must be null), the sources of some fields, the probability's range and
-//! the fields with validation messages.
+//! the fields with validation messages. "@body" and "@html" stand for
+//! the article text and HTML that `content::article` reads.
 
 use std::path::Path;
 
@@ -35,8 +36,15 @@ fn every_auto_fixture_matches_its_answer() {
         let url = url::Url::parse(want["url"].as_str().unwrap()).unwrap();
         let doc = Document::parse(&html);
         let got = extract(schema, doc.root(), Some(&url), Civil::date(2026, 10, 25));
+        // "@body" and "@html" stand for the article text and HTML
+        // content::article reads, which its own corpus checks.
+        let article = netweir_dom::content::article(doc.root(), Some(&url));
         for (field, value) in &got.fields {
-            let expected = want["item"].get(*field).unwrap_or(&Value::Null);
+            let expected = match want["item"].get(*field).unwrap_or(&Value::Null) {
+                Value::String(s) if s == "@body" => &Value::from(article.text.clone()),
+                Value::String(s) if s == "@html" => &Value::from(article.html.clone()),
+                other => other,
+            };
             if value != expected {
                 failures.push(format!("{name}: {field} is {value}, not {expected}"));
             }

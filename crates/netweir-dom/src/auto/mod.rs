@@ -7,6 +7,7 @@
 //! that was. Where JSON-LD and microdata disagree on a key field, the
 //! item says so in its validation messages.
 
+mod article;
 pub mod fields;
 mod job;
 mod product;
@@ -52,25 +53,7 @@ impl Schema {
                 "page_number",
             ],
             Schema::JobPosting => job::FIELDS,
-            Schema::Article => &[
-                "url",
-                "canonical_url",
-                "headline",
-                "date_published",
-                "date_published_raw",
-                "date_modified",
-                "date_modified_raw",
-                "authors",
-                "breadcrumbs",
-                "in_language",
-                "main_image",
-                "images",
-                "description",
-                "article_body",
-                "article_body_html",
-                "videos",
-                "audios",
-            ],
+            Schema::Article => article::FIELDS,
         }
     }
 
@@ -153,8 +136,9 @@ pub fn extract(schema: Schema, root: Node<'_>, page: Option<&Url>, now: Civil) -
     match schema {
         Schema::Product => product::read(&ctx, &mut item),
         Schema::JobPosting => job::read(&ctx, &mut item),
+        Schema::Article => article::read(&ctx, &mut item),
         // Not read yet; only the URL is known.
-        Schema::ProductList | Schema::ProductNavigation | Schema::Article => {}
+        Schema::ProductList | Schema::ProductNavigation => {}
     }
     item.finish()
 }
