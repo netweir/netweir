@@ -483,7 +483,8 @@ doc.clean_text()  # 'Specs\n\nOak,\nhand finished\n\n46 cm\n2 kg'
 
 Three things turn up on nearly every job, and each is a regular
 expression that works on the first site and breaks on the second. Netweir
-reads all three in Rust.
+reads all three in Rust, along with product codes, ratings, stock and
+salaries.
 
 ### Prices
 
@@ -579,6 +580,28 @@ Anything Netweir doesn't fully understand is None, not a guess: a date
 without a year (`12 Oct`), an impossible one (`31/04/2026`), or a date
 with words around it (`Posted 12 Oct 2026`; take the date out with `re=`
 first).
+
+### Codes, ratings, stock and salaries
+
+Four smaller readers do the same for what product and job pages repeat:
+
+```python
+netweir.parse_gtin("EAN: 4006381333931")
+# {"type": "gtin13", "value": "4006381333931"}
+netweir.parse_rating("4.5 out of 5 (1,204 reviews)")
+# {"rating_value": 4.5, "best_rating": 5.0, "review_count": 1204}
+netweir.parse_availability("Sold out")          # "OutOfStock"
+netweir.parse_salary("£30k–£40k per annum")
+# {"raw": "£30k–£40k per annum", "value_min": "30000", "value_max": "40000",
+#  "rate_type": "yearly", "currency": "GBP", "currency_raw": "£"}
+```
+
+`parse_gtin` knows GTIN-8, UPC, EAN, GTIN-14, ISBN-10 and -13 and ISSN,
+and checks the check digit, so a mistyped code or a stray number is None
+rather than a code. `parse_availability` gives `InStock` or `OutOfStock`
+from schema.org's values or plain English, and None when the text doesn't
+say. A salary's currency follows the same rule as a price's: `$` alone
+names no currency, so `currency` is None and `currency_raw` is `$`.
 
 ### Data in scripts
 

@@ -42,6 +42,10 @@ from netweir._native import (
     __version__,
     js_data,
     parse,
+    parse_availability,
+    parse_gtin,
+    parse_rating,
+    parse_salary,
 )
 from netweir._request import Request
 from netweir._rules import Follow, Item, clean_text, css, markdown, xpath
@@ -103,8 +107,12 @@ __all__ = [
     "markdown",
     "js_data",
     "parse",
+    "parse_availability",
     "parse_date",
+    "parse_gtin",
     "parse_price",
+    "parse_rating",
+    "parse_salary",
     "post",
     "repair",
     "request",

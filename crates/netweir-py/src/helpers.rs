@@ -1,6 +1,7 @@
 //! Prices, dates and the data in scripts. The reading is in netweir-dom;
 //! the Python types (Price, datetime) are made in netweir/_helpers.py.
 
+use netweir_dom::auto::fields;
 use netweir_dom::date::{self, Civil, Zone};
 use netweir_dom::js::{self, JsValue};
 use netweir_dom::price;
@@ -17,6 +18,36 @@ fn _parse_price(text: &str) -> Option<(String, Option<String>)> {
 #[pyfunction]
 fn _currency_code(currency: &str) -> Option<&'static str> {
     price::currency_code(currency)
+}
+
+/// The product code in `text` as {type, value}, or None.
+#[pyfunction]
+fn parse_gtin(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    let found = netweir_dom::gtin::parse(text)
+        .map(|g| serde_json::json!({"type": g.kind, "value": g.value}));
+    crate::browser::to_python(py, &found.unwrap_or_default())
+}
+
+/// The rating in `text` as {rating_value, best_rating, review_count}, or
+/// None.
+#[pyfunction]
+fn parse_rating(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    let found = fields::rating(&serde_json::Value::String(text.to_string()));
+    crate::browser::to_python(py, &found.unwrap_or_default())
+}
+
+/// "InStock" or "OutOfStock", or None when `text` doesn't say.
+#[pyfunction]
+fn parse_availability(text: &str) -> Option<String> {
+    fields::availability(&serde_json::Value::String(text.to_string()))
+}
+
+/// The salary in `text` as {raw, value_min, value_max, rate_type,
+/// currency, currency_raw}, or None.
+#[pyfunction]
+fn parse_salary(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    let found = fields::salary(&serde_json::Value::String(text.to_string()));
+    crate::browser::to_python(py, &found.unwrap_or_default())
 }
 
 type Fields = (i32, u32, u32, u32, u32, u32, u32);
@@ -100,5 +131,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_parse_price, m)?)?;
     m.add_function(wrap_pyfunction!(_currency_code, m)?)?;
     m.add_function(wrap_pyfunction!(_parse_date, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_gtin, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_rating, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_availability, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_salary, m)?)?;
     m.add_function(wrap_pyfunction!(js_data, m)?)
 }

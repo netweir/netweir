@@ -501,3 +501,36 @@ def test_dots_are_day_first_unless_told_otherwise():
     assert netweir.parse_date("03.04.2026") == datetime.datetime(2026, 4, 3)
     assert netweir.parse_date("03/04/2026") == datetime.datetime(2026, 3, 4)
     assert netweir.parse_date("03.04.2026", day_first=False) == datetime.datetime(2026, 3, 4)
+
+
+def test_parse_gtin_checks_the_check_digit():
+    assert netweir.parse_gtin("EAN 4006381333931") == {"type": "gtin13", "value": "4006381333931"}
+    assert netweir.parse_gtin("978-0-306-40615-7") == {"type": "isbn13", "value": "9780306406157"}
+    assert netweir.parse_gtin("4006381333932") is None
+
+
+def test_parse_rating_reads_text():
+    assert netweir.parse_rating("4.5 out of 5 (1,204 reviews)") == {
+        "rating_value": 4.5,
+        "best_rating": 5.0,
+        "review_count": 1204,
+    }
+    assert netweir.parse_rating("no reviews yet") is None
+
+
+def test_parse_availability():
+    assert netweir.parse_availability("https://schema.org/InStock") == "InStock"
+    assert netweir.parse_availability("Sold out") == "OutOfStock"
+    assert netweir.parse_availability("ships soon") is None
+
+
+def test_parse_salary_reads_ranges_and_rates():
+    assert netweir.parse_salary("£30k–£40k per annum") == {
+        "raw": "£30k–£40k per annum",
+        "value_min": "30000",
+        "value_max": "40000",
+        "rate_type": "yearly",
+        "currency": "GBP",
+        "currency_raw": "£",
+    }
+    assert netweir.parse_salary("competitive") is None
