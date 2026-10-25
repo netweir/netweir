@@ -461,7 +461,9 @@ pub fn from_element(
                 .map(Value::String)
         }
         FieldKind::Gtin => {
-            crate::gtin::parse(&words()?).map(|g| json!([{"type": g.kind, "value": g.value}]))
+            let mut one = Map::new();
+            one.insert("gtin".into(), Value::String(words()?));
+            gtins(&one)
         }
         FieldKind::Brand => {
             let alt = || {
