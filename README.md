@@ -79,6 +79,14 @@ Working today:
   content as Markdown, tables and code blocks included. All in Rust, in a
   few milliseconds on a 1 MB page. See
   [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
+- Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
+  a category page's listing, a job posting or an article from the
+  structured data the page carries (JSON-LD, microdata, Open Graph), in
+  the common item schema Zyte's API uses, with where each field came from.
+  When one field is wrong for a site, pin it with a selector and the rest
+  stay automatic; it works in declarative spiders, and `netweir extract
+  URL` tries it from the command line. Pages with no structured data
+  aren't read from their layout yet. See [docs/extraction.md](docs/extraction.md).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Downloader and spider
@@ -231,6 +239,31 @@ holding a quote comes out as `&quot;` where lxml would switch to single
 quotes; the elements and their order are the same. And attribute values are
 plain strings: `node["class"]` is `"star-rating Three"`, not Beautiful
 Soup's list. Filters still match one class out of several, as you'd expect.
+
+## Data without selectors
+
+Most shops, job boards and news sites describe their pages to search
+engines in structured data. Netweir reads it and gives you the item:
+
+```python
+product = page.extract(netweir.auto.Product)
+product["name"], product["price"], product["currency"]
+product["metadata"]["sources"]["price"]  # "json-ld"
+```
+
+Field names and shapes are the common item schema's, so items from many
+sites, or from Zyte's API, share one table. When a site's data is wrong
+for one field, pin that field and keep the rest:
+
+```python
+class Lumo(netweir.auto.Product):
+    price = netweir.css("span.sale", track="price")
+```
+
+A pinned price element gives `"9.50"`, not `"$9.50 inc. VAT"`, and
+`track=` keeps the selector working through a redesign. Products,
+listings, job postings and articles are covered so far; see
+[Auto-extraction](docs/extraction.md).
 
 ## Crawling a site
 

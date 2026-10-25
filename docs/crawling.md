@@ -1490,3 +1490,16 @@ items still writes the first batch, empty. Each run numbers its batches
 from 1 again, so files a longer earlier run left with higher numbers stay
 beside the new ones; add `{time}`, or clear the folder first, to keep
 runs apart. Batches can't be combined with a checkpoint.
+
+### Field names
+
+Every exporter takes `field_names="zyte"`, which writes keys in camelCase
+at every depth (`regular_price` becomes `regularPrice`), as the common
+item schema Zyte's API uses writes them. Items from
+[auto-extraction](extraction.md) then match items from that API column
+for column:
+
+```python
+class Shop(netweir.Spider):
+    pipelines = [netweir.export.jsonl("products.jsonl", field_names="zyte")]
+```

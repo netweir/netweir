@@ -1,0 +1,118 @@
+# Auto-extraction
+
+What `netweir.auto` is for, how it reads a page, and the calls behind its
+shape. The user guide is [docs/extraction.md](../extraction.md).
+
+## Intent
+
+People point Netweir at sites they know: shops, job boards, public
+records, library catalogues, wikis, forums, news. They want the data out
+without writing selectors first. Auto-extraction gives them a good first
+guess as a typed item, and when one field is wrong, they pin that field
+with a CSS selector and keep the rest automatic.
+
+The bar is Zyte's automatic extraction and Scrapy's page objects, with
+three things neither has together: it runs locally, in Rust, with no
+per-page fee; every field says where it came from; and a pinned field is
+an ordinary tracked selector, so self-healing keeps the fix working.
+
+## Shape
+
+- **Typed items with the common schema's fields.** Product, ProductList,
+  ProductNavigation, JobPosting and Article match zyte-common-items field
+  for field, in snake_case, with the same value shapes: decimal strings
+  for money, ISO 4217 currencies, ISO 8601 dates, `{name}` brands,
+  `[{type, value}]` GTINs with check digits verified (an ISBN-10 ending in
+  X becomes its ISBN-13, since the schema allows digits only). Exporters
+  take `field_names="zyte"` for its camelCase.
+- **Dicts, like every Item.** An auto item is an `Item` subclass whose
+  `ItemSpec` carries a schema. Rust runs the schema's reader, then the
+  subclass's own fields, and emits the type's fields in order, then any
+  extra fields, then `metadata` (`probability`, `date_downloaded`,
+  `sources`, `validation_messages`). A declarative crawl does all of it
+  without Python.
+- **No invented values.** A field the page doesn't hold is None. A
+  currency is named only when structured data gives a code, the text has
+  one, or the symbol belongs to one currency; `$` alone leaves `currency`
+  None and `currency_raw` `"$"`. Never the domain or the locale.
+
+## How a page is read
+
+1. `auto::schema_org::things` reads every typed schema.org object on the
+   page into one shape: JSON-LD (with `@graph` flattened and `{"@id"}`
+   references replaced by what they name) and microdata (reshaped to
+   match, keeping each property's element). Type URLs shorten to `Product`
+   or `Offer`; subtypes such as ProductGroup and NewsArticle count as
+   their parent. Cycles stay references and nesting stops at 64 levels,
+   so a hostile page can't exhaust the stack. Microdata's `content`
+   attribute is read on any element, as search engines read it.
+2. Each type's reader picks the thing the page is about (for products:
+   the one whose URL is the page's, else the first with an offer, else the
+   first; products that hang off another as variants or accessories don't
+   count) from JSON-LD and from microdata, and offers each field to a
+   builder in that order: JSON-LD, then microdata, then meta tags (Open
+   Graph's `product:` tags, `og:title`, `og:image`, the canonical link).
+   The first source to give a value wins and is recorded. On key fields
+   (name, price, currency, availability, SKU, job title), a different
+   answer from the other structured source is a validation message.
+3. Field readers in `auto::fields` turn what was found into the schema's
+   shapes: prices through `price::parse_price`, dates through
+   `date::parse_date`, and new readers for availability, GTINs, brands,
+   ratings, breadcrumbs, salaries, employment types and images. Each also
+   reads an element a person picked (`from_element`) or a string
+   (`from_text`), which is how a pinned field is read as its field.
+4. Articles add what `content::article` reads from the page itself, so a
+   page with no structured data still gives its headline and body.
+
+Meta-tag fallbacks for products apply only when the page has a Product
+or says `og:type` product: a news page asked for a product gives its URL
+and a probability near zero, not its title as a product name.
+
+## Pinning
+
+A field the subclass declares under a schema field's name replaces it.
+It compiles to `Convert::Auto(kind)`, with the kind from
+`Schema::kind_of`, so a price element gives `"9.50"`. `into=` replaces
+that reading. The field's source becomes `css:<query>` or
+`xpath:<query>`. A pinned field that finds nothing gives None and a
+validation message, and one that finds text that doesn't read as its
+field ("free" for a price) gives None and says what it found. Neither
+falls back to the automatic value: a quiet fallback would hide a broken
+selector.
+
+## Probability
+
+Fixed steps for now, set where the evidence changes: about 0.95 for a
+complete schema.org item (a product with a name and an offer, SKU or
+GTIN), 0.8 for a thinner one, 0.5 for a product only Open Graph names,
+0.6 for an article found only by its main content, 0.9 for a listing of
+two or more products, and 0.05 when nothing points to the type. They're
+to be calibrated against a corpus of real pages once the layout readers
+exist.
+
+## Testing
+
+`crates/netweir-dom/tests/fixtures/auto/` holds pages written for the
+purpose, each with a JSON file of its answer: the type, the URL, every
+field that must have a value (the rest must be null), some sources, the
+probability's range and which fields carry validation messages. Real
+sites' pages aren't committed. `tests/auto.rs` also feeds every reader
+JSON-LD nested 5,000 deep and a 5 MB description and requires them to
+finish in bounded time. `tests/test_auto.py` covers pinning, tracking
+through a redesign, declarative crawls, exports and the command.
+
+## Still to come
+
+- Reading pages from their layout when they carry no structured data:
+  the price nearest the title and the buy button, the main image, cards
+  of a listing, pagination widgets. The main-content scoring, listing
+  detection and similarity already in `content.rs` and `similar.rs` are
+  the base.
+- The data apps keep in their scripts (Next.js, Nuxt, Apollo state)
+  through `js_data`, matched by the shape of product and job objects.
+- Generic records: the main repeated region of any page (table rows,
+  cards, list entries) as rows with inferred column names, for public
+  records, catalogues and directories.
+- `page.page_type()`, the rest of the schema (ForumThread, ArticleList,
+  BusinessPlace, RealEstate, Serp and others), and spider templates run
+  with a URL.

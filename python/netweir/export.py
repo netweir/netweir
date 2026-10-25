@@ -11,6 +11,7 @@ exporter opens its file at the first item; close it to finish the file.
 A path such as ``s3://bucket/books.jsonl`` is written locally and uploaded
 through fsspec when the file is finished. ``batch=N`` starts a new file
 every N items, named by ``{batch}`` (and ``{time}``) in the path.
+``field_names="zyte"`` writes keys in the common item schema's camelCase.
 """
 
 from __future__ import annotations

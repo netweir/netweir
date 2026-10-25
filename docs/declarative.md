@@ -60,6 +60,10 @@ They need an element, so a query ending in `::text` or `::attr()` raises
 where it's written. On a Node rather than a Page, pass the URL its links
 are relative to: `Post.extract(root, url="https://example.com/post")`.
 
+The items in `netweir.auto` fill their fields without selectors, and a
+subclass can pin the ones a site gets wrong; they work in rules like any
+other. See [Auto-extraction](extraction.md#in-a-crawl).
+
 ## Rules
 
 `netweir.Follow(css, ...)` or `netweir.Follow(xpath=..., ...)` takes links

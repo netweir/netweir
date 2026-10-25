@@ -670,3 +670,5 @@ as a string so no digits are lost, and a datetime as ISO 8601.
 
 Markdown and clean text have fields of their own, `netweir.markdown()`
 and `netweir.clean_text()`; see [Declarative spiders](declarative.md#items).
+For whole products, job postings and articles without selectors, see
+[Auto-extraction](extraction.md).
