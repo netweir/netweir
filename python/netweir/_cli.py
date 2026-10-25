@@ -249,6 +249,23 @@ def main(argv: list[str] | None = None) -> int:
         "--headers", action="store_true", help="the status line and headers instead of the body"
     )
     _fetch_options(fetch, browser=True)
+    extract = commands.add_parser(
+        "extract", help="read a page's product, job or article without selectors, as JSON"
+    )
+    extract.add_argument("url")
+    extract.add_argument(
+        "--type",
+        default="product",
+        choices=["product", "product-list", "product-navigation", "job-posting", "article"],
+        help="what to read (default product)",
+    )
+    extract.add_argument(
+        "--field-names",
+        default="snake",
+        choices=["snake", "zyte"],
+        help="zyte writes the common schema's camelCase names",
+    )
+    _fetch_options(extract, browser=True)
     view = commands.add_parser("view", help="open the page Netweir gets in your browser")
     view.add_argument("url")
     _fetch_options(view, browser=True)
@@ -311,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         return _serve.main(args)
     if args.command == "install":
         return _install(args)
-    if args.command in ("fetch", "view", "shell"):
+    if args.command in ("fetch", "view", "shell", "extract"):
         return _page_command(args)
     if args.command == "queue":
         return _queue(args)
@@ -628,6 +645,8 @@ def _page_command(args) -> int:
             page = session.first(args.url)
             if args.command == "fetch":
                 _write(page, args.headers)
+            elif args.command == "extract":
+                _extract(page, args.type, args.field_names)
             else:
                 _view(page)
             status = 1 if page.blocked else 0
@@ -653,6 +672,24 @@ def _page_command(args) -> int:
     except (BrowserError, OSError) as e:
         print(f"netweir: {e}", file=sys.stderr)
         return 1
+
+
+def _extract(page, kind: str, field_names: str) -> None:
+    import json
+
+    from netweir import auto
+    from netweir.export import _camel
+
+    item = {
+        "product": auto.Product,
+        "product-list": auto.ProductList,
+        "product-navigation": auto.ProductNavigation,
+        "job-posting": auto.JobPosting,
+        "article": auto.Article,
+    }[kind].extract(page)
+    if field_names == "zyte":
+        item = _camel(item)
+    print(json.dumps(item, indent=2, ensure_ascii=False))
 
 
 def _write(page, headers: bool) -> None:

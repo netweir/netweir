@@ -1,13 +1,15 @@
-# Trying a page: fetch, view and shell
+# Trying a page: fetch, view, extract and shell
 
 A selector that works in your browser's devtools can still find nothing in
 a spider. The browser ran the page's JavaScript and Netweir didn't, or the
 site sent your browser one page and Netweir another. These three commands
-show you the page Netweir gets, so you can write selectors against that.
+show you the page Netweir gets, so you can write selectors against that,
+and `extract` shows what Netweir reads from it without any.
 
 ```
 netweir fetch https://quotes.toscrape.com/           # the body, on stdout
 netweir view https://quotes.toscrape.com/            # opened in your browser
+netweir extract https://books.toscrape.com/          # its product, as JSON
 netweir shell https://quotes.toscrape.com/           # a Python prompt with it
 ```
 
@@ -30,7 +32,7 @@ A block page isn't treated as an error. You see the page that came back,
 and a line on stderr names the vendor that blocked it, so a block never
 passes for the real page.
 
-`fetch` and `view` exit with status 0 when a page came back, a 404
+`fetch`, `view` and `extract` exit with status 0 when a page came back, a 404
 included. They exit with 1 when the fetch failed or the page was a block,
 and with 2 for a mistake on the command line, such as a URL or a header
 that can't be sent. `shell` exits with 1 only when its first page can't be
@@ -50,6 +52,26 @@ netweir fetch https://quotes.toscrape.com/ > quotes.html
 `--headers` writes the status line and the response headers instead, in
 the order the server sent them.
 
+## extract
+
+`netweir extract URL` reads the page's product without selectors and
+prints it as JSON, the way `page.extract(netweir.auto.Product)` would
+(see [Auto-extraction](extraction.md)):
+
+```
+netweir extract https://shop.example/p/lamp
+netweir extract --type job-posting https://jobs.example/j/1042
+netweir extract --type article --field-names zyte https://paper.example/story
+```
+
+`--type` is `product` (the default), `product-list`, `product-navigation`,
+`job-posting` or `article`. The item ends with `metadata`, whose `sources`
+say where each field came from: `json-ld`, `microdata:` and the element's
+CSS path, `meta:` and the tag, or `dom:` and the element. That path is
+what you'd pin a field with when one comes out wrong. `--field-names zyte`
+writes the common schema's camelCase names (`regularPrice`) instead of
+Netweir's snake_case ones. `--browser` reads the page Chrome rendered.
+
 ## view
 
 `netweir view URL` saves the page to a temporary file, opens it in your
@@ -65,7 +87,7 @@ selector for it won't find it either.
 
 ## Pages built by JavaScript
 
-`fetch` and `view` take `--browser`, which loads the page in Chrome and
+`fetch`, `view` and `extract` take `--browser`, which loads the page in Chrome and
 uses the HTML Chrome ends up with once the page's scripts have run. This
 is the page a crawl gets with `browser="always"`. If a selector works with
 `--browser` and not without it, the spider needs Chrome for that page. See

@@ -236,3 +236,29 @@ def test_product_list_and_navigation():
     nav = p.extract(netweir.auto.ProductNavigation)
     assert nav["items"][0] == {"url": "https://shop.example/p/arc", "name": "Arc lamp"}
     assert nav["next_page"] == {"url": "https://shop.example/c/lamps?page=2"}
+
+
+def test_extract_command_prints_the_item(capsys):
+    from netweir import _cli
+
+    assert _cli.main(["extract", str(FIXTURES / "product-jsonld.html")]) == 0
+    item = json.loads(capsys.readouterr().out)
+    assert item["name"] == "Arc desk lamp"
+    assert item["metadata"]["sources"]["name"] == "json-ld"
+
+
+def test_extract_command_takes_a_type_and_zyte_names(capsys):
+    from netweir import _cli
+
+    target = str(FIXTURES / "job-jsonld.html")
+    assert _cli.main(["extract", "--type", "job-posting", "--field-names", "zyte", target]) == 0
+    item = json.loads(capsys.readouterr().out)
+    assert item["jobTitle"] == "Senior Rust Engineer"
+    assert item["baseSalary"]["valueMin"] == "70000"
+
+
+def test_extract_command_rejects_an_unknown_type(capsys):
+    from netweir import _cli
+
+    with pytest.raises(SystemExit):
+        _cli.main(["extract", "--type", "recipe", "x.html"])
