@@ -37,8 +37,9 @@ jmespath = ["jmespath>=1.0"]
 netweir = "netweir._cli:main"
 
 [project.urls]
+Homepage = "https://netweir.com/"
+Documentation = "https://docs.netweir.com/"
 Repository = "https://github.com/netweir/netweir"
-Documentation = "https://github.com/netweir/netweir/tree/main/docs"
 Issues = "https://github.com/netweir/netweir/issues"
 Changelog = "https://github.com/netweir/netweir/releases"
 
