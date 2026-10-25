@@ -644,3 +644,6 @@ class Product(netweir.Item):
 
 A `Price` exports as `{"amount": "1234.50", "currency": "£"}`, the amount
 as a string so no digits are lost, and a datetime as ISO 8601.
+
+Markdown and clean text have fields of their own, `netweir.markdown()`
+and `netweir.clean_text()`; see [Declarative spiders](declarative.md#items).

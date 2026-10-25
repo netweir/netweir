@@ -5,6 +5,8 @@ use regex::Regex;
 
 use std::sync::LazyLock;
 
+use url::Url;
+
 use crate::document::{Node, NodeKind};
 use crate::query::{Hit, Query};
 use crate::track::{Fingerprint, best, still_repeated};
@@ -45,6 +47,24 @@ pub enum Convert {
     Float,
     /// `true`/`false`, `yes`/`no`, `on`/`off` or `1`/`0`, in any case.
     Bool,
+    /// An element as Markdown, links absolute against the page; with
+    /// `main_only`, its main content, missing when it has none.
+    Markdown {
+        main_only: bool,
+    },
+    /// An element's text as a reader sees it (see
+    /// [`crate::markdown::clean_text`]); `main_only` as for Markdown.
+    CleanText {
+        main_only: bool,
+    },
+}
+
+impl Convert {
+    /// Whether this works on the element a query found rather than on
+    /// its text.
+    pub fn takes_element(self) -> bool {
+        matches!(self, Convert::Markdown { .. } | Convert::CleanText { .. })
+    }
 }
 
 /// One field's value on one page.
@@ -58,6 +78,8 @@ pub enum Value {
     Bool(bool),
     /// With `all`, one value per result.
     List(Vec<Value>),
+    /// A structured value, such as an auto-extracted field.
+    Json(serde_json::Value),
     /// The text that would not convert.
     Invalid(String),
     /// Why the query failed on this page (an XPath type error, say).
@@ -133,8 +155,9 @@ impl Field {
     fn texts(
         &self,
         scope: Node<'_>,
+        base: Option<&Url>,
         ctx: Option<&TrackContext<'_>>,
-    ) -> Result<(Vec<String>, Option<Tracking>), String> {
+    ) -> Result<(Vec<Value>, Option<Tracking>), String> {
         let (hits, tracking) = match (&self.tracker, ctx) {
             (Some(t), Some(ctx)) => {
                 let (hits, tracking) = t.run(scope, ctx)?;
@@ -143,6 +166,15 @@ impl Field {
             _ => (self.selector.hits(scope)?, None),
         };
         let mut out = Vec::new();
+        if self.convert.takes_element() {
+            for hit in hits {
+                out.push(self.element_value(hit, base));
+                if !self.all {
+                    break;
+                }
+            }
+            return Ok((out, tracking));
+        }
         for hit in hits {
             let text = hit.to_string_value();
             match &self.re {
@@ -150,14 +182,14 @@ impl Field {
                     let grouped = re.captures_len() > 1;
                     for caps in re.captures_iter(&text) {
                         let m = if grouped { caps.get(1) } else { caps.get(0) };
-                        out.push(m.map_or("", |m| m.as_str()).to_string());
+                        out.push(self.value(m.map_or("", |m| m.as_str()).to_string()));
                         if !self.all {
                             return Ok((out, tracking));
                         }
                     }
                 }
                 None => {
-                    out.push(text);
+                    out.push(self.value(text));
                     if !self.all {
                         return Ok((out, tracking));
                     }
@@ -183,11 +215,35 @@ impl Field {
                 "false" | "no" | "off" | "0" => Value::Bool(false),
                 _ => Value::Invalid(text),
             },
+            Convert::Markdown { .. } | Convert::CleanText { .. } => Value::Invalid(text),
         }
     }
 
-    pub fn extract(&self, scope: Node<'_>) -> Value {
-        self.extract_with(scope, None).0
+    /// An element's Markdown or clean text; a string (from `::attr()`
+    /// or `::text`) has no element to convert.
+    fn element_value(&self, hit: Hit<'_>, base: Option<&Url>) -> Value {
+        let node = match hit {
+            Hit::Node(n) if n.kind() == NodeKind::Element => n,
+            other => return Value::Invalid(other.to_string_value()),
+        };
+        let text = match self.convert {
+            Convert::Markdown { main_only: false } => Some(crate::markdown::markdown(node, base)),
+            Convert::Markdown { main_only: true } => {
+                crate::content::main_content(node).map(|m| m.markdown(base))
+            }
+            Convert::CleanText { main_only: false } => Some(crate::markdown::clean_text(node)),
+            Convert::CleanText { main_only: true } => {
+                crate::content::main_content(node).map(|m| m.clean_text())
+            }
+            _ => unreachable!("only element conversions come here"),
+        };
+        text.map_or(Value::Missing, Value::Text)
+    }
+
+    /// The field's value below `scope`; `base` is the page's URL (after
+    /// any `<base href>`), which Markdown resolves links against.
+    pub fn extract(&self, scope: Node<'_>, base: Option<&Url>) -> Value {
+        self.extract_with(scope, base, None).0
     }
 
     /// `extract`, tracking the field's element if it's tracked and `ctx`
@@ -195,19 +251,17 @@ impl Field {
     pub fn extract_with(
         &self,
         scope: Node<'_>,
+        base: Option<&Url>,
         ctx: Option<&TrackContext<'_>>,
     ) -> (Value, Option<Tracking>) {
-        let (texts, tracking) = match self.texts(scope, ctx) {
+        let (values, tracking) = match self.texts(scope, base, ctx) {
             Ok(t) => t,
             Err(e) => return (Value::Error(e), None),
         };
         let value = if self.all {
-            Value::List(texts.into_iter().map(|t| self.value(t)).collect())
+            Value::List(values)
         } else {
-            texts
-                .into_iter()
-                .next()
-                .map_or(Value::Missing, |t| self.value(t))
+            values.into_iter().next().unwrap_or(Value::Missing)
         };
         (value, tracking)
     }
@@ -400,9 +454,10 @@ impl ItemSpec {
         self.fields.iter().map(Field::name).collect()
     }
 
-    /// One value per field, in the fields' order.
-    pub fn extract(&self, scope: Node<'_>) -> Vec<Value> {
-        self.fields.iter().map(|f| f.extract(scope)).collect()
+    /// One value per field, in the fields' order; `base` as for
+    /// [`Field::extract`].
+    pub fn extract(&self, scope: Node<'_>, base: Option<&Url>) -> Vec<Value> {
+        self.fields.iter().map(|f| f.extract(scope, base)).collect()
     }
 
     /// `extract`, with tracked fields tracked. Also returns, by field
@@ -410,6 +465,7 @@ impl ItemSpec {
     pub fn extract_with(
         &self,
         scope: Node<'_>,
+        base: Option<&Url>,
         ctx: &TrackContext<'_>,
     ) -> (Vec<Value>, Vec<(usize, Tracking)>) {
         let mut notes = Vec::new();
@@ -418,7 +474,7 @@ impl ItemSpec {
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                let (value, tracking) = f.extract_with(scope, Some(ctx));
+                let (value, tracking) = f.extract_with(scope, base, Some(ctx));
                 if let Some(t) =
                     tracking.filter(|t| matches!(t, Tracking::Relocated(_) | Tracking::Lost(_)))
                 {

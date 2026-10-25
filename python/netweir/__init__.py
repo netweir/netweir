@@ -44,7 +44,7 @@ from netweir._native import (
     parse,
 )
 from netweir._request import Request
-from netweir._rules import Follow, Item, css, xpath
+from netweir._rules import Follow, Item, clean_text, css, markdown, xpath
 from netweir._stats import Stats
 
 __all__ = [
@@ -91,6 +91,7 @@ __all__ = [
     "XPathError",
     "__version__",
     "browser",
+    "clean_text",
     "css",
     "devices",
     "export",
@@ -99,6 +100,7 @@ __all__ = [
     "images",
     "jmespath",
     "loader",
+    "markdown",
     "js_data",
     "parse",
     "parse_date",

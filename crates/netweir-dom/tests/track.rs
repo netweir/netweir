@@ -149,13 +149,13 @@ fn a_tracked_field_in_an_item() {
     let spec = ItemSpec::new(vec![field("p.price_color::text")]);
     let before = Document::parse(&page("class-renamed.before.html"));
     let after = Document::parse(&page("class-renamed.after.html"));
-    let (v, notes) = spec.extract_with(before.root(), &ctx);
+    let (v, notes) = spec.extract_with(before.root(), None, &ctx);
     assert_eq!((v, notes), (vec![Value::Text("£24.99".into())], vec![]));
-    let (v, notes) = spec.extract_with(after.root(), &ctx);
+    let (v, notes) = spec.extract_with(after.root(), None, &ctx);
     assert_eq!(v, vec![Value::Text("£24.99".into())]);
     assert!(matches!(notes[..], [(0, Tracking::Relocated(_))]));
     // Without a context, a tracked field is an ordinary one.
-    assert_eq!(spec.extract(after.root()), vec![Value::Missing]);
+    assert_eq!(spec.extract(after.root(), None), vec![Value::Missing]);
 }
 
 #[test]

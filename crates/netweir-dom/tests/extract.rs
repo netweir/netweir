@@ -21,7 +21,7 @@ fn css(name: &str, q: &str) -> Field {
 fn one(field: Field) -> Value {
     let doc = Document::parse(PAGE);
     let spec = ItemSpec::new(vec![field]);
-    spec.extract(doc.root()).remove(0)
+    spec.extract(doc.root(), None).remove(0)
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn an_item_has_one_value_per_field_in_order() {
         css("tags", ".tag::text").all(true),
     ]);
     assert_eq!(spec.names(), ["title", "tags"]);
-    let values = spec.extract(doc.root());
+    let values = spec.extract(doc.root(), None);
     assert_eq!(values.len(), 2);
     assert_eq!(values[0], Value::Text("A Light in the Attic".into()));
 }
@@ -153,7 +153,7 @@ fn compiled_specs_are_shared_across_threads() {
             let spec = spec.clone();
             std::thread::spawn(move || {
                 let doc = Document::parse(PAGE);
-                spec.extract(doc.root()).remove(0)
+                spec.extract(doc.root(), None).remove(0)
             })
         })
         .collect();
@@ -169,4 +169,23 @@ fn compiled_specs_are_shared_across_threads() {
 fn a_query_that_fails_is_an_error_not_a_bad_value() {
     let f = Field::new("n", Selector::xpath("count(1)").unwrap());
     assert!(matches!(one(f), Value::Error(e) if e.contains("count")));
+}
+
+#[test]
+fn markdown_convert_resolves_links_against_base() {
+    let doc = Document::parse(PAGE);
+    let base = url::Url::parse("https://books.example/catalogue/").unwrap();
+    let spec = ItemSpec::new(vec![
+        css("md", "a.link").convert(Convert::Markdown { main_only: false }),
+        css("text", "table").convert(Convert::CleanText { main_only: false }),
+        css("attr", "a::attr(href)").convert(Convert::Markdown { main_only: false }),
+    ]);
+    assert_eq!(
+        spec.extract(doc.root(), Some(&base)),
+        vec![
+            Value::Text("[A](https://books.example/a)".into()),
+            Value::Text("UPC\ta897fe39b1053632\nReviews\t0".into()),
+            Value::Invalid("/a".into()),
+        ]
+    );
 }

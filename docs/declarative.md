@@ -43,6 +43,23 @@ query or pattern that can't be parsed raises where the field is written,
 not halfway through a crawl. `Book.extract(page)` runs the same extraction
 inside an ordinary callback.
 
+Two more kinds of field hold a whole element as text a person or a
+search index can read: `netweir.markdown(query)` gives its Markdown, with
+links made absolute against the page, and `netweir.clean_text(query)` its
+text as a reader sees it. Without a query they take the whole page, and
+with `main_only=True` only its main content, so a spider can keep every
+article on a site as Markdown without running Python per page:
+
+```python
+class Post(netweir.Item):
+    title = netweir.css("h1::text", strip=True)
+    body = netweir.markdown(main_only=True)
+```
+
+They need an element, so a query ending in `::text` or `::attr()` raises
+where it's written. On a Node rather than a Page, pass the URL its links
+are relative to: `Post.extract(root, url="https://example.com/post")`.
+
 ## Rules
 
 `netweir.Follow(css, ...)` or `netweir.Follow(xpath=..., ...)` takes links

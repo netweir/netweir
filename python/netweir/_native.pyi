@@ -634,7 +634,16 @@ class ItemSpec:
                 str | None,
                 bool,
                 bool,
-                Literal["text", "int", "float", "bool"],
+                Literal[
+                    "text",
+                    "int",
+                    "float",
+                    "bool",
+                    "markdown",
+                    "markdown_main",
+                    "clean_text",
+                    "clean_text_main",
+                ],
                 object,
                 str | None,
             ]
@@ -646,6 +655,7 @@ class ItemSpec:
         store: TrackStore | None = None,
         site: str = "",
         threshold: float = 0.75,
+        base_url: str | None = None,
     ) -> tuple[dict[str, Any], list[tuple[str, str, str]], list[tuple[str, str, float | None]]]: ...
 
 class TrackStore:

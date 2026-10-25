@@ -18,9 +18,9 @@ _BUILTIN = {str: "text", int: "int", float: "float", bool: "bool"}
 class Field:
     """One field of an Item. Made by ``netweir.css`` or ``netweir.xpath``."""
 
-    __slots__ = ("all", "default", "into", "kind", "query", "re", "strip", "track")
+    __slots__ = ("all", "convert", "default", "into", "kind", "query", "re", "strip", "track")
 
-    def __init__(self, kind, query, re, into, all, strip, default, track=None):
+    def __init__(self, kind, query, re, into, all, strip, default, track=None, convert=None):
         if into is not None and not callable(into):
             raise TypeError(f"into= takes a type or a function, not {into!r}")
         self.kind = kind
@@ -31,11 +31,12 @@ class Field:
         self.strip = strip
         self.default = default
         self.track = track
+        self.convert = convert
         # Compiling now reports a bad query or pattern where it was written.
         ItemSpec("check", [self._spec("check")])
 
     def _spec(self, name: str) -> tuple:
-        convert = _BUILTIN.get(self.into, "text")
+        convert = self.convert or _BUILTIN.get(self.into, "text")
         return (
             name,
             self.kind,
@@ -91,6 +92,35 @@ def xpath(
     return Field("xpath", query, re, into, all, strip, default, track)
 
 
+def markdown(
+    query: str | None = None,
+    *,
+    main_only: bool = False,
+    all: bool = False,
+    default: Any = None,
+) -> Field:
+    """A field holding an element's Markdown, as ``Node.markdown`` gives
+    it, with links made absolute against the page: the first element the
+    CSS ``query`` finds, or the whole page without one. ``main_only`` keeps
+    only the main content, without its boilerplate; a page without main
+    content gives ``default``. ``all`` gives one per element found."""
+    convert = "markdown_main" if main_only else "markdown"
+    return Field("css", query or ":root", None, None, all, False, default, None, convert)
+
+
+def clean_text(
+    query: str | None = None,
+    *,
+    main_only: bool = False,
+    all: bool = False,
+    default: Any = None,
+) -> Field:
+    """A field holding an element's text as a reader sees it, as
+    ``Node.clean_text`` gives it; the options are as for ``markdown``."""
+    convert = "clean_text_main" if main_only else "clean_text"
+    return Field("css", query or ":root", None, None, all, False, default, None, convert)
+
+
 class Item:
     """Subclass this and give it fields::
 
@@ -126,15 +156,17 @@ class Item:
         }
 
     @classmethod
-    def extract(cls, node: Any) -> dict[str, Any]:
-        """The item found in a Page or below a Node."""
+    def extract(cls, node: Any, *, url: str | None = None) -> dict[str, Any]:
+        """The item found in a Page or below a Node. ``url`` is what a
+        Node's relative links are relative to; a Page knows its own."""
         root = getattr(node, "root", node)
         if not isinstance(root, Node):
             raise TypeError(f"extract() takes a Page or a Node, not {type(node).__name__}")
         store, threshold = _track.context()
         page_url = getattr(node, "url", None)
         site = _track.site_of(page_url)
-        item, invalid, notes = cls._spec.extract(root, store, site, threshold)
+        base = url if url is not None else _page_base(node)
+        item, invalid, notes = cls._spec.extract(root, store, site, threshold, base)
         _warn_invalid(invalid)
         for field, what, score in notes:
             _track.report(field, site, what, score)
@@ -153,6 +185,11 @@ class Item:
                 _warn_once(field, f"{into!r} failed on {value!r}: {e}", warned)
                 item[name] = None
         return item
+
+
+def _page_base(page: Any) -> str | None:
+    urljoin = getattr(page, "urljoin", None)
+    return urljoin("") if urljoin is not None else None
 
 
 #: Fields already warned about outside a crawl (once per field for the life

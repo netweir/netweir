@@ -6,10 +6,11 @@ use std::sync::Arc;
 use netweir_dom::extract::{
     self, Convert, Field, Selector, TrackContext, Tracker, Tracking, Tracks, Value,
 };
-use netweir_dom::{Query, XPath};
+use netweir_dom::{Output, Query, XPath};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use url::Url;
 
 use crate::node::Node;
 use crate::{SelectorError, XPathError};
@@ -27,6 +28,13 @@ pub(crate) fn selector(kind: &str, query: &str) -> PyResult<Selector> {
             "a query is css or xpath, not {other:?}"
         ))),
     }
+}
+
+/// Whether a CSS query ends in `::text` or `::attr()`, so finds strings
+/// rather than elements. XPath can only tell when it runs.
+fn ends_in_strings(kind: &str, query: &str) -> bool {
+    kind == "css"
+        && Query::new(query).is_ok_and(|q| q.outputs().iter().any(|o| *o != Output::Nodes))
 }
 
 /// What went wrong with one field on one page: ("module.Class.field",
@@ -107,17 +115,18 @@ impl Drop for ItemInner {
 }
 
 impl ItemInner {
-    pub(crate) fn extract(&self, root: netweir_dom::Node<'_>) -> Vec<Value> {
-        self.spec.extract(root)
+    pub(crate) fn extract(&self, root: netweir_dom::Node<'_>, base: Option<&Url>) -> Vec<Value> {
+        self.spec.extract(root, base)
     }
 
     /// `extract`, with tracked fields followed through `ctx`.
     pub(crate) fn extract_tracked(
         &self,
         root: netweir_dom::Node<'_>,
+        base: Option<&Url>,
         ctx: &TrackContext<'_>,
     ) -> (Vec<Value>, Notes) {
-        let (values, notes) = self.spec.extract_with(root, ctx);
+        let (values, notes) = self.spec.extract_with(root, base, ctx);
         let notes = notes
             .into_iter()
             .map(|(i, t)| {
@@ -166,6 +175,7 @@ fn value_py<'py>(
         Value::Int(i) => i.into_pyobject(py)?.into_any(),
         Value::Float(f) => f.into_pyobject(py)?.into_any(),
         Value::Bool(b) => b.into_pyobject(py)?.to_owned().into_any(),
+        Value::Json(v) => crate::browser::to_python(py, &v)?.into_bound(py),
         Value::List(items) => {
             let list = PyList::empty(py);
             for item in items {
@@ -194,7 +204,8 @@ pub struct ItemSpec {
 #[pymethods]
 impl ItemSpec {
     /// `fields` holds (name, "css" | "xpath", query, pattern, all, strip,
-    /// "text" | "int" | "float" | "bool", default, track name or None) for
+    /// "text" | "int" | "float" | "bool" | "markdown" | "markdown_main" |
+    /// "clean_text" | "clean_text_main", default, track name or None) for
     /// each field.
     #[new]
     #[allow(clippy::type_complexity)]
@@ -221,12 +232,23 @@ impl ItemSpec {
                 "int" => Convert::Int,
                 "float" => Convert::Float,
                 "bool" => Convert::Bool,
+                "markdown" => Convert::Markdown { main_only: false },
+                "markdown_main" => Convert::Markdown { main_only: true },
+                "clean_text" => Convert::CleanText { main_only: false },
+                "clean_text_main" => Convert::CleanText { main_only: true },
                 other => {
                     return Err(PyValueError::new_err(format!(
-                        "a field converts to text, int, float or bool, not {other:?}"
+                        "a field converts to text, int, float, bool, markdown or clean_text, \
+                         not {other:?}"
                     )));
                 }
             };
+            if convert.takes_element() && ends_in_strings(&kind, &query) {
+                return Err(PyValueError::new_err(format!(
+                    "{field}: Markdown and clean text are made from an element, and {query:?} \
+                     gives strings"
+                )));
+            }
             let mut f = Field::new(&field, selector(&kind, &query)?)
                 .all(all)
                 .strip(strip)
@@ -253,7 +275,7 @@ impl ItemSpec {
 
     /// The item found below `node`, its problems, and what tracking did
     /// (with `store`, tracked fields are followed on `site`).
-    #[pyo3(signature = (node, store=None, site="", threshold=0.75))]
+    #[pyo3(signature = (node, store=None, site="", threshold=0.75, base_url=None))]
     fn extract<'py>(
         &self,
         py: Python<'py>,
@@ -261,8 +283,10 @@ impl ItemSpec {
         store: Option<&TrackStore>,
         site: &str,
         threshold: f64,
+        base_url: Option<&str>,
     ) -> PyResult<(Bound<'py, PyDict>, Vec<Problem>, Notes)> {
         let (doc, id, inner) = (node.document().clone(), node.node_id(), self.inner.clone());
+        let base = base_url.and_then(|b| Url::parse(b).ok());
         let (tracks, site) = (store.map(TrackStore::tracks), site.to_string());
         // SAFETY: the id came from a Node of this document, which `doc` keeps
         // alive.
@@ -272,13 +296,14 @@ impl ItemSpec {
             match &tracks {
                 Some(tracks) => inner.extract_tracked(
                     root,
+                    base.as_ref(),
                     &TrackContext {
                         tracks,
                         site: &site,
                         threshold,
                     },
                 ),
-                None => (inner.extract(root), Vec::new()),
+                None => (inner.extract(root, base.as_ref()), Vec::new()),
             }
         });
         let (dict, problems) = self.inner.to_python(py, values)?;

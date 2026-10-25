@@ -423,6 +423,7 @@ impl Engine {
                         }
                     }
                     if let Some(item) = done.tag.rule.and_then(|r| rules[r].item.as_ref()) {
+                        let base = self.page_base(&response.url, root);
                         let tracks = self
                             .tracks
                             .lock()
@@ -439,14 +440,15 @@ impl Engine {
                                     site: &site,
                                     threshold,
                                 };
-                                let (values, notes) = item.extract_tracked(root, &ctx);
+                                let (values, notes) =
+                                    item.extract_tracked(root, base.as_ref(), &ctx);
                                 done.item = Some(values);
                                 if !notes.is_empty() {
                                     done.html = Some(text.clone());
                                 }
                                 done.notes = notes;
                             }
-                            None => done.item = Some(item.extract(root)),
+                            None => done.item = Some(item.extract(root, base.as_ref())),
                         }
                     }
                     if done.tag.to_python {
@@ -475,6 +477,20 @@ impl Engine {
         done
     }
 
+    /// What a page's relative links are relative to: its `<base href>`
+    /// against its URL, or its URL, as a browser resolves them.
+    fn page_base(&self, page_url: &str, root: netweir_dom::Node<'_>) -> Option<Url> {
+        let page = Url::parse(page_url).ok()?;
+        Some(
+            self.base
+                .strings(root)
+                .into_iter()
+                .next()
+                .and_then(|b| page.join(b.trim()).ok())
+                .unwrap_or(page),
+        )
+    }
+
     /// Every rule's links on the page, made absolute against its
     /// `<base href>` and URL, as a browser resolves them.
     fn links(
@@ -483,16 +499,9 @@ impl Engine {
         page_url: &str,
         root: netweir_dom::Node<'_>,
     ) -> Result<Vec<(String, usize)>, String> {
-        let Ok(page) = Url::parse(page_url) else {
+        let Some(base) = self.page_base(page_url, root) else {
             return Ok(Vec::new());
         };
-        let base = self
-            .base
-            .strings(root)
-            .into_iter()
-            .next()
-            .and_then(|b| page.join(b.trim()).ok())
-            .unwrap_or(page);
         let mut out = Vec::new();
         // One request per page per link, however many times it appears.
         let mut seen = std::collections::HashSet::new();

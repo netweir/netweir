@@ -319,3 +319,48 @@ def test_rules_respect_max_depth(base):
     # would be depth 2.
     assert len(items) == PER_PAGE
     assert stats["skipped_depth"] > 0
+
+
+def test_markdown_field_in_an_item():
+    class Doc(netweir.Item):
+        body = netweir.markdown("article")
+
+    root = netweir.parse('<article><h2>Hi</h2><p><a href="/x">x</a></p></article>')
+    assert Doc.extract(root, url="https://a.example/p") == {
+        "body": "## Hi\n\n[x](https://a.example/x)"
+    }
+
+
+def test_clean_text_field_reads_the_whole_page():
+    class Doc(netweir.Item):
+        text = netweir.clean_text()
+
+    root = netweir.parse("<h1>T</h1><p>a <b>b</b></p><script>x()</script>")
+    assert Doc.extract(root) == {"text": "T\n\na b"}
+
+
+def test_main_only_without_main_content_gives_the_default():
+    class Doc(netweir.Item):
+        body = netweir.markdown(main_only=True, default="none")
+
+    assert Doc.extract(netweir.parse("<p>hi</p>")) == {"body": "none"}
+
+
+def test_markdown_fields_need_elements():
+    with pytest.raises(ValueError, match="element"):
+        netweir.markdown("a::attr(href)")
+
+
+class BackLink(netweir.Item):
+    back = netweir.markdown("a.back")
+
+
+def test_markdown_field_in_a_declarative_crawl(base):
+    spider = books_spider(
+        base,
+        rules=[netweir.Follow("article.product_pod h3 a", extract=BackLink)],
+        start_urls=[f"{base}/page/1"],
+    )
+    items, _ = collect(spider)
+    # The page's <base href='/page/'> resolves the link, as a browser would.
+    assert items and all(i == {"back": f"[back]({base}/page/1)"} for i in items)
