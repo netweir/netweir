@@ -6,6 +6,7 @@
 //! [`xml`]).
 //! The tree stays in lexbor's memory; [`Node`] is a borrowed handle into it.
 
+pub mod auto;
 mod cache;
 pub mod content;
 pub mod css_path;

@@ -30,7 +30,7 @@ pub fn metadata(root: Node<'_>, base: Option<&url::Url>) -> Value {
 /// members one by one. A block wrapped in an HTML comment or CDATA, as
 /// some pages hide them, is unwrapped; one that still isn't JSON is
 /// skipped.
-fn json_ld(elements: &[Node<'_>]) -> Vec<Value> {
+pub(crate) fn json_ld(elements: &[Node<'_>]) -> Vec<Value> {
     let mut out = Vec::new();
     for script in elements.iter().filter(|n| n.tag() == Some("script")) {
         let kind = script.attr("type").unwrap_or_default();
@@ -104,7 +104,7 @@ fn add(map: &mut Map<String, Value>, key: &str, value: Value) {
 }
 
 /// Microdata, read as the HTML standard's "microdata" section describes.
-struct Microdata<'d, 'a> {
+pub(crate) struct Microdata<'d, 'a> {
     elements: &'d [Node<'a>],
     base: Option<&'d url::Url>,
     /// Document order, for sorting an item's properties.
@@ -114,7 +114,7 @@ struct Microdata<'d, 'a> {
 }
 
 impl<'d, 'a> Microdata<'d, 'a> {
-    fn new(elements: &'d [Node<'a>], base: Option<&'d url::Url>) -> Self {
+    pub(crate) fn new(elements: &'d [Node<'a>], base: Option<&'d url::Url>) -> Self {
         let order = elements
             .iter()
             .enumerate()
@@ -194,7 +194,7 @@ impl<'d, 'a> Microdata<'d, 'a> {
     /// The elements whose itemprop belongs to `item`, in document order:
     /// its descendants and those its itemref names, not looking inside
     /// nested items.
-    fn properties(&self, item: Node<'a>) -> Vec<Node<'a>> {
+    pub(crate) fn properties(&self, item: Node<'a>) -> Vec<Node<'a>> {
         let mut pending: Vec<Node<'a>> = item.children().collect();
         for id in item.attr("itemref").unwrap_or_default().split_whitespace() {
             if let Some(n) = self.by_id.get(id) {
@@ -219,7 +219,7 @@ impl<'d, 'a> Microdata<'d, 'a> {
     }
 
     /// A property's value, by its element, as the standard gives it.
-    fn value(&self, n: Node<'a>) -> String {
+    pub(crate) fn value(&self, n: Node<'a>) -> String {
         let attr = |name: &str| n.attr(name).unwrap_or_default().to_string();
         match n.tag().unwrap_or_default() {
             "meta" => attr("content"),
