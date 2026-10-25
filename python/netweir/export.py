@@ -64,12 +64,32 @@ def _fsspec(path: str) -> Any:
     return fsspec
 
 
+def _camel(value: Any) -> Any:
+    """A dict's keys, at every depth, in camelCase (``regular_price`` to
+    ``regularPrice``), as the common item schema writes them."""
+    if isinstance(value, dict):
+        return {_camel_key(k): _camel(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_camel(v) for v in value]
+    return value
+
+
+def _camel_key(key: Any) -> Any:
+    if not isinstance(key, str) or "_" not in key.strip("_"):
+        return key
+    first, *rest = key.split("_")
+    return first + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
 class _Exporter:
     """Writes items to ``path``. The file is opened by ``start`` (a crawl
     calls it) or at the first item, so defining an exporter doesn't touch
     the file. Closing finishes it; the next start begins it afresh."""
 
-    def __init__(self, path: str, batch: int | None = None):
+    def __init__(self, path: str, batch: int | None = None, field_names: str = "snake"):
+        if field_names not in ("snake", "zyte"):
+            raise ValueError(f'field_names is "snake" or "zyte", not {field_names!r}')
+        self.field_names = field_names
         if path.lower().startswith("file://"):
             path = urllib.request.url2pathname(urllib.parse.urlparse(path).path)
         self.remote = _remote(path)
@@ -178,6 +198,8 @@ class _Exporter:
         self._done = False
         if self._writer is None:
             self._writer = self._begin()
+        if self.field_names == "zyte":
+            item = _camel(item)
         result = self._writer.write(item)
         self.written += 1
         self._count += 1
@@ -278,11 +300,16 @@ class xml(_Exporter):  # noqa: N801
     characters a name can't hold replaced with ``_``."""
 
     def __init__(
-        self, path: str, root: str = "items", item: str = "item", batch: int | None = None
+        self,
+        path: str,
+        root: str = "items",
+        item: str = "item",
+        batch: int | None = None,
+        field_names: str = "snake",
     ):
         self.root = root
         self.item = item
-        super().__init__(path, batch)
+        super().__init__(path, batch, field_names)
 
     def _open(self) -> XmlWriter:
         return XmlWriter(self._file, self.root, self.item, self._append)
@@ -299,9 +326,15 @@ class csv(_Exporter):  # noqa: N801
     """A CSV file. Columns are ``fields`` if given, otherwise the first
     item's keys; keys outside them are left out, with one warning."""
 
-    def __init__(self, path: str, fields: list[str] | None = None, batch: int | None = None):
+    def __init__(
+        self,
+        path: str,
+        fields: list[str] | None = None,
+        batch: int | None = None,
+        field_names: str = "snake",
+    ):
         self.fields = fields
-        super().__init__(path, batch)
+        super().__init__(path, batch, field_names)
 
     def _open(self) -> CsvWriter:
         self._warned: set[str] = set()
@@ -423,7 +456,7 @@ class parquet(_Exporter):  # noqa: N801
                 )
 
 
-def to_path(path: str, batch: int | None = None):
+def to_path(path: str, batch: int | None = None, field_names: str = "snake"):
     """The exporter for a file name's extension: .jsonl/.jl, .json, .xml,
     .csv or .parquet."""
     lower = path.lower()
@@ -435,7 +468,7 @@ def to_path(path: str, batch: int | None = None):
         ((".parquet",), parquet),
     ]:
         if lower.endswith(endings):
-            return exporter(path, batch=batch)
+            return exporter(path, batch=batch, field_names=field_names)
     raise ValueError(
         f"can't tell the format of {path!r}: use .jsonl, .json, .xml, .csv or .parquet"
     )

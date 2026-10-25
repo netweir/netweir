@@ -950,6 +950,33 @@ fn add_months(c: Civil, months: i64) -> Option<Civil> {
     })
 }
 
+/// The time now, in UTC, from the system clock.
+pub fn now_utc() -> Civil {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = since.as_secs() as i64;
+    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
+    let rest = secs.rem_euclid(86_400) as u32;
+    Civil {
+        year: year as i32,
+        month,
+        day,
+        hour: rest / 3600,
+        minute: rest % 3600 / 60,
+        second: rest % 60,
+        micro: since.subsec_micros(),
+    }
+}
+
+/// `civil` as ISO 8601 in UTC, to the second: `2026-10-25T18:04:05Z`.
+pub fn iso_utc(civil: Civil) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        civil.year, civil.month, civil.day, civil.hour, civil.minute, civil.second
+    )
+}
+
 /// Days from 1970-01-01 to a date (Howard Hinnant's algorithm).
 fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let y = i64::from(y) - i64::from(m <= 2);
@@ -1025,6 +1052,21 @@ mod tests {
         for (text, want) in cases {
             assert_eq!(read(text, day_first), Some(*want), "{text:?}");
         }
+    }
+
+    #[test]
+    fn now_is_a_real_utc_time() {
+        let now = now_utc();
+        assert!(now.year >= 2026 && (1..=12).contains(&now.month) && now.hour < 24);
+        assert_eq!(
+            iso_utc(Civil {
+                hour: 18,
+                minute: 4,
+                second: 5,
+                ..Civil::date(2026, 10, 25)
+            }),
+            "2026-10-25T18:04:05Z"
+        );
     }
 
     #[test]

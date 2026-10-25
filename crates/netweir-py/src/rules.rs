@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use netweir_dom::auto::{self, Schema};
+use netweir_dom::date;
 use netweir_dom::extract::{
     self, Convert, Field, Selector, TrackContext, Tracker, Tracking, Tracks, Value,
 };
@@ -101,8 +103,20 @@ pub(crate) struct ItemInner {
     spec: extract::ItemSpec,
     /// Python's class name, for messages.
     name: String,
+    /// The compiled fields' names, in order.
     fields: Vec<String>,
+    /// What an item holds, in order: the fields, or for an auto item its
+    /// type's fields, then extra fields, then `metadata`.
+    output: Vec<String>,
+    /// Each output's value when nothing is found.
     defaults: Vec<Py<PyAny>>,
+    auto: Option<Auto>,
+}
+
+/// An auto item: its type, and each compiled field's source label.
+struct Auto {
+    schema: Schema,
+    sources: Vec<String>,
 }
 
 // The last reference to an Item's spec can go on a runtime thread: a
@@ -115,18 +129,102 @@ impl Drop for ItemInner {
 }
 
 impl ItemInner {
-    pub(crate) fn extract(&self, root: netweir_dom::Node<'_>, base: Option<&Url>) -> Vec<Value> {
-        self.spec.extract(root, base)
+    /// The item's values in output order; `page` is the page's URL and
+    /// `base` what its relative links are relative to.
+    pub(crate) fn extract(
+        &self,
+        root: netweir_dom::Node<'_>,
+        page: Option<&Url>,
+        base: Option<&Url>,
+    ) -> Vec<Value> {
+        let values = self.spec.extract(root, base);
+        self.assemble(root, page, values)
+    }
+
+    /// An auto item's values: its type's fields as auto-extraction found
+    /// them, the compiled ones pinned in their place, extras, then
+    /// metadata. Any other item's values are the compiled fields'.
+    fn assemble(
+        &self,
+        root: netweir_dom::Node<'_>,
+        page: Option<&Url>,
+        values: Vec<Value>,
+    ) -> Vec<Value> {
+        let Some(auto) = &self.auto else {
+            return values;
+        };
+        let now = date::now_utc();
+        let found = auto::extract(auto.schema, root, page, now);
+        let mut sources: Vec<(&str, String)> = found.sources.clone();
+        let mut validation = found.validation.clone();
+        let mut out = Vec::with_capacity(self.output.len());
+        for (field, value) in found.fields {
+            let Some(i) = self.fields.iter().position(|f| f == field) else {
+                out.push(Value::Json(value));
+                continue;
+            };
+            sources.retain(|(f, _)| *f != field);
+            let src = &auto.sources[i];
+            out.push(match &values[i] {
+                Value::Missing => {
+                    validation.push((field, format!("{src} matched nothing")));
+                    Value::Missing
+                }
+                Value::Invalid(text) => {
+                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    validation.push((
+                        field,
+                        format!("{src} found {text:?}, which doesn't read as {field}"),
+                    ));
+                    Value::Json(serde_json::Value::Null)
+                }
+                other => {
+                    sources.push((field, src.clone()));
+                    other.clone()
+                }
+            });
+        }
+        for (i, name) in self.fields.iter().enumerate() {
+            if !auto.schema.fields().contains(&name.as_str()) {
+                out.push(values[i].clone());
+            }
+        }
+        let order = |f: &str| {
+            auto.schema
+                .fields()
+                .iter()
+                .position(|x| *x == f)
+                .unwrap_or(usize::MAX)
+        };
+        sources.sort_by_key(|(f, _)| order(f));
+        let mut messages = serde_json::Map::new();
+        for (field, message) in validation {
+            if let serde_json::Value::Array(list) = messages
+                .entry(field.to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+            {
+                list.push(serde_json::Value::String(message));
+            }
+        }
+        out.push(Value::Json(serde_json::json!({
+            "probability": found.probability,
+            "date_downloaded": date::iso_utc(now),
+            "sources": sources.into_iter().map(|(f, s)| (f.to_string(), serde_json::Value::String(s))).collect::<serde_json::Map<_, _>>(),
+            "validation_messages": messages,
+        })));
+        out
     }
 
     /// `extract`, with tracked fields followed through `ctx`.
     pub(crate) fn extract_tracked(
         &self,
         root: netweir_dom::Node<'_>,
+        page: Option<&Url>,
         base: Option<&Url>,
         ctx: &TrackContext<'_>,
     ) -> (Vec<Value>, Notes) {
         let (values, notes) = self.spec.extract_with(root, base, ctx);
+        let values = self.assemble(root, page, values);
         let notes = notes
             .into_iter()
             .map(|(i, t)| {
@@ -151,7 +249,7 @@ impl ItemInner {
     ) -> PyResult<Extracted<'py>> {
         let dict = PyDict::new(py);
         let mut invalid = Vec::new();
-        for ((name, default), value) in self.fields.iter().zip(&self.defaults).zip(values) {
+        for ((name, default), value) in self.output.iter().zip(&self.defaults).zip(values) {
             let v = match value {
                 Value::Missing => default.clone_ref(py).into_bound(py),
                 other => value_py(py, other, &mut |text, kind| {
@@ -209,7 +307,9 @@ impl ItemSpec {
     /// each field.
     #[new]
     #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (name, fields, schema=None))]
     fn new(
+        py: Python<'_>,
         name: String,
         fields: Vec<(
             String,
@@ -222,12 +322,29 @@ impl ItemSpec {
             Py<PyAny>,
             Option<String>,
         )>,
+        schema: Option<&str>,
     ) -> PyResult<ItemSpec> {
+        let schema = schema
+            .map(|s| {
+                Schema::from_name(s).ok_or_else(|| {
+                    PyValueError::new_err(format!("no auto-extracted item type {s:?}"))
+                })
+            })
+            .transpose()?;
         let mut compiled = Vec::new();
         let mut names = Vec::new();
         let mut defaults = Vec::new();
+        let mut sources = Vec::new();
         for (field, kind, query, pattern, all, strip, convert, default, track) in fields {
             let convert = match convert.as_str() {
+                c if c.starts_with("auto:") => match schema {
+                    Some(s) => Convert::Auto(s.kind_of(&c[5..])),
+                    None => {
+                        return Err(PyValueError::new_err(format!(
+                            "{field}: {c:?} is for auto-extracted items"
+                        )));
+                    }
+                },
                 "text" => Convert::Text,
                 "int" => Convert::Int,
                 "float" => Convert::Float,
@@ -260,22 +377,49 @@ impl ItemSpec {
                 f = f.track(Tracker::new(&t, &kind, &query).map_err(PyValueError::new_err)?);
             }
             compiled.push(f);
+            sources.push(format!("{kind}:{query}"));
             names.push(field);
             defaults.push(default);
         }
+        let (output, defaults, auto) = match schema {
+            None => (names.clone(), defaults, None),
+            Some(schema) => {
+                let mut output = Vec::new();
+                let mut out_defaults = Vec::new();
+                for field in schema.fields() {
+                    output.push(field.to_string());
+                    out_defaults.push(match names.iter().position(|n| n == field) {
+                        Some(i) => defaults[i].clone_ref(py),
+                        None => py.None(),
+                    });
+                }
+                for (i, n) in names.iter().enumerate() {
+                    if !schema.fields().contains(&n.as_str()) {
+                        output.push(n.clone());
+                        out_defaults.push(defaults[i].clone_ref(py));
+                    }
+                }
+                output.push("metadata".into());
+                out_defaults.push(py.None());
+                (output, out_defaults, Some(Auto { schema, sources }))
+            }
+        };
         Ok(ItemSpec {
             inner: Arc::new(ItemInner {
                 spec: extract::ItemSpec::new(compiled),
                 name,
                 fields: names,
+                output,
                 defaults,
+                auto,
             }),
         })
     }
 
     /// The item found below `node`, its problems, and what tracking did
     /// (with `store`, tracked fields are followed on `site`).
-    #[pyo3(signature = (node, store=None, site="", threshold=0.75, base_url=None))]
+    #[pyo3(signature = (node, store=None, site="", threshold=0.75, base_url=None, page_url=None))]
+    #[allow(clippy::too_many_arguments)]
     fn extract<'py>(
         &self,
         py: Python<'py>,
@@ -284,9 +428,11 @@ impl ItemSpec {
         site: &str,
         threshold: f64,
         base_url: Option<&str>,
+        page_url: Option<&str>,
     ) -> PyResult<(Bound<'py, PyDict>, Vec<Problem>, Notes)> {
         let (doc, id, inner) = (node.document().clone(), node.node_id(), self.inner.clone());
         let base = base_url.and_then(|b| Url::parse(b).ok());
+        let page = page_url.and_then(|p| Url::parse(p).ok());
         let (tracks, site) = (store.map(TrackStore::tracks), site.to_string());
         // SAFETY: the id came from a Node of this document, which `doc` keeps
         // alive.
@@ -296,6 +442,7 @@ impl ItemSpec {
             match &tracks {
                 Some(tracks) => inner.extract_tracked(
                     root,
+                    page.as_ref(),
                     base.as_ref(),
                     &TrackContext {
                         tracks,
@@ -303,12 +450,24 @@ impl ItemSpec {
                         threshold,
                     },
                 ),
-                None => (inner.extract(root, base.as_ref()), Vec::new()),
+                None => (
+                    inner.extract(root, page.as_ref(), base.as_ref()),
+                    Vec::new(),
+                ),
             }
         });
         let (dict, problems) = self.inner.to_python(py, values)?;
         Ok((dict, problems, notes))
     }
+}
+
+/// The fields of an auto-extracted item type, in order.
+#[pyfunction]
+pub(crate) fn _auto_fields(schema: &str) -> PyResult<Vec<&'static str>> {
+    Schema::from_name(schema)
+        .map(Schema::fields)
+        .map(<[&str]>::to_vec)
+        .ok_or_else(|| PyValueError::new_err(format!("no auto-extracted item type {schema:?}")))
 }
 
 /// A link rule: which links to take from a page, and what to do with the
@@ -365,6 +524,7 @@ pub fn similarity(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(similarity, m)?)?;
+    m.add_function(wrap_pyfunction!(_auto_fields, m)?)?;
     m.add_class::<ItemSpec>()?;
     m.add_class::<TrackStore>()
 }

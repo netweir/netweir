@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from netweir import _track
-from netweir._native import ItemSpec, Node
+from netweir._native import ItemSpec, Node, _auto_fields
 
 #: `into` values Rust converts itself; anything else runs in Python.
 _BUILTIN = {str: "text", int: "int", float: "float", bool: "bool"}
@@ -35,8 +35,8 @@ class Field:
         # Compiling now reports a bad query or pattern where it was written.
         ItemSpec("check", [self._spec("check")])
 
-    def _spec(self, name: str) -> tuple:
-        convert = self.convert or _BUILTIN.get(self.into, "text")
+    def _spec(self, name: str, convert: str | None = None) -> tuple:
+        convert = convert or self.convert or _BUILTIN.get(self.into, "text")
         return (
             name,
             self.kind,
@@ -136,6 +136,8 @@ class Item:
     _spec: ItemSpec
     _fields: dict[str, Field]
     _python_into: dict[str, Callable[[Any], Any]]
+    #: The auto-extracted type an item reads (see ``netweir.auto``), or None.
+    _schema: str | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -150,23 +152,35 @@ class Item:
         # silence each other.
         cls._fields = fields
         qualified = f"{cls.__module__}.{cls.__qualname__}"
-        cls._spec = ItemSpec(qualified, [f._spec(name) for name, f in fields.items()])
+        schema_fields = _auto_fields(cls._schema) if cls._schema else []
+        if "metadata" in fields and cls._schema:
+            raise TypeError(f"{cls.__qualname__}.metadata: auto items fill 'metadata' themselves")
+
+        def spec(name: str, f: Field) -> tuple:
+            # A pinned field of an auto item is read as that field: a
+            # price element gives "9.50". into= replaces the reading.
+            pinned = name in schema_fields and f.into is None and f.convert is None
+            return f._spec(name, f"auto:{name}" if pinned else None)
+
+        specs = [spec(name, f) for name, f in fields.items()]
+        cls._spec = ItemSpec(qualified, specs, cls._schema)
         cls._python_into = {
             name: into for name, f in fields.items() if (into := f._python_into()) is not None
         }
 
     @classmethod
     def extract(cls, node: Any, *, url: str | None = None) -> dict[str, Any]:
-        """The item found in a Page or below a Node. ``url`` is what a
-        Node's relative links are relative to; a Page knows its own."""
+        """The item found in a Page or below a Node. ``url`` is the page's
+        address, which a Node's relative links are relative to; a Page
+        knows its own."""
         root = getattr(node, "root", node)
         if not isinstance(root, Node):
             raise TypeError(f"extract() takes a Page or a Node, not {type(node).__name__}")
         store, threshold = _track.context()
-        page_url = getattr(node, "url", None)
-        site = _track.site_of(page_url)
+        page = url if url is not None else getattr(node, "url", None)
+        site = _track.site_of(page)
         base = url if url is not None else _page_base(node)
-        item, invalid, notes = cls._spec.extract(root, store, site, threshold, base)
+        item, invalid, notes = cls._spec.extract(root, store, site, threshold, base, page)
         _warn_invalid(invalid)
         for field, what, score in notes:
             _track.report(field, site, what, score)

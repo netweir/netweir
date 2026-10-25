@@ -414,6 +414,11 @@ class Page:
         """The meta of the Request this page answers; empty outside a crawl."""
         return self.request.meta if self.request is not None else {}
 
+    def extract(self, item: type) -> dict:
+        """``item.extract(self)``: the Item (often one of ``netweir.auto``'s)
+        found on this page."""
+        return item.extract(self)
+
     def urljoin(self, url: str) -> str:
         """``url`` made absolute, against the page's ``<base href>`` if it
         has one and its URL otherwise, as a browser resolves links."""

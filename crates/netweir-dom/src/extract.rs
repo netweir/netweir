@@ -57,6 +57,9 @@ pub enum Convert {
     CleanText {
         main_only: bool,
     },
+    /// What an auto-extracted field of this kind holds, read from the
+    /// element or string found (a price element gives `"9.50"`).
+    Auto(crate::auto::fields::FieldKind),
 }
 
 impl Convert {
@@ -166,6 +169,26 @@ impl Field {
             _ => (self.selector.hits(scope)?, None),
         };
         let mut out = Vec::new();
+        if let Convert::Auto(kind) = self.convert {
+            let now = crate::date::now_utc();
+            for hit in hits {
+                let (found, text) = match hit {
+                    Hit::Node(n) if n.kind() == NodeKind::Element => (
+                        crate::auto::fields::from_element(kind, n, base, now),
+                        n.text(),
+                    ),
+                    other => {
+                        let text = other.to_string_value();
+                        (crate::auto::fields::from_text(kind, &text, base, now), text)
+                    }
+                };
+                out.push(found.map_or(Value::Invalid(text), Value::Json));
+                if !self.all {
+                    break;
+                }
+            }
+            return Ok((out, tracking));
+        }
         if self.convert.takes_element() {
             for hit in hits {
                 out.push(self.element_value(hit, base));
@@ -215,7 +238,9 @@ impl Field {
                 "false" | "no" | "off" | "0" => Value::Bool(false),
                 _ => Value::Invalid(text),
             },
-            Convert::Markdown { .. } | Convert::CleanText { .. } => Value::Invalid(text),
+            Convert::Markdown { .. } | Convert::CleanText { .. } | Convert::Auto(_) => {
+                Value::Invalid(text)
+            }
         }
     }
 

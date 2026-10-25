@@ -557,6 +557,38 @@ pub fn from_element(
     }
 }
 
+/// A field's value from a string a query found (`::text`, `::attr()`).
+pub fn from_text(kind: FieldKind, text: &str, base: Option<&Url>, now: Civil) -> Option<Value> {
+    let v = Value::String(text.to_string());
+    let string = |t: Option<String>| t.map(Value::String);
+    match kind {
+        FieldKind::Text | FieldKind::Html => string(self::text(&v)),
+        FieldKind::Url => string(absolute(text, base)),
+        FieldKind::Price => string(price_fields(&v).price),
+        FieldKind::Currency => string(price_fields(&v).currency.or_else(|| currency(&v).currency)),
+        FieldKind::CurrencyRaw => string(
+            price_fields(&v)
+                .currency_raw
+                .or_else(|| currency(&v).currency_raw),
+        ),
+        FieldKind::Availability => string(availability(&v)),
+        FieldKind::Gtin => {
+            let mut one = Map::new();
+            one.insert("gtin".into(), v);
+            gtins(&one)
+        }
+        FieldKind::Brand => brand(&v),
+        FieldKind::Rating => rating(&v),
+        FieldKind::Breadcrumbs => None,
+        FieldKind::Date => string(iso_date(&v, now)),
+        FieldKind::Salary => salary(&v),
+        FieldKind::EmploymentType => string(employment_type(&v)),
+        FieldKind::Image => image(&v, base),
+        FieldKind::Images => images(&v, base),
+        FieldKind::Texts => self::text(&v).map(|t| Value::Array(vec![Value::String(t)])),
+    }
+}
+
 /// A value, or each member of a list.
 fn each(v: Option<&Value>) -> Box<dyn Iterator<Item = &Value> + '_> {
     match v {

@@ -423,6 +423,7 @@ impl Engine {
                         }
                     }
                     if let Some(item) = done.tag.rule.and_then(|r| rules[r].item.as_ref()) {
+                        let page = Url::parse(&response.url).ok();
                         let base = self.page_base(&response.url, root);
                         let tracks = self
                             .tracks
@@ -441,14 +442,16 @@ impl Engine {
                                     threshold,
                                 };
                                 let (values, notes) =
-                                    item.extract_tracked(root, base.as_ref(), &ctx);
+                                    item.extract_tracked(root, page.as_ref(), base.as_ref(), &ctx);
                                 done.item = Some(values);
                                 if !notes.is_empty() {
                                     done.html = Some(text.clone());
                                 }
                                 done.notes = notes;
                             }
-                            None => done.item = Some(item.extract(root, base.as_ref())),
+                            None => {
+                                done.item = Some(item.extract(root, page.as_ref(), base.as_ref()))
+                            }
                         }
                     }
                     if done.tag.to_python {

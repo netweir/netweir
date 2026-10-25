@@ -189,3 +189,26 @@ fn markdown_convert_resolves_links_against_base() {
         ]
     );
 }
+
+#[test]
+fn auto_convert_reads_elements_and_strings_as_their_field() {
+    use netweir_dom::auto::fields::FieldKind;
+    let doc = Document::parse(PAGE);
+    let spec = ItemSpec::new(vec![
+        css("price", "p.price_color").convert(Convert::Auto(FieldKind::Price)),
+        css("price_text", "p.price_color::text").convert(Convert::Auto(FieldKind::Price)),
+        css("stock", "p.stock").convert(Convert::Auto(FieldKind::Availability)),
+        css("not_a_price", "h1::text").convert(Convert::Auto(FieldKind::Price)),
+        css("missing", "p.nope").convert(Convert::Auto(FieldKind::Price)),
+    ]);
+    assert_eq!(
+        spec.extract(doc.root(), None),
+        vec![
+            Value::Json("51.77".into()),
+            Value::Json("51.77".into()),
+            Value::Json("InStock".into()),
+            Value::Invalid("  A Light in the Attic  ".into()),
+            Value::Missing,
+        ]
+    );
+}
