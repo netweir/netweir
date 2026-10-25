@@ -8,6 +8,7 @@
 //! item says so in its validation messages.
 
 pub mod fields;
+mod job;
 mod product;
 pub mod schema_org;
 
@@ -50,28 +51,7 @@ impl Schema {
                 "next_page",
                 "page_number",
             ],
-            Schema::JobPosting => &[
-                "url",
-                "job_posting_id",
-                "date_published",
-                "date_published_raw",
-                "date_modified",
-                "date_modified_raw",
-                "valid_through",
-                "valid_through_raw",
-                "job_title",
-                "headline",
-                "job_location",
-                "description",
-                "description_html",
-                "employment_type",
-                "base_salary",
-                "requirements",
-                "hiring_organization",
-                "job_start_date",
-                "job_start_date_raw",
-                "remote_status",
-            ],
+            Schema::JobPosting => job::FIELDS,
             Schema::Article => &[
                 "url",
                 "canonical_url",
@@ -172,8 +152,9 @@ pub fn extract(schema: Schema, root: Node<'_>, page: Option<&Url>, now: Civil) -
     }
     match schema {
         Schema::Product => product::read(&ctx, &mut item),
+        Schema::JobPosting => job::read(&ctx, &mut item),
         // Not read yet; only the URL is known.
-        Schema::ProductList | Schema::ProductNavigation | Schema::JobPosting | Schema::Article => {}
+        Schema::ProductList | Schema::ProductNavigation | Schema::Article => {}
     }
     item.finish()
 }
@@ -183,7 +164,6 @@ pub(crate) struct Page<'p, 'a> {
     pub root: Node<'a>,
     pub page: Option<&'p Url>,
     pub base: Option<&'p Url>,
-    #[allow(dead_code)] // read by the job posting and article readers, next
     pub now: Civil,
     pub things: Vec<Thing>,
     /// Open Graph and other meta tags by property, lowercased, plus

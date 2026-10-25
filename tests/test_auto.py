@@ -206,3 +206,12 @@ def test_tracked_override_survives_a_redesign(base, monkeypatch):
 def test_field_names_are_checked():
     with pytest.raises(ValueError, match="snake"):
         netweir.export.jsonl("x.jsonl", field_names="camel")
+
+
+def test_job_posting():
+    item = page(fixture("job-jsonld"), "https://jobs.example/j/1042").extract(
+        netweir.auto.JobPosting
+    )
+    assert item["job_title"] == "Senior Rust Engineer"
+    assert item["base_salary"]["value_min"] == "70000"
+    assert item["metadata"]["probability"] > 0.9

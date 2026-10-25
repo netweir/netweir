@@ -382,7 +382,10 @@ fn image_url(v: &Value, base: Option<&Url>) -> Option<String> {
 /// whitespace collapsed. A number is its digits; a list, its first item.
 pub fn text(v: &Value) -> Option<String> {
     let s = match v {
-        Value::String(s) if s.contains(['<', '&']) => crate::Document::parse(s).root().text(),
+        // Blocks kept apart, so "<p>a</p><p>b</p>" is "a b", not "ab".
+        Value::String(s) if s.contains(['<', '&']) => {
+            crate::markdown::clean_text(crate::Document::parse(s).root())
+        }
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
         Value::Array(list) => return list.iter().find_map(text),

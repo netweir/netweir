@@ -1,0 +1,8 @@
+{"type": "job-posting", "url": "https://jobs.example/j/7",
+ "item": {"url": "https://jobs.example/j/7", "job_title": "Barista",
+  "date_published": "2026-10-22", "date_published_raw": "3 days ago",
+  "base_salary": {"raw": "£11.50 - £12.50 an hour", "value_min": "11.50", "value_max": "12.50", "rate_type": "hourly", "currency": "GBP", "currency_raw": "£"},
+  "employment_type": "Part-time",
+  "hiring_organization": {"name": "Bean There", "name_raw": "Bean There"},
+  "job_location": {"raw": "Leeds, West Yorkshire"}},
+ "sources": {"base_salary": "json-ld"}, "probability": [0.9, 1.0], "validation": []}
