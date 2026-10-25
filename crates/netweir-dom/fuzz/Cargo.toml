@@ -69,5 +69,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "auto"
+path = "fuzz_targets/auto.rs"
+test = false
+doc = false
+bench = false
+
 # Built with cargo-fuzz on nightly, outside the workspace.
 [workspace]
