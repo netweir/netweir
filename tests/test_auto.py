@@ -226,3 +226,13 @@ def test_auto_article_leaves_netweir_article_alone():
     assert isinstance(old, netweir.Article)
     assert old.title == "Rivers rise across the north"
     assert set(vars(old)) == {"title", "byline", "published", "image", "language", "text", "html"}
+
+
+def test_product_list_and_navigation():
+    p = page(fixture("list-itemlist"), "https://shop.example/c/lamps")
+    listing = p.extract(netweir.auto.ProductList)
+    assert [x["name"] for x in listing["products"]] == ["Arc lamp", "Dome lamp", "Cone lamp"]
+    assert listing["pagination_next"] == {"url": "https://shop.example/c/lamps?page=2"}
+    nav = p.extract(netweir.auto.ProductNavigation)
+    assert nav["items"][0] == {"url": "https://shop.example/p/arc", "name": "Arc lamp"}
+    assert nav["next_page"] == {"url": "https://shop.example/c/lamps?page=2"}

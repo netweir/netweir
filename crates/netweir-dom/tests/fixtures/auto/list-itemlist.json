@@ -1,0 +1,10 @@
+{"type": "product-list", "url": "https://shop.example/c/lamps",
+ "item": {"url": "https://shop.example/c/lamps", "canonical_url": "https://shop.example/c/lamps",
+  "products": [
+   {"name": "Arc lamp", "url": "https://shop.example/p/arc", "price": "49.99", "currency": "GBP", "currency_raw": "GBP", "main_image": {"url": "https://shop.example/i/arc.jpg"}},
+   {"name": "Dome lamp", "url": "https://shop.example/p/dome", "price": "35", "currency": "GBP", "currency_raw": "GBP"},
+   {"name": "Cone lamp", "url": "https://shop.example/p/cone"}],
+  "breadcrumbs": [{"name": "Lighting", "url": "https://shop.example/c/lighting"}, {"name": "Desk lamps", "url": null}],
+  "category_name": "Desk lamps",
+  "pagination_next": {"url": "https://shop.example/c/lamps?page=2"}},
+ "sources": {"products": "json-ld", "pagination_next": "dom:link[rel=next]"}, "probability": [0.85, 1.0], "validation": []}

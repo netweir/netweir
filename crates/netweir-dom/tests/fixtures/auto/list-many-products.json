@@ -1,0 +1,8 @@
+{"type": "product-list", "url": "https://shop.example/c/kitchen",
+ "item": {"url": "https://shop.example/c/kitchen",
+  "products": [
+   {"name": "Apple crate", "url": "https://shop.example/p/a", "price": "8", "currency": "GBP", "currency_raw": "GBP"},
+   {"name": "Bread bin", "url": "https://shop.example/p/b"},
+   {"name": "Cake tin", "url": "https://shop.example/p/c"}],
+  "pagination_next": {"url": "https://shop.example/c/kitchen?page=2", "text": "Next"}},
+ "sources": {"products": "microdata"}, "probability": [0.85, 1.0], "validation": []}

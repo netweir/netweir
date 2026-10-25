@@ -102,7 +102,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
 
 /// Products that aren't someone else's variant, related product or
 /// accessory: those are read as part of the product they hang off.
-fn candidates(things: &[Thing]) -> Vec<&Thing> {
+pub(super) fn candidates(things: &[Thing]) -> Vec<&Thing> {
     let products = of_type(things, "Product");
     let mut nested: Vec<&Map<String, Value>> = Vec::new();
     for p in &products {
@@ -302,7 +302,7 @@ fn variant(page: &Page<'_, '_>, v: &Map<String, Value>) -> Map<String, Value> {
 }
 
 /// The offer to read the price from: the first with a price.
-fn main_offer(p: &Map<String, Value>) -> Option<&Map<String, Value>> {
+pub(super) fn main_offer(p: &Map<String, Value>) -> Option<&Map<String, Value>> {
     let offers: Vec<&Map<String, Value>> = each(p.get("offers").unwrap_or(&Value::Null))
         .filter_map(Value::as_object)
         .collect();
@@ -319,7 +319,7 @@ fn main_offer(p: &Map<String, Value>) -> Option<&Map<String, Value>> {
 
 /// An offer's price and currency: `price`, else an AggregateOffer's
 /// `lowPrice`, else its price specification that isn't a list price.
-fn offer_money(offer: &Map<String, Value>) -> PriceFields {
+pub(super) fn offer_money(offer: &Map<String, Value>) -> PriceFields {
     let specs: Vec<&Map<String, Value>> =
         each(offer.get("priceSpecification").unwrap_or(&Value::Null))
             .filter_map(Value::as_object)
@@ -351,7 +351,7 @@ fn is_list_price(spec: &Map<String, Value>) -> bool {
 }
 
 /// The price before a discount: a list or strikethrough price.
-fn regular_price(offer: &Map<String, Value>) -> Option<String> {
+pub(super) fn regular_price(offer: &Map<String, Value>) -> Option<String> {
     each(offer.get("priceSpecification").unwrap_or(&Value::Null))
         .filter_map(Value::as_object)
         .find(|s| is_list_price(s))

@@ -10,6 +10,7 @@
 mod article;
 pub mod fields;
 mod job;
+mod list;
 mod product;
 pub mod schema_org;
 
@@ -35,23 +36,8 @@ impl Schema {
     pub fn fields(self) -> &'static [&'static str] {
         match self {
             Schema::Product => product::FIELDS,
-            Schema::ProductList => &[
-                "url",
-                "canonical_url",
-                "products",
-                "breadcrumbs",
-                "category_name",
-                "page_number",
-                "pagination_next",
-            ],
-            Schema::ProductNavigation => &[
-                "url",
-                "category_name",
-                "sub_categories",
-                "items",
-                "next_page",
-                "page_number",
-            ],
+            Schema::ProductList => list::LIST_FIELDS,
+            Schema::ProductNavigation => list::NAVIGATION_FIELDS,
             Schema::JobPosting => job::FIELDS,
             Schema::Article => article::FIELDS,
         }
@@ -137,8 +123,8 @@ pub fn extract(schema: Schema, root: Node<'_>, page: Option<&Url>, now: Civil) -
         Schema::Product => product::read(&ctx, &mut item),
         Schema::JobPosting => job::read(&ctx, &mut item),
         Schema::Article => article::read(&ctx, &mut item),
-        // Not read yet; only the URL is known.
-        Schema::ProductList | Schema::ProductNavigation => {}
+        Schema::ProductList => list::read_list(&ctx, &mut item),
+        Schema::ProductNavigation => list::read_navigation(&ctx, &mut item),
     }
     item.finish()
 }
