@@ -529,7 +529,7 @@ def test_parse_salary_reads_ranges_and_rates():
         "raw": "£30k–£40k per annum",
         "value_min": "30000",
         "value_max": "40000",
-        "rate_type": "yearly",
+        "rate_type": "annual",
         "currency": "GBP",
         "currency_raw": "£",
     }

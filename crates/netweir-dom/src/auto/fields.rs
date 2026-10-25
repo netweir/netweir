@@ -106,9 +106,20 @@ pub fn gtins(props: &Map<String, Value>) -> Option<Value> {
                 Value::Number(n) => n.to_string(),
                 _ => continue,
             };
-            if let Some(g) = crate::gtin::parse(&text)
-                && !seen.contains(&g.value)
-            {
+            let Some(mut g) = crate::gtin::parse(&text) else {
+                continue;
+            };
+            // The schema's codes are digits, and an ISBN-10 can end in X.
+            if g.value.ends_with('X') {
+                let Some(isbn13) = crate::gtin::isbn13_of(&g.value) else {
+                    continue;
+                };
+                g = crate::gtin::Gtin {
+                    kind: "isbn13",
+                    value: isbn13,
+                };
+            }
+            if !seen.contains(&g.value) {
                 seen.push(g.value.clone());
                 out.push(json!({"type": g.kind, "value": g.value}));
             }
@@ -295,7 +306,7 @@ fn thousands(part: &str) -> Option<crate::price::Price> {
     Some(p)
 }
 
-/// `hourly`, `daily`, `weekly`, `monthly` or `yearly`, from schema.org's
+/// `hourly`, `daily`, `weekly`, `monthly` or `annual`, from schema.org's
 /// unitText (`HOUR`) or the way a salary is written (`a year`, `/hr`).
 fn rate_type(s: &str) -> Option<&'static str> {
     let lower = s.to_lowercase();
@@ -309,7 +320,7 @@ fn rate_type(s: &str) -> Option<&'static str> {
     } else if has(&["month", "/mo", "pcm"]) {
         Some("monthly")
     } else if has(&["year", "annum", "annual", "/yr", " pa", "p.a."]) {
-        Some("yearly")
+        Some("annual")
     } else {
         None
     }
@@ -672,13 +683,16 @@ mod tests {
     #[test]
     fn gtins_from_any_property_checked() {
         let props = json!({"gtin13": "4006381333931", "gtin": "0-306-40615-2",
-                           "gtin12": "000000000000x", "isbn": "978-0-306-40615-7"});
+                           "gtin12": "000000000000x", "isbn": "978-0-306-40615-7",
+                           "issn": "080442957X"});
         assert_eq!(
             gtins(props.as_object().unwrap()),
             Some(json!([
                 {"type": "gtin13", "value": "4006381333931"},
                 {"type": "isbn10", "value": "0306406152"},
-                {"type": "isbn13", "value": "9780306406157"}
+                {"type": "isbn13", "value": "9780306406157"},
+                // An ISBN-10 ending in X, as its ISBN-13: the schema's codes are digits.
+                {"type": "isbn13", "value": "9780804429573"}
             ]))
         );
         assert_eq!(gtins(json!({"gtin13": "123"}).as_object().unwrap()), None);
@@ -769,7 +783,7 @@ mod tests {
                                      "maxValue": 70000, "unitText": "YEAR"}})),
             Some(
                 json!({"raw": null, "value_min": "50000", "value_max": "70000",
-                        "rate_type": "yearly", "currency": "USD", "currency_raw": "USD"})
+                        "rate_type": "annual", "currency": "USD", "currency_raw": "USD"})
             )
         );
         assert_eq!(
@@ -781,7 +795,7 @@ mod tests {
             salary(&json!("£30,000 - £40,000 a year")),
             Some(
                 json!({"raw": "£30,000 - £40,000 a year", "value_min": "30000",
-                        "value_max": "40000", "rate_type": "yearly", "currency": "GBP",
+                        "value_max": "40000", "rate_type": "annual", "currency": "GBP",
                         "currency_raw": "£"})
             )
         );

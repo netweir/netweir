@@ -593,7 +593,7 @@ netweir.parse_rating("4.5 out of 5 (1,204 reviews)")
 netweir.parse_availability("Sold out")          # "OutOfStock"
 netweir.parse_salary("£30k–£40k per annum")
 # {"raw": "£30k–£40k per annum", "value_min": "30000", "value_max": "40000",
-#  "rate_type": "yearly", "currency": "GBP", "currency_raw": "£"}
+#  "rate_type": "annual", "currency": "GBP", "currency_raw": "£"}
 ```
 
 `parse_gtin` knows GTIN-8, UPC, EAN, GTIN-14, ISBN-10 and -13 and ISSN,

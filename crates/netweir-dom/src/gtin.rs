@@ -2,7 +2,7 @@
 //! (GTIN-13), GTIN-14, ISBN-10 and -13, and ISSN, each checked against
 //! its check digit, so a typo or a stray number isn't taken for a code.
 
-/// A product code: its kind (`gtin8`, `gtin12`, `gtin13`, `gtin14`,
+/// A product code: its kind (`gtin8`, `upc`, `gtin13`, `gtin14`,
 /// `isbn10`, `isbn13` or `issn`) and its digits, without spaces or
 /// dashes (an ISBN-10 or ISSN may end in `X`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,13 +50,29 @@ pub fn parse(text: &str) -> Option<Gtin> {
         8 if issn_shape => mod11(&value).then_some("issn")?,
         8 => gs1(&value).then_some("gtin8")?,
         10 => mod11(&value).then_some("isbn10")?,
-        12 => gs1(&value).then_some("gtin12")?,
+        12 => gs1(&value).then_some("upc")?,
         13 if gs1(&value) && (value.starts_with("978") || value.starts_with("979")) => "isbn13",
         13 => gs1(&value).then_some("gtin13")?,
         14 => gs1(&value).then_some("gtin14")?,
         _ => return None,
     };
     Some(Gtin { kind, value })
+}
+
+/// An ISBN-10 as the ISBN-13 for the same book: 978, its first nine
+/// digits, and a new check digit.
+pub fn isbn13_of(isbn10: &str) -> Option<String> {
+    if isbn10.len() != 10 || !mod11(isbn10) {
+        return None;
+    }
+    let mut digits = format!("978{}", &isbn10[..9]);
+    let sum: u32 = digits
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| u32::from(b - b'0') * if i % 2 == 1 { 3 } else { 1 })
+        .sum();
+    digits.push(char::from(b'0' + ((10 - sum % 10) % 10) as u8));
+    Some(digits)
 }
 
 /// The GS1 check: digits weighted 3 and 1 from the right, check digit
@@ -102,7 +118,7 @@ mod tests {
     fn gs1_codes_are_checked() {
         assert_eq!(kind("4006381333931"), Some("gtin13"));
         assert_eq!(kind("4006381333932"), None, "wrong check digit");
-        assert_eq!(kind("036000291452"), Some("gtin12"));
+        assert_eq!(kind("036000291452"), Some("upc"));
         assert_eq!(kind("96385074"), Some("gtin8"));
         assert_eq!(kind("10012345678902"), Some("gtin14"));
         assert_eq!(
@@ -122,7 +138,7 @@ mod tests {
         assert_eq!(kind("978-0-306-40615-7"), Some("isbn13"));
         assert_eq!(kind("ISBN 978-0-306-40615-7"), Some("isbn13"));
         assert_eq!(kind("EAN: 4006381333931"), Some("gtin13"));
-        assert_eq!(kind("UPC 036000291452"), Some("gtin12"));
+        assert_eq!(kind("UPC 036000291452"), Some("upc"));
         assert_eq!(kind("gtin13: 4006381333931"), Some("gtin13"));
         assert_eq!(kind("0378-5955"), Some("issn"));
         assert_eq!(kind("2049-3630"), Some("issn"));
