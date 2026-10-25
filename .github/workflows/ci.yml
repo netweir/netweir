@@ -180,3 +180,4 @@ jobs:
       - run: uv run python bench/parse.py --check
       - run: uv run python bench/query.py --check
       - run: uv run python bench/items.py --check
+      - run: uv run python bench/content.py --check

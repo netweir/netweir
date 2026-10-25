@@ -489,6 +489,23 @@ You can write the query inline; each thread keeps the ones it has
 compiled. All three benchmarks run in CI, and the build fails if any
 library beats Netweir.
 
+Pulling the readable part out of a page is the other job people time,
+usually right before it goes to a search index or a model.
+`bench/content.py` hands each tool a 1 MB article buried in navigation, a
+sidebar and a thousand comments, and times it from raw HTML to answer,
+parsing included:
+
+| | Netweir | The usual tool |
+|---|---|---|
+| Main text | 6.1 ms | trafilatura 2.3: 121 ms |
+| Main content as Markdown | 7.2 ms | trafilatura 2.3: 163 ms |
+| Whole page as Markdown | 9.5 ms | markdownify 1.2: 172 ms |
+
+That's twenty times faster on one M2 Max with Python 3.14, and CI fails
+the build if either one catches up. It measures speed, not judgement:
+trafilatura has years of tuning on news sites, so if what you need is
+the best possible text from a newspaper, test both on your own pages.
+
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
 crawler fetches all 10,000 pages and pulls a title and price from each,

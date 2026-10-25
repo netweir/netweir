@@ -47,7 +47,7 @@ Changelog = "https://github.com/netweir/netweir/releases"
 # pip only so editors that list packages with `python -m pip list` (VS
 # Code's Python extension) can; uv itself doesn't need it.
 dev = ["pytest>=8", "pytest-asyncio>=1.2", "maturin>=1.15,<2", "ruff>=0.14", "pyarrow>=21", "pip>=25", "fsspec>=2025", "jsonschema>=4.23", "scrapy>=2.15", "warcio>=1.7", "pillow>=11", "jmespath>=1.0"]
-bench = ["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10"]
+bench = ["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10", "trafilatura>=2.3.1", "markdownify>=1.2.3"]
 
 [tool.maturin]
 manifest-path = "crates/netweir-py/Cargo.toml"
