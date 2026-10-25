@@ -57,7 +57,7 @@ pub(crate) fn json_ld(elements: &[Node<'_>]) -> Vec<Value> {
 /// Open Graph (and its `article:`, `product:` and other namespaces),
 /// Twitter card and Dublin Core `<meta>` tags. A key that appears more
 /// than once becomes a list, in order.
-fn meta_tags(
+pub(crate) fn meta_tags(
     elements: &[Node<'_>],
 ) -> (Map<String, Value>, Map<String, Value>, Map<String, Value>) {
     const OPEN_GRAPH: [&str; 8] = [

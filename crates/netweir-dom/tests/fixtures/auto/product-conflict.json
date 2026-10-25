@@ -1,0 +1,4 @@
+{"type": "product", "url": "https://shop.example/p/throw",
+ "item": {"url": "https://shop.example/p/throw", "name": "Wool throw", "price": "19.99",
+  "currency": "GBP", "currency_raw": "GBP", "sku": "WT-2"},
+ "sources": {"price": "json-ld", "sku": "microdata:body > div > meta"}, "probability": [0.9, 1.0], "validation": ["price"]}

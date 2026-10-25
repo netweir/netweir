@@ -334,7 +334,14 @@ fn microdata_item<'a>(
             }
             microdata_item(micro, prop, out, within)
         } else {
-            Value::String(micro.value(prop))
+            // Search engines read `content` on any element, and pages
+            // rely on it (`<span itemprop="priceCurrency" content="USD">$`),
+            // though the standard reads it only on <meta>.
+            let value = match prop.attr("content") {
+                Some(c) if prop.tag() != Some("meta") => c.trim().to_string(),
+                _ => micro.value(prop),
+            };
+            Value::String(value)
         };
         for name in prop.attr("itemprop").unwrap_or_default().split_whitespace() {
             if !prop_elements
@@ -451,6 +458,17 @@ mod tests {
         assert_eq!(m.source, Source::Microdata);
         assert!(m.element.is_some() && m.element_of("name").is_some());
         assert_eq!(m.element_of("missing"), None);
+    }
+
+    #[test]
+    fn microdata_content_attributes_win_over_text() {
+        let found = read(
+            r#"<div itemscope itemtype="https://schema.org/Offer">
+                 <span itemprop="priceCurrency" content="USD">$</span>
+                 <span itemprop="price" content="28.00">28</span></div>"#,
+        );
+        assert_eq!(found[0].props["priceCurrency"], "USD");
+        assert_eq!(found[0].props["price"], "28.00");
     }
 
     #[test]

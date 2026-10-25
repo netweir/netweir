@@ -1,0 +1,6 @@
+{"type": "product", "url": "https://shop.example/p/mug",
+ "item": {"url": "https://shop.example/p/mug", "name": "Stoneware mug", "price": "12",
+  "currency": "EUR", "currency_raw": "EUR", "availability": "OutOfStock",
+  "brand": {"name": "Kiln & Co"},
+  "breadcrumbs": [{"name": "Kitchen", "url": "https://shop.example/c/kitchen"}, {"name": "Mug", "url": null}]},
+ "sources": {"brand": "json-ld"}, "probability": [0.9, 1.0], "validation": []}

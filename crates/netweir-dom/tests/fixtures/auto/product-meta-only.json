@@ -1,0 +1,8 @@
+{"type": "product", "url": "https://shop.example/p/basket?x=1",
+ "item": {"url": "https://shop.example/p/basket?x=1", "canonical_url": "https://shop.example/p/basket",
+  "name": "Rattan basket", "price": "35", "currency": "AUD", "currency_raw": "AUD",
+  "availability": "InStock", "brand": {"name": "Weave"},
+  "main_image": {"url": "https://shop.example/i/basket.jpg"}, "images": [{"url": "https://shop.example/i/basket.jpg"}],
+  "description": "Hand-woven rattan."},
+ "sources": {"name": "meta:og:title", "price": "meta:product:price:amount", "canonical_url": "meta:og:url"},
+ "probability": [0.4, 0.6], "validation": []}

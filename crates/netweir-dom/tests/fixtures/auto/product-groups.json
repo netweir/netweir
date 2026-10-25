@@ -1,0 +1,9 @@
+{"type": "product", "url": "https://shop.example/p/tote",
+ "item": {"url": "https://shop.example/p/tote", "name": "Canvas tote", "product_id": "TOTE",
+  "variants": [
+   {"name": "Canvas tote, natural", "sku": "TOTE-NAT", "color": "Natural", "url": "https://shop.example/p/tote?c=nat",
+    "price": "18", "currency": "GBP", "currency_raw": "GBP", "availability": "InStock",
+    "main_image": {"url": "https://shop.example/i/nat.jpg"}},
+   {"name": "Canvas tote, black", "sku": "TOTE-BLK", "color": "Black", "url": "https://shop.example/p/tote?c=blk",
+    "price": "18", "currency": "GBP", "currency_raw": "GBP", "availability": "OutOfStock"}]},
+ "sources": {"variants": "json-ld"}, "probability": [0.75, 1.0], "validation": []}
