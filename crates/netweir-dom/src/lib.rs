@@ -8,6 +8,7 @@
 
 mod cache;
 pub mod content;
+pub mod css_path;
 pub mod date;
 mod document;
 pub mod extract;

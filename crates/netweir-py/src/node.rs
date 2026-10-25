@@ -806,6 +806,17 @@ impl Node {
         }
     }
 
+    /// A short CSS selector that finds this element again, and only it,
+    /// in this document; None for anything but an element.
+    fn css_path(&self, py: Python<'_>) -> Option<String> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            netweir_dom::css_path::css_path(unsafe { doc.node(id) })
+        })
+    }
+
     /// The element holding the main content at and below this node (an
     /// article, a post, a product's description), or None when no part of
     /// it stands out, as on a listing.

@@ -317,3 +317,10 @@ def test_jmespath_without_the_extra_names_it(monkeypatch):
         doc.find("script").jmespath("total")
     with pytest.raises(ImportError, match="netweir"):
         netweir.jmespath("a", {})
+
+
+def test_css_path_finds_its_element_again():
+    root = netweir.parse('<div id="buy"><span>a</span><span class="now">b</span></div><p>c</p>')
+    now = root.css("span.now")[0]
+    assert now.css_path() == "span.now"
+    assert list(root.css(now.css_path())) == [now]
