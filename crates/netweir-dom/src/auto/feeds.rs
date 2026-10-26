@@ -795,6 +795,7 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder, leads: Le
             item.offer("page_number", Some(Value::from(n)), source);
         }
     }
+    super::list::offer_sub_categories(page, item);
     item.probability = probability;
 }
 

@@ -1292,3 +1292,132 @@ fn same_page(page: &Url, url: &str) -> bool {
         && path(page) == path(&other)
         && query(page) == query(&other)
 }
+
+/// Links read for sub-categories at most.
+const MAX_SUB_CATEGORIES: usize = 200;
+
+/// Words in a link's text that make it the site's furniture, not a
+/// category.
+const FURNITURE: &[&str] = &[
+    "login", "log in", "sign in", "sign up", "register", "account", "basket", "cart", "bag",
+    "checkout", "wishlist", "help", "contact", "about", "privacy", "terms", "cookies", "faq",
+    "delivery", "returns", "careers", "home",
+];
+
+/// The categories a page leads to: links in a list marked as categories
+/// (`categories`, `subcat`, `departments`, `collections`), and links one
+/// level below the page's own path (`/c/lamps/desk` on `/c/lamps`). On a
+/// home page with neither, its main menu. Never the page itself or
+/// another page of it, an item in `items`, a link off the site, or a link
+/// in a footer or the breadcrumbs, and never account, basket or help
+/// links. Each is `{url, name}`, with the source of the first.
+pub(crate) fn sub_categories(
+    root: Node<'_>,
+    page: Option<&Url>,
+    base: Option<&Url>,
+    items: &HashSet<String>,
+) -> Option<(Vec<Value>, String)> {
+    let page = page?;
+    let trail = breadcrumbs(root);
+    let footer = |n: Node<'_>| {
+        std::iter::successors(Some(n), |p| p.parent()).any(|p| {
+            p.tag() == Some("footer")
+                || p.attr("role") == Some("contentinfo")
+                || trail == Some(p)
+                || words(p).any(|w| w.eq_ignore_ascii_case("footer"))
+        })
+    };
+    let marked = |n: Node<'_>| {
+        std::iter::successors(n.parent(), |p| p.parent())
+            .take(6)
+            .any(|p| {
+                words(p).any(|w| {
+                    let w = w.to_ascii_lowercase();
+                    ["categor", "subcat", "department", "collection"]
+                        .iter()
+                        .any(|k| w.starts_with(k))
+                }) || p.attr("aria-label").is_some_and(|l| {
+                    let l = l.to_ascii_lowercase();
+                    l.contains("categor") || l.contains("department")
+                })
+            })
+    };
+    let in_menu = |n: Node<'_>| {
+        std::iter::successors(n.parent(), |p| p.parent())
+            .any(|p| p.tag() == Some("nav") || p.attr("role") == Some("navigation"))
+    };
+    let own_path = page.path().trim_end_matches('/').to_string();
+    let child = |u: &Url| {
+        let p = u.path().trim_end_matches('/');
+        p.strip_prefix(&own_path)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+    };
+    let home = own_path.is_empty();
+    // (url, name, node, in a marked list or a child, in a menu)
+    let mut found: Vec<(String, String, Node<'_>, bool, bool)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for a in root.descendants().filter(|n| n.tag() == Some("a")) {
+        if found.len() >= MAX_SUB_CATEGORIES {
+            break;
+        }
+        let Some(href) = a.attr("href").map(str::trim) else {
+            continue;
+        };
+        if href.is_empty()
+            || href.starts_with('#')
+            || href.to_ascii_lowercase().starts_with("javascript:")
+        {
+            continue;
+        }
+        let Some(mut url) = base.unwrap_or(page).join(href).ok() else {
+            continue;
+        };
+        url.set_fragment(None);
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str() != page.host_str()
+            || url.path().trim_end_matches('/') == own_path
+            || items.contains(url.as_str())
+        {
+            continue;
+        }
+        let name = a.text().split_whitespace().collect::<Vec<_>>().join(" ");
+        let lower = name.to_ascii_lowercase();
+        if name.is_empty()
+            || name.chars().count() > 60
+            || FURNITURE.iter().any(|w| {
+                lower == *w
+                    || lower.starts_with(&format!("{w} "))
+                    || lower.ends_with(&format!(" {w}"))
+                    || lower.starts_with("my ")
+            })
+            || footer(a)
+        {
+            continue;
+        }
+        let strong = marked(a) || child(&url);
+        let menu = in_menu(a);
+        if !(strong || (home && menu)) {
+            continue;
+        }
+        let url = String::from(url);
+        if seen.insert(url.clone()) {
+            found.push((url, name, a, strong, menu));
+        }
+    }
+    // The main menu counts only on a home page without category lists.
+    if found.iter().any(|f| f.3) {
+        found.retain(|f| f.3);
+    }
+    let source = source(found.first()?.2);
+    let list = found
+        .into_iter()
+        .map(|(url, name, ..)| {
+            let mut m = Map::new();
+            m.insert("url".into(), Value::String(url));
+            m.insert("name".into(), Value::String(name));
+            Value::Object(m)
+        })
+        .collect();
+    Some((list, source))
+}

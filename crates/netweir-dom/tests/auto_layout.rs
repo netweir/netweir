@@ -420,3 +420,80 @@ fn a_shop_grid_isnt_an_article_list() {
     assert!(list.probability < 0.4, "{}", list.probability);
     assert_eq!(typed(&html), Some(Schema::ProductList));
 }
+
+fn subcategories(html: &str, url: &str) -> Vec<(String, String)> {
+    let item = read(Schema::ProductNavigation, html, url);
+    match get(&item, "sub_categories") {
+        Value::Array(list) => list
+            .iter()
+            .map(|c| {
+                (
+                    c["url"].as_str().unwrap().into(),
+                    c["name"].as_str().unwrap().into(),
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+const CATEGORY: &str = r#"<html><body>
+<header><a href="/account">My account</a><a href="/basket">Basket</a></header>
+<nav class="crumbs"><a href="/">Home</a> / <a href="/c/lamps">Lamps</a></nav>
+<h1>Lamps</h1>
+<ul class="subcategories"><li><a href="/c/lamps/desk">Desk lamps</a></li>
+<li><a href="/c/lamps/floor">Floor lamps</a></li></ul>
+<ul class="grid">
+<li class="card"><a href="/p/arc"><h3>Arc lamp</h3></a><span class="price">£49.99</span></li>
+<li class="card"><a href="/p/dome"><h3>Dome lamp</h3></a><span class="price">£29.00</span></li>
+<li class="card"><a href="/p/clip"><h3>Clip lamp</h3></a><span class="price">£12.50</span></li></ul>
+<a href="/c/lamps/wall">Wall lamps</a>
+<nav class="pagination"><a rel="next" href="/c/lamps?page=2">Next</a></nav>
+<footer><a href="/c/lamps/sale">Lamps on sale</a><a href="/help">Help</a></footer>
+</body></html>"#;
+
+#[test]
+fn sub_categories_come_from_category_lists_and_child_paths() {
+    let found = subcategories(CATEGORY, "https://shop.example/c/lamps");
+    let urls: Vec<&str> = found.iter().map(|(u, _)| u.as_str()).collect();
+    assert_eq!(
+        urls,
+        [
+            "https://shop.example/c/lamps/desk",
+            "https://shop.example/c/lamps/floor",
+            "https://shop.example/c/lamps/wall",
+        ]
+    );
+    assert_eq!(found[0].1, "Desk lamps");
+}
+
+#[test]
+fn a_home_page_menu_gives_the_top_categories() {
+    let html = r#"<html><body><header><nav class="main">
+      <a href="/">Home</a><a href="/c/lamps">Lamps</a><a href="/c/rugs">Rugs</a>
+      <a href="/c/chairs">Chairs</a><a href="/login">Sign in</a><a href="/basket">Basket</a>
+      <a href="https://other.example/x">Partner</a></nav></header>
+      <main><h1>Welcome</h1><p>Light, warmth, comfort.</p></main></body></html>"#;
+    let found = subcategories(html, "https://shop.example/");
+    let names: Vec<&str> = found.iter().map(|(_, n)| n.as_str()).collect();
+    assert_eq!(names, ["Lamps", "Rugs", "Chairs"]);
+}
+
+#[test]
+fn item_links_and_pages_are_not_sub_categories() {
+    let html = r##"<html><body><h1>Search: lamp</h1>
+      <ul class="categories"><li><a href="/p/arc">Arc lamp</a></li><li><a href="/c/lamps?page=2">2</a></li>
+      <li><a href="/c/lamps">Lamps</a></li><li><a href="javascript:void(0)">More</a></li><li><a href="#top">Top</a></li></ul>
+      <ul class="grid">
+      <li class="card"><a href="/p/arc"><h3>Arc lamp</h3></a><span class="price">£49.99</span></li>
+      <li class="card"><a href="/p/dome"><h3>Dome lamp</h3></a><span class="price">£29.00</span></li>
+      <li class="card"><a href="/p/clip"><h3>Clip lamp</h3></a><span class="price">£12.50</span></li></ul>
+      <a rel="next" href="/c/lamps?page=2">Next</a></body></html>"##;
+    let found = subcategories(html, "https://shop.example/c/lamps");
+    let urls: Vec<&str> = found.iter().map(|(u, _)| u.as_str()).collect();
+    assert_eq!(
+        urls,
+        Vec::<&str>::new(),
+        "the page itself, an item, a page of it"
+    );
+}
