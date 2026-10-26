@@ -201,7 +201,20 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     crawl = commands.add_parser("crawl", aliases=["runspider"], help="run a spider")
     crawl.add_argument(
-        "file", help="a Python file defining a Spider subclass, or a spider's name in a project"
+        "file",
+        help="a Python file defining a Spider subclass, a spider's name in a project, "
+        "or a template: ecommerce, article or job",
+    )
+    crawl.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        help="where a template starts (give it more than once for several)",
+    )
+    crawl.add_argument(
+        "--strategy",
+        choices=["automatic", "full", "navigation", "pagination_only", "direct_item"],
+        help="how far a template goes (default automatic)",
     )
     crawl.add_argument(
         "-o", "--output", help="write items to a .jsonl, .json, .xml, .csv or .parquet file"
@@ -575,7 +588,9 @@ def _prepare(args):
     crawl starts, so a typo costs one line rather than a traceback."""
     from netweir import Settings, export
     from netweir._crawl import _check_outputs
+    from netweir.templates import TEMPLATES
 
+    template = None
     if Path(args.file).is_file() or args.file.endswith(".py"):
         spider_cls = _load_spider(args.file, args.spider)
     else:
@@ -583,7 +598,16 @@ def _prepare(args):
 
         if args.spider:
             raise _Usage(f"--spider picks from a file's spiders; {args.file} is a spider's name")
-        spider_cls = _project.by_name(args.file)
+        try:
+            spider_cls = _project.by_name(args.file)
+        except _Usage:
+            if args.file not in TEMPLATES:
+                raise
+            spider_cls = template = TEMPLATES[args.file]
+    if template is not None and not args.url:
+        raise _Usage(f"the {args.file} template needs --url: where to start")
+    if template is None and (args.url or args.strategy):
+        raise _Usage("--url and --strategy go with a template: ecommerce, article or job")
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
     _login_from_environment(spider_cls.settings, overrides, fields)
@@ -598,6 +622,10 @@ def _prepare(args):
     if args.stats and not Path(args.stats).resolve().parent.is_dir():
         raise _Usage(f"no such directory for --stats: {Path(args.stats).parent}")
     arguments = dict(_parse_argument(a) for a in args.arguments)
+    if template is not None:
+        arguments["url"] = " ".join(args.url)
+        if args.strategy:
+            arguments["strategy"] = args.strategy
     # Before the engine is made (it opens the checkpoint), so a checkpoint
     # with batches or a cloud path is one line and leaves nothing behind.
     _check_outputs(settings, [*spider_cls.pipelines, *([output] if output else [])])

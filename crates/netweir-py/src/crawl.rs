@@ -15,6 +15,8 @@ use netweir_core::{
     BrowserMode, CrawlRequest, CrawlSettings, Crawler as CoreCrawler, DropReason, Event,
     FetchError, ProxyRotation, Submitted,
 };
+use netweir_dom::auto;
+use netweir_dom::date;
 use netweir_dom::extract::{self, TrackContext, Value};
 use netweir_dom::{Document, Query};
 use pyo3::exceptions::PyValueError;
@@ -25,7 +27,7 @@ use url::Url;
 use crate::browser::BrowserPage;
 use crate::fetch::{AuthPy, Response, fetch_error_value, fetch_options, policy, policy_py};
 use crate::node::Node;
-use crate::rules::{ItemSpec, Notes, Rule, StoreRef, TrackStore, selector};
+use crate::rules::{ItemSpec, Links, Notes, Part, Rule, StoreRef, TrackStore};
 
 fn seconds(name: &str, value: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value).map_err(|_| {
@@ -112,6 +114,8 @@ struct Processed {
     root: Option<Arc<Document>>,
     links: Vec<(String, usize)>,
     item: Option<Vec<Value>>,
+    /// Items "here" rules took from the page, by rule.
+    here: Vec<(usize, Vec<Value>)>,
     /// What tracking did to the item's tracked fields.
     notes: Notes,
     /// The page, when tracking failed on it, for repairs.
@@ -299,6 +303,27 @@ struct Engine {
     calls: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<netweir_core::StepCall>>,
 }
 
+/// The URLs in one part of a navigation item.
+fn navigation_links(found: &auto::Extracted, part: Part) -> Vec<String> {
+    use serde_json::Value;
+    let field = match part {
+        Part::Items => "items",
+        Part::NextPage => "next_page",
+        Part::SubCategories => "sub_categories",
+    };
+    let url = |v: &Value| v.get("url").and_then(Value::as_str).map(str::to_string);
+    match found
+        .fields
+        .iter()
+        .find(|(f, _)| *f == field)
+        .map(|(_, v)| v)
+    {
+        Some(Value::Array(list)) => list.iter().filter_map(url).collect(),
+        Some(v @ Value::Object(_)) => url(v).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 impl Engine {
     fn tags(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Tag>> {
         self.tags.lock().unwrap_or_else(|e| e.into_inner())
@@ -393,6 +418,7 @@ impl Engine {
             root: None,
             links: Vec::new(),
             item: None,
+            here: Vec::new(),
             notes: Vec::new(),
             html: None,
             error: None,
@@ -454,6 +480,10 @@ impl Engine {
                             }
                         }
                     }
+                    // A page its own rule gave an item gives no other.
+                    if done.tag.apply_rules && done.item.is_none() {
+                        done.here = self.here(rules, &response.url, root);
+                    }
                     if done.tag.to_python {
                         done.root = Some(Arc::new(doc));
                     }
@@ -478,6 +508,35 @@ impl Engine {
             done.response = Some(response);
         }
         done
+    }
+
+    /// The items "here" rules take from the page the rules run on: each
+    /// rule's, when the page is of the rule's type (or it names none).
+    fn here(
+        &self,
+        rules: &[Arc<Rule>],
+        page_url: &str,
+        root: netweir_dom::Node<'_>,
+    ) -> Vec<(usize, Vec<Value>)> {
+        let page = Url::parse(page_url).ok();
+        let base = self.page_base(page_url, root);
+        let mut kind: Option<Option<auto::Schema>> = None;
+        let mut out = Vec::new();
+        for (at, rule) in rules.iter().enumerate() {
+            let (Links::Here, Some(item)) = (&rule.links, &rule.item) else {
+                continue;
+            };
+            if let Some(when) = rule.when {
+                let k = *kind.get_or_insert_with(|| {
+                    auto::page_type(root, page.as_ref(), base.as_ref(), date::now_utc()).0
+                });
+                if k != Some(when) {
+                    continue;
+                }
+            }
+            out.push((at, item.extract(root, page.as_ref(), base.as_ref())));
+        }
+        out
     }
 
     /// What a page's relative links are relative to: its `<base href>`
@@ -508,8 +567,22 @@ impl Engine {
         let mut out = Vec::new();
         // One request per page per link, however many times it appears.
         let mut seen = std::collections::HashSet::new();
+        // Each navigation type is read once per page, however many rules
+        // take its parts.
+        let mut navigation: HashMap<auto::Schema, auto::Extracted> = HashMap::new();
+        let page = Url::parse(page_url).ok();
         for (at, rule) in rules.iter().enumerate() {
-            for href in extract::links(&rule.selector, root)? {
+            let hrefs = match &rule.links {
+                Links::Query(selector) => extract::links(selector, root)?,
+                Links::Here => continue,
+                Links::Navigation(schema, part) => {
+                    let found = navigation.entry(*schema).or_insert_with(|| {
+                        auto::extract(*schema, root, page.as_ref(), Some(&base), date::now_utc())
+                    });
+                    navigation_links(found, *part)
+                }
+            };
+            for href in hrefs {
                 if let Ok(mut url) = base.join(href.trim()) {
                     url.set_fragment(None);
                     if !rule.takes(&url) {
@@ -672,6 +745,15 @@ impl Engine {
                         values,
                         notes: done.notes,
                         html: done.html,
+                    });
+                }
+                for (rule, values) in done.here {
+                    out.push(Out::Item {
+                        rule,
+                        url: done.tag.url.clone(),
+                        values,
+                        notes: Vec::new(),
+                        html: None,
                     });
                 }
                 match (done.tag.rule, done.response) {
@@ -1195,6 +1277,10 @@ impl Crawler {
     }
 
     /// Adds a link rule and returns its number. `kind` is "css" or "xpath";
+    /// or "navigation", with "<type>:<part>" as `query`, for the links in
+    /// a part (items, next_page, sub_categories) of the page's
+    /// auto-extracted navigation item; or "here", for `item` taken from
+    /// each page the rules run on, of page type `when` if given.
     /// `item` is extracted from the pages it leads to; `follow` applies the
     /// rules to those pages too; `to_python` hands them to Python as
     /// "ruled" events.
@@ -1202,7 +1288,7 @@ impl Crawler {
     /// `allow_domains` and `deny_domains` limit them by site.
     /// `browser` fetches the pages it leads to in Chrome, and `steps`
     /// (JSON) is what to do on them first, in place of the crawl's.
-    #[pyo3(signature = (kind, query, item=None, follow=true, to_python=false, priority=0, allow=None, deny=None, allow_domains=None, deny_domains=None, browser=false, steps=None))]
+    #[pyo3(signature = (kind, query, item=None, follow=true, to_python=false, priority=0, allow=None, deny=None, allow_domains=None, deny_domains=None, browser=false, steps=None, when=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_rule(
         &self,
@@ -1218,6 +1304,7 @@ impl Crawler {
         deny_domains: Option<Vec<String>>,
         browser: bool,
         steps: Option<&str>,
+        when: Option<&str>,
     ) -> PyResult<usize> {
         let patterns = |what: &str, list: Option<Vec<String>>| {
             list.unwrap_or_default()
@@ -1231,8 +1318,15 @@ impl Crawler {
         let domains = |list: Option<Vec<String>>| {
             netweir_core::allowed_domains(&list.unwrap_or_default()).map_err(PyValueError::new_err)
         };
+        let when = when
+            .map(|w| {
+                auto::Schema::from_name(w)
+                    .ok_or_else(|| PyValueError::new_err(format!("no page type {w:?}")))
+            })
+            .transpose()?;
         let rule = Rule {
-            selector: selector(kind, query)?,
+            links: Links::new(kind, query)?,
+            when,
             item: item.map(|i| i.inner.clone()),
             follow,
             to_python,

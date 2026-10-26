@@ -559,6 +559,24 @@ def _admits(rule: Any, url: str) -> bool:
     return not (rule.deny_domains and not _offsite(url, rule.deny_domains))
 
 
+def _rule_hits(rule: Any, page: Any) -> list[Any]:
+    """What a rule's query finds on ``page``: elements or strings."""
+    if rule.kind == "css":
+        return page.css(rule.query)
+    if rule.kind == "xpath":
+        return page.xpath(rule.query)
+    if rule.kind == "navigation":
+        from netweir import auto
+
+        schema, part = rule.query.split(":")
+        [kind] = [t for t in vars(auto).values() if getattr(t, "_schema", None) == schema]
+        found = page.extract(kind)[part]
+        if isinstance(found, dict):
+            found = [found]
+        return [link["url"] for link in found or [] if link.get("url")]
+    return []
+
+
 def _rule_links(spider: Any, page: Any, hows: dict[int, Any]) -> list[Any]:
     """The Requests the spider's rules make from ``page``: Python's version
     of what the crawl does in Rust, for showing them."""
@@ -568,8 +586,7 @@ def _rule_links(spider: Any, page: Any, hows: dict[int, Any]) -> list[Any]:
     seen: set[str] = set()
     out = []
     for rule in spider.rules:
-        hits = page.css(rule.query) if rule.kind == "css" else page.xpath(rule.query)
-        for hit in hits:
+        for hit in _rule_hits(rule, page):
             href = hit if isinstance(hit, str) else hit.attr("href")
             if not href:
                 continue

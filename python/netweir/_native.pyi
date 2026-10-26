@@ -468,7 +468,7 @@ class Crawler:
     ) -> None: ...
     def add_rule(
         self,
-        kind: Literal["css", "xpath"],
+        kind: Literal["css", "xpath", "navigation", "here"],
         query: str,
         item: ItemSpec | None = None,
         follow: bool = True,
@@ -480,6 +480,7 @@ class Crawler:
         deny_domains: list[str] | None = None,
         browser: bool = False,
         steps: str | None = None,
+        when: str | None = None,
     ) -> int: ...
     def submit(
         self,

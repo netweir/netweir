@@ -503,10 +503,61 @@ pub(crate) fn _auto_fields(schema: &str) -> PyResult<Vec<&'static str>> {
         .ok_or_else(|| PyValueError::new_err(format!("no auto-extracted item type {schema:?}")))
 }
 
+/// Where a rule's links come from.
+pub(crate) enum Links {
+    /// What a CSS or XPath query finds.
+    Query(Selector),
+    /// A part of the page's auto-extracted navigation item: the items it
+    /// lists, its next page, or its sub-categories.
+    Navigation(Schema, Part),
+    /// None: the rule's item is taken from the page the rules run on.
+    Here,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Part {
+    Items,
+    NextPage,
+    SubCategories,
+}
+
+impl Links {
+    /// From `add_rule`'s kind and query: "css" or "xpath" with a query,
+    /// "navigation" with "<schema>:<part>", or "here".
+    pub fn new(kind: &str, query: &str) -> PyResult<Links> {
+        match kind {
+            "here" => Ok(Links::Here),
+            "navigation" => {
+                let (schema, part) = query.split_once(':').unwrap_or((query, ""));
+                let schema = Schema::from_name(schema)
+                    .filter(|s| s.fields().contains(&"sub_categories"))
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!("{schema:?} isn't a navigation item type"))
+                    })?;
+                let part = match part {
+                    "items" => Part::Items,
+                    "next_page" => Part::NextPage,
+                    "sub_categories" => Part::SubCategories,
+                    other => {
+                        return Err(PyValueError::new_err(format!(
+                            "part is items, next_page or sub_categories, not {other:?}"
+                        )));
+                    }
+                };
+                Ok(Links::Navigation(schema, part))
+            }
+            _ => selector(kind, query).map(Links::Query),
+        }
+    }
+}
+
 /// A link rule: which links to take from a page, and what to do with the
 /// pages they lead to.
 pub(crate) struct Rule {
-    pub selector: Selector,
+    pub links: Links,
+    /// For a `Here` rule, the page type a page must be for its item to be
+    /// taken.
+    pub when: Option<Schema>,
     pub item: Option<Arc<ItemInner>>,
     /// Apply the rules to the pages this rule leads to.
     pub follow: bool,

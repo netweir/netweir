@@ -1060,6 +1060,7 @@ class _Run:
                 deny_domains=rule.deny_domains,
                 browser=rule.browser,
                 steps=self.rule_steps[-1],
+                when=rule.when,
             )
         # parse runs alongside the rules only if the spider writes its own.
         self.has_parse = type(spider).parse is not Spider.parse
