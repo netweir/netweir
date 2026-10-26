@@ -163,6 +163,15 @@ JSON-LD nested 5,000 deep and a 5 MB description and requires them to
 finish in bounded time. `tests/test_auto.py` covers pinning, tracking
 through a redesign, declarative crawls, exports and the command.
 
+Two scripts measure it on real pages, which are never committed.
+`bench/auto_eval.py` takes pages with complete structured data, reads
+them, strips the JSON-LD, microdata, Open Graph tags and app state, and
+reads them again: the first reading is the answer key for the layout
+readers. `bench/zyte_compare.py` has Zyte API fetch and extract each
+page once, reads the same HTML with Netweir, and reports agreement per
+field; it keeps what it fetched so a comparison can be run again for
+free.
+
 ## Still to come
 
 Some fields of the schema have no reader yet: a job's `headline`, a
