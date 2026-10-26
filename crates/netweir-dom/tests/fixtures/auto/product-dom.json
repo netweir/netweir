@@ -1,0 +1,11 @@
+{"type": "product", "url": "https://lumo.example/p/arc-lamp",
+ "item": {"url": "https://lumo.example/p/arc-lamp",
+  "name": "Arc desk lamp", "price": "49.99", "currency": "GBP", "currency_raw": "£",
+  "availability": "InStock", "sku": "ARC-01", "mpn": "A100",
+  "main_image": {"url": "https://lumo.example/img/arc-1.jpg"},
+  "images": [{"url": "https://lumo.example/img/arc-1.jpg"}, {"url": "https://lumo.example/img/arc-2.jpg"}],
+  "description": "A steel arc lamp with a linen shade. It reaches over a desk from the side, so the light falls where you work and not in your eyes.",
+  "description_html": "<p>A steel arc lamp with a linen shade. It reaches over a desk from the side, so the light falls where you work and not in your eyes.</p>",
+  "breadcrumbs": [{"name": "Home", "url": "https://lumo.example/"}, {"name": "Lamps", "url": "https://lumo.example/c/lamps"}, {"name": "Arc desk lamp", "url": null}]},
+ "sources": {"name": "dom:h1", "price": "dom:span"},
+ "probability": [0.65, 0.75], "validation": []}

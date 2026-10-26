@@ -204,7 +204,7 @@ const TAXONOMY: [&str; 11] = [
 
 /// The words of an element's class and id: each class split at anything
 /// that isn't a letter or digit, leaving out taxonomy classes.
-fn words<'a>(n: Node<'a>) -> impl Iterator<Item = &'a str> {
+pub(crate) fn words<'a>(n: Node<'a>) -> impl Iterator<Item = &'a str> {
     // A custom element's name says what it is too: <s-modal>, <cart-drawer>.
     let custom = n.tag().filter(|t| t.contains('-'));
     [n.attr("class"), n.attr("id"), custom]
@@ -320,7 +320,7 @@ impl Signals {
 }
 
 /// Whether `n` or an element above it says it's boilerplate.
-fn in_boilerplate(n: Node<'_>) -> bool {
+pub(crate) fn in_boilerplate(n: Node<'_>) -> bool {
     std::iter::successors(Some(n), |a| a.parent())
         .filter_map(|a| Some((a, a.tag()?)))
         .take_while(|(_, tag)| !matches!(*tag, "body" | "html"))
@@ -1253,7 +1253,7 @@ fn is_breadcrumb(text: &str) -> bool {
 /// in a banner, or a `<header>` with navigation, that isn't inside an
 /// `<article>` or `<main>`, or with a class or id word `site`, `logo` or `brand`), a
 /// breadcrumb trail, or inside `<noscript>`.
-fn page_heading(n: Node<'_>) -> Option<String> {
+pub(crate) fn page_heading(n: Node<'_>) -> Option<String> {
     if n.tag() != Some("h1") || in_boilerplate(n) {
         return None;
     }
@@ -1334,7 +1334,7 @@ fn author_of(n: Node<'_>) -> Option<String> {
 
 /// An image in the content that could lead it: not an avatar, an icon or
 /// a logo, and not marked smaller than 100 pixels.
-fn lead_image(n: Node<'_>) -> Option<String> {
+pub(crate) fn lead_image(n: Node<'_>) -> Option<String> {
     if n.tag() != Some("img") {
         return None;
     }

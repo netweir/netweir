@@ -8,6 +8,7 @@
 //! item says so in its validation messages.
 
 mod article;
+mod dom;
 pub mod fields;
 mod job;
 mod list;

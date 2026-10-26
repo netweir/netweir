@@ -92,10 +92,13 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
         p.contains_key("name")
             && (p.contains_key("offers") || p.contains_key("sku") || item.has("gtin"))
     });
-    item.probability = match (strong, !chosen.is_empty(), og_product) {
-        (true, _, _) => 0.95,
-        (_, true, _) => 0.8,
-        (_, _, true) => 0.5,
+    let layout = super::dom::product(page, item);
+    item.probability = match (strong, !chosen.is_empty(), og_product, layout) {
+        (true, ..) => 0.95,
+        (_, true, ..) => 0.8,
+        (_, _, true, Some(p)) => p.max(0.5),
+        (_, _, true, None) => 0.5,
+        (.., Some(p)) => p,
         _ => 0.05,
     };
 }

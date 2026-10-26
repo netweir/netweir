@@ -1,0 +1,8 @@
+{"type": "product", "url": "https://wood.example/p/stool",
+ "item": {"url": "https://wood.example/p/stool",
+  "name": "Oak stool", "price": "59.00", "regular_price": "80.00", "currency_raw": "$",
+  "availability": "OutOfStock",
+  "main_image": {"url": "https://cdn.example/stool-large.jpg"},
+  "images": [{"url": "https://cdn.example/stool-large.jpg"}]},
+ "sources": {"price": "dom:ins", "regular_price": "dom:del"},
+ "probability": [0.65, 0.75], "validation": []}

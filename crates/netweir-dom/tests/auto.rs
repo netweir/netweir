@@ -189,3 +189,41 @@ fn a_list_price_equal_to_the_price_is_no_regular_price() {
     assert_eq!(get("price"), "59.990");
     assert_eq!(get("regular_price"), Value::Null);
 }
+
+#[test]
+fn hostile_layouts_are_bounded() {
+    // 20,000 priced cards, a price 3,000 elements deep and 5 MB of
+    // prices in one paragraph's worth of spans.
+    let mut cards = String::from("<h1>Lamps</h1>");
+    for i in 0..20_000 {
+        cards.push_str(&format!(
+            r#"<div class="c"><a href="/p/{i}">Lamp {i}</a><span>£{i}.00</span></div>"#
+        ));
+    }
+    let deep = format!(
+        "<h1>Deep</h1>{}<span>£1.00</span>{}",
+        "<div>".repeat(3000),
+        "</div>".repeat(3000)
+    );
+    let spans = format!(
+        "<h1>Spans</h1><p>{}</p>",
+        "<span>£9.99</span> ".repeat(300_000)
+    );
+    for (case, html) in [cards, deep, spans].into_iter().enumerate() {
+        let doc = Document::parse(&html);
+        let start = std::time::Instant::now();
+        for schema in [
+            Schema::Product,
+            Schema::ProductList,
+            Schema::ProductNavigation,
+            Schema::JobPosting,
+        ] {
+            extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
+        }
+        assert!(
+            start.elapsed().as_secs_f64() < 5.0,
+            "case {case}: {:?}",
+            start.elapsed()
+        );
+    }
+}
