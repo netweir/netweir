@@ -172,12 +172,27 @@ impl ItemInner {
                     Value::Missing
                 }
                 Value::Invalid(text) => {
-                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    validation.push((
-                        field,
-                        format!("{src} found {text:?}, which doesn't read as {field}"),
-                    ));
+                    validation.push((field, unreadable(src, text, field)));
                     Value::Json(serde_json::Value::Null)
+                }
+                Value::Error(reason) => {
+                    validation.push((field, format!("{src} failed: {reason}")));
+                    Value::Json(serde_json::Value::Null)
+                }
+                Value::List(items) => {
+                    sources.push((field, src.clone()));
+                    Value::List(
+                        items
+                            .iter()
+                            .map(|v| match v {
+                                Value::Invalid(text) => {
+                                    validation.push((field, unreadable(src, text, field)));
+                                    Value::Json(serde_json::Value::Null)
+                                }
+                                other => other.clone(),
+                            })
+                            .collect(),
+                    )
                 }
                 other => {
                     sources.push((field, src.clone()));
@@ -261,6 +276,18 @@ impl ItemInner {
         }
         Ok((dict, invalid))
     }
+}
+
+/// The note for a pinned field whose element held text that doesn't read
+/// as the field: the text, its whitespace collapsed and cut at 80
+/// characters, since the element can be a whole container.
+fn unreadable(src: &str, text: &str, field: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = match text.char_indices().nth(80) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text,
+    };
+    format!("{src} found '{text}', which doesn't read as {field}")
 }
 
 fn value_py<'py>(

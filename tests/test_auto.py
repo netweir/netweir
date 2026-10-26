@@ -323,3 +323,26 @@ def test_fields_that_no_single_element_holds_cannot_be_pinned():
 
     class Fine(netweir.auto.ProductList):
         products = netweir.css("li.product::text", all=True, into=str)
+
+
+def test_unreadable_values_in_a_pinned_list_are_noted():
+    html = SALE.replace('<span class="sale">$9.50</span>', '<i class="p">free</i><i class="p">$2</i>')
+
+    class Many(netweir.auto.Product):
+        price = netweir.css("i.p", all=True)
+
+    item = Many.extract(page(html))
+    assert item["price"] == [None, "2"]
+    assert item["metadata"]["validation_messages"]["price"] == [
+        "css:i.p found 'free', which doesn't read as price"
+    ]
+
+
+def test_a_long_unreadable_text_is_shortened_in_the_note():
+    html = SALE.replace('<span class="sale">$9.50</span>', f'<div class="p">{"word " * 200}</div>')
+
+    class Big(netweir.auto.Product):
+        price = netweir.css("div.p")
+
+    [note] = Big.extract(page(html))["metadata"]["validation_messages"]["price"]
+    assert len(note) < 200 and "…" in note
