@@ -212,7 +212,9 @@ leaves out the boilerplate elements found inside it: the share bar under
 the headline, a related box between paragraphs, the tags footer. The
 article's `html` is written by Netweir rather than lexbor for the same
 reason, so it can leave those out, along with scripts, styles, hidden
-elements and comments.
+elements and comments. Event handler attributes (`onclick`) and
+`javascript:` links go too, so the HTML can be shown or stored without
+anything in it running.
 
 ## The article's fields
 

@@ -886,6 +886,19 @@ fn is_listing(all: &[Tally<'_>], mut at: usize) -> bool {
     }
 }
 
+/// An HTML fragment (a description from structured data, say) cleaned
+/// as the main content's HTML is: no scripts, styles or hidden elements,
+/// no comments, nothing that runs.
+pub fn clean_html_fragment(html: &str) -> String {
+    let doc = crate::Document::parse(html);
+    let mut out = String::new();
+    let body = doc.root().descendants().find(|n| n.tag() == Some("body"));
+    for child in body.into_iter().flat_map(|b| b.children()) {
+        clean_html(child, &HashSet::new(), false, &mut out);
+    }
+    out.trim().to_string()
+}
+
 /// `node` as HTML, leaving out `skip`, what nobody sees, and comments.
 fn clean_html(node: Node<'_>, skip: &HashSet<NodeId>, noscript: bool, out: &mut String) {
     const VOID: [&str; 13] = [
@@ -902,6 +915,16 @@ fn clean_html(node: Node<'_>, skip: &HashSet<NodeId>, noscript: bool, out: &mut 
             out.push('<');
             out.push_str(tag);
             for (name, value) in node.attrs() {
+                // Cleaned HTML is for showing or storing, so nothing in it
+                // runs: no event handlers, no javascript: links.
+                let scripted = name.len() > 2 && name[..2].eq_ignore_ascii_case("on")
+                    || value
+                        .trim_start()
+                        .get(..11)
+                        .is_some_and(|v| v.eq_ignore_ascii_case("javascript:"));
+                if scripted {
+                    continue;
+                }
                 out.push(' ');
                 out.push_str(name);
                 out.push_str("=\"");
@@ -1380,6 +1403,14 @@ mod tests {
 
     const PARA: &str = "<p>The river rose through the night, and by morning the lower town \
                         was under a foot of water, with the bridge closed to traffic.</p>";
+
+    #[test]
+    fn cleaned_html_has_no_scripts_or_handlers() {
+        let html = clean_html_fragment(
+            r#"<p onclick="x()">Hi <a href="javascript:go()">there</a> <a href="/ok" ONMOUSEOVER="y()">ok</a></p><script>z()</script>"#,
+        );
+        assert_eq!(html, r#"<p>Hi <a>there</a> <a href="/ok">ok</a></p>"#);
+    }
 
     #[test]
     fn the_article_wins_over_the_page_around_it() {

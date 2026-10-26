@@ -423,7 +423,8 @@ names a person where the page gives one, so an Organization in JSON-LD
 (usually the publication) only fills in when nothing else does. The date is read by
 `parse_date`, so it's a `datetime`, and None if the page wrote something
 Netweir can't read. A field the page doesn't give is None, and so are
-`text` and `html` when there's no main content.
+`text` and `html` when there's no main content. `html` has no scripts,
+event handlers or `javascript:` links, so it's safe to show.
 
 ### Markdown
 

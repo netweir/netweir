@@ -247,6 +247,14 @@ fn from_thing(page: &Page<'_, '_>, thing: &Thing, item: &mut Builder) {
         f::text(get("description")).map(Value::String),
         src("description"),
     );
+    if let Some(html) = get("description").as_str().filter(|d| d.contains('<')) {
+        let cleaned = crate::content::clean_html_fragment(html);
+        item.offer(
+            "description_html",
+            (!cleaned.is_empty()).then_some(Value::String(cleaned)),
+            src("description"),
+        );
+    }
     item.offer(
         "additional_properties",
         properties(get("additionalProperty")),

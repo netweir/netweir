@@ -1,19 +1,72 @@
-{"type": "product", "url": "https://shop.example/p/arc-lamp?ref=home",
+{
+ "type": "product",
+ "url": "https://shop.example/p/arc-lamp?ref=home",
  "item": {
   "url": "https://shop.example/p/arc-lamp?ref=home",
   "canonical_url": "https://shop.example/p/arc-lamp",
-  "name": "Arc desk lamp", "price": "49.99", "regular_price": "59.99",
-  "currency": "GBP", "currency_raw": "GBP", "availability": "InStock",
-  "sku": "ARC-01", "mpn": "LM-ARC-01", "product_id": "1001",
-  "gtin": [{"type": "gtin13", "value": "4006381333931"}],
-  "brand": {"name": "Lumo"},
-  "main_image": {"url": "https://shop.example/img/arc-1.jpg"},
-  "images": [{"url": "https://shop.example/img/arc-1.jpg"}, {"url": "https://cdn.shop.example/arc-2.jpg"}],
+  "name": "Arc desk lamp",
+  "price": "49.99",
+  "regular_price": "59.99",
+  "currency": "GBP",
+  "currency_raw": "GBP",
+  "availability": "InStock",
+  "sku": "ARC-01",
+  "mpn": "LM-ARC-01",
+  "product_id": "1001",
+  "gtin": [
+   {
+    "type": "gtin13",
+    "value": "4006381333931"
+   }
+  ],
+  "brand": {
+   "name": "Lumo"
+  },
+  "main_image": {
+   "url": "https://shop.example/img/arc-1.jpg"
+  },
+  "images": [
+   {
+    "url": "https://shop.example/img/arc-1.jpg"
+   },
+   {
+    "url": "https://cdn.shop.example/arc-2.jpg"
+   }
+  ],
   "description": "A dimmable arc lamp & USB-C charger.",
   "color": "Matte black",
-  "aggregate_rating": {"rating_value": 4.6, "best_rating": 5.0, "review_count": 128},
-  "additional_properties": [{"name": "Wattage", "value": "8 W"}],
-  "breadcrumbs": [{"name": "Home", "url": "https://shop.example/"}, {"name": "Lighting", "url": "https://shop.example/c/lighting/"}]
+  "aggregate_rating": {
+   "rating_value": 4.6,
+   "best_rating": 5.0,
+   "review_count": 128
+  },
+  "additional_properties": [
+   {
+    "name": "Wattage",
+    "value": "8 W"
+   }
+  ],
+  "breadcrumbs": [
+   {
+    "name": "Home",
+    "url": "https://shop.example/"
+   },
+   {
+    "name": "Lighting",
+    "url": "https://shop.example/c/lighting/"
+   }
+  ],
+  "description_html": "A <b>dimmable</b> arc lamp &amp; USB-C charger."
  },
- "sources": {"name": "json-ld", "price": "json-ld", "canonical_url": "meta:canonical", "breadcrumbs": "json-ld"},
- "probability": [0.9, 1.0], "validation": []}
+ "sources": {
+  "name": "json-ld",
+  "price": "json-ld",
+  "canonical_url": "meta:canonical",
+  "breadcrumbs": "json-ld"
+ },
+ "probability": [
+  0.9,
+  1.0
+ ],
+ "validation": []
+}

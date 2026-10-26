@@ -102,9 +102,10 @@ fn from_thing(page: &Page<'_, '_>, job: &Thing, item: &mut Builder) {
         src("description"),
     );
     if let Some(html) = description.as_str().filter(|d| d.contains('<')) {
+        let cleaned = crate::content::clean_html_fragment(html);
         item.offer(
             "description_html",
-            Some(Value::String(html.trim().to_string())),
+            (!cleaned.is_empty()).then_some(Value::String(cleaned)),
             src("description"),
         );
     }
