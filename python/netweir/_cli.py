@@ -598,12 +598,10 @@ def _prepare(args):
 
         if args.spider:
             raise _Usage(f"--spider picks from a file's spiders; {args.file} is a spider's name")
-        try:
-            spider_cls = _project.by_name(args.file)
-        except _Usage:
-            if args.file not in TEMPLATES:
-                raise
+        if args.file in TEMPLATES and not _project.has_spider(args.file):
             spider_cls = template = TEMPLATES[args.file]
+        else:
+            spider_cls = _project.by_name(args.file)
     if template is not None and not args.url:
         raise _Usage(f"the {args.file} template needs --url: where to start")
     if template is None and (args.url or args.strategy):

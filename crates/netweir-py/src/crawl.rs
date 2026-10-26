@@ -1654,21 +1654,25 @@ impl Crawler {
 
     /// Reads a page Python answered a request with, as the rules read a
     /// fetched page of a request with no callback: the links they find are
-    /// queued, one deeper than `depth`. Returns (error, ignored): why the
-    /// page couldn't be read, or why the rules left it alone, if either.
+    /// queued, one deeper than `depth`. Returns (error, ignored, items):
+    /// why the page couldn't be read, or why the rules left it alone, if
+    /// either, and the "item" events of the items Extract rules took from
+    /// it.
+    #[allow(clippy::type_complexity)]
     fn apply_rules(
         &self,
         py: Python<'_>,
         response: &Response,
         url: String,
         depth: u32,
-    ) -> (Option<String>, Option<String>) {
+    ) -> PyResult<(Option<String>, Option<String>, Vec<Py<PyAny>>)> {
         let rules = self
             .engine
             .rules
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let page = url.clone();
         let tag = Tag {
             rule: None,
             apply_rules: true,
@@ -1678,11 +1682,32 @@ impl Crawler {
         };
         let response = response.core().clone();
         let engine = self.engine.clone();
-        py.detach(move || {
-            let done = engine.process(&rules, 0, tag, response);
-            engine.submit_links(&rules, done.links, depth + 1);
-            (done.error, done.ignored)
-        })
+        let (error, ignored, here) = py.detach({
+            let rules = rules.clone();
+            move || {
+                let done = engine.process(&rules, 0, tag, response);
+                engine.submit_links(&rules, done.links, depth + 1);
+                (done.error, done.ignored, done.here)
+            }
+        });
+        let mut items = Vec::new();
+        for (rule, values) in here {
+            let Some(item) = rules[rule].item.as_ref() else {
+                continue;
+            };
+            let (dict, invalid) = item.to_python(py, values)?;
+            let event = (
+                "item",
+                rule,
+                dict,
+                invalid,
+                page.as_str(),
+                Vec::<(String, String, f64)>::new(),
+                None::<String>,
+            );
+            items.push(event.into_pyobject(py)?.into_any().unbind());
+        }
+        Ok((error, ignored, items))
     }
 
     /// Tracked Item fields keep their fingerprints in `store`, and are

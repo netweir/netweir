@@ -516,3 +516,118 @@ fn a_jobs_board_is_not_a_job() {
     assert_eq!(get(&item, "base_salary"), &Value::Null);
     assert!(item.probability < 0.3, "{}", item.probability);
 }
+
+fn sub_urls(html: &str, url: &str) -> Vec<String> {
+    subcategories(html, url)
+        .into_iter()
+        .map(|(u, _)| u)
+        .collect()
+}
+
+#[test]
+fn a_home_pages_menu_beats_one_segment_links_in_the_body() {
+    let html = r#"<html><body><header><nav><a href="/c/lamps">Lamps</a><a href="/c/rugs">Rugs</a>
+      <a href="/c/chairs">Chairs</a></nav></header>
+      <main><p>Read our <a href="/blog">journal</a> or buy <a href="/gift-cards">a gift card</a>.</p></main></body></html>"#;
+    assert_eq!(
+        sub_urls(html, "https://shop.example/"),
+        [
+            "https://shop.example/c/lamps",
+            "https://shop.example/c/rugs",
+            "https://shop.example/c/chairs"
+        ]
+    );
+}
+
+#[test]
+fn a_home_menu_outside_a_nav_and_without_languages() {
+    let html = r#"<html><body><div class="header__menu"><a href="/collections/lamps">Lamps</a>
+      <a href="/collections/rugs">Rugs</a><a href="/collections/chairs">Chairs</a></div>
+      <nav class="locale"><a href="/fr/">Français</a><a href="/de/">Deutsch</a><a href="/en-gb/">English</a></nav>
+      <main><h1>Welcome</h1></main></body></html>"#;
+    assert_eq!(
+        sub_urls(html, "https://shop.example/"),
+        [
+            "https://shop.example/collections/lamps",
+            "https://shop.example/collections/rugs",
+            "https://shop.example/collections/chairs"
+        ]
+    );
+}
+
+#[test]
+fn categories_addressed_by_query_string() {
+    let html = r#"<html><body><h1>Desktops</h1><div class="list-group categories">
+      <a href="index.php?route=product/category&amp;path=20_26">PC</a>
+      <a href="index.php?route=product/category&amp;path=20_28">Mac</a>
+      <a href="index.php?route=product/category&amp;path=20&amp;page=2">2</a>
+      <a href="index.php?route=product/category&amp;path=20&amp;sort=p.price">Price</a></div></body></html>"#;
+    assert_eq!(
+        sub_urls(
+            html,
+            "https://shop.example/index.php?route=product/category&path=20"
+        ),
+        [
+            "https://shop.example/index.php?route=product/category&path=20_26",
+            "https://shop.example/index.php?route=product/category&path=20_28"
+        ]
+    );
+}
+
+#[test]
+fn a_category_class_on_a_wrapper_marks_nothing() {
+    let cards: String = (1..=3)
+        .map(|i| {
+            format!(
+                r#"<li class="item product"><a href="/lamp-{i}.html"><h3>Lamp {i}</h3></a><span class="price">£{i}9.00</span>
+                <a href="/catalog/product_compare/add/product/{i}/">Add to Compare</a></li>"#
+            )
+        })
+        .collect();
+    let html = format!(
+        r#"<html><body class="page-products categorypath-lamps category-lamps"><h1>Lamps</h1>
+        <div class="category-products"><ol class="products">{cards}</ol></div>
+        <div class="sidebar"><a href="/blog">Our blog</a><a href="/brands/lumo">Lumo</a></div>
+        <ul class="subcategories"><li><a href="/lamps/desk.html">Desk</a></li></ul></body></html>"#
+    );
+    assert_eq!(
+        sub_urls(&html, "https://shop.example/lamps.html"),
+        ["https://shop.example/lamps/desk.html"]
+    );
+    let home = r#"<html><body><nav><a href="/collections/lamps">Lamps</a><a href="/collections/rugs">Rugs</a></nav>
+      <section class="featured-collection"><a href="/products/arc">Arc</a><a href="/products/dome">Dome</a></section></body></html>"#;
+    assert_eq!(
+        sub_urls(home, "https://shop.example/"),
+        [
+            "https://shop.example/collections/lamps",
+            "https://shop.example/collections/rugs"
+        ]
+    );
+}
+
+#[test]
+fn a_pages_own_sub_categories_come_before_a_big_menu() {
+    let menu: String = (0..500)
+        .map(|i| format!(r#"<a href="/c/dept{i}">Dept {i}</a>"#))
+        .collect();
+    let html = format!(
+        r#"<html><body><nav aria-label="Categories">{menu}</nav><h1>Lamps</h1>
+        <ul class="subcategories"><li><a href="/c/lamps/desk">Desk lamps</a></li></ul></body></html>"#
+    );
+    assert!(
+        sub_urls(&html, "https://shop.example/c/lamps")
+            .contains(&"https://shop.example/c/lamps/desk".to_string())
+    );
+}
+
+#[test]
+fn a_jobs_linked_facts_are_its_own() {
+    let html = r#"<main><h1>Senior Baker</h1><ul>
+      <li class="fact"><span>Location:</span> <a href="/jobs/in-leeds">Leeds</a></li>
+      <li class="fact"><span>Salary:</span> <a href="/salaries/bakers">£30,000 a year</a></li>
+      <li class="fact"><span>Job type:</span> <a href="/jobs/full-time">Full-time</a></li></ul>
+      <a class="button" href="/apply/1">Apply now</a><p>Bake bread at dawn for a busy bakery.</p></main>"#;
+    let item = read(Schema::JobPosting, html, "https://jobs.example/jobs/1");
+    assert_ne!(get(&item, "job_location"), &Value::Null);
+    assert_ne!(get(&item, "base_salary"), &Value::Null);
+}

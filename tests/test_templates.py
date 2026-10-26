@@ -233,3 +233,45 @@ def test_parse_shows_a_navigation_rules_links(base):
     rule = netweir.Follow(navigation=netweir.auto.ProductNavigation, part="sub_categories")
     assert _rule_hits(rule, page) == [f"{base}/c/lamps/desk"]
     assert _rule_hits(netweir.Extract(netweir.auto.Product), page) == []
+
+
+FAST = ["-s", "throttle=false", "-s", "start_delay=0", "-s", "obey_robots=false"]
+
+
+def project(tmp_path, monkeypatch, text):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "spiders").mkdir()
+    (tmp_path / "spiders" / "shop.py").write_text(text, encoding="utf-8")
+
+
+def test_parse_reads_a_template_subclass(base, tmp_path, monkeypatch, capsys):
+    project(
+        tmp_path,
+        monkeypatch,
+        "import netweir\n\n"
+        "class Shop(netweir.templates.Ecommerce):\n"
+        "    name = 'shop'\n"
+        "    strategy = 'direct_item'\n"
+        f"    url = '{base}/p/arc'\n",
+    )
+    assert main(["parse", "https://other.example/x", *FAST]) == 2
+    capsys.readouterr()
+    assert main(["parse", f"{base}/p/arc", "--spider", "shop", *FAST]) == 0
+    assert "'name': 'arc'" in capsys.readouterr().out
+
+
+def test_crawl_runs_a_template_beside_a_broken_project(base, tmp_path, monkeypatch):
+    project(tmp_path, monkeypatch, "raise RuntimeError('broken')\n")
+    out = tmp_path / "out.jsonl"
+    argv = ["crawl", "ecommerce", "--url", f"{base}/p/arc", "--strategy", "direct_item"]
+    assert main([*argv, "-o", str(out), *FAST, "-q"]) == 0
+    assert len(out.read_text().splitlines()) == 1
+
+
+def test_a_page_a_middleware_answers_gives_its_item(base):
+    class Cache:
+        async def process_request(self, request, spider):
+            return netweir.get(request.url)
+
+    items = run(netweir.templates.Ecommerce, f"{base}/p/arc", "direct_item", middlewares=[Cache()])
+    assert names(items) == ["arc"]

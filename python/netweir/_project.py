@@ -69,6 +69,15 @@ def project_spiders() -> dict[str, list[tuple[type, Path]]]:
     return found
 
 
+def has_spider(name: str) -> bool:
+    """Whether there's a project here with a spider called ``name``: an
+    unreadable project has none."""
+    try:
+        return name in project_spiders()
+    except (_Usage, _Failed):
+        return False
+
+
 def by_name(name: str) -> type:
     """The project's spider called ``name``."""
     try:
@@ -537,7 +546,11 @@ class _Shown:
 def _covers(cls: type, url: str) -> bool:
     from netweir._native import _offsite
 
-    for domain in [*cls.allowed_domains, *([cls.name] if cls.name else [])]:
+    # A template works its domains out per instance.
+    domains = cls.allowed_domains
+    if isinstance(domains, property):
+        domains = cls().allowed_domains
+    for domain in [*domains, *([cls.name] if cls.name else [])]:
         try:
             if not _offsite(url, [domain]):
                 return True
@@ -623,6 +636,8 @@ async def _outputs(spider: Any, how: tuple, page: Any, hows: dict[int, Any]) -> 
         if rule.callback is not None:
             out += await _collect(_resolve(spider, rule.callback)(page))
         if rule.follow:
+            if rule.extract is None:
+                out += _here_items(spider, page)
             out += _rule_links(spider, page, hows)
         return out
     # A page the rules apply to, as a start page is: its links, and parse
@@ -630,7 +645,22 @@ async def _outputs(spider: Any, how: tuple, page: Any, hows: dict[int, Any]) -> 
     out = []
     if type(spider).parse is not Spider.parse:
         out += await _collect(spider.parse(page))
-    return out + _rule_links(spider, page, hows)
+    return out + _here_items(spider, page) + _rule_links(spider, page, hows)
+
+
+def _here_items(spider: Any, page: Any) -> list[Any]:
+    """The items the spider's Extract rules take from ``page`` itself."""
+    out = []
+    kind = None
+    for rule in spider.rules:
+        if rule.kind != "here":
+            continue
+        if rule.when is not None:
+            kind = kind or page.page_type()
+            if kind != rule.when:
+                continue
+        out.append(rule.extract.extract(page))
+    return out
 
 
 def parse(args) -> int:
@@ -666,14 +696,14 @@ def parse(args) -> int:
             raise _Usage(f"{cls.__name__} has no method {args.callback!r}")
         how: tuple = ("callback", args.callback, cb_kwargs)
     elif args.rules:
-        if not cls.rules:
+        if not spider.rules:
             raise _Usage(f"{cls.__name__} has no rules; give a callback with -c")
-        rule = next((r for r in cls.rules if _admits(r, args.url)), None)
+        rule = next((r for r in spider.rules if r.kind != "here" and _admits(r, args.url)), None)
         if rule is None:
             raise _Usage(f"no rule of {cls.__name__} takes {args.url}")
         # A rule that only follows links has nothing to say: parse, as in Scrapy.
         how = ("rule", rule) if rule.extract or rule.callback else ("callback", "parse", cb_kwargs)
-    elif cls.rules:
+    elif spider.rules:
         how = ("start",)
     else:
         how = ("callback", "parse", cb_kwargs)
