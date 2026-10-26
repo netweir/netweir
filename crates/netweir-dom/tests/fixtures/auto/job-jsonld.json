@@ -6,7 +6,7 @@
   "job_location": {"raw": "1 Iron St, Manchester, M1 1AA, GB"},
   "description": "Build fast things. Rust",
   "description_html": "<p>Build <strong>fast</strong> things.</p><ul><li>Rust</li></ul>",
-  "employment_type": "Full-time, Contract",
+  "employment_type": "full-time, contract",
   "base_salary": {"raw": null, "value_min": "70000", "value_max": "90000", "rate_type": "annual", "currency": "GBP", "currency_raw": "GBP"},
   "requirements": ["Five years of systems work", "Rust", "Tokio"],
   "hiring_organization": {"name": "Ferrous Ltd", "name_raw": "Ferrous Ltd"},

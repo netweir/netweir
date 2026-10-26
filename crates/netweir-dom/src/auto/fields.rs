@@ -326,8 +326,9 @@ fn rate_type(s: &str) -> Option<&'static str> {
     }
 }
 
-/// `Full-time`, `Part-time` and so on from schema.org's codes; other
-/// words as written. Several are joined with commas.
+/// `full-time`, `part-time` and so on from schema.org's codes, as the
+/// common item schema writes them; other words as written. Several are
+/// joined with commas.
 pub fn employment_type(v: &Value) -> Option<String> {
     let words: Vec<String> = each(Some(v))
         .filter_map(Value::as_str)
@@ -335,13 +336,13 @@ pub fn employment_type(v: &Value) -> Option<String> {
         .filter(|w| !w.is_empty())
         .map(|w| {
             match w.to_ascii_uppercase().replace(['-', ' '], "_").as_str() {
-                "FULL_TIME" => "Full-time",
-                "PART_TIME" => "Part-time",
-                "CONTRACTOR" | "CONTRACT" => "Contract",
-                "TEMPORARY" => "Temporary",
-                "INTERN" | "INTERNSHIP" => "Internship",
-                "VOLUNTEER" => "Volunteer",
-                "PER_DIEM" => "Per diem",
+                "FULL_TIME" => "full-time",
+                "PART_TIME" => "part-time",
+                "CONTRACTOR" | "CONTRACT" => "contract",
+                "TEMPORARY" => "temporary",
+                "INTERN" | "INTERNSHIP" => "internship",
+                "VOLUNTEER" => "volunteer",
+                "PER_DIEM" => "per diem",
                 _ => w,
             }
             .to_string()
@@ -942,10 +943,10 @@ mod tests {
 
     #[test]
     fn employment_types_read_as_words() {
-        assert_eq!(employment_type(&json!("FULL_TIME")), s("Full-time"));
+        assert_eq!(employment_type(&json!("FULL_TIME")), s("full-time"));
         assert_eq!(
             employment_type(&json!(["PART_TIME", "CONTRACTOR"])),
-            s("Part-time, Contract")
+            s("part-time, contract")
         );
         assert_eq!(employment_type(&json!("Permanent")), s("Permanent"));
         assert_eq!(employment_type(&json!([])), None);
