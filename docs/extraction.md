@@ -152,24 +152,31 @@ and `netweir.parse_salary`, beside `parse_price` and `parse_date`. See
 
 A product page that only shows its product still has a heading, a price
 near it and a buy button. Netweir takes the heading as the name and the
-price closest to it as the price. A struck-through price beside it
-becomes `regular_price`. The images around them, an "In stock" or
-"Sold out", labelled codes (`SKU: ARC-01`), the description and the
-breadcrumb trail fill in the rest. Prices inside a grid of cards never
-count, so the "You may also like" strip under a product can't pass for
+price closest to it as the price, as long as that price is marked as one
+or has a buy button beside it. A struck-through price beside it, or one
+written "Was £120" or "RRP £120", becomes `regular_price`. The images
+around them, an "In stock" or "Sold out", labelled codes
+(`SKU: ARC-01`), the description and the breadcrumb trail fill in the
+rest. Prices inside a grid of cards never count, and neither do "Save
+£20" badges or prices in a sentence ("Tickets £15", "Products from
+£19"), so the "You may also like" strip under a product can't pass for
 it, and a category page asked for a product stays close to zero.
 
 Category and search pages are read from their cards: the biggest group
 of elements that look alike, most of them priced, each giving a name, a
 link, a price and an image. The next page comes from `rel=next` or from
 the pagination widget's "Next" link (a disabled one is skipped), and
-`page_number` from the widget or the URL. A job advert without a
-JobPosting gives its title, salary, location, job type and closing date
-when the page shows an apply button, a salary or those labelled facts.
+`page_number` from the widget or the URL, on pages that have a listing.
+A job advert without a JobPosting gives its title, salary, location, job
+type and closing date when the page shows an "Apply now" button, a
+salary written as adverts write it ("£12.50 an hour"), or two of those
+labelled facts.
 
-These guesses carry lower probabilities than structured data (0.55 to
-0.75), and every field says `dom:` and the element it came from, so you
-can see at a glance which ones to check and pin.
+These guesses carry lower probabilities than structured data: 0.5 for a
+job, 0.55 to 0.7 for a product, 0.75 for a listing, and 0.3 for the
+cards on a page that shows a product of its own. Every field says
+`dom:` and the element it came from, so you can see at a glance which
+ones to check and pin.
 
 ## What it doesn't do yet
 

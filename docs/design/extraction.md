@@ -68,14 +68,25 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    element marked as a price, and not a sentence with a price in it),
    then for each the nearest element above it that holds a link, and that
    element's look-alikes (`Node::similar`): a group of three or more, at
-   least half of them priced, is a listing's cards. A product is the page
-   heading with the nearest unstruck price outside cards and boilerplate;
-   its images, stock text, buy button and labelled codes are read from
-   the smallest element holding both, widened to take in the gallery. A
-   listing is the largest card group outside boilerplate. A job needs the
-   heading plus an apply control, a salary or two labelled facts. Every
-   walk is linear in the page, and at most 2,000 texts are looked at for
-   prices.
+   least half of them priced, is a listing's cards. A price is old when
+   it's struck, classed as old (`was`, `compare`) or says so ("Was",
+   "RRP"); one only its class calls `list` or `regular` is old only when
+   there's another price to be the current one, since some themes class
+   the price that way when nothing is on sale. A product is the page
+   heading with the nearest current price within 300 nodes, outside
+   cards, boilerplate and links, that is marked as a price or has a buy
+   button beside it; a page with three or more buy buttons is a listing.
+   Its images, stock text, buy button and labelled codes are read from
+   the smallest element holding heading and price, widened (never past
+   `<main>` or `<article>`) to take in the gallery. A listing is the
+   largest card group outside boilerplate; its pager is read only when
+   there is one. A job needs the heading plus an apply button ("Apply
+   now", not "Apply filters"), a salary line that starts with the money,
+   or two labelled facts. Each reader walks the page a fixed number of
+   times; texts read from an element above a price stop after 40 bytes,
+   at most 2,000 prices and 16 card searches are made, and the stress
+   pages in `tests/auto_layout.rs` and `tests/auto.rs` hold them to time
+   limits.
 
 Meta-tag fallbacks for products apply only when the page has a Product
 or says `og:type` product: a news page asked for a product gives its URL

@@ -17,9 +17,19 @@ use super::{Builder, Page};
 use crate::content::{in_boilerplate, lead_image, page_heading, words};
 use crate::{Node, NodeId, NodeKind};
 
-/// Text pieces looked at for prices at most; past it, the rest of the
-/// page isn't read for them.
+/// Prices read at most; past it, the rest of the page isn't read for
+/// them.
 const MAX_PRICES: usize = 2000;
+
+/// Short texts with digits looked at for prices at most.
+const MAX_TEXTS: usize = 50_000;
+
+/// `similar()` searches at most, each a pass over the page's index.
+const MAX_GROUPS: usize = 16;
+
+/// How far, in elements and texts, a product's price may be from its
+/// heading.
+const NEAR: u32 = 300;
 
 /// Levels above a price searched for the card holding it.
 const CARD_DEPTH: usize = 8;
@@ -28,8 +38,20 @@ const CARD_DEPTH: usize = 8;
 pub(crate) struct Shown<'a> {
     pub node: Node<'a>,
     pub money: PriceFields,
-    /// Struck through, or marked as the old price.
-    pub struck: bool,
+    pub struck: Struck,
+}
+
+/// Whether a price is the old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Struck {
+    No,
+    /// Only its class says so (`price-item--regular`), which some themes
+    /// put on the price itself when nothing is on sale: the price when
+    /// there's no other.
+    Weak,
+    /// Struck through, classed as old (`was`, `compare`), or said in
+    /// words (`Was £120`, `RRP £120`).
+    Strong,
 }
 
 /// The prices on a page and the cards that hold them.
@@ -49,7 +71,7 @@ impl<'a> Layout<'a> {
         let mut group_of: HashMap<NodeId, usize> = HashMap::new();
         let mut groups: Vec<Vec<Node<'a>>> = Vec::new();
         let mut priced: Vec<HashSet<NodeId>> = Vec::new();
-        for s in shown.iter().filter(|s| !s.struck) {
+        for s in shown.iter().filter(|s| s.struck == Struck::No) {
             let holder = std::iter::successors(Some(s.node), |n| n.parent())
                 .take(CARD_DEPTH)
                 .take_while(|n| !matches!(n.tag(), Some("body" | "html") | None))
@@ -57,6 +79,7 @@ impl<'a> Layout<'a> {
             let Some(holder) = holder else { continue };
             let g = match group_of.get(&holder.id()) {
                 Some(g) => *g,
+                None if groups.len() >= MAX_GROUPS => continue,
                 None => {
                     let mut members = holder.similar(crate::similar::SIMILAR);
                     members.push(holder);
@@ -122,6 +145,9 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
     let mut looked = 0;
     let mut stack: Vec<Node<'_>> = vec![root];
     while let Some(n) = stack.pop() {
+        if out.len() >= MAX_PRICES || looked >= MAX_TEXTS {
+            break;
+        }
         match n.kind() {
             NodeKind::Text => {
                 let text = n.data().unwrap_or_default().trim();
@@ -129,18 +155,33 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
                     continue;
                 }
                 looked += 1;
-                if looked > MAX_PRICES {
-                    break;
+                let Some(parent) = n.parent() else { continue };
+                // `Was £120.00 Now £99.00` in one text: both prices.
+                if let Some((was, now)) = was_now(text) {
+                    if seen.insert(parent.id()) {
+                        out.push(Shown {
+                            node: parent,
+                            money: was,
+                            struck: Struck::Strong,
+                        });
+                        out.push(Shown {
+                            node: parent,
+                            money: now,
+                            struck: Struck::No,
+                        });
+                    }
+                    continue;
                 }
-                // A price split across elements (`£<b>49</b>.99`) is read
-                // from the smallest element around it that holds all of it.
                 // The text itself first, so `<s>£120</s> £99` reads £99
-                // for the element holding both.
-                let tries = std::iter::successors(n.parent(), |a| a.parent())
+                // for the element holding both; then, for a price split
+                // across elements (`£<b>49</b>.99`), the smallest element
+                // around it that holds all of it.
+                let own = std::iter::once((parent, Some(text.to_string())));
+                let tries = std::iter::successors(Some(parent), |a| a.parent())
                     .take(3)
-                    .map(|el| (el, el.text()));
-                let own = n.parent().map(|p| (p, text.to_string()));
-                for (el, whole) in own.into_iter().chain(tries) {
+                    .map(|el| (el, short_text(el, 40)));
+                for (el, whole) in own.chain(tries) {
+                    let Some(whole) = whole else { break };
                     let whole = whole.split_whitespace().collect::<Vec<_>>().join(" ");
                     if whole.len() > 40 || wordy(&whole) {
                         break;
@@ -156,7 +197,7 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
                         out.push(Shown {
                             node: el,
                             money,
-                            struck: struck(el),
+                            struck: struck(el, &whole),
                         });
                     }
                     break;
@@ -173,18 +214,48 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
     out
 }
 
+/// The text at and below `n`, or None once it passes `cap` bytes: read
+/// no further than that, so asking costs little on a big element.
+fn short_text(n: Node<'_>, cap: usize) -> Option<String> {
+    let mut out = String::new();
+    for (visited, d) in std::iter::once(n).chain(n.descendants()).enumerate() {
+        if visited > 4 * cap + 16 {
+            return None;
+        }
+        if d.kind() == NodeKind::Text {
+            out.push_str(d.data().unwrap_or_default());
+            if out.len() > cap * 2 && out.trim().len() > cap {
+                return None;
+            }
+        }
+    }
+    (out.trim().len() <= cap).then_some(out)
+}
+
+/// The old and new price of `Was £120.00 Now £99.00`.
+fn was_now(text: &str) -> Option<(PriceFields, PriceFields)> {
+    let lower = text.to_lowercase();
+    let at = lower.find("now")?;
+    if !lower[..at].contains("was") || !text.is_char_boundary(at) {
+        return None;
+    }
+    let (was, now) = (f::price_text(&text[..at]), f::price_text(&text[at..]));
+    (was.price.is_some() && now.price.is_some()).then_some((was, now))
+}
+
 /// Whether text says more than a price does: "Free delivery on orders
-/// over £50" is a sentence with a price in it.
+/// over £50", "Save £20", "Tickets £15" have a price in them, but aren't
+/// one.
 fn wordy(text: &str) -> bool {
-    const ALLOWED: [&str; 16] = [
-        "from", "now", "only", "was", "price", "sale", "inc", "incl", "vat", "each", "per", "unit",
-        "our", "today", "save", "off",
+    const ALLOWED: [&str; 28] = [
+        "from", "now", "only", "was", "price", "sale", "inc", "incl", "excl", "vat", "tax", "each",
+        "per", "unit", "our", "today", "rrp", "msrp", "list", "regular", "special", "offer",
+        "starting", "euro", "euros", "dollars", "pounds", "price:",
     ];
     text.split(|c: char| !c.is_alphabetic())
-        .filter(|w| w.chars().count() > 3)
+        .filter(|w| w.chars().count() > 2)
         .filter(|w| !ALLOWED.iter().any(|a| w.eq_ignore_ascii_case(a)))
-        .count()
-        > 1
+        .any(|w| crate::price::currency_code(w).is_none())
 }
 
 const PRICE_WORDS: [&str; 5] = ["price", "prices", "pricing", "amount", "cost"];
@@ -202,6 +273,10 @@ const STRUCK_WORDS: [&str; 10] = [
     "crossed",
 ];
 
+/// Words that, beside a price word in one class (`list-price`,
+/// `price-item--regular`), mark the price as maybe the old one.
+const WEAK_WORDS: [&str; 2] = ["list", "regular"];
+
 /// Whether `n` or one of the two elements above it has a class or id
 /// word from `list` (or, for prices, `itemprop=price`).
 fn marked(n: Node<'_>, list: &[&str]) -> bool {
@@ -213,16 +288,57 @@ fn marked(n: Node<'_>, list: &[&str]) -> bool {
         })
 }
 
-/// A price struck through or marked as the old one.
-fn struck(n: Node<'_>) -> bool {
-    std::iter::successors(Some(n), |a| a.parent())
-        .take(3)
-        .any(|a| {
-            matches!(a.tag(), Some("del" | "s" | "strike"))
-                || a.attr("style")
-                    .is_some_and(|s| s.to_ascii_lowercase().contains("line-through"))
-        })
-        || marked(n, &STRUCK_WORDS)
+/// Whether a price, reading `text`, is the old one.
+fn struck(n: Node<'_>, text: &str) -> Struck {
+    let lower = text.to_lowercase();
+    let said = [
+        "was",
+        "rrp",
+        "msrp",
+        "list price",
+        "compare at",
+        "originally",
+        "before",
+    ]
+    .iter()
+    .any(|w| lower.starts_with(w));
+    let strong = said
+        || std::iter::successors(Some(n), |a| a.parent())
+            .take(3)
+            .any(|a| {
+                matches!(a.tag(), Some("del" | "s" | "strike"))
+                    || a.attr("style")
+                        .is_some_and(|s| s.to_ascii_lowercase().contains("line-through"))
+            })
+        || marked(n, &STRUCK_WORDS);
+    let weak = || {
+        std::iter::successors(Some(n), |a| a.parent())
+            .take(2)
+            .filter_map(|a| a.attr("class"))
+            .flat_map(str::split_whitespace)
+            .any(|class| {
+                let parts: Vec<&str> = class
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                let has = |list: &[&str]| {
+                    parts
+                        .iter()
+                        .any(|p| list.iter().any(|l| p.eq_ignore_ascii_case(l)))
+                };
+                (has(&PRICE_WORDS) && has(&WEAK_WORDS))
+                    || ["listprice", "regularprice"]
+                        .iter()
+                        .any(|c| class.eq_ignore_ascii_case(c))
+            })
+    };
+    if strong {
+        Struck::Strong
+    } else if weak() {
+        Struck::Weak
+    } else {
+        Struck::No
+    }
 }
 
 pub(crate) fn source(n: Node<'_>) -> String {
@@ -239,55 +355,100 @@ fn heading<'a>(root: Node<'a>, layout: &Layout<'_>) -> Option<(Node<'a>, String)
         .find_map(|n| Some((n, page_heading(n)?)))
 }
 
-/// The price nearest the heading outside cards and boilerplate, a
-/// marked price counting as half as far: the product's.
-fn main_price<'l, 'a>(layout: &'l Layout<'a>, h1: Node<'_>) -> Option<&'l Shown<'a>> {
-    let at = h1.order() as f64;
+/// The product's price: the one nearest the heading, outside cards,
+/// boilerplate and links, a marked price counting as half as far. Only
+/// a price marked as one, or with a buy button beside it, counts: a
+/// stray "from £19" under a category's heading isn't a product's. A page
+/// with buy buttons on three or more things is a listing, not a product.
+/// A price only its class calls the old one is the price when there's
+/// no other.
+fn main_price<'l, 'a>(
+    layout: &'l Layout<'a>,
+    root: Node<'a>,
+    h1: Node<'a>,
+) -> Option<&'l Shown<'a>> {
+    let at = h1.order();
     let distance = |s: &Shown<'_>| {
-        let d = (s.node.order() as f64 - at).abs();
+        let d = s.node.order().abs_diff(at) as f64;
         if marked(s.node, &PRICE_WORDS) {
             d / 2.0
         } else {
             d
         }
     };
-    layout
-        .shown
-        .iter()
-        .filter(|s| !s.struck && !layout.in_card(s.node) && !in_boilerplate(s.node))
-        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+    if buy_controls(root) >= 3 {
+        return None;
+    }
+    let near = |s: &&Shown<'a>| {
+        s.node.order().abs_diff(at) <= NEAR
+            && !layout.in_card(s.node)
+            && !in_boilerplate(s.node)
+            && !std::iter::successors(Some(s.node), |n| n.parent()).any(|n| n.tag() == Some("a"))
+    };
+    // Nearest first; the buy-button check walks the price's part of the
+    // page, so it runs once per part and only until a price passes.
+    let mut buying: HashMap<NodeId, bool> = HashMap::new();
+    let mut best = |struck: Struck| {
+        let mut found: Vec<&'l Shown<'a>> = layout
+            .shown
+            .iter()
+            .filter(|s| s.struck == struck)
+            .filter(near)
+            .collect();
+        found.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
+        found.into_iter().find(|s| {
+            marked(s.node, &PRICE_WORDS) || {
+                let shared = common(h1, s.node);
+                *buying
+                    .entry(shared.id())
+                    .or_insert_with(|| buy_control(widen(shared, layout)))
+            }
+        })
+    };
+    let now = best(Struck::No);
+    now.or_else(|| best(Struck::Weak))
+}
+
+/// Whether two prices are the same amount: `49.9` is `£49.90`.
+fn same_amount(a: Option<&str>, b: Option<&str>) -> bool {
+    let n = |s: Option<&str>| s.and_then(|s| s.parse::<f64>().ok());
+    a.is_some() && (a == b || (n(a).is_some() && n(a) == n(b)))
 }
 
 /// What a page's layout says about the product it shows, offered after
 /// the structured sources. Returns the probability it gives, or None
 /// when the page doesn't look like a product: no heading, or no price
-/// outside a listing's cards.
+/// beside it (see [`main_price`]).
 pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     let layout = Layout::of(page.root);
     let (h1, name) = heading(page.root, &layout)?;
-    let price = main_price(&layout, h1)?;
+    let price = main_price(&layout, page.root, h1)?;
     let usable = |s: &&Shown<'_>| !layout.in_card(s.node) && !in_boilerplate(s.node);
     item.offer("name", Some(Value::String(name)), source(h1));
     let ours = price.money.price.clone();
-    let agrees = !item.has("price") || item.get("price").as_str() == ours.as_deref();
+    // The layout's price is the one structured data gave, or there was
+    // none: what's beside it (its currency, the old price) belongs to it.
+    let agrees = !item.has("price") || same_amount(item.get("price").as_str(), ours.as_deref());
     item.offer("price", ours.clone().map(Value::String), source(price.node));
-    item.offer(
-        "currency",
-        price.money.currency.clone().map(Value::String),
-        source(price.node),
-    );
-    item.offer(
-        "currency_raw",
-        price.money.currency_raw.clone().map(Value::String),
-        source(price.node),
-    );
+    if agrees {
+        item.offer(
+            "currency",
+            price.money.currency.clone().map(Value::String),
+            source(price.node),
+        );
+        item.offer(
+            "currency_raw",
+            price.money.currency_raw.clone().map(Value::String),
+            source(price.node),
+        );
+    }
     let amount = |s: &Option<String>| s.as_deref().and_then(|a| a.parse::<f64>().ok());
     if agrees
         && let Some(was) = layout
             .shown
             .iter()
             .filter(usable)
-            .filter(|s| s.struck && amount(&s.money.price) > amount(&ours))
+            .filter(|s| s.struck != Struck::No && amount(&s.money.price) > amount(&ours))
             .min_by_key(|s| s.node.order().abs_diff(price.node.order()))
             .filter(|s| s.node.order().abs_diff(price.node.order()) <= 40)
     {
@@ -300,7 +461,7 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     let region = region(h1, price.node, &layout);
     let images: Vec<Value> = region
         .descendants()
-        .filter(|n| n.tag() == Some("img") && !layout.in_card(*n) && !links_away(*n))
+        .filter(|n| n.tag() == Some("img") && product_image(*n, region, &layout))
         .filter_map(lead_image)
         .map(Value::String)
         .collect();
@@ -331,30 +492,52 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     Some(if control { 0.7 } else { 0.55 })
 }
 
+/// Whether an image in the product's part of the page shows it: not in a
+/// card, not a thumbnail linking elsewhere, and not in a section of its
+/// own with its own heading (a blog teaser under the buy box).
+fn product_image(img: Node<'_>, region: Node<'_>, layout: &Layout<'_>) -> bool {
+    !layout.in_card(img)
+        && !links_away(img)
+        && !std::iter::successors(img.parent(), |n| n.parent())
+            .take_while(|n| n.id() != region.id())
+            .any(|n| {
+                n.children()
+                    .any(|c| matches!(c.tag(), Some("h2" | "h3" | "h4" | "h5" | "h6")))
+            })
+}
+
 /// The part of the page about the product: the smallest element holding
 /// the heading and the price, widened up to three levels to take in the
 /// images beside them.
 fn region<'a>(h1: Node<'a>, price: Node<'a>, layout: &Layout<'_>) -> Node<'a> {
-    let above: Vec<NodeId> = std::iter::successors(Some(h1), |n| n.parent())
+    widen(common(h1, price), layout)
+}
+
+/// The smallest element holding both.
+fn common<'a>(h1: Node<'a>, price: Node<'a>) -> Node<'a> {
+    let above: HashSet<NodeId> = std::iter::successors(Some(h1), |n| n.parent())
         .map(|n| n.id())
         .collect();
-    let mut area = std::iter::successors(Some(price), |n| n.parent())
+    std::iter::successors(Some(price), |n| n.parent())
         .find(|n| above.contains(&n.id()))
-        .unwrap_or(h1);
+        .unwrap_or(h1)
+}
+
+/// `area` widened up to three levels to take in the product's images.
+fn widen<'a>(mut area: Node<'a>, layout: &Layout<'_>) -> Node<'a> {
     let has_image = |n: Node<'_>| {
         n.descendants().any(|d| {
-            d.tag() == Some("img")
-                && !layout.in_card(d)
-                && !links_away(d)
-                && lead_image(d).is_some()
+            d.tag() == Some("img") && product_image(d, n, layout) && lead_image(d).is_some()
         })
     };
     for _ in 0..3 {
-        if has_image(area) {
+        if has_image(area) || matches!(area.tag(), Some("main" | "article" | "body" | "html")) {
             break;
         }
         match area.parent() {
-            Some(p) if !matches!(p.tag(), Some("body" | "html") | None) => area = p,
+            Some(p) if !matches!(p.tag(), Some("main" | "article" | "body" | "html") | None) => {
+                area = p
+            }
             _ => break,
         }
     }
@@ -397,7 +580,7 @@ const BUY: [&str; 12] = [
 
 fn control_text(n: Node<'_>) -> Option<String> {
     let text = match n.tag()? {
-        "button" | "a" => n.text(),
+        "button" | "a" => short_text(n, 60)?,
         "input" => n.attr("value")?.to_string(),
         _ => return None,
     };
@@ -409,11 +592,38 @@ fn control_text(n: Node<'_>) -> Option<String> {
     )
 }
 
+fn buys(t: &str) -> bool {
+    t.len() <= 40 && BUY.iter().any(|b| t.contains(b))
+}
+
 fn buy_control(region: Node<'_>) -> bool {
     region
         .descendants()
         .filter_map(control_text)
-        .any(|t| t.len() <= 40 && BUY.iter().any(|b| t.contains(b)))
+        .any(|t| buys(&t))
+}
+
+/// Buy buttons on the page outside boilerplate, counted up to three.
+fn buy_controls(root: Node<'_>) -> usize {
+    let mut count = 0;
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() != NodeKind::Element && n.kind() != NodeKind::Document {
+            continue;
+        }
+        if crate::content::says_boilerplate(n) {
+            continue;
+        }
+        if control_text(n).is_some_and(|t| buys(&t)) {
+            count += 1;
+            if count >= 3 {
+                break;
+            }
+            continue;
+        }
+        stack.extend(n.children());
+    }
+    count
 }
 
 /// `InStock` or `OutOfStock` from a short text in the product's part of
@@ -433,7 +643,11 @@ fn availability(region: Node<'_>) -> Option<&'static str> {
         }
         if ["out of stock", "sold out"].iter().any(|p| t.contains(p)) {
             Some("OutOfStock")
-        } else if t.contains("in stock") && !t.contains("not in stock") {
+        } else if t.contains("in stock")
+            && !["not in stock", "back in stock", "when", "soon", "notify"]
+                .iter()
+                .any(|p| t.contains(p))
+        {
             Some("InStock")
         } else {
             None
@@ -492,11 +706,14 @@ fn labelled<'a>(
         }
         let found = match n.kind() {
             NodeKind::Element if matches!(n.tag(), Some("dt" | "th")) => {
+                let wanted = if n.tag() == Some("dt") { "dd" } else { "td" };
                 let value = std::iter::successors(n.next_sibling(), |s| s.next_sibling())
-                    .find(|s| s.kind() == NodeKind::Element);
-                field_of(&n.text())
+                    .find(|s| s.kind() == NodeKind::Element)
+                    .filter(|v| v.tag() == Some(wanted));
+                short_text(n, 60)
+                    .and_then(|label| field_of(&label))
                     .zip(value)
-                    .and_then(|(f, v)| Some((f, read(f, &v.text())?, v)))
+                    .and_then(|(f, v)| Some((f, read(f, &short_text(v, 300)?)?, v)))
             }
             NodeKind::Text => {
                 let text = n.data().unwrap_or_default();
@@ -507,9 +724,10 @@ fn labelled<'a>(
                         let next =
                             std::iter::successors(parent?.next_sibling(), |s| s.next_sibling())
                                 .find(|s| {
-                                    s.kind() != NodeKind::Text || !s.text().trim().is_empty()
+                                    s.kind() != NodeKind::Text
+                                        || !s.data().unwrap_or_default().trim().is_empty()
                                 })?;
-                        read(field, &next.text())?
+                        read(field, &short_text(next, 300)?)?
                     } else {
                         read(field, value)?
                     };
@@ -535,17 +753,46 @@ fn code(_: &'static str, v: &str) -> Option<Value> {
     (!v.is_empty() && v.len() <= 40 && v.split(' ').count() <= 2).then_some(Value::String(v))
 }
 
-/// The element holding the product's description: one whose class or id
-/// says so, with some text in it.
+/// The element holding the description: the first one whose class or id
+/// says so, with some text in it, outside boilerplate and cards. One
+/// holding the page's heading is a wrapper, not the description.
 fn description<'a>(root: Node<'a>, layout: &Layout<'_>) -> Option<Node<'a>> {
-    root.descendants().find(|n| {
-        n.kind() == NodeKind::Element
-            && !matches!(n.tag(), Some("meta" | "body" | "html"))
-            && words(*n).any(|w| w.eq_ignore_ascii_case("description"))
-            && n.text().trim().len() >= 40
-            && !layout.in_card(*n)
-            && !in_boilerplate(*n)
-    })
+    let holds_h1: HashSet<NodeId> = root
+        .descendants()
+        .filter(|n| n.tag() == Some("h1"))
+        .flat_map(|h| std::iter::successors(Some(h), |n| n.parent()))
+        .map(|n| n.id())
+        .collect();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() != NodeKind::Element && n.kind() != NodeKind::Document {
+            continue;
+        }
+        if crate::content::says_boilerplate(n) || layout.in_card(n) {
+            continue;
+        }
+        let named = !matches!(n.tag(), Some("meta" | "body" | "html"))
+            && words(n).any(|w| w.eq_ignore_ascii_case("description"));
+        if named && !holds_h1.contains(&n.id()) && has_text(n, 40) {
+            return Some(n);
+        }
+        let at = stack.len();
+        stack.extend(n.children());
+        stack[at..].reverse();
+    }
+    None
+}
+
+/// Whether there are at least `min` bytes of text at and below `n`,
+/// reading no more than it takes to know.
+fn has_text(n: Node<'_>, min: usize) -> bool {
+    let mut total = 0;
+    n.descendants()
+        .filter(|d| d.kind() == NodeKind::Text)
+        .any(|d| {
+            total += d.data().unwrap_or_default().trim().len();
+            total >= min
+        })
 }
 
 /// A description's text and HTML, without a heading that only says
@@ -628,7 +875,7 @@ pub(crate) fn listing(root: Node<'_>, base: Option<&Url>) -> Option<Listing> {
     let found = heading(root, &layout);
     let product_page = found
         .as_ref()
-        .is_some_and(|(h1, _)| main_price(&layout, *h1).is_some());
+        .is_some_and(|(h1, _)| main_price(&layout, root, *h1).is_some());
     let container = cards[0].parent().unwrap_or(cards[0]);
     Some(Listing {
         products,
@@ -676,7 +923,11 @@ fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Val
     };
     let shown: Vec<&Shown<'_>> = layout.shown.iter().filter(inside).collect();
     let amount = |s: &Shown<'_>| s.money.price.as_deref().and_then(|a| a.parse::<f64>().ok());
-    if let Some(now) = shown.iter().find(|s| !s.struck) {
+    let current = shown
+        .iter()
+        .find(|s| s.struck == Struck::No)
+        .or_else(|| shown.iter().find(|s| s.struck == Struck::Weak));
+    if let Some(now) = current {
         let money = &now.money;
         for (k, v) in [
             ("price", &money.price),
@@ -689,7 +940,7 @@ fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Val
         }
         if let Some(was) = shown
             .iter()
-            .find(|s| s.struck && amount(s) > amount(now))
+            .find(|s| s.struck != Struck::No && amount(s) > amount(now))
             .and_then(|s| s.money.price.clone())
         {
             out.insert("regular_price".into(), Value::String(was));
@@ -761,8 +1012,12 @@ pub(crate) fn next_page(
     base: Option<&Url>,
 ) -> Option<(String, Option<String>, String)> {
     let says_next = |a: Node<'_>| {
-        let text = a.text().split_whitespace().collect::<Vec<_>>().join(" ");
-        let lower = text.to_lowercase();
+        let text = short_text(a, 40).unwrap_or_default();
+        let lower = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         let label = [a.attr("aria-label"), a.attr("title"), a.attr("rel")]
             .into_iter()
             .flatten()
@@ -770,7 +1025,8 @@ pub(crate) fn next_page(
         label
             || words(a).any(|w| w.eq_ignore_ascii_case("next"))
             || (lower.len() <= 20 && lower.starts_with("next"))
-            || matches!(lower.as_str(), "›" | "»" | "→" | ">" | ">>")
+            // `»` and `>>` are as often the last page as the next.
+            || matches!(lower.as_str(), "›" | "→" | ">")
     };
     pagers(root).find_map(|pager| {
         pager.descendants().find_map(|a| {
@@ -785,7 +1041,7 @@ pub(crate) fn next_page(
                 return None;
             }
             let url = f::absolute(href, base)?;
-            if page.is_some_and(|p| p.as_str() == url) {
+            if page.is_some_and(|p| same_page(p, &url)) {
                 return None;
             }
             let text = f::text(&Value::String(a.text()));
@@ -878,9 +1134,25 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         .find(|n| matches!(n.tag(), Some("article" | "main")))
         .or_else(|| std::iter::successors(Some(h1), |n| n.parent()).nth(3))
         .unwrap_or(h1);
-    let apply = area.descendants().filter_map(control_text).any(|t| {
-        t.len() <= 30 && (t.starts_with("apply") || t.contains(" apply") || t == "easy apply")
-    });
+    let apply = area
+        .descendants()
+        .filter_map(|n| Some((n, control_text(n)?)))
+        .any(|(n, t)| {
+            let t = t.trim_end_matches(['!', '.', '›', '→', ' ']);
+            let says = t == "apply"
+                || [
+                    "apply now",
+                    "apply for this",
+                    "apply online",
+                    "apply here",
+                    "apply today",
+                    "easy apply",
+                    "quick apply",
+                ]
+                .iter()
+                .any(|p| t.starts_with(p));
+            says && !in_boilerplate(n)
+        });
     let salary_text = || {
         area.descendants()
             .filter(|n| n.kind() == NodeKind::Text)
@@ -889,9 +1161,27 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                 if t.len() > 80 || !t.bytes().any(|b| b.is_ascii_digit()) {
                     return None;
                 }
+                // A salary as adverts write it starts with the money
+                // ("£12.50 an hour", "Up to £40k"), not as a sentence
+                // about pay; and it isn't a headline.
+                let lower = t.to_lowercase();
+                let starts = t.starts_with(|c: char| !c.is_alphabetic())
+                    || ["up to ", "from ", "salary", "pay "]
+                        .iter()
+                        .any(|p| lower.starts_with(p));
+                let headline = std::iter::successors(n.parent(), |a| a.parent())
+                    .take(3)
+                    .any(|a| matches!(a.tag(), Some("h1" | "h2" | "h3" | "h4" | "h5" | "h6")));
+                // No words, no rate: `£9.99` isn't a salary.
+                if !starts || headline || !t.chars().any(char::is_alphabetic) {
+                    return None;
+                }
                 let s = f::salary(&Value::String(t.to_string()))?;
-                (!s["currency_raw"].is_null() && !s["rate_type"].is_null())
-                    .then(|| (s, n.parent().unwrap_or(n)))
+                let parent = n.parent()?;
+                (!s["currency_raw"].is_null()
+                    && !s["rate_type"].is_null()
+                    && !in_boilerplate(parent))
+                .then_some((s, parent))
             })
     };
     let salary = facts
@@ -938,7 +1228,7 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                     .iter()
                     .any(|o| w.eq_ignore_ascii_case(o))
                 })
-                && (1..=80).contains(&n.text().trim().len())
+                && short_text(*n, 80).is_some_and(|t| !t.trim().is_empty())
         })
     {
         item.offer(
@@ -977,4 +1267,21 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         item.offer("description_html", html.map(Value::String), source(d));
     }
     Some(0.5)
+}
+
+/// Whether `url` is `page` written another way: the same host, path
+/// (with or without its trailing slash) and query.
+fn same_page(page: &Url, url: &str) -> bool {
+    let Ok(other) = Url::parse(url) else {
+        return false;
+    };
+    let path = |u: &Url| u.path().trim_end_matches('/').to_string();
+    let query = |u: &Url| {
+        let mut q: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+        q.sort();
+        q
+    };
+    page.host_str() == other.host_str()
+        && path(page) == path(&other)
+        && query(page) == query(&other)
 }

@@ -92,7 +92,9 @@ pub(crate) fn read_list(page: &Page<'_, '_>, item: &mut Builder) {
             format!("meta:{key}"),
         );
     }
-    let next = next_link(page);
+    // A pager on a page with no listing is a thread's or an archive's.
+    let listing = listed.is_some() || cards.is_some();
+    let next = next_link(page, listing);
     if let Some((url, text, source)) = &next {
         let mut link = Map::new();
         link.insert("url".into(), Value::String(url.clone()));
@@ -101,7 +103,7 @@ pub(crate) fn read_list(page: &Page<'_, '_>, item: &mut Builder) {
         }
         item.offer("pagination_next", Some(Value::Object(link)), source.clone());
     }
-    if let Some((n, source)) = dom::page_number(page.root, page.page) {
+    if let Some((n, source)) = dom::page_number(page.root, page.page).filter(|_| listing) {
         item.offer("page_number", Some(Value::from(n)), source);
     }
     item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
@@ -161,7 +163,9 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
             );
         }
     }
-    let next = next_link(page);
+    // A pager on a page with no listing is a thread's or an archive's.
+    let listing = listed.is_some() || cards.is_some();
+    let next = next_link(page, listing);
     if let Some((url, text, source)) = &next {
         let mut request = Map::new();
         request.insert("url".into(), Value::String(url.clone()));
@@ -170,7 +174,7 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
         }
         item.offer("next_page", Some(Value::Object(request)), source.clone());
     }
-    if let Some((n, source)) = dom::page_number(page.root, page.page) {
+    if let Some((n, source)) = dom::page_number(page.root, page.page).filter(|_| listing) {
         item.offer("page_number", Some(Value::from(n)), source);
     }
     item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
@@ -362,8 +366,14 @@ fn from_product(
 
 /// The next page: `<link rel=next>` or `<a rel=next>`, its URL absolute,
 /// the link's text if it has any, and where it was.
-fn next_link(page: &Page<'_, '_>) -> Option<(String, Option<String>, String)> {
-    rel_next(page).or_else(|| dom::next_page(page.root, page.page, page.base))
+/// The next page: `rel=next`, else, on a page with a listing, its
+/// pagination widget's next link.
+fn next_link(page: &Page<'_, '_>, listing: bool) -> Option<(String, Option<String>, String)> {
+    rel_next(page).or_else(|| {
+        listing
+            .then(|| dom::next_page(page.root, page.page, page.base))
+            .flatten()
+    })
 }
 
 fn rel_next(page: &Page<'_, '_>) -> Option<(String, Option<String>, String)> {

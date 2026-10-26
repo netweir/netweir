@@ -319,6 +319,12 @@ impl Signals {
     }
 }
 
+/// Whether the element itself says it's boilerplate (not what's above it).
+pub(crate) fn says_boilerplate(n: Node<'_>) -> bool {
+    n.tag()
+        .is_some_and(|tag| signals(n, tag).says_boilerplate())
+}
+
 /// Whether `n` or an element above it says it's boilerplate.
 pub(crate) fn in_boilerplate(n: Node<'_>) -> bool {
     std::iter::successors(Some(n), |a| a.parent())
