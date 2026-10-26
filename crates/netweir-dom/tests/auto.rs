@@ -2,7 +2,8 @@
 //! `fixtures/auto/<name>.html` has a `<name>.json` with the item type to
 //! ask for, the page's URL, every field that must have a value (the rest
 //! must be null), the sources of some fields, the probability's range and
-//! the fields with validation messages. "@body" and "@html" stand for
+//! the fields with validation messages, and the page's type as
+//! `page_type()` should tell it. "@body" and "@html" stand for
 //! the article text and HTML that `content::article` reads.
 
 use std::path::Path;
@@ -80,6 +81,15 @@ fn every_auto_fixture_matches_its_answer() {
             failures.push(format!(
                 "{name}: probability {} outside {low}..={high}",
                 got.probability
+            ));
+        }
+        let (typed, _) =
+            netweir_dom::auto::page_type(doc.root(), Some(&url), None, Civil::date(2026, 10, 25));
+        let typed = typed.map_or("other", Schema::name);
+        if Some(typed) != want["page_type"].as_str() {
+            failures.push(format!(
+                "{name}: page type {typed}, not {}",
+                want["page_type"]
             ));
         }
         let mut flagged: Vec<&str> = got.validation.iter().map(|(f, _)| *f).collect();

@@ -5,4 +5,4 @@
    {"name": "Bread bin", "url": "https://shop.example/p/b"},
    {"name": "Cake tin", "url": "https://shop.example/p/c"}],
   "pagination_next": {"url": "https://shop.example/c/kitchen?page=2", "text": "Next"}},
- "sources": {"products": "microdata"}, "probability": [0.85, 1.0], "validation": []}
+ "sources": {"products": "microdata"}, "probability": [0.85, 1.0], "validation": [], "page_type": "product-list"}

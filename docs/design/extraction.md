@@ -114,6 +114,19 @@ Meta-tag fallbacks for products apply only when the page has a Product
 or says `og:type` product: a news page asked for a product gives its URL
 and a probability near zero, not its title as a product name.
 
+## Page type
+
+`auto::page_type` builds the page's context once (structured data, meta
+tags, app state) and runs the Product, JobPosting, ProductList and
+Article readers on it, keeping each probability. The highest wins if it
+reaches 0.4, the earlier type winning a tie. An article found only from
+its main content counts as 0.45 rather than 0.6, since any page with a
+few paragraphs reads that way, product pages with long descriptions
+included. A product reader that finds several products, none of them
+the page's own URL, or a product on a CollectionPage, gives 0.5: that's
+a listing. The corpus's answers each carry the type `page_type` must
+give.
+
 ## Pinning
 
 A field the subclass declares under a schema field's name replaces it.
@@ -159,6 +172,6 @@ They can be pinned meanwhile.
 - Generic records: the main repeated region of any page (table rows,
   cards, list entries) as rows with inferred column names, for public
   records, catalogues and directories.
-- `page.page_type()`, the rest of the schema (ForumThread, ArticleList,
+- The rest of the schema (ForumThread, ArticleList,
   BusinessPlace, RealEstate, Serp and others), and spider templates run
   with a URL.

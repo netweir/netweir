@@ -3,4 +3,4 @@
   "currency": "EUR", "currency_raw": "EUR", "availability": "OutOfStock",
   "brand": {"name": "Kiln & Co"},
   "breadcrumbs": [{"name": "Kitchen", "url": "https://shop.example/c/kitchen"}, {"name": "Mug", "url": null}]},
- "sources": {"brand": "json-ld"}, "probability": [0.9, 1.0], "validation": []}
+ "sources": {"brand": "json-ld"}, "probability": [0.9, 1.0], "validation": [], "page_type": "product"}

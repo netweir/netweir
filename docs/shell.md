@@ -64,10 +64,13 @@ netweir extract --type job-posting https://jobs.example/j/1042
 netweir extract --type article --field-names zyte https://paper.example/story
 ```
 
-`--type` is `product` (the default), `product-list`, `product-navigation`,
-`job-posting` or `article`. The item ends with `metadata`, whose `sources`
-say where each field came from: `json-ld`, `microdata:` and the element's
-CSS path, `meta:` and the tag, or `dom:` and the element. That path is
+`--type` is `product`, `product-list`, `product-navigation`,
+`job-posting` or `article`; without it, the command reads whichever the
+page looks like (see `page.page_type()`), and a page that looks like
+none of them as a product, with a note saying so. The item ends with
+`metadata`, whose `sources` say where each field came from: `json-ld`, `microdata:` and the element's
+CSS path, `meta:` and the tag, `js:` and the path in the app's state, or
+`dom:` and the element. That path is
 what you'd pin a field with when one comes out wrong. `--field-names zyte`
 writes the common schema's camelCase names (`regularPrice`) instead of
 Netweir's snake_case ones. `--browser` reads the page Chrome rendered.

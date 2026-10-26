@@ -4,4 +4,4 @@
   "brand": {"name": "Woodworks"},
   "main_image": {"url": "https://wood.example/i/stool.jpg"}, "images": [{"url": "https://wood.example/i/stool.jpg"}]},
  "sources": {"price": "js:__APOLLO_STATE__.Product:42.priceInCents"},
- "probability": [0.8, 0.9], "validation": []}
+ "probability": [0.8, 0.9], "validation": [], "page_type": "product"}

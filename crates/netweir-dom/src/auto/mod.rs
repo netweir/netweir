@@ -45,6 +45,18 @@ impl Schema {
         }
     }
 
+    /// The type's name: `product`, `product-list`, `product-navigation`,
+    /// `job-posting` or `article`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Schema::Product => "product",
+            Schema::ProductList => "product-list",
+            Schema::ProductNavigation => "product-navigation",
+            Schema::JobPosting => "job-posting",
+            Schema::Article => "article",
+        }
+    }
+
     /// `product`, `product-list`, `product-navigation`, `job-posting` or
     /// `article` (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
@@ -126,27 +138,8 @@ pub fn extract(
         Some(b) => Some(b.clone()),
         None => page.map(|p| page_base(root, p)),
     };
-    let ctx = Page {
-        root,
-        page,
-        base: found_base.as_ref(),
-        now,
-        things: schema_org::things(root, found_base.as_ref()),
-        meta: meta(root),
-        elements: Default::default(),
-    };
-    let mut item = Builder::new(schema);
-    if let Some(p) = page {
-        item.set("url", Value::String(p.to_string()), "page".into());
-    }
-    match schema {
-        Schema::Product => product::read(&ctx, &mut item),
-        Schema::JobPosting => job::read(&ctx, &mut item),
-        Schema::Article => article::read(&ctx, &mut item),
-        Schema::ProductList => list::read_list(&ctx, &mut item),
-        Schema::ProductNavigation => list::read_navigation(&ctx, &mut item),
-    }
-    let mut out = item.finish();
+    let ctx = Page::new(root, page, found_base.as_ref(), now);
+    let mut out = read(schema, &ctx).finish();
     // Microdata sources name their element; its CSS path is worked out
     // only now, for the fields that kept a value, once per element.
     let elements = ctx.elements.into_inner();
@@ -164,6 +157,66 @@ pub fn extract(
         }
     }
     out
+}
+
+/// The type of item the page at `page` holds: a product, a listing, a
+/// job advert or an article, or None when it looks like none of them.
+/// With it, each type's probability, in the order tried. Arguments are
+/// as for [`extract`].
+pub fn page_type(
+    root: Node<'_>,
+    page: Option<&Url>,
+    base: Option<&Url>,
+    now: Civil,
+) -> (Option<Schema>, Vec<(Schema, f64)>) {
+    let found_base = match base {
+        Some(b) => Some(b.clone()),
+        None => page.map(|p| page_base(root, p)),
+    };
+    let ctx = Page::new(root, page, found_base.as_ref(), now);
+    let all: Vec<(Schema, f64)> = [
+        Schema::Product,
+        Schema::JobPosting,
+        Schema::ProductList,
+        Schema::Article,
+    ]
+    .into_iter()
+    .map(|schema| (schema, read(schema, &ctx).probability))
+    .collect();
+    // Any page with a few paragraphs reads as an article from its main
+    // content alone (0.6), product pages with a long description too, so
+    // that counts for less than any other type's evidence.
+    let weight = |(schema, p): &(Schema, f64)| match schema {
+        Schema::Article if *p < 0.7 => p.min(0.45),
+        _ => *p,
+    };
+    let mut best: Option<(Schema, f64)> = None;
+    for one in &all {
+        let w = weight(one);
+        if w >= TYPED && best.is_none_or(|(_, b)| w > b) {
+            best = Some((one.0, w));
+        }
+    }
+    (best.map(|(s, _)| s), all)
+}
+
+/// The weighed probability a page needs to be typed at all.
+const TYPED: f64 = 0.4;
+
+/// Runs the reader for `schema` on the page.
+fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
+    let mut item = Builder::new(schema);
+    if let Some(p) = ctx.page {
+        item.set("url", Value::String(p.to_string()), "page".into());
+    }
+    match schema {
+        Schema::Product => product::read(ctx, &mut item),
+        Schema::JobPosting => job::read(ctx, &mut item),
+        Schema::Article => article::read(ctx, &mut item),
+        Schema::ProductList => list::read_list(ctx, &mut item),
+        Schema::ProductNavigation => list::read_navigation(ctx, &mut item),
+    }
+    item
 }
 
 /// A source that stands for a microdata element: the element's index in
@@ -198,9 +251,30 @@ pub(crate) struct Page<'p, 'a> {
     pub meta: Map<String, Value>,
     /// Microdata elements sources have named, by index.
     elements: std::cell::RefCell<Vec<crate::NodeId>>,
+    /// The app state in the page's scripts, read the first time a reader
+    /// asks.
+    state: std::cell::OnceCell<Vec<(String, Value)>>,
 }
 
-impl<'a> Page<'_, 'a> {
+impl<'p, 'a> Page<'p, 'a> {
+    fn new(root: Node<'a>, page: Option<&'p Url>, base: Option<&'p Url>, now: Civil) -> Self {
+        Page {
+            root,
+            page,
+            base,
+            now,
+            things: schema_org::things(root, base),
+            meta: meta(root),
+            elements: Default::default(),
+            state: Default::default(),
+        }
+    }
+
+    /// The app state in the page's scripts (see [`js_state`]).
+    pub fn state(&self) -> &[(String, Value)] {
+        self.state.get_or_init(|| js_state::roots(self.root))
+    }
+
     /// Where a thing's property came from, as a source label.
     pub fn source(&self, thing: &Thing, prop: &str) -> String {
         match thing.source {

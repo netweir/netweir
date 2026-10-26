@@ -11,4 +11,4 @@
   "requirements": ["Five years of systems work", "Rust", "Tokio"],
   "hiring_organization": {"name": "Ferrous Ltd", "name_raw": "Ferrous Ltd"},
   "job_start_date_raw": "As soon as possible"},
- "sources": {"job_title": "json-ld"}, "probability": [0.9, 1.0], "validation": []}
+ "sources": {"job_title": "json-ld"}, "probability": [0.9, 1.0], "validation": [], "page_type": "job-posting"}

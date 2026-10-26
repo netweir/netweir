@@ -2,4 +2,4 @@
  "item": {"url": "https://jobs.example/j/9", "job_title": "Technical writer", "remote_status": "Remote",
   "hiring_organization": {"name": "Docs Co", "name_raw": "Docs Co"},
   "date_published": "2026-10-01T09:00:00Z", "date_published_raw": "2026-10-01T09:00:00Z"},
- "sources": {"job_title": "microdata:h1"}, "probability": [0.9, 1.0], "validation": []}
+ "sources": {"job_title": "microdata:h1"}, "probability": [0.9, 1.0], "validation": [], "page_type": "job-posting"}

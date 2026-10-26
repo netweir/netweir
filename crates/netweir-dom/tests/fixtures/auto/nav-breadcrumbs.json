@@ -2,4 +2,4 @@
  "item": {"url": "https://shop.example/c/garden", "category_name": "Garden tools",
   "items": [{"url": "https://shop.example/p/trowel", "name": "Trowel"}],
   "next_page": {"url": "https://shop.example/c/garden/2", "name": "More"}},
- "sources": {"category_name": "json-ld"}, "probability": [0.5, 0.7], "validation": []}
+ "sources": {"category_name": "json-ld"}, "probability": [0.5, 0.7], "validation": [], "page_type": "product-list"}

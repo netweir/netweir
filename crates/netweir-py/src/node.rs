@@ -848,6 +848,23 @@ impl Node {
         })
     }
 
+    /// What the page holds: "product", "product-list", "job-posting",
+    /// "article", or "other" when it looks like none of them. `url` is
+    /// the page's, which its links are relative to.
+    #[pyo3(signature = (url=None))]
+    fn page_type(&self, py: Python<'_>, url: Option<&str>) -> &'static str {
+        let (doc, id) = (self.doc.clone(), self.id);
+        let page = url.and_then(|u| url::Url::parse(u).ok());
+        py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            let node = unsafe { doc.node(id) };
+            let now = netweir_dom::date::now_utc();
+            let (found, _) = netweir_dom::auto::page_type(node, page.as_ref(), None, now);
+            found.map_or("other", netweir_dom::auto::Schema::name)
+        })
+    }
+
     /// The text a reader sees, a blank line between blocks and a line per
     /// list item and table row. With main_only=True, only the main
     /// content without its boilerplate, or None when there's no main

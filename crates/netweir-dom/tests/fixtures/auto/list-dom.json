@@ -8,4 +8,4 @@
    {"name": "Clip lamp", "price": "19.00", "currency": "GBP", "currency_raw": "£", "url": "https://lumo.example/p/clip", "main_image": {"url": "https://lumo.example/i/clip.jpg"}},
    {"name": "Globe lamp", "url": "https://lumo.example/p/globe", "main_image": {"url": "https://lumo.example/i/globe.jpg"}}]},
  "sources": {"products": "dom:ul", "category_name": "dom:h1"},
- "probability": [0.7, 0.8], "validation": []}
+ "probability": [0.7, 0.8], "validation": [], "page_type": "product-list"}

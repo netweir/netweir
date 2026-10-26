@@ -39,7 +39,7 @@ const NAMES: [&str; 8] = [
 ];
 
 /// The page's app state, each with the name it was found under.
-fn roots(root: Node<'_>) -> Vec<(String, Value)> {
+pub(crate) fn roots(root: Node<'_>) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     let scripts: Vec<Node<'_>> = std::iter::once(root)
         .chain(root.descendants())
@@ -885,11 +885,11 @@ where
 /// The product in the page's app state, offered after the structured
 /// sources and before meta tags. Returns the probability it gives.
 pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
-    let roots = roots(page.root);
+    let roots = page.state();
     if roots.is_empty() {
         return None;
     }
-    let (steps, found, _) = search(&roots, product_score);
+    let (steps, found, _) = search(roots, product_score);
     let best = main_product(page, &steps, &found)?;
     let path = steps.label(best.step);
     for (field, value, key) in product_fields(best.object, page.base) {
@@ -904,11 +904,11 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
 /// product objects, each as a list shows it. None on a product's own
 /// page, whose lists are its related products and variants.
 pub(crate) fn listing(page: &Page<'_, '_>) -> Option<(Vec<Map<String, Value>>, String)> {
-    let roots = roots(page.root);
+    let roots = page.state();
     if roots.is_empty() {
         return None;
     }
-    let (steps, found, lists) = search(&roots, product_score);
+    let (steps, found, lists) = search(roots, product_score);
     if found
         .iter()
         .any(|f| !f.listed && f.score >= 3 && !aside(&steps, f.step))
@@ -1008,11 +1008,11 @@ fn job_score(o: &Map<String, Value>) -> u32 {
 
 /// The job in the page's app state. Returns the probability it gives.
 pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
-    let roots = roots(page.root);
+    let roots = page.state();
     if roots.is_empty() {
         return None;
     }
-    let (steps, found, _) = search(&roots, job_score);
+    let (steps, found, _) = search(roots, job_score);
     let best = first_best(
         found.iter().filter(|f| !f.listed && !aside(&steps, f.step)),
         |f| f.score,

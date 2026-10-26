@@ -5,4 +5,4 @@
    {"name": "Dome pendant", "price": "65", "currency": "GBP", "currency_raw": "GBP", "url": "https://lumo.example/p/dome", "main_image": {"url": "https://lumo.example/i/dome.jpg"}, "product_id": "2"},
    {"name": "Clip lamp", "price": "19", "regular_price": "25", "currency": "GBP", "currency_raw": "GBP", "url": "https://lumo.example/p/clip", "main_image": {"url": "https://lumo.example/i/clip.jpg"}, "product_id": "3"}]},
  "sources": {"products": "js:__NEXT_DATA__.props.pageProps.products"},
- "probability": [0.8, 0.9], "validation": []}
+ "probability": [0.8, 0.9], "validation": [], "page_type": "product-list"}

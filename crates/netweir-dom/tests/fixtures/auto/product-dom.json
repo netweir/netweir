@@ -8,4 +8,4 @@
   "description_html": "<p>A steel arc lamp with a linen shade. It reaches over a desk from the side, so the light falls where you work and not in your eyes.</p>",
   "breadcrumbs": [{"name": "Home", "url": "https://lumo.example/"}, {"name": "Lamps", "url": "https://lumo.example/c/lamps"}, {"name": "Arc desk lamp", "url": null}]},
  "sources": {"name": "dom:h1", "price": "dom:span"},
- "probability": [0.65, 0.75], "validation": []}
+ "probability": [0.65, 0.75], "validation": [], "page_type": "product"}

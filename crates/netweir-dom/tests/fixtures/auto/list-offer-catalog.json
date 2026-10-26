@@ -3,4 +3,4 @@
   "products": [
    {"name": "Stoneware mug", "url": "https://shop.example/p/mug", "price": "12.00", "currency": "EUR", "currency_raw": "EUR"},
    {"name": "Enamel mug", "url": "https://shop.example/p/enamel", "price": "14.00", "currency": "EUR", "currency_raw": "EUR"}]},
- "sources": {"products": "json-ld"}, "probability": [0.85, 1.0], "validation": []}
+ "sources": {"products": "json-ld"}, "probability": [0.85, 1.0], "validation": [], "page_type": "product-list"}

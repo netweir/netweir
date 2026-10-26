@@ -11,4 +11,4 @@
   "description": "Three rivers burst their banks overnight.",
   "article_body": "@body", "article_body_html": "@html",
   "videos": [{"url": "https://paper.example/v/river.mp4"}]},
- "sources": {"headline": "json-ld", "article_body": "dom:article"}, "probability": [0.85, 1.0], "validation": []}
+ "sources": {"headline": "json-ld", "article_body": "dom:article"}, "probability": [0.85, 1.0], "validation": [], "page_type": "article"}

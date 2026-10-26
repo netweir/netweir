@@ -38,6 +38,7 @@ pub(crate) const FIELDS: &[&str] = &[
 pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     let candidates = candidates(&page.things);
     let mut chosen = Vec::new();
+    let mut several = false;
     for source in [Source::JsonLd, Source::Microdata] {
         let here: Vec<&Thing> = candidates
             .iter()
@@ -45,6 +46,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
             .filter(|t| t.source == source)
             .collect();
         if let Some(main) = main_product(page, &here) {
+            several |= here.len() > 1 && !is_the_page(page, main);
             if here.len() > 1 {
                 item.note(
                     "item",
@@ -94,7 +96,15 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
             && (p.contains_key("offers") || p.contains_key("sku") || item.has("gtin"))
     });
     let layout = super::dom::product(page, item);
+    // Several products, none of them the page's own, or a product on a
+    // collection page: a listing, read as a product only if asked.
+    let collection = page.things.iter().any(|t| {
+        t.types
+            .iter()
+            .any(|ty| ty == "CollectionPage" || ty == "SearchResultsPage")
+    }) && !chosen.iter().any(|t| is_the_page(page, t));
     item.probability = match (strong, !chosen.is_empty(), og_product, layout) {
+        _ if several || collection => 0.5,
         (true, ..) => 0.95,
         (_, true, ..) => 0.8,
         _ if state.is_some() => state.unwrap_or_default(),
@@ -131,6 +141,30 @@ pub(super) fn candidates(things: &[Thing]) -> Vec<&Thing> {
             })
         })
         .collect()
+}
+
+/// Whether a product's URL is the page's (or its canonical URL).
+fn is_the_page(page: &Page<'_, '_>, product: &Thing) -> bool {
+    let canonical = page
+        .meta("canonical")
+        .and_then(Value::as_str)
+        .and_then(|c| f::absolute(c, page.base));
+    let strip = |s: &str| {
+        s.split('#')
+            .next()
+            .unwrap_or(s)
+            .trim_end_matches('/')
+            .to_string()
+    };
+    product
+        .props
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(|u| f::absolute(u, page.base))
+        .is_some_and(|u| {
+            page.page.is_some_and(|p| strip(p.as_str()) == strip(&u))
+                || canonical.as_deref().is_some_and(|c| strip(c) == strip(&u))
+        })
 }
 
 /// The product the page is about: the one whose URL is the page's,

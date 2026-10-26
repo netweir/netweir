@@ -383,3 +383,29 @@ def test_a_page_without_structured_data_is_read_from_its_layout():
     pinned = page(fixture("product-dom"), url="https://lumo.example/p/arc-lamp").extract(Lumo)
     assert pinned["sku"] == "A100"
     assert pinned["price"] == "49.99"
+
+
+def test_page_type_tells_what_a_page_holds():
+    for name, kind in [
+        ("product-jsonld", "product"),
+        ("product-dom", "product"),
+        ("list-dom", "product-list"),
+        ("list-itemlist", "product-list"),
+        ("job-jsonld", "job-posting"),
+        ("article-jsonld", "article"),
+        ("no-data", "other"),
+    ]:
+        assert page(fixture(name)).page_type() == kind, name
+    root = netweir.parse(fixture("job-dom"))
+    assert root.page_type(url="https://jobs.example/jobs/4411") == "job-posting"
+
+
+def test_extract_command_reads_the_type_the_page_has(capsys):
+    from netweir import _cli
+
+    assert _cli.main(["extract", str(FIXTURES / "job-jsonld.html")]) == 0
+    assert json.loads(capsys.readouterr().out)["job_title"] == "Senior Rust Engineer"
+    assert _cli.main(["extract", str(FIXTURES / "no-data.html")]) == 0
+    out = capsys.readouterr()
+    assert "doesn't look like" in out.err
+    assert "name" in json.loads(out.out)

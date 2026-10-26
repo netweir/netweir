@@ -1,2 +1,2 @@
 {"type": "product", "url": "https://plain.example/", "item": {"url": "https://plain.example/"},
- "sources": {}, "probability": [0.0, 0.1], "validation": []}
+ "sources": {}, "probability": [0.0, 0.1], "validation": [], "page_type": "other"}

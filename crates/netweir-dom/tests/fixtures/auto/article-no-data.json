@@ -1,4 +1,4 @@
 {"type": "article", "url": "https://village.example/marche",
  "item": {"url": "https://village.example/marche", "headline": "Le marché du samedi", "in_language": "fr",
   "article_body": "@body", "article_body_html": "@html"},
- "sources": {"headline": "dom:h1"}, "probability": [0.5, 0.7], "validation": []}
+ "sources": {"headline": "dom:h1"}, "probability": [0.5, 0.7], "validation": [], "page_type": "article"}

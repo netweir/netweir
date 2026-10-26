@@ -5,4 +5,4 @@
   "employment_type": "part-time",
   "hiring_organization": {"name": "Bean There", "name_raw": "Bean There"},
   "job_location": {"raw": "Leeds, West Yorkshire"}},
- "sources": {"base_salary": "json-ld"}, "probability": [0.9, 1.0], "validation": []}
+ "sources": {"base_salary": "json-ld"}, "probability": [0.9, 1.0], "validation": [], "page_type": "job-posting"}

@@ -1,3 +1,3 @@
 {"type": "product", "url": "https://shop.example/p/gift",
  "item": {"url": "https://shop.example/p/gift", "name": "Gift card", "price": "10.00", "currency": "USD", "currency_raw": "USD"},
- "sources": {"price": "json-ld"}, "probability": [0.9, 1.0], "validation": []}
+ "sources": {"price": "json-ld"}, "probability": [0.9, 1.0], "validation": [], "page_type": "product"}

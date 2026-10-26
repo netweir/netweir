@@ -55,6 +55,32 @@ A field the page doesn't give is None. Netweir doesn't guess: a price
 written `$12` has `currency_raw` `"$"` and `currency` None, because `$`
 alone could be any of a dozen dollars.
 
+## Which type a page is
+
+A crawl that wanders reaches product pages, category pages, the blog
+and the careers page in one run. `page.page_type()` says which is
+which: `"product"`, `"product-list"`, `"job-posting"`, `"article"`, or
+`"other"`. It runs each type's reader and keeps the one with the
+strongest evidence, so a product page with a long description is still
+a product, and a category page whose cards are marked up as products is
+a listing.
+
+```python
+kinds = {
+    "product": netweir.auto.Product,
+    "product-list": netweir.auto.ProductList,
+    "job-posting": netweir.auto.JobPosting,
+    "article": netweir.auto.Article,
+}
+
+def parse(self, page):
+    kind = page.page_type()
+    if kind in kinds:
+        yield page.extract(kinds[kind])
+```
+
+`netweir extract URL` does the same when you leave out `--type`.
+
 ## Where each value came from
 
 Every item ends with `metadata`:

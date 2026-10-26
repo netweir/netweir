@@ -1,3 +1,3 @@
 {"type": "product", "url": "https://lumo.example/c/lamps",
  "item": {"url": "https://lumo.example/c/lamps"},
- "sources": {}, "probability": [0.0, 0.1], "validation": []}
+ "sources": {}, "probability": [0.0, 0.1], "validation": [], "page_type": "product-list"}

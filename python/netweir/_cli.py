@@ -255,9 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     extract.add_argument("url")
     extract.add_argument(
         "--type",
-        default="product",
+        default=None,
         choices=["product", "product-list", "product-navigation", "job-posting", "article"],
-        help="what to read (default product)",
+        help="what to read (default: what the page looks like)",
     )
     extract.add_argument(
         "--field-names",
@@ -674,11 +674,21 @@ def _page_command(args) -> int:
         return 1
 
 
-def _extract(page, kind: str, field_names: str) -> None:
+def _extract(page, kind: str | None, field_names: str) -> None:
     import json
 
     from netweir import auto
     from netweir.export import _camel
+
+    if kind is None:
+        kind = page.page_type()
+        if kind == "other":
+            print(
+                "netweir: this page doesn't look like a product, listing, job or "
+                "article; reading it as a product (--type picks another)",
+                file=sys.stderr,
+            )
+            kind = "product"
 
     item = {
         "product": auto.Product,

@@ -4,4 +4,4 @@
   "availability": "OutOfStock", "sku": "MUG-2",
   "main_image": {"url": "https://pots.example/i/mug.jpg"}, "images": [{"url": "https://pots.example/i/mug.jpg"}]},
  "sources": {"name": "js:__NUXT__.data[0].product.title"},
- "probability": [0.7, 0.9], "validation": []}
+ "probability": [0.7, 0.9], "validation": [], "page_type": "product"}

@@ -5,4 +5,4 @@
   "main_image": {"url": "https://shop.example/i/basket.jpg"}, "images": [{"url": "https://shop.example/i/basket.jpg"}],
   "description": "Hand-woven rattan."},
  "sources": {"name": "meta:og:title", "price": "meta:product:price:amount", "canonical_url": "meta:og:url"},
- "probability": [0.4, 0.6], "validation": []}
+ "probability": [0.4, 0.6], "validation": [], "page_type": "product"}

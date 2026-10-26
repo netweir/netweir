@@ -4,4 +4,4 @@
    {"url": "https://lumo.example/p/tall", "name": "Tall floor lamp"}, {"url": "https://lumo.example/p/clip", "name": "Clip lamp"},
    {"url": "https://lumo.example/p/globe", "name": "Globe lamp"}]},
  "sources": {"items": "dom:ul"},
- "probability": [0.7, 0.8], "validation": []}
+ "probability": [0.7, 0.8], "validation": [], "page_type": "product-list"}

@@ -6,4 +6,4 @@
     "main_image": {"url": "https://shop.example/i/nat.jpg"}},
    {"name": "Canvas tote, black", "sku": "TOTE-BLK", "color": "Black", "url": "https://shop.example/p/tote?c=blk",
     "price": "18", "currency": "GBP", "currency_raw": "GBP", "availability": "OutOfStock"}]},
- "sources": {"variants": "json-ld"}, "probability": [0.75, 1.0], "validation": []}
+ "sources": {"variants": "json-ld"}, "probability": [0.75, 1.0], "validation": [], "page_type": "product"}
