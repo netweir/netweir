@@ -420,6 +420,20 @@ pub enum FieldKind {
     Images,
     /// The text of each item (`li`, or each child) as a list.
     Texts,
+    /// `{name, name_raw}`, from the organisation's name.
+    Organization,
+    /// `{raw}`, the place as written.
+    Location,
+    /// `[{name, name_raw, url}]`: each link's text and page, or the text.
+    Authors,
+    /// `{url, text}` for a link.
+    Link,
+    /// `{url, name}` for a page to request.
+    Request,
+    /// The first whole number in the text.
+    Int,
+    /// `[{url}]` for videos or audio: their sources, or links.
+    Media,
 }
 
 /// A field's value from an element a person chose for it.
@@ -535,6 +549,65 @@ pub fn from_element(
                 _ => images(&Value::Array(srcs), base),
             }
         }
+        FieldKind::Organization => {
+            let name = words()?;
+            Some(json!({"name": name, "name_raw": name}))
+        }
+        FieldKind::Location => Some(json!({"raw": words()?})),
+        FieldKind::Authors => {
+            let links: Vec<Value> = std::iter::once(node)
+                .chain(node.descendants())
+                .filter(|n| n.tag() == Some("a"))
+                .filter_map(|a| {
+                    let name = self::text(&Value::String(a.text()))?;
+                    let mut one = json!({"name": name, "name_raw": name});
+                    if let Some(u) = a.attr("href").and_then(|h| absolute(h, base)) {
+                        one["url"] = Value::String(u);
+                    }
+                    Some(one)
+                })
+                .collect();
+            if links.is_empty() {
+                from_text(kind, &words()?, base, now)
+            } else {
+                Some(Value::Array(links))
+            }
+        }
+        FieldKind::Link | FieldKind::Request => {
+            let link = std::iter::once(node)
+                .chain(node.descendants())
+                .find_map(|n| n.attr("href"))
+                .and_then(|h| absolute(h, base))?;
+            let label = if kind == FieldKind::Link {
+                "text"
+            } else {
+                "name"
+            };
+            let mut out = Map::new();
+            out.insert("url".into(), Value::String(link));
+            if let Some(t) = words() {
+                out.insert(label.into(), Value::String(t));
+            }
+            Some(Value::Object(out))
+        }
+        FieldKind::Int => from_text(kind, &words()?, base, now),
+        FieldKind::Media => {
+            let mut urls: Vec<Value> = Vec::new();
+            for n in std::iter::once(node).chain(node.descendants()) {
+                let src = match n.tag() {
+                    Some("video" | "audio" | "source" | "track") => n.attr("src"),
+                    Some("a") => n.attr("href"),
+                    _ => None,
+                };
+                if let Some(u) = src.and_then(|s| absolute(s, base)) {
+                    let one = json!({"url": u});
+                    if !urls.contains(&one) {
+                        urls.push(one);
+                    }
+                }
+            }
+            (!urls.is_empty()).then_some(Value::Array(urls))
+        }
         FieldKind::Texts => {
             let lis: Vec<Node<'_>> = node
                 .descendants()
@@ -588,6 +661,27 @@ pub fn from_text(kind: FieldKind, text: &str, base: Option<&Url>, now: Civil) ->
         FieldKind::EmploymentType => string(employment_type(&v)),
         FieldKind::Image => image(&v, base),
         FieldKind::Images => images(&v, base),
+        FieldKind::Organization => {
+            let name = self::text(&v)?;
+            Some(json!({"name": name, "name_raw": name}))
+        }
+        FieldKind::Location => Some(json!({"raw": self::text(&v)?})),
+        FieldKind::Authors => {
+            let name = self::text(&v)?;
+            Some(json!([{"name": name, "name_raw": name}]))
+        }
+        FieldKind::Link => Some(json!({"url": absolute(text, base)?})),
+        FieldKind::Request => Some(json!({"url": absolute(text, base)?})),
+        FieldKind::Int => {
+            static INT: std::sync::LazyLock<regex::Regex> =
+                std::sync::LazyLock::new(|| regex::Regex::new(r"\d+").unwrap());
+            INT.find(text)?
+                .as_str()
+                .parse::<i64>()
+                .ok()
+                .map(Value::from)
+        }
+        FieldKind::Media => Some(json!([{"url": absolute(text, base)?}])),
         FieldKind::Texts => self::text(&v).map(|t| Value::Array(vec![Value::String(t)])),
     }
 }

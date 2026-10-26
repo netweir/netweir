@@ -56,11 +56,16 @@ impl Schema {
         })
     }
 
-    /// The kind of value each field holds, for reading an element a
-    /// person picked for it.
-    pub fn kind_of(self, field: &str) -> fields::FieldKind {
+    /// The kind of value a field holds, which decides how an element a
+    /// person picked for it is read; None for fields no one element
+    /// holds (a list's products, a group's variants), which can't be
+    /// pinned.
+    pub fn kind_of(self, field: &str) -> Option<fields::FieldKind> {
         use fields::FieldKind as K;
-        match field {
+        Some(match field {
+            "products" | "items" | "sub_categories" | "variants" | "additional_properties" => {
+                return None;
+            }
             "price" | "regular_price" => K::Price,
             "currency" => K::Currency,
             "currency_raw" => K::CurrencyRaw,
@@ -76,15 +81,17 @@ impl Schema {
             "description_html" | "article_body_html" => K::Html,
             "base_salary" => K::Salary,
             "employment_type" => K::EmploymentType,
-            f if f.starts_with("date_") || f == "valid_through" || f == "job_start_date" => {
-                if f.ends_with("_raw") {
-                    K::Text
-                } else {
-                    K::Date
-                }
-            }
+            "hiring_organization" => K::Organization,
+            "job_location" => K::Location,
+            "authors" => K::Authors,
+            "pagination_next" => K::Link,
+            "next_page" => K::Request,
+            "page_number" => K::Int,
+            "videos" | "audios" => K::Media,
+            f if f.ends_with("_raw") => K::Text,
+            f if f.starts_with("date_") || f == "valid_through" || f == "job_start_date" => K::Date,
             _ => K::Text,
-        }
+        })
     }
 }
 

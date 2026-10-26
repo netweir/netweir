@@ -339,7 +339,12 @@ impl ItemSpec {
         for (field, kind, query, pattern, all, strip, convert, default, track) in fields {
             let convert = match convert.as_str() {
                 c if c.starts_with("auto:") => match schema {
-                    Some(s) => Convert::Auto(s.kind_of(&c[5..])),
+                    Some(s) => Convert::Auto(s.kind_of(&c[5..]).ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "{field} can't be pinned with a selector: no one element holds it. \
+                             Give it into= to read it yourself."
+                        ))
+                    })?),
                     None => {
                         return Err(PyValueError::new_err(format!(
                             "{field}: {c:?} is for auto-extracted items"

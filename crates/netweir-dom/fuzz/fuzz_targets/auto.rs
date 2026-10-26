@@ -9,7 +9,7 @@ use netweir_dom::auto::{Schema, extract};
 use netweir_dom::date::Civil;
 use netweir_dom::{Document, NodeKind, css_path};
 
-const KINDS: [FieldKind; 17] = [
+const KINDS: [FieldKind; 24] = [
     FieldKind::Text,
     FieldKind::Html,
     FieldKind::Url,
@@ -27,6 +27,13 @@ const KINDS: [FieldKind; 17] = [
     FieldKind::Image,
     FieldKind::Images,
     FieldKind::Texts,
+    FieldKind::Organization,
+    FieldKind::Location,
+    FieldKind::Authors,
+    FieldKind::Link,
+    FieldKind::Request,
+    FieldKind::Int,
+    FieldKind::Media,
 ];
 
 fuzz_target!(|data: &[u8]| {

@@ -275,3 +275,51 @@ def test_re_on_a_pinned_field_picks_the_text_to_read():
 
     assert ByText.extract(page(html))["price"] == "9.50"
     assert ByElement.extract(page(html))["price"] == "9.50"
+
+
+SHAPES = """<html><body><span class="org">Acme Ltd</span><span class="loc">Leeds, UK</span>
+<p class="by"><a href="/a">Ann Lee</a> and <a href="/r">Raj Patel</a></p>
+<a class="next" href="/c?page=3">Next page</a><span class="pg">Page 2 of 9</span>
+<video class="v" src="/v.mp4"></video></body></html>"""
+
+
+def test_pinned_structured_fields_keep_the_schemas_shape():
+    class Job(netweir.auto.JobPosting):
+        hiring_organization = netweir.css("span.org")
+        job_location = netweir.css("span.loc")
+
+    class Story(netweir.auto.Article):
+        authors = netweir.css("p.by")
+        videos = netweir.css("video.v")
+
+    class Listing(netweir.auto.ProductList):
+        pagination_next = netweir.css("a.next")
+        page_number = netweir.css("span.pg::text")
+
+    class Nav(netweir.auto.ProductNavigation):
+        next_page = netweir.css("a.next")
+
+    p = page(SHAPES, "https://shop.example/c")
+    job = Job.extract(p)
+    assert job["hiring_organization"] == {"name": "Acme Ltd", "name_raw": "Acme Ltd"}
+    assert job["job_location"] == {"raw": "Leeds, UK"}
+    story = Story.extract(p)
+    assert story["authors"] == [
+        {"name": "Ann Lee", "name_raw": "Ann Lee", "url": "https://shop.example/a"},
+        {"name": "Raj Patel", "name_raw": "Raj Patel", "url": "https://shop.example/r"},
+    ]
+    assert story["videos"] == [{"url": "https://shop.example/v.mp4"}]
+    listing = Listing.extract(p)
+    assert listing["pagination_next"] == {"url": "https://shop.example/c?page=3", "text": "Next page"}
+    assert listing["page_number"] == 2
+    assert Nav.extract(p)["next_page"] == {"url": "https://shop.example/c?page=3", "name": "Next page"}
+
+
+def test_fields_that_no_single_element_holds_cannot_be_pinned():
+    with pytest.raises(ValueError, match="products"):
+
+        class Bad(netweir.auto.ProductList):
+            products = netweir.css("li.product")
+
+    class Fine(netweir.auto.ProductList):
+        products = netweir.css("li.product::text", all=True, into=str)
