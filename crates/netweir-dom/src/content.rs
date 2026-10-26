@@ -917,7 +917,8 @@ fn clean_html(node: Node<'_>, skip: &HashSet<NodeId>, noscript: bool, out: &mut 
             for (name, value) in node.attrs() {
                 // Cleaned HTML is for showing or storing, so nothing in it
                 // runs: no event handlers, no javascript: links.
-                let scripted = name.len() > 2 && name[..2].eq_ignore_ascii_case("on")
+                let scripted = name.len() > 2
+                    && name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on"))
                     || value
                         .trim_start()
                         .get(..11)
@@ -1410,6 +1411,11 @@ mod tests {
             r#"<p onclick="x()">Hi <a href="javascript:go()">there</a> <a href="/ok" ONMOUSEOVER="y()">ok</a></p><script>z()</script>"#,
         );
         assert_eq!(html, r#"<p>Hi <a>there</a> <a href="/ok">ok</a></p>"#);
+        // Attribute names needn't be ASCII.
+        assert_eq!(
+            clean_html_fragment(r#"<p aéb="1" oné="2">x</p>"#),
+            r#"<p aéb="1">x</p>"#
+        );
     }
 
     #[test]
