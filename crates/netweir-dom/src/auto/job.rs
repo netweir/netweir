@@ -47,12 +47,13 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     for job in &chosen {
         from_thing(page, job, item);
     }
+    let layout = super::dom::job(page, item);
     item.probability = if chosen.iter().any(|j| j.props.contains_key("title")) {
         0.95
     } else if !chosen.is_empty() {
         0.8
     } else {
-        0.05
+        layout.unwrap_or(0.05)
     };
 }
 

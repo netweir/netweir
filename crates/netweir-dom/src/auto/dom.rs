@@ -313,8 +313,8 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         availability(region).map(|a| Value::String(a.into())),
         source(region),
     );
-    for (field, value, node) in labelled(page.root, &layout) {
-        item.offer(field, Some(Value::String(value)), source(node));
+    for (field, value, node) in labelled(page.root, &layout, &LABELS, code) {
+        item.offer(field, Some(value), source(node));
     }
     if let Some(d) = description(page.root, &layout) {
         let (text, html) = described(d);
@@ -461,25 +461,33 @@ const LABELS: [(&str, &str); 12] = [
     ("manufacturer part number", "mpn"),
 ];
 
-/// Product codes written as a label and a value: `SKU: ARC-01`, a
-/// `<dt>`/`<dd>` or `<th>`/`<td>` pair, or a label element followed by
-/// its value. The first of each kind, outside boilerplate and cards.
-fn labelled<'a>(root: Node<'a>, layout: &Layout<'_>) -> Vec<(&'static str, String, Node<'a>)> {
+/// Values written as a label and a value: `SKU: ARC-01`, a `<dt>`/`<dd>`
+/// or `<th>`/`<td>` pair, or a label element followed by its value. The
+/// labels are `table`'s, each naming a field; `read` turns the value's
+/// text into the field's value, or turns it down. The first of each
+/// field, outside boilerplate and cards.
+fn labelled<'a>(
+    root: Node<'a>,
+    layout: &Layout<'_>,
+    table: &[(&str, &'static str)],
+    read: impl Fn(&'static str, &str) -> Option<Value>,
+) -> Vec<(&'static str, Value, Node<'a>)> {
     let field_of = |label: &str| {
         let l = label
             .trim()
             .trim_end_matches([':', '.'])
             .trim()
             .to_lowercase();
-        LABELS.iter().find(|(k, _)| *k == l).map(|(_, f)| *f)
+        table.iter().find(|(k, _)| *k == l).map(|(_, f)| *f)
     };
-    let code = |v: &str| {
-        let v = v.split_whitespace().collect::<Vec<_>>().join(" ");
-        (!v.is_empty() && v.len() <= 40 && v.split(' ').count() <= 2).then_some(v)
+    let fields = {
+        let mut f: Vec<&str> = table.iter().map(|(_, f)| *f).collect();
+        f.dedup();
+        f.len()
     };
-    let mut out: Vec<(&'static str, String, Node<'a>)> = Vec::new();
+    let mut out: Vec<(&'static str, Value, Node<'a>)> = Vec::new();
     for n in root.descendants() {
-        if out.len() == 2 {
+        if out.len() == fields {
             break;
         }
         let found = match n.kind() {
@@ -488,7 +496,7 @@ fn labelled<'a>(root: Node<'a>, layout: &Layout<'_>) -> Vec<(&'static str, Strin
                     .find(|s| s.kind() == NodeKind::Element);
                 field_of(&n.text())
                     .zip(value)
-                    .and_then(|(f, v)| Some((f, code(&v.text())?, v)))
+                    .and_then(|(f, v)| Some((f, read(f, &v.text())?, v)))
             }
             NodeKind::Text => {
                 let text = n.data().unwrap_or_default();
@@ -501,9 +509,9 @@ fn labelled<'a>(root: Node<'a>, layout: &Layout<'_>) -> Vec<(&'static str, Strin
                                 .find(|s| {
                                     s.kind() != NodeKind::Text || !s.text().trim().is_empty()
                                 })?;
-                        code(&next.text())?
+                        read(field, &next.text())?
                     } else {
-                        code(value)?
+                        read(field, value)?
                     };
                     Some((field, value, parent?))
                 })
@@ -519,6 +527,12 @@ fn labelled<'a>(root: Node<'a>, layout: &Layout<'_>) -> Vec<(&'static str, Strin
         }
     }
     out
+}
+
+/// A product code: a word or two, not a sentence.
+fn code(_: &'static str, v: &str) -> Option<Value> {
+    let v = v.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!v.is_empty() && v.len() <= 40 && v.split(' ').count() <= 2).then_some(Value::String(v))
 }
 
 /// The element holding the product's description: one whose class or id
@@ -820,4 +834,147 @@ pub(crate) fn page_number(root: Node<'_>, page: Option<&Url>) -> Option<(i64, St
             .or_else(from_path)
             .map(|p| (p, "url".to_string()))
     })
+}
+
+/// Labels job adverts put beside their facts, and the field each fills.
+const JOB_LABELS: [(&str, &str); 22] = [
+    ("location", "job_location"),
+    ("job location", "job_location"),
+    ("where", "job_location"),
+    ("salary", "base_salary"),
+    ("pay", "base_salary"),
+    ("compensation", "base_salary"),
+    ("salary range", "base_salary"),
+    ("job type", "employment_type"),
+    ("employment type", "employment_type"),
+    ("contract type", "employment_type"),
+    ("hours", "employment_type"),
+    ("company", "hiring_organization"),
+    ("employer", "hiring_organization"),
+    ("organisation", "hiring_organization"),
+    ("organization", "hiring_organization"),
+    ("closing date", "valid_through"),
+    ("apply by", "valid_through"),
+    ("deadline", "valid_through"),
+    ("posted", "date_published"),
+    ("date posted", "date_published"),
+    ("start date", "job_start_date"),
+    ("starts", "job_start_date"),
+];
+
+/// What a page's layout says about the job it advertises, offered after
+/// the structured sources. Returns the probability it gives, or None when
+/// nothing beside the heading says it's a job: an apply button, a salary,
+/// or two of the facts job adverts list.
+pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
+    let layout = Layout::of(page.root);
+    let (h1, title) = heading(page.root, &layout)?;
+    let schema = super::Schema::JobPosting;
+    let facts = labelled(page.root, &layout, &JOB_LABELS, |field, text| {
+        let kind = schema.kind_of(field)?;
+        f::from_text(kind, text.trim(), page.base, page.now)
+    });
+    let area = std::iter::successors(Some(h1), |n| n.parent())
+        .find(|n| matches!(n.tag(), Some("article" | "main")))
+        .or_else(|| std::iter::successors(Some(h1), |n| n.parent()).nth(3))
+        .unwrap_or(h1);
+    let apply = area.descendants().filter_map(control_text).any(|t| {
+        t.len() <= 30 && (t.starts_with("apply") || t.contains(" apply") || t == "easy apply")
+    });
+    let salary_text = || {
+        area.descendants()
+            .filter(|n| n.kind() == NodeKind::Text)
+            .find_map(|n| {
+                let t = n.data().unwrap_or_default().trim();
+                if t.len() > 80 || !t.bytes().any(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let s = f::salary(&Value::String(t.to_string()))?;
+                (!s["currency_raw"].is_null() && !s["rate_type"].is_null())
+                    .then(|| (s, n.parent().unwrap_or(n)))
+            })
+    };
+    let salary = facts
+        .iter()
+        .find(|(f, _, _)| *f == "base_salary")
+        .map(|(_, v, n)| (v.clone(), *n))
+        .or_else(salary_text);
+    if !apply && salary.is_none() && facts.len() < 2 {
+        return None;
+    }
+    item.offer("job_title", Some(Value::String(title)), source(h1));
+    for (field, value, node) in &facts {
+        if *field == "base_salary" {
+            continue;
+        }
+        let value = match *field {
+            "date_published" | "valid_through" | "job_start_date" => {
+                let raw = format!("{field}_raw");
+                let raw = schema.fields().iter().find(|f| **f == raw).copied();
+                if let Some(raw) = raw {
+                    let text = f::text(&Value::String(node.text()));
+                    item.offer(raw, text.map(Value::String), source(*node));
+                }
+                value.clone()
+            }
+            _ => value.clone(),
+        };
+        item.offer(field, Some(value), source(*node));
+    }
+    if let Some((value, node)) = salary {
+        item.offer("base_salary", Some(value), source(node));
+    }
+    if !item.has("hiring_organization")
+        && let Some(org) = area.descendants().find(|n| {
+            n.kind() == NodeKind::Element
+                && words(*n).any(|w| {
+                    [
+                        "company",
+                        "employer",
+                        "organisation",
+                        "organization",
+                        "hiring",
+                    ]
+                    .iter()
+                    .any(|o| w.eq_ignore_ascii_case(o))
+                })
+                && (1..=80).contains(&n.text().trim().len())
+        })
+    {
+        item.offer(
+            "hiring_organization",
+            f::from_element(FieldKind::Organization, org, page.base, page.now),
+            source(org),
+        );
+    }
+    if !item.has("employment_type")
+        && let Some(n) = area.descendants().find(|n| {
+            n.kind() == NodeKind::Text
+                && [
+                    "full-time",
+                    "full time",
+                    "part-time",
+                    "part time",
+                    "contract",
+                    "temporary",
+                    "permanent",
+                    "internship",
+                ]
+                .iter()
+                .any(|w| n.data().unwrap_or_default().trim().eq_ignore_ascii_case(w))
+        })
+    {
+        let text = n.data().unwrap_or_default().trim().to_string();
+        item.offer(
+            "employment_type",
+            f::employment_type(&Value::String(text)).map(Value::String),
+            source(n.parent().unwrap_or(n)),
+        );
+    }
+    if let Some(d) = description(page.root, &layout) {
+        let (text, html) = described(d);
+        item.offer("description", text.map(Value::String), source(d));
+        item.offer("description_html", html.map(Value::String), source(d));
+    }
+    Some(0.5)
 }
