@@ -1,0 +1,11 @@
+{"type": "job-posting", "url": "https://jobs.example/j/9",
+ "item": {"url": "https://jobs.example/j/9", "job_posting_id": "j-9",
+  "job_title": "Gardener", "hiring_organization": {"name": "Green Ltd", "name_raw": "Green Ltd"},
+  "job_location": {"raw": "Bristol, UK"}, "employment_type": "part-time",
+  "base_salary": {"raw": null, "value_min": "12", "value_max": "14", "rate_type": "hourly", "currency": "GBP", "currency_raw": "GBP"},
+  "description": "Look after our gardens three days a week.",
+  "description_html": "<p>Look after our gardens three days a week.</p>",
+  "date_published": "2026-10-20", "date_published_raw": "2026-10-20",
+  "valid_through": "2026-11-30", "valid_through_raw": "2026-11-30"},
+ "sources": {"job_title": "js:__NEXT_DATA__.props.pageProps.job.title"},
+ "probability": [0.7, 0.85], "validation": []}

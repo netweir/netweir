@@ -239,7 +239,14 @@ fn listed(page: &Page<'_, '_>) -> Option<Listed> {
             });
         }
     }
-    None
+    // Apps that render in the browser keep their list in their state.
+    super::js_state::listing(page)
+        .filter(|(products, _)| products.len() >= 2)
+        .map(|(products, source)| Listed {
+            products,
+            source,
+            name: collection_name(page),
+        })
 }
 
 fn label(source: Source) -> String {

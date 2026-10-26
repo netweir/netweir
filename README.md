@@ -81,8 +81,9 @@ Working today:
   [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
   a category page's listing, a job posting or an article from the
-  structured data the page carries (JSON-LD, microdata, Open Graph), and
-  from its layout where that data runs out, in the common item schema
+  structured data the page carries (JSON-LD, microdata, Open Graph), the
+  state apps keep in their scripts (Next.js, Nuxt, Apollo), and its
+  layout where those run out, in the common item schema
   Zyte's API uses, with where each field came from. When one field is
   wrong for a site, pin it with a selector and the rest stay automatic;
   it works in declarative spiders, and `netweir extract URL` tries it from

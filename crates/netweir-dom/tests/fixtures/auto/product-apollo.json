@@ -1,0 +1,7 @@
+{"type": "product", "url": "https://wood.example/p/42",
+ "item": {"url": "https://wood.example/p/42",
+  "name": "Oak stool", "price": "59.00", "currency": "USD", "currency_raw": "USD", "product_id": "42",
+  "brand": {"name": "Woodworks"},
+  "main_image": {"url": "https://wood.example/i/stool.jpg"}, "images": [{"url": "https://wood.example/i/stool.jpg"}]},
+ "sources": {"price": "js:__APOLLO_STATE__.Product:42.priceInCents"},
+ "probability": [0.8, 0.9], "validation": []}

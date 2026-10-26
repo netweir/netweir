@@ -1,0 +1,7 @@
+{"type": "product", "url": "https://pots.example/mug",
+ "item": {"url": "https://pots.example/mug",
+  "name": "Clay mug", "price": "18.5", "currency": "EUR", "currency_raw": "EUR", "sku": "MUG-2",
+  "main_image": {"url": "https://pots.example/i/mug-1.jpg"},
+  "images": [{"url": "https://pots.example/i/mug-1.jpg"}, {"url": "https://pots.example/i/mug-2.jpg"}]},
+ "sources": {"name": "js:__NUXT_DATA__.data.product-mug.name"},
+ "probability": [0.7, 0.9], "validation": []}

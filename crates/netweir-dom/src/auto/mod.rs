@@ -11,6 +11,7 @@ mod article;
 mod dom;
 pub mod fields;
 mod job;
+mod js_state;
 mod list;
 mod product;
 pub mod schema_org;

@@ -63,7 +63,22 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    (`from_text`), which is how a pinned field is read as its field.
 4. Articles add what `content::article` reads from the page itself, so a
    page with no structured data still gives its headline and body.
-5. `auto::dom` reads the layout last, for any field still empty. It finds
+5. `auto::js_state` reads the app's state between microdata and meta
+   tags: JSON scripts with an id like `__NEXT_DATA__` (Nuxt 3's
+   `__NUXT_DATA__` decoded from devalue's flat array), Nuxt 2's
+   `__NUXT__` (the object its function returns, parameters filled from
+   the call: `js::nuxt`), Apollo's cache with `__ref`s followed, and the
+   usual `window.__X__` names. Every object is weighed by its keys
+   (matched without case, `_` or `-`): a product needs a name and a
+   price, a job a title and two facts; codes, images, brand, currency
+   and a `__typename` saying Product add weight. The heaviest object not
+   inside a list wins, or one in a list whose URL is the page's; the
+   longest list of three or more is a listing. Money in `centAmount`,
+   `priceInCents` and the like is divided by 100. The walk stops after
+   100,000 values, looks at the first 1,000 entries of a list, and
+   reference following shares one budget, so shared references can't
+   multiply.
+6. `auto::dom` reads the layout last, for any field still empty. It finds
    every short text that reads as a price (with a currency, or inside an
    element marked as a price, and not a sentence with a price in it),
    then for each the nearest element above it that holds a link, and that
@@ -134,8 +149,6 @@ Some fields of the schema have no reader yet: a job's `headline`, a
 product's `features` and `style`, and the subcategories of navigation.
 They can be pinned meanwhile.
 
-- The data apps keep in their scripts (Next.js, Nuxt, Apollo state)
-  through `js_data`, matched by the shape of product and job objects.
 - Generic records: the main repeated region of any page (table rows,
   cards, list entries) as rows with inferred column names, for public
   records, catalogues and directories.

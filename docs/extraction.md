@@ -75,9 +75,10 @@ only its Open Graph tags say it's a product, and close to zero for a page
 that isn't one. Filter on it when a crawl reaches pages of every kind.
 
 `sources` names the source of every field that has a value. JSON-LD comes
-first, then microdata, then meta tags, then the layout (`dom:`); for
-microdata and the layout the source includes the CSS path of the element,
-which is the selector you'd use to pin that field. `validation_messages` lists problems by field: JSON-LD and
+first, then microdata, then the app's state in its scripts (`js:`), then
+meta tags, then the layout (`dom:`). For microdata and the layout the
+source includes the CSS path of the element, which is the selector you'd
+use to pin that field. `validation_messages` lists problems by field: JSON-LD and
 microdata giving two different prices, a page carrying several products,
 or a pinned selector that found nothing.
 
@@ -178,10 +179,22 @@ cards on a page that shows a product of its own. Every field says
 `dom:` and the element it came from, so you can see at a glance which
 ones to check and pin.
 
-## What it doesn't do yet
+## Pages built in the browser
 
-Apps built with Next.js, Nuxt or Apollo keep their product data in a
-script rather than in the HTML; reading that is the next step. Until
-then, a page that renders its product only in JavaScript needs
-`--browser` (or a browser crawl) for the layout to have anything to
-read.
+Shops built with Next.js, Nuxt or Apollo often send a page whose HTML is
+an empty `<div>`, with the product sitting in a script for the browser
+to draw. Netweir reads that state without running anything:
+`__NEXT_DATA__`, Nuxt's `__NUXT__` and `__NUXT_DATA__`, Apollo's cache
+(references followed), and the `__INITIAL_STATE__`-style objects
+Redux apps assign. It looks for objects shaped like a product (a name
+and a price, plus codes, images, a brand) or a job (a title plus a
+salary, location, employer or dates), whatever key the framework
+filed them under. A product that stands alone beats one in a list, so
+"related products" and the basket don't win; a list of three or more
+fills a listing.
+
+These fields say `js:` and the path to the value, such as
+`js:__NEXT_DATA__.props.pageProps.product.price`, so you can find the
+value in `page.js_data("__NEXT_DATA__")` yourself. They come after
+JSON-LD and microdata but before meta tags and the layout, and an item
+read from state carries a probability of 0.7 to 0.85.

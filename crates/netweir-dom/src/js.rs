@@ -46,6 +46,132 @@ pub fn assigned(text: &str, name: &str) -> Option<JsValue> {
     Reader::new(text).assigned(name)
 }
 
+/// Marks a parameter of [`nuxt`]'s function until its argument is known.
+const PARAM: &str = "\u{0}param\u{0}";
+
+/// Values at most that [`nuxt`] builds from its function's arguments,
+/// against a page that uses one big argument many times over.
+const MAX_BUILT: usize = 1_000_000;
+
+/// The state Nuxt assigns to `window.__NUXT__`: an object, or in Nuxt 2
+/// the object a function returns, written with its parameters in place
+/// of repeated values and called at once:
+/// `(function(a,b){return {name:a,price:b}}("Lamp",49.99))`.
+pub fn nuxt(text: &str) -> Option<JsValue> {
+    let mut r = Reader::new(text);
+    let at = memchr::memmem::find(r.s, b"__NUXT__")?;
+    r.pos = at + "__NUXT__".len();
+    r.skip_space();
+    if !r.eat(b'=') {
+        return None;
+    }
+    r.skip_space();
+    if matches!(r.peek(), Some(b'{' | b'[')) {
+        return r.value(0).ok();
+    }
+    let wrapped = r.eat(b'(');
+    r.skip_space();
+    if !r.eat_word("function") {
+        return None;
+    }
+    r.skip_space();
+    if !r.eat(b'(') {
+        return None;
+    }
+    let mut params = Vec::new();
+    loop {
+        r.skip_space();
+        if r.eat(b')') {
+            break;
+        }
+        let start = r.pos;
+        while r.peek().is_some_and(is_ident_byte) {
+            r.pos += 1;
+        }
+        if r.pos == start {
+            return None;
+        }
+        params.push(text[start..r.pos].to_string());
+        r.skip_space();
+        if !r.eat(b',') {
+            r.skip_space();
+            if !r.eat(b')') {
+                return None;
+            }
+            break;
+        }
+    }
+    r.skip_space();
+    if !r.eat(b'{') {
+        return None;
+    }
+    r.skip_space();
+    if !r.eat_word("return") {
+        return None;
+    }
+    r.params = params;
+    let body = r.value(0).ok()?;
+    r.params = Vec::new();
+    r.skip_space();
+    r.eat(b';');
+    r.skip_space();
+    if !r.eat(b'}') {
+        return None;
+    }
+    r.skip_space();
+    if wrapped {
+        // `(function(){...}(args))` or `(function(){...})(args)`.
+        r.eat(b')');
+        r.skip_space();
+    }
+    let args = r.arguments(0).ok()?;
+    let mut built = 0;
+    fill(body, &args, &mut built)
+}
+
+/// `value` with each parameter placeholder replaced by its argument.
+fn fill(value: JsValue, args: &[JsValue], built: &mut usize) -> Option<JsValue> {
+    fn size(v: &JsValue) -> usize {
+        match v {
+            JsValue::Array(items) => 1 + items.iter().map(size).sum::<usize>(),
+            JsValue::Object(members) => 1 + members.iter().map(|(_, v)| size(v)).sum::<usize>(),
+            _ => 1,
+        }
+    }
+    *built += 1;
+    if *built > MAX_BUILT {
+        return None;
+    }
+    Some(match value {
+        JsValue::Str(s) if s.starts_with(PARAM) => {
+            let arg = s[PARAM.len()..]
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| args.get(i))
+                .cloned()
+                .unwrap_or(JsValue::Null);
+            *built += size(&arg);
+            if *built > MAX_BUILT {
+                return None;
+            }
+            arg
+        }
+        JsValue::Array(items) => JsValue::Array(
+            items
+                .into_iter()
+                .map(|v| fill(v, args, built))
+                .collect::<Option<_>>()?,
+        ),
+        JsValue::Object(members) => JsValue::Object(
+            members
+                .into_iter()
+                .map(|(k, v)| Some((k, fill(v, args, built)?)))
+                .collect::<Option<_>>()?,
+        ),
+        other => other,
+    })
+}
+
 /// The data in the `<script>` elements at and below `root`. With `name`,
 /// the value assigned to it in the first script that has one (or the whole
 /// of a JSON script whose id is `name`, as Next.js writes
@@ -123,6 +249,9 @@ struct Reader<'a> {
     /// Bytes read by attempts that failed, against `budget`.
     spent: usize,
     budget: usize,
+    /// A function's parameter names, read as placeholders for the
+    /// arguments it's called with (see [`nuxt`]).
+    params: Vec<String>,
 }
 
 type Res<T> = Result<T, ()>;
@@ -139,6 +268,7 @@ impl<'a> Reader<'a> {
             // each read far before failing can run out of budget, and
             // then later literals in it aren't found.
             budget: text.len().saturating_mul(16).saturating_add(1 << 20),
+            params: Vec::new(),
         }
     }
 
@@ -426,6 +556,17 @@ impl<'a> Reader<'a> {
             } else {
                 Err(())
             };
+        }
+        if !self.params.is_empty() {
+            let start = self.pos;
+            while self.peek().is_some_and(is_ident_byte) {
+                self.pos += 1;
+            }
+            let name = &self.text[start..self.pos];
+            if let Some(i) = self.params.iter().position(|p| p == name) {
+                return Ok(JsValue::Str(format!("{PARAM}{i}")));
+            }
+            self.pos = start;
         }
         Err(())
     }
@@ -757,6 +898,38 @@ mod tests {
 
     fn s(text: &str) -> JsValue {
         Str(text.into())
+    }
+
+    #[test]
+    fn nuxt_two_state_is_read_through_its_function() {
+        let lamp = obj(&[(
+            "product",
+            obj(&[
+                ("name", s("Lamp")),
+                ("price", Float(49.99)),
+                ("tags", Array(vec![s("new"), s("Lamp")])),
+                ("gone", Null),
+            ]),
+        )]);
+        for text in [
+            r#"window.__NUXT__=(function(a,b,c){return {data:[{product:{name:a,price:b,tags:[c,a],gone:void 0}}]}}("Lamp",49.99,"new"));"#,
+            r#"window.__NUXT__ = (function (a, b, c) { return {data: [{product: {name: a, price: b, tags: [c, a], gone: void 0}}]}; })("Lamp", 49.99, "new")"#,
+        ] {
+            let got = nuxt(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!(got, obj(&[("data", Array(vec![lamp.clone()]))]), "{text}");
+        }
+        // Not Nuxt's shape, or a body that isn't data.
+        assert_eq!(
+            nuxt("window.__NUXT__ = {a: 1}"),
+            Some(obj(&[("a", Int(1))]))
+        );
+        assert_eq!(nuxt("window.__NUXT__=(function(a){return go(a)}(1))"), None);
+        assert_eq!(nuxt("var x = 1"), None);
+        // One big argument used many times isn't copied without end.
+        let big = format!("[{}]", "1,".repeat(100_000));
+        let uses = "a,".repeat(5_000);
+        let text = format!("window.__NUXT__=(function(a){{return [{uses}]}}({big}))");
+        assert_eq!(nuxt(&text), None);
     }
 
     #[test]

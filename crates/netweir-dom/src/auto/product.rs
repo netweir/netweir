@@ -67,6 +67,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     for thing in &chosen {
         from_thing(page, thing, item);
     }
+    let state = super::js_state::product(page, item);
     if let Some(list) = page
         .things
         .iter()
@@ -84,7 +85,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
         .is_some_and(|t| {
             t.trim().eq_ignore_ascii_case("product") || t.trim().eq_ignore_ascii_case("og:product")
         });
-    if !chosen.is_empty() || og_product {
+    if !chosen.is_empty() || og_product || state.is_some() {
         from_meta(page, item);
     }
     let strong = chosen.iter().any(|t| {
@@ -96,6 +97,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     item.probability = match (strong, !chosen.is_empty(), og_product, layout) {
         (true, ..) => 0.95,
         (_, true, ..) => 0.8,
+        _ if state.is_some() => state.unwrap_or_default(),
         (_, _, true, Some(p)) => p.max(0.5),
         (_, _, true, None) => 0.5,
         (.., Some(p)) => p,
