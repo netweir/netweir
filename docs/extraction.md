@@ -91,6 +91,37 @@ def parse(self, page):
 
 `netweir extract URL` does the same when you leave out `--type`.
 
+## Pages that fit no type
+
+A register of licences, a library catalogue, a directory of branches: no
+type covers them, but they all repeat. `page.records()` finds the
+page's main repeated region (a table's rows, a run of cards, a list) and
+gives you the rows with column names worked out for you.
+
+```python
+found = page.records()
+found.rows[0]
+# {"name": "Ada Byron", "name_url": "https://example.org/l/1",
+#  "licence_no": "L-001", "issued": "2024-01-03"}
+found.columns[0]
+# {"name": "name", "selector": "td:nth-child(1)"}
+found.selector
+# "table.results > * > tr:has(> td), table.results > tr:has(> td)"
+```
+
+Columns are named by the table's header, by a label beside the value
+(`<dt>Phone</dt>`, `Area: 120 m²`), by the element's `itemprop` or
+class, and otherwise by what the value is: `heading`, `date`, `link`,
+`image`, `text`. A link's URL sits in its own column, after its text
+(`title` and `title_url`), and links and images are absolute. A row
+without a column has None there.
+
+Menus, footers and prose don't count: a region needs two columns of
+text or images. The biggest region wins, and it stops at 5000 rows. When
+it picks the wrong one, or names a column badly, the selectors are there
+to copy into your own `netweir.Item`. `records()` returns None when
+nothing repeats.
+
 ## Where each value came from
 
 Every item ends with `metadata`:

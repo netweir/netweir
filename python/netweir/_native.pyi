@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
 from netweir._errors import FetchError
-from netweir._helpers import Article
+from netweir._helpers import Article, Records
 from netweir._network import Expectation
 
 _D = TypeVar("_D")
@@ -195,6 +195,7 @@ class Node:
     @overload
     def clean_text(self, main_only: bool) -> str | None: ...
     def article(self, base_url: str | None = None) -> Article: ...
+    def records(self, url: str | None = None) -> Records | None: ...
     def page_type(
         self, url: str | None = None
     ) -> Literal[

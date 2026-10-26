@@ -13,7 +13,7 @@ from netweir import _jmespath, _track
 from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
-from netweir._helpers import Article
+from netweir._helpers import Article, Records
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _encode, _response
 from netweir._request import Request
 
@@ -418,6 +418,12 @@ class Page:
         """``item.extract(self)``: the Item (often one of ``netweir.auto``'s)
         found on this page."""
         return item.extract(self)
+
+    def records(self) -> Records | None:
+        """The page's main repeated region (table rows, cards, list
+        entries) as a ``netweir.Records``: ``rows`` with named columns, and
+        the selectors that find them. None when nothing repeats."""
+        return self.root.records(self.url)
 
     def page_type(self) -> str:
         """What the page holds, without being told: ``"product"``,

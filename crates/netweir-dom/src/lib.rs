@@ -21,6 +21,7 @@ pub mod markdown;
 pub mod metadata;
 pub mod price;
 mod query;
+pub mod records;
 pub mod similar;
 pub mod track;
 pub mod xml;

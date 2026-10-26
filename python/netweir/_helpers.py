@@ -113,6 +113,24 @@ class Article:
     html: str | None = None
 
 
+@dataclass(frozen=True)
+class Records:
+    """A page's main repeated region: table rows, cards or list entries.
+
+    ``rows`` holds a dict per row with every column, a string or None
+    where the row lacks it. ``columns`` lists each column's ``name`` and
+    the ``selector`` that finds it inside a row (``::attr()`` for links
+    and images), and ``selector`` finds the rows on the page."""
+
+    selector: str
+    columns: list[dict[str, str]]
+    rows: list[dict[str, str | None]]
+
+
+def _records(selector: str, columns: list[tuple[str, str]], rows: list) -> Records:
+    return Records(selector, [{"name": n, "selector": s} for n, s in columns], rows)
+
+
 def _article(
     title: str | None,
     byline: str | None,

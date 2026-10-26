@@ -866,6 +866,37 @@ impl Node {
         })
     }
 
+    /// The page's main repeated region (table rows, cards, list entries)
+    /// as a netweir.Records, or None when nothing repeats. `url` is the
+    /// page's, which links and images are made absolute against.
+    #[pyo3(signature = (url=None))]
+    fn records(&self, py: Python<'_>, url: Option<&str>) -> PyResult<Py<PyAny>> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        let page = url.and_then(|u| url::Url::parse(u).ok());
+        let found = py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            netweir_dom::records::records(unsafe { doc.node(id) }, page.as_ref())
+        });
+        let Some(r) = found else {
+            return Ok(py.None());
+        };
+        let columns: Vec<(String, String)> = r
+            .columns
+            .into_iter()
+            .map(|c| (c.name, c.selector))
+            .collect();
+        let rows = crate::browser::to_python(
+            py,
+            &serde_json::Value::Array(r.rows.into_iter().map(serde_json::Value::Object).collect()),
+        )?;
+        Ok(py
+            .import("netweir._helpers")?
+            .getattr("_records")?
+            .call1((r.selector, columns, rows))?
+            .unbind())
+    }
+
     /// The text a reader sees, a blank line between blocks and a line per
     /// list item and table row. With main_only=True, only the main
     /// content without its boilerplate, or None when there's no main

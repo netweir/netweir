@@ -1,6 +1,8 @@
 //! Any HTML read as every auto-extracted item type, and each of its
 //! elements read as every kind of field, and its page type asked for:
 //! nothing panics, and the same page gives the same answer every time.
+//! Its records, too: every row has every column, and every selector
+//! parses.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -62,6 +64,15 @@ fuzz_target!(|data: &[u8]| {
         netweir_dom::auto::page_type(doc.root(), Some(&url), None, now)
     );
     assert!(all.iter().all(|(_, p)| (0.0..=1.0).contains(p)));
+    let found = netweir_dom::records::records(doc.root(), Some(&url));
+    assert_eq!(found, netweir_dom::records::records(doc.root(), Some(&url)));
+    if let Some(r) = found {
+        assert!(netweir_dom::Query::new(&r.selector).is_ok(), "{}", r.selector);
+        for c in &r.columns {
+            assert!(netweir_dom::Query::new(&c.selector).is_ok(), "{}", c.selector);
+        }
+        assert!(r.rows.iter().all(|row| row.len() == r.columns.len()));
+    }
     for node in doc.root().descendants().filter(|n| n.kind() == NodeKind::Element).take(64) {
         css_path::css_path(node);
         for kind in KINDS {

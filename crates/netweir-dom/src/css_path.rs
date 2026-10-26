@@ -80,7 +80,7 @@ fn finds_only(path: &str, top: Node<'_>, node: Node<'_>) -> bool {
 /// How to write `node` so that none of its siblings matches: its tag with
 /// the fewest stable classes that do it, else its tag, else its tag and
 /// position.
-fn segment(node: Node<'_>) -> String {
+pub(crate) fn segment(node: Node<'_>) -> String {
     let tag = escape(node.tag().unwrap_or("*"));
     let siblings: Vec<Node<'_>> = node
         .parent()
@@ -146,7 +146,7 @@ fn segment(node: Node<'_>) -> String {
 /// Whether an id or class looks made by a build tool rather than a
 /// person: a run of three digits, or a part (between `-` and `_`) of four
 /// or more characters mixing letters and digits, as hashes do.
-fn generated(name: &str) -> bool {
+pub(crate) fn generated(name: &str) -> bool {
     let mut digits = 0;
     for c in name.chars() {
         digits = if c.is_ascii_digit() { digits + 1 } else { 0 };
@@ -162,7 +162,7 @@ fn generated(name: &str) -> bool {
 }
 
 /// `name` as a CSS identifier, escaped as CSSOM's `CSS.escape` does.
-fn escape(name: &str) -> String {
+pub(crate) fn escape(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for (i, c) in name.chars().enumerate() {
         let first = i == 0;

@@ -426,3 +426,33 @@ def test_lists_and_threads():
     assert jobs.page_type() == "job-posting-navigation"
     items = jobs.extract(netweir.auto.JobPostingNavigation)["items"]
     assert [i["name"] for i in items] == ["Gardener", "Baker", "Driver"]
+
+
+RESULTS = """<html><body><nav><a href="/">Home</a></nav><main><ul>
+<li class="hit"><a class="title" href="/b/1">The Hobbit</a><span class="year">1937</span></li>
+<li class="hit"><a class="title" href="/b/2">Dune</a><span class="year">1965</span></li>
+<li class="hit"><a class="title" href="/b/3">Emma</a></li>
+</ul></main></body></html>"""
+
+
+def test_records_are_the_rows_that_repeat():
+    found = page(RESULTS, url="https://books.example/search").records()
+    assert isinstance(found, netweir.Records)
+    assert [c["name"] for c in found.columns] == ["title", "title_url", "year"]
+    assert found.rows[1] == {
+        "title": "Dune",
+        "title_url": "https://books.example/b/2",
+        "year": "1965",
+    }
+    assert found.rows[2]["year"] is None
+    # The selectors find what the rows say.
+    root = netweir.parse(RESULTS)
+    rows = root.css(found.selector)
+    assert len(rows) == 3
+    by_name = {c["name"]: c["selector"] for c in found.columns}
+    assert rows[0].css(by_name["title_url"]).get() == "/b/1"
+    assert rows[1].css(by_name["year"])[0].text == "1965"
+
+
+def test_a_page_with_nothing_repeated_has_no_records():
+    assert netweir.parse("<article><p>One.</p><p>Two.</p><p>Three.</p></article>").records() is None
