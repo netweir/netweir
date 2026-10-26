@@ -101,6 +101,9 @@ pub(crate) fn read_list(page: &Page<'_, '_>, item: &mut Builder) {
         }
         item.offer("pagination_next", Some(Value::Object(link)), source.clone());
     }
+    if let Some((n, source)) = dom::page_number(page.root, page.page) {
+        item.offer("page_number", Some(Value::from(n)), source);
+    }
     item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
 }
 
@@ -166,6 +169,9 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
             request.insert("name".into(), Value::String(t.clone()));
         }
         item.offer("next_page", Some(Value::Object(request)), source.clone());
+    }
+    if let Some((n, source)) = dom::page_number(page.root, page.page) {
+        item.offer("page_number", Some(Value::from(n)), source);
     }
     item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
 }
@@ -357,6 +363,10 @@ fn from_product(
 /// The next page: `<link rel=next>` or `<a rel=next>`, its URL absolute,
 /// the link's text if it has any, and where it was.
 fn next_link(page: &Page<'_, '_>) -> Option<(String, Option<String>, String)> {
+    rel_next(page).or_else(|| dom::next_page(page.root, page.page, page.base))
+}
+
+fn rel_next(page: &Page<'_, '_>) -> Option<(String, Option<String>, String)> {
     page.root.descendants().find_map(|n| {
         let tag = n.tag()?;
         if !matches!(tag, "link" | "a") {

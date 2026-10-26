@@ -708,3 +708,116 @@ fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Val
         .filter_map(|k| Some((k.to_string(), out.remove(*k)?)))
         .collect()
 }
+
+/// A page's pagination widget: an element labelled or classed as one,
+/// with links in it.
+fn pagers(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
+    root.descendants().filter(|n| {
+        n.kind() == NodeKind::Element
+            && (n
+                .attr("aria-label")
+                .is_some_and(|l| l.to_ascii_lowercase().contains("pag"))
+                || words(*n).any(|w| {
+                    ["pagination", "pager", "paging", "paginator", "pages"]
+                        .iter()
+                        .any(|p| w.eq_ignore_ascii_case(p))
+                }))
+            && n.descendants().any(|d| d.tag() == Some("a"))
+    })
+}
+
+/// Whether a link, or the element it sits in, says it's switched off.
+fn disabled(a: Node<'_>) -> bool {
+    std::iter::successors(Some(a), |n| n.parent())
+        .take(2)
+        .any(|n| {
+            n.attr("aria-disabled")
+                .is_some_and(|d| d.trim().eq_ignore_ascii_case("true"))
+                || n.attr("disabled").is_some()
+                || words(n).any(|w| w.eq_ignore_ascii_case("disabled"))
+        })
+}
+
+/// The next page from a pagination widget: its link whose text, label
+/// or class says next, unless it's switched off or goes nowhere. The
+/// URL, the link's text and its source.
+pub(crate) fn next_page(
+    root: Node<'_>,
+    page: Option<&Url>,
+    base: Option<&Url>,
+) -> Option<(String, Option<String>, String)> {
+    let says_next = |a: Node<'_>| {
+        let text = a.text().split_whitespace().collect::<Vec<_>>().join(" ");
+        let lower = text.to_lowercase();
+        let label = [a.attr("aria-label"), a.attr("title"), a.attr("rel")]
+            .into_iter()
+            .flatten()
+            .any(|l| l.to_lowercase().split_whitespace().any(|w| w == "next"));
+        label
+            || words(a).any(|w| w.eq_ignore_ascii_case("next"))
+            || (lower.len() <= 20 && lower.starts_with("next"))
+            || matches!(lower.as_str(), "›" | "»" | "→" | ">" | ">>")
+    };
+    pagers(root).find_map(|pager| {
+        pager.descendants().find_map(|a| {
+            if a.tag() != Some("a") || disabled(a) || !says_next(a) {
+                return None;
+            }
+            let href = a.attr("href")?.trim();
+            if href.is_empty()
+                || href.starts_with('#')
+                || href.to_ascii_lowercase().starts_with("javascript:")
+            {
+                return None;
+            }
+            let url = f::absolute(href, base)?;
+            if page.is_some_and(|p| p.as_str() == url) {
+                return None;
+            }
+            let text = f::text(&Value::String(a.text()));
+            Some((url, text, source(a)))
+        })
+    })
+}
+
+/// The number of the page: the current entry of its pagination widget,
+/// else a page parameter or `/page/N` in its URL.
+pub(crate) fn page_number(root: Node<'_>, page: Option<&Url>) -> Option<(i64, String)> {
+    let number = |t: &str| t.trim().parse::<i64>().ok().filter(|n| *n > 0);
+    let current = pagers(root).find_map(|pager| {
+        pager.descendants().find_map(|n| {
+            let marked = n
+                .attr("aria-current")
+                .is_some_and(|c| !c.trim().eq_ignore_ascii_case("false"))
+                || words(n).any(|w| {
+                    ["current", "active", "selected"]
+                        .iter()
+                        .any(|c| w.eq_ignore_ascii_case(c))
+                });
+            (n.kind() == NodeKind::Element && marked)
+                .then(|| number(&n.text()))
+                .flatten()
+                .map(|p| (p, source(n)))
+        })
+    });
+    current.or_else(|| {
+        let url = page?;
+        let from_query = url.query_pairs().find_map(|(k, v)| {
+            ["page", "pg", "pagenum", "page_number", "pagenumber"]
+                .iter()
+                .any(|name| k.eq_ignore_ascii_case(name))
+                .then(|| number(&v))
+                .flatten()
+        });
+        let from_path = || {
+            let segments: Vec<&str> = url.path_segments()?.collect();
+            segments
+                .windows(2)
+                .find(|w| w[0].eq_ignore_ascii_case("page"))
+                .and_then(|w| number(w[1]))
+        };
+        from_query
+            .or_else(from_path)
+            .map(|p| (p, "url".to_string()))
+    })
+}

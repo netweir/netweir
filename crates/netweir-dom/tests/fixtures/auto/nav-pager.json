@@ -1,0 +1,8 @@
+{"type": "product-navigation", "url": "https://lumo.example/c/lamps?page=2",
+ "item": {"url": "https://lumo.example/c/lamps?page=2", "category_name": "Lamps",
+  "items": [{"url": "https://lumo.example/p/arc", "name": "Arc desk lamp"}, {"url": "https://lumo.example/p/dome", "name": "Dome pendant"},
+   {"url": "https://lumo.example/p/tall", "name": "Tall floor lamp"}, {"url": "https://lumo.example/p/clip", "name": "Clip lamp"},
+   {"url": "https://lumo.example/p/globe", "name": "Globe lamp"}],
+  "next_page": {"url": "https://lumo.example/c/lamps?page=3", "name": "Next ›"}, "page_number": 2},
+ "sources": {"items": "dom:ul", "next_page": "dom:a.next"},
+ "probability": [0.7, 0.8], "validation": []}
