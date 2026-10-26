@@ -133,13 +133,21 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    (an opening post's extra class) joins it; classless blocks count
    side by side only. Comment sections, boilerplate to the other
    readers, are read here. A set needs two posts, most with a poster,
-   few led by a title linking elsewhere before their text, and dates or
-   80 bytes of prose in most, and is 0.75. A post's text is the deepest
+   few led by a title linking elsewhere before their text (or ending in
+   "Read more"), and in most either a date, or 80 bytes of prose and a
+   link to a member's profile, and is 0.75. Classless blocks nested in
+   blocks of their tag (`<li><ul><li>`) count with them, custom elements
+   (`<shreddit-comment>`) count like classed ones, and `<noscript>`
+   (Discourse's crawler view) is read. Profile links are matched by
+   path segment, relative ones included. A post's text is the deepest
    block with nearly all of its clean text (holding no poster, date,
    furniture or reply), with the clean paragraphs beside it, headings
    and rows of links left out. Posts the cards reading also finds as a
    dated listing, or the comments or reviews of the page's own article
-   or product, are 0.25. A listing or
+   or product, are 0.25: an article in its structured data, main content
+   beside the posts, 400 bytes of paragraphs no poster signs between the
+   heading and the posts, or a product by its structured data, Open
+   Graph type or layout. A listing or
    thread whose container neither holds nor sits inside the page's main
    content is beside an article (related stories, comments) and gets 0.3
    or 0.25; a listing mostly of priced cards is a shop's and gets 0.3.

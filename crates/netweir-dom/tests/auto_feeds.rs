@@ -812,3 +812,183 @@ fn deep_posts_are_quick() {
     );
     assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
 }
+
+fn three(post: impl Fn(u32) -> String) -> String {
+    (1..=3).map(post).collect()
+}
+
+#[test]
+fn a_date_wrapping_a_permalink_isnt_a_title() {
+    let html = format!(
+        "<main><h1>T</h1><div>{}</div></main>",
+        three(|n| format!(
+            r#"<div class="post"><span class="author">u{n}</span> <span class="date"><a href="/posts/{n}">Oct 2{n}, 2026 10:00 AM</a></span><div class="body"><p>{BODY}</p></div></div>"#
+        ))
+    );
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 3);
+}
+
+#[test]
+fn xenforo_ones_relative_profile_links_are_posters() {
+    let html = format!(
+        "<main><h1>Flicker</h1><ol class=\"messageList\">{}</ol></main>",
+        three(|n| format!(
+            r#"<li class="message"><div class="messageUserInfo"><h3 class="userText"><a href="members/kit{n}.{n}/" class="username">kit{n}</a></h3></div>
+            <div class="messageContent"><blockquote class="messageText">Post {n}. {BODY}</blockquote></div>
+            <div class="messageMeta"><a href="members/kit{n}.{n}/" class="username author">kit{n}</a> <a href="posts/{n}/" class="datePermalink"><span class="DateTime">Oct 2{n}, 2026</span></a></div></li>"#
+        ))
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn a_reply_under_a_long_quote_keeps_its_own_words() {
+    let html = format!(
+        "<main><h1>T</h1><div>{}</div></main>",
+        three(|n| format!(
+            r#"<div class="post"><span class="author">u{n}</span> <time datetime="2026-10-2{n}">Oct</time><div class="body"><blockquote><cite><a href="/members/kit.1">kit</a> said: <time datetime="2026-10-20">Oct 20</time></cite><p>{BODY} {BODY}</p></blockquote>Yes, same here.</div></div>"#
+        ))
+    );
+    let posts = texts(&read(Schema::ForumThread, &html));
+    assert!(
+        posts.iter().all(|p| p.ends_with("Yes, same here.")),
+        "{posts:?}"
+    );
+}
+
+#[test]
+fn nested_classless_and_custom_element_comments_are_all_read() {
+    fn li(n: u32, children: &str) -> String {
+        format!(
+            r#"<li><div class="meta"><a href="/user/kit{n}">kit{n}</a> <time datetime="2026-10-2{n}">Oct</time></div><div class="comment-text"><p>Comment {n}. {BODY}</p></div>{children}</li>"#
+        )
+    }
+    let tree = format!(
+        r#"<ul class="comment-list">{}{}</ul>"#,
+        li(
+            1,
+            &format!("<ul>{}</ul>", li(2, &format!("<ul>{}</ul>", li(3, ""))))
+        ),
+        li(4, &format!("<ul>{}{}</ul>", li(5, ""), li(6, "")))
+    );
+    let html = format!("<main><h1>Flicker</h1>{tree}</main>");
+    let posts = texts(&read(Schema::ForumThread, &html));
+    assert_eq!(posts.len(), 6, "{posts:?}");
+    assert!(
+        posts
+            .iter()
+            .enumerate()
+            .all(|(i, p)| p.starts_with(&format!("Comment {}.", i + 1))),
+        "{posts:?}"
+    );
+    fn shreddit(n: u32, children: &str) -> String {
+        format!(
+            r#"<shreddit-comment author="kit{n}"><div slot="commentMeta"><a href="/user/kit{n}/">kit{n}</a> <time datetime="2026-10-2{n}T10:00:00Z">2h</time></div><div slot="comment"><p>Comment {n}. {BODY}</p></div>{children}</shreddit-comment>"#
+        )
+    }
+    let tree = format!(
+        "{}{}",
+        shreddit(1, &shreddit(2, &shreddit(3, ""))),
+        shreddit(4, &shreddit(5, ""))
+    );
+    let html = format!(
+        "<main><h1>Flicker</h1><shreddit-comment-tree>{tree}</shreddit-comment-tree></main>"
+    );
+    let posts = texts(&read(Schema::ForumThread, &html));
+    assert_eq!(posts.len(), 5, "{posts:?}");
+}
+
+#[test]
+fn og_type_article_alone_doesnt_demote_a_forum() {
+    let html = format!(
+        r#"<html><head><meta property="og:type" content="article"></head><body><main><h1>Flicker</h1><div class="bbp-replies">{}</div></main></body></html>"#,
+        three(|n| format!(
+            r#"<div class="bbp-reply"><div class="bbp-reply-author"><a href="/forums/users/kit{n}/">kit{n}</a></div><div class="bbp-reply-content"><p>Reply {n}. {BODY}</p></div></div>"#
+        ))
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn invision_author_panes_are_posters() {
+    let html = format!(
+        "<main><h1>Flicker</h1><div class=\"cTopic\">{}</div></main>",
+        three(|n| format!(
+            r#"<article class="cPost ipsBox ipsComment ipsComment_parent"><aside class="ipsComment_author cAuthorPane"><h3 class="cAuthorPane_author"><a href="https://site.example/profile/{n}-kit{n}/">kit{n}</a></h3></aside>
+            <div class="ipsColumn"><time datetime="2026-10-2{n}T10:00:00Z">Oct 2{n}</time><div data-role="commentContent" class="ipsType_richText"><p>Post {n}. {BODY}</p></div></div></article>"#
+        ))
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn testimonials_authors_and_unlinked_teasers_arent_threads() {
+    let testimonials = format!(
+        "<main><h1>What our customers say</h1>{}</main>",
+        (1..=4)
+            .map(|n| format!(r#"<div class="testimonial"><blockquote><p>{BODY} {n}</p></blockquote><cite class="author">Jane Doe {n}, Head of School</cite></div>"#))
+            .collect::<String>()
+    );
+    let authors = format!(
+        "<main><h1>Our writers</h1>{}</main>",
+        (1..=5)
+            .map(|n| format!(r#"<div class="author-card"><img src="/a/{n}.jpg" alt=""><h3>Writer {n}</h3><p>{BODY} {n}</p></div>"#))
+            .collect::<String>()
+    );
+    let teasers = format!(
+        "<main><h1>Blog</h1>{}</main>",
+        (1..=6)
+            .map(|n| format!(
+                r#"<article class="card"><h2>A long look at lamps, part {n}</h2><div class="meta"><span class="author">Ana</span> <time datetime="2026-10-0{n}">Oct</time></div><p>{BODY}</p><a class="more" href="/s/{n}">Read more</a></article>"#
+            ))
+            .collect::<String>()
+    );
+    for html in [testimonials, authors, teasers] {
+        assert_ne!(typed(&html), Some(Schema::ForumThread), "{html}");
+    }
+}
+
+#[test]
+fn comments_under_an_article_in_main_arent_a_thread() {
+    let comments = three(|n| {
+        format!(
+            r#"<div class="comment"><span class="author">Kit</span> <time datetime="2026-10-2{n}">Oct</time><p>{BODY}</p></div>"#
+        )
+    });
+    let html = format!(
+        r#"<main><h1>The night market returns</h1><p class="byline">By <span class="author">Ana</span>, <time datetime="2026-10-20">Oct 20</time></p>{}<div class="comments">{comments}</div></main>"#,
+        format!("<p>{BODY} {BODY}</p>").repeat(5)
+    );
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+}
+
+#[test]
+fn discourses_noscript_posts_are_read() {
+    let html = format!(
+        r#"<main><h1>Flicker</h1><noscript data-path="/t/flicker/88">{}</noscript></main>"#,
+        three(|n| format!(
+            r#"<div class="topic-body crawler-post"><div class="crawler-post-meta"><span class="creator"><a href="/u/kit{n}"><span>kit{n}</span></a></span>
+            <span class="crawler-post-infos"><time datetime="2026-10-2{n}T10:00:00Z" class="post-time">October 2{n}, 2026, 10:00am</time></span></div>
+            <div class="post"><p>Post {n}. {BODY}</p></div></div>"#
+        ))
+    );
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 3);
+}
+
+#[test]
+fn many_classless_posts_are_quick() {
+    let posts: String = (0..20_000)
+        .map(|n| format!(r#"<div><div><span class="author">u{n}</span> <time datetime="2026-10-20">Oct</time><p>{BODY}</p></div></div>"#))
+        .collect();
+    let html = format!("<main><h1>T</h1>{posts}</main>");
+    let doc = Document::parse(&html);
+    let start = std::time::Instant::now();
+    extract(
+        Schema::ForumThread,
+        doc.root(),
+        None,
+        None,
+        Civil::date(2026, 10, 25),
+    );
+    assert!(start.elapsed().as_secs_f64() < 6.0, "{:?}", start.elapsed());
+}
