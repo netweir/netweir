@@ -33,12 +33,16 @@ class Site(BaseHTTPRequestHandler):
         pass
 
     def reply(self, status, body=b"", headers=()):
-        self.send_response(status)
-        for k, v in headers:
-            self.send_header(k, v)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client gave up first (the /slow timeout test).
+            pass
 
     def echo(self, extra=None):
         Site.seen.append((self.command, self.path))
