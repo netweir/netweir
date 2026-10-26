@@ -364,3 +364,22 @@ def test_csv_columns_follow_zyte_field_names(tmp_path):
     write({"name": "Lamp", "regular_price": "59.99"})
     write.close()
     assert out.read_text().splitlines() == ["name,regularPrice", "Lamp,59.99"]
+
+
+def test_a_page_without_structured_data_is_read_from_its_layout():
+    item = page(fixture("product-dom"), url="https://lumo.example/p/arc-lamp").extract(
+        netweir.auto.Product
+    )
+    assert (item["name"], item["price"], item["currency"]) == ("Arc desk lamp", "49.99", "GBP")
+    assert item["sku"] == "ARC-01"
+    sources = item["metadata"]["sources"]
+    assert sources["price"] == "dom:span"
+    assert 0.6 < item["metadata"]["probability"] < 0.8
+    # A layout field pins like any other, and its siblings stay automatic.
+
+    class Lumo(netweir.auto.Product):
+        sku = netweir.css("dd:nth-of-type(2)")
+
+    pinned = page(fixture("product-dom"), url="https://lumo.example/p/arc-lamp").extract(Lumo)
+    assert pinned["sku"] == "A100"
+    assert pinned["price"] == "49.99"

@@ -81,12 +81,12 @@ Working today:
   [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
   a category page's listing, a job posting or an article from the
-  structured data the page carries (JSON-LD, microdata, Open Graph), in
-  the common item schema Zyte's API uses, with where each field came from.
-  When one field is wrong for a site, pin it with a selector and the rest
-  stay automatic; it works in declarative spiders, and `netweir extract
-  URL` tries it from the command line. Pages with no structured data
-  aren't read from their layout yet. See [docs/extraction.md](docs/extraction.md).
+  structured data the page carries (JSON-LD, microdata, Open Graph), and
+  from its layout where that data runs out, in the common item schema
+  Zyte's API uses, with where each field came from. When one field is
+  wrong for a site, pin it with a selector and the rest stay automatic;
+  it works in declarative spiders, and `netweir extract URL` tries it from
+  the command line. See [docs/extraction.md](docs/extraction.md).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Downloader and spider
@@ -243,7 +243,8 @@ Soup's list. Filters still match one class out of several, as you'd expect.
 ## Data without selectors
 
 Most shops, job boards and news sites describe their pages to search
-engines in structured data. Netweir reads it and gives you the item:
+engines in structured data. Netweir reads it, falls back on the page's
+layout for whatever it leaves out, and gives you the item:
 
 ```python
 product = page.extract(netweir.auto.Product)

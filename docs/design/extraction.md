@@ -63,6 +63,19 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    (`from_text`), which is how a pinned field is read as its field.
 4. Articles add what `content::article` reads from the page itself, so a
    page with no structured data still gives its headline and body.
+5. `auto::dom` reads the layout last, for any field still empty. It finds
+   every short text that reads as a price (with a currency, or inside an
+   element marked as a price, and not a sentence with a price in it),
+   then for each the nearest element above it that holds a link, and that
+   element's look-alikes (`Node::similar`): a group of three or more, at
+   least half of them priced, is a listing's cards. A product is the page
+   heading with the nearest unstruck price outside cards and boilerplate;
+   its images, stock text, buy button and labelled codes are read from
+   the smallest element holding both, widened to take in the gallery. A
+   listing is the largest card group outside boilerplate. A job needs the
+   heading plus an apply control, a salary or two labelled facts. Every
+   walk is linear in the page, and at most 2,000 texts are looked at for
+   prices.
 
 Meta-tag fallbacks for products apply only when the page has a Product
 or says `og:type` product: a news page asked for a product gives its URL
@@ -86,7 +99,10 @@ Fixed steps for now, set where the evidence changes: about 0.95 for a
 complete schema.org item (a product with a name and an offer, SKU or
 GTIN), 0.8 for a thinner one, 0.5 for a product only Open Graph names,
 0.6 for an article found only by its main content, 0.9 for a listing of
-two or more products, and 0.05 when nothing points to the type. They're
+two or more products, and 0.05 when nothing points to the type. From the
+layout alone: 0.7 for a product with a buy control, 0.55 without, 0.75
+for a listing of cards (0.3 when the page also shows a product of its
+own, whose cards are related products), and 0.5 for a job. They're
 to be calibrated against a corpus of real pages once the layout readers
 exist.
 
@@ -103,17 +119,10 @@ through a redesign, declarative crawls, exports and the command.
 
 ## Still to come
 
-Some fields of the schema have no reader yet, because schema.org data
-doesn't carry them: a job's `headline`, a product's `features` and
-`style`, and the page numbers and subcategories of listings and
-navigation. They're None until the layout readers find them, and can be
-pinned meanwhile.
+Some fields of the schema have no reader yet: a job's `headline`, a
+product's `features` and `style`, and the subcategories of navigation.
+They can be pinned meanwhile.
 
-- Reading pages from their layout when they carry no structured data:
-  the price nearest the title and the buy button, the main image, cards
-  of a listing, pagination widgets. The main-content scoring, listing
-  detection and similarity already in `content.rs` and `similar.rs` are
-  the base.
 - The data apps keep in their scripts (Next.js, Nuxt, Apollo state)
   through `js_data`, matched by the shape of product and job objects.
 - Generic records: the main repeated region of any page (table rows,

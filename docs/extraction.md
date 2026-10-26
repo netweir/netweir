@@ -3,8 +3,10 @@
 Most shops, job boards and news sites already describe their pages in
 structured data, for search engines: the product's name, price and stock,
 the job's salary and location, the article's author and date. Netweir
-reads it, in Rust, and hands you the item in a fixed shape, so you can get
-a product out of a page you've never written a selector for:
+reads it, in Rust, and where a page has none, or leaves a field out, it
+reads the page the way you would: the heading, the price beside it, the
+grid of cards. You get the item in a fixed shape, out of a page you've
+never written a selector for:
 
 ```python
 import netweir
@@ -73,9 +75,9 @@ only its Open Graph tags say it's a product, and close to zero for a page
 that isn't one. Filter on it when a crawl reaches pages of every kind.
 
 `sources` names the source of every field that has a value. JSON-LD comes
-first, then microdata, then meta tags; for microdata the source includes
-the CSS path of the element, which is the selector you'd use to pin that
-field. `validation_messages` lists problems by field: JSON-LD and
+first, then microdata, then meta tags, then the layout (`dom:`); for
+microdata and the layout the source includes the CSS path of the element,
+which is the selector you'd use to pin that field. `validation_messages` lists problems by field: JSON-LD and
 microdata giving two different prices, a page carrying several products,
 or a pinned selector that found nothing.
 
@@ -146,13 +148,33 @@ The readers behind the fields work on any text:
 and `netweir.parse_salary`, beside `parse_price` and `parse_date`. See
 [Selecting](selecting.md#codes-ratings-stock-and-salaries).
 
+## Pages without structured data
+
+A product page that only shows its product still has a heading, a price
+near it and a buy button. Netweir takes the heading as the name and the
+price closest to it as the price. A struck-through price beside it
+becomes `regular_price`. The images around them, an "In stock" or
+"Sold out", labelled codes (`SKU: ARC-01`), the description and the
+breadcrumb trail fill in the rest. Prices inside a grid of cards never
+count, so the "You may also like" strip under a product can't pass for
+it, and a category page asked for a product stays close to zero.
+
+Category and search pages are read from their cards: the biggest group
+of elements that look alike, most of them priced, each giving a name, a
+link, a price and an image. The next page comes from `rel=next` or from
+the pagination widget's "Next" link (a disabled one is skipped), and
+`page_number` from the widget or the URL. A job advert without a
+JobPosting gives its title, salary, location, job type and closing date
+when the page shows an apply button, a salary or those labelled facts.
+
+These guesses carry lower probabilities than structured data (0.55 to
+0.75), and every field says `dom:` and the element it came from, so you
+can see at a glance which ones to check and pin.
+
 ## What it doesn't do yet
 
-Today auto-extraction reads what pages say about themselves: JSON-LD,
-microdata and meta tags, plus Netweir's main-content reading for
-articles. Most shops, job boards and news sites carry that data, because
-search engines reward it. A page that has none (a product shown only in
-its HTML, a listing without an `ItemList`) gives an item with a low
-probability and few fields. Reading those from the page's layout, and
-from the data apps keep in their scripts, is the next step. Until then,
-pin the fields such a site needs.
+Apps built with Next.js, Nuxt or Apollo keep their product data in a
+script rather than in the HTML; reading that is the next step. Until
+then, a page that renders its product only in JavaScript needs
+`--browser` (or a browser crawl) for the layout to have anything to
+read.
