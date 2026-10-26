@@ -386,7 +386,8 @@ impl Browser {
             // high-entropy client hints, which each page's override puts
             // back.
             if !options.args.iter().any(|a| a.starts_with("--user-agent=")) {
-                let (own, metadata) = headless_identity(&executable, &options.args).await?;
+                let (own, metadata) =
+                    headless_identity(&executable, &options.args, options.timeout).await?;
                 let own = own.replace("HeadlessChrome/", "Chrome/");
                 // The environment's own, where it has one, so a service
                 // worker says it too.
@@ -501,17 +502,22 @@ impl Browser {
         } else {
             url.to_string()
         };
-        let late = || Error::Launch(format!("{ws} didn't answer in 30 seconds"));
+        let late = || {
+            Error::Launch(format!(
+                "{ws} didn't answer in {}s",
+                options.timeout.as_secs_f64()
+            ))
+        };
         let refused = |e: String| Error::Launch(format!("can't connect to {ws}: {e}"));
         let conn = if ws.starts_with("wss://") {
-            let socket = tokio::time::timeout(Duration::from_secs(30), secure_websocket(&ws))
+            let socket = tokio::time::timeout(options.timeout, secure_websocket(&ws))
                 .await
                 .map_err(|_| late())?
                 .map_err(refused)?;
             Connection::over_websocket(socket)
         } else {
             let (socket, _) = tokio::time::timeout(
-                Duration::from_secs(30),
+                options.timeout,
                 tokio_tungstenite::connect_async(ws.as_str()),
             )
             .await
@@ -559,14 +565,17 @@ impl Browser {
         hints: Option<Value>,
     ) -> Result<Browser> {
         let version = match tokio::time::timeout(
-            Duration::from_secs(30),
+            options.timeout,
             inner.conn.call("", "Browser.getVersion", json!({})),
         )
         .await
         {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(Error::Launch(format!("{what} didn't answer: {e}"))),
-            Err(_) => return Err(Error::Launch(format!("{what} didn't answer in 30 seconds"))),
+            Err(_) => {
+                let limit = options.timeout.as_secs_f64();
+                return Err(Error::Launch(format!("{what} didn't answer in {limit}s")));
+            }
         };
         inner.version = str_of(&version, "product");
         // Anything that answers in JSON could get this far; a browser says
@@ -1350,7 +1359,11 @@ static PROBED: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
 /// its client hints, which only asking it tells exactly, and only before
 /// a --user-agent flag empties the hints. The first time, it's started once
 /// to ask.
-async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(String, Value)> {
+async fn headless_identity(
+    executable: &Path,
+    extra: &[String],
+    timeout: Duration,
+) -> Result<(String, Value)> {
     // By the file as it is now, so a Chrome updated in place is asked
     // again, and by the switches it's started with.
     type Key = (PathBuf, Option<std::time::SystemTime>, u64, Vec<String>);
@@ -1378,7 +1391,7 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
         .or_default()
         .clone();
     let outcome = answer
-        .get_or_init(|| ask_identity(executable, extra))
+        .get_or_init(|| ask_identity(executable, extra, timeout))
         .await
         .clone();
     if outcome.is_err() {
@@ -1392,7 +1405,11 @@ async fn headless_identity(executable: &Path, extra: &[String]) -> Result<(Strin
 }
 
 /// Starts a headless Chrome at `executable` to ask what it is.
-async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Value)> {
+async fn ask_identity(
+    executable: &Path,
+    extra: &[String],
+    timeout: Duration,
+) -> Result<(String, Value)> {
     #[cfg(test)]
     PROBED
         .lock()
@@ -1452,18 +1469,26 @@ async fn ask_identity(executable: &Path, extra: &[String]) -> Result<(String, Va
     let what = executable.display().to_string();
     let asked = async {
         let version = tokio::time::timeout(
-            Duration::from_secs(30),
+            timeout,
             probe.inner.conn.call("", "Browser.getVersion", json!({})),
         )
         .await
-        .map_err(|_| Error::Launch(format!("{what} didn't answer in 30 seconds")))?
+        .map_err(|_| {
+            Error::Launch(format!(
+                "{what} didn't answer in {}s",
+                timeout.as_secs_f64()
+            ))
+        })?
         .map_err(|e| Error::Launch(format!("{what} didn't answer: {e}")))?;
         let metadata = probe.own_metadata().await?;
         Ok::<_, Error>((str_of(&version, "userAgent"), metadata))
     }
     .await;
-    // What it said counts even if it then wouldn't close cleanly.
-    let _ = probe.close().await;
+    // What it said counts even if it then wouldn't close cleanly. One
+    // that never answered isn't asked to close: dropping it ends it.
+    if asked.is_ok() {
+        let _ = probe.close().await;
+    }
     asked.map_err(|e| match e {
         Error::Launch(message) => Error::Launch(said.explain(message)),
         other => other,
@@ -2029,13 +2054,15 @@ mod tests {
         };
         let extra = fresh_switch();
         let (a, b) = tokio::join!(
-            headless_identity(&executable, &extra),
-            headless_identity(&executable, &extra)
+            headless_identity(&executable, &extra, Duration::from_secs(30)),
+            headless_identity(&executable, &extra, Duration::from_secs(30))
         );
         assert_eq!(a.unwrap(), b.unwrap());
         assert_eq!(probes(&extra), 1);
         // And the answer is kept.
-        headless_identity(&executable, &extra).await.unwrap();
+        headless_identity(&executable, &extra, Duration::from_secs(30))
+            .await
+            .unwrap();
         assert_eq!(probes(&extra), 1);
     }
 
@@ -2101,6 +2128,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A Chrome that never answers is given the launch's `timeout`, not a
+    /// fixed 30 seconds: a slow machine can wait longer, a script less.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_chrome_is_given_the_launchs_timeout() {
+        let dir = std::env::temp_dir().join(format!("netweir-silent-{}", std::process::id()));
+        let fake = fake_chrome(&dir, "exec sleep 60\n");
+        for headless in [true, false] {
+            let started = Instant::now();
+            let launched = Browser::launch(LaunchOptions {
+                executable: Some(fake.clone()),
+                headless,
+                args: fresh_switch(),
+                timeout: Duration::from_secs(1),
+                ..LaunchOptions::default()
+            })
+            .await;
+            let Err(Error::Launch(message)) = launched else {
+                panic!("launched, or failed some other way");
+            };
+            assert!(message.contains("in 1s"), "{message}");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "headless={headless}: {:?}",
+                started.elapsed()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A probe that fails fails every launch waiting on it at once, and
     /// the next launch asks again.
     #[cfg(unix)]
@@ -2112,14 +2169,18 @@ mod tests {
         let extra = fresh_switch();
         let started = std::time::Instant::now();
         let (a, b, c) = tokio::join!(
-            headless_identity(&fake, &extra),
-            headless_identity(&fake, &extra),
-            headless_identity(&fake, &extra)
+            headless_identity(&fake, &extra, Duration::from_secs(30)),
+            headless_identity(&fake, &extra, Duration::from_secs(30)),
+            headless_identity(&fake, &extra, Duration::from_secs(30))
         );
         assert!(a.is_err() && b.is_err() && c.is_err());
         assert_eq!(probes(&extra), 1, "each waiting launch started its own");
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
-        assert!(headless_identity(&fake, &extra).await.is_err());
+        assert!(
+            headless_identity(&fake, &extra, Duration::from_secs(30))
+                .await
+                .is_err()
+        );
         assert_eq!(probes(&extra), 2, "the failure was kept for later launches");
         let _ = std::fs::remove_dir_all(&dir);
     }
