@@ -1,0 +1,6 @@
+{"type": "article-navigation", "url": "https://lumo.example/journal",
+ "item": {"url": "https://lumo.example/journal", "category_name": "Journal",
+  "items": [{"url": "https://lumo.example/journal/winter-light", "name": "Choosing light for winter evenings"}, {"url": "https://lumo.example/journal/studio", "name": "A week in the weaving studio"}, {"url": "https://lumo.example/journal/repair", "name": "How to rewire an old lamp"}],
+  "next_page": {"url": "https://lumo.example/journal?page=2", "name": "Older posts"}, "page_number": 1},
+ "sources": {"items": "dom:div", "next_page": "dom:a.next"},
+ "probability": [0.65, 0.8], "validation": [], "page_type": "article-list"}

@@ -61,4 +61,41 @@ class Article(Item):
     _schema = "article"
 
 
-__all__ = ["Article", "JobPosting", "Product", "ProductList", "ProductNavigation"]
+class ArticleList(Item):
+    """A blog's or a news site's list of articles: each one's headline,
+    link, date, authors, image and teaser."""
+
+    _schema = "article-list"
+
+
+class ArticleNavigation(Item):
+    """Where a list of articles leads: the articles, and the next page."""
+
+    _schema = "article-navigation"
+
+
+class JobPostingNavigation(Item):
+    """Where a jobs board or a search for jobs leads: the adverts, and
+    the next page."""
+
+    _schema = "job-posting-navigation"
+
+
+class ForumThread(Item):
+    """A forum thread: its topic, and each post's text, date and
+    reactions."""
+
+    _schema = "forum-thread"
+
+
+__all__ = [
+    "Article",
+    "ArticleList",
+    "ArticleNavigation",
+    "ForumThread",
+    "JobPosting",
+    "JobPostingNavigation",
+    "Product",
+    "ProductList",
+    "ProductNavigation",
+]

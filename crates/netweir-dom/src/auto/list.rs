@@ -375,7 +375,10 @@ fn from_product(
 /// the link's text if it has any, and where it was.
 /// The next page: `rel=next`, else, on a page with a listing, its
 /// pagination widget's next link.
-fn next_link(page: &Page<'_, '_>, listing: bool) -> Option<(String, Option<String>, String)> {
+pub(crate) fn next_link(
+    page: &Page<'_, '_>,
+    listing: bool,
+) -> Option<(String, Option<String>, String)> {
     rel_next(page).or_else(|| {
         listing
             .then(|| dom::next_page(page.root, page.page, page.base))

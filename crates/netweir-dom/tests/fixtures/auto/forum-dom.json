@@ -1,0 +1,8 @@
+{"type": "forum-thread", "url": "https://community.lumo.example/t/flicker/88",
+ "item": {"url": "https://community.lumo.example/t/flicker/88", "topic": {"name": "Lamp flickers when dimmed"},
+  "posts": [
+   {"text": "My arc lamp flickers whenever I turn the dimmer below half. The bulb is an LED one from the shop. Is it the bulb or the dimmer?", "date_published": "2026-10-20T19:02:00Z", "date_published_raw": "Oct 20", "reactions": {"likes": 3}},
+   {"text": "Most likely the dimmer. Older dimmers expect a bigger load than one LED bulb draws. A trailing-edge dimmer usually fixes it.", "date_published": "2026-10-21T08:15:00Z", "date_published_raw": "Oct 21", "reactions": {"likes": 12}},
+   {"text": "Swapped the dimmer at the weekend and it's perfect now, thanks. No flicker at all, even at the lowest setting.", "date_published": "2026-10-23T17:40:00Z", "date_published_raw": "Oct 23", "reactions": {"likes": 1}}]},
+ "sources": {"topic": "dom:h1", "posts": "dom:main > div"},
+ "probability": [0.55, 0.75], "validation": [], "page_type": "forum-thread"}

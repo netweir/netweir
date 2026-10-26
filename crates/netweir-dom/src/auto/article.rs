@@ -175,7 +175,7 @@ fn from_content(page: &Page<'_, '_>, item: &mut Builder) -> bool {
 
 /// `[{name, name_raw, url}]` from Person or Organization things, names,
 /// or a list of either.
-fn authors(v: &Value, page: &Page<'_, '_>) -> Option<Value> {
+pub(super) fn authors(v: &Value, page: &Page<'_, '_>) -> Option<Value> {
     let list: Vec<Value> = each(v)
         .filter_map(|a| {
             let mut out = Map::new();
@@ -201,7 +201,7 @@ fn authors(v: &Value, page: &Page<'_, '_>) -> Option<Value> {
 }
 
 /// A language tag: `en-GB`, or a Language thing's name.
-fn language(v: &Value) -> Option<String> {
+pub(super) fn language(v: &Value) -> Option<String> {
     match v {
         Value::Object(o) => o
             .get("alternateName")

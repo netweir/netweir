@@ -120,7 +120,7 @@ const SUBTYPES: &[(&str, &[&str])] = &[
     ),
 ];
 
-fn is_a(ty: &str, wanted: &str) -> bool {
+pub(crate) fn is_a(ty: &str, wanted: &str) -> bool {
     ty == wanted
         || SUBTYPES
             .iter()

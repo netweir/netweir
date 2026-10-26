@@ -1314,7 +1314,7 @@ fn image_url(value: &Value) -> Option<String> {
 /// `itemprop=author`, or the class or id word `author` or `byline`),
 /// short enough to be a name, with a leading "By" taken off. A
 /// commenter (`comment-author`) isn't one.
-fn author_of(n: Node<'_>) -> Option<String> {
+pub(crate) fn author_of(n: Node<'_>) -> Option<String> {
     let marked = n
         .attr("rel")
         .is_some_and(|r| r.split_whitespace().any(|w| w == "author"))

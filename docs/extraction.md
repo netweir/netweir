@@ -29,6 +29,10 @@ From the command line, `netweir extract URL` prints the same item as JSON
 | `netweir.auto.ProductNavigation` | the same page as where it leads: product URLs and the next page |
 | `netweir.auto.JobPosting` | a job advert: title, organisation, location, salary range and rate, employment type, requirements, remote status, dates |
 | `netweir.auto.Article` | an article: headline, authors, dates, language, images, videos, description and the body as text and HTML |
+| `netweir.auto.ArticleList` | a blog's index or a news section: each article's headline, link, date, authors, image and teaser |
+| `netweir.auto.ArticleNavigation` | the same page as where it leads: article links and the next page |
+| `netweir.auto.JobPostingNavigation` | a jobs board or a job search: advert links and the next page |
+| `netweir.auto.ForumThread` | a forum thread: its topic and each post's text, date, likes and replies |
 
 Field names are the common item schema's, the one Zyte's API and
 zyte-common-items use, in snake_case: `regular_price`, `main_image`,
@@ -59,8 +63,9 @@ alone could be any of a dozen dollars.
 
 A crawl that wanders reaches product pages, category pages, the blog
 and the careers page in one run. `page.page_type()` says which is
-which: `"product"`, `"product-list"`, `"job-posting"`, `"article"`, or
-`"other"`. It runs each type's reader and keeps the one with the
+which: `"product"`, `"product-list"`, `"job-posting"`,
+`"job-posting-navigation"`, `"forum-thread"`, `"article-list"`,
+`"article"`, or `"other"`. It runs each type's reader and keeps the one with the
 strongest evidence, so a product page with a long description is still
 a product, and a category page whose cards are marked up as products is
 a listing. A page that's only prose (an About page, terms and
@@ -73,6 +78,8 @@ kinds = {
     "product": netweir.auto.Product,
     "product-list": netweir.auto.ProductList,
     "job-posting": netweir.auto.JobPosting,
+    "forum-thread": netweir.auto.ForumThread,
+    "article-list": netweir.auto.ArticleList,
     "article": netweir.auto.Article,
 }
 
@@ -210,6 +217,25 @@ job, 0.55 to 0.7 for a product, 0.75 for a listing, and 0.3 for the
 cards on a page that shows a product of its own. Every field says
 `dom:` and the element it came from, so you can see at a glance which
 ones to check and pin.
+
+## Lists of articles, jobs boards and threads
+
+A blog's index, a news section or a jobs board lists its entries in
+structured data often enough (a Blog's posts, an ItemList, several
+JobPostings), and Netweir reads them from there first. Without it, the
+entries are the page's biggest group of look-alike cards each led by a
+heading that links somewhere: the card's heading is the headline, its
+`<time>` the date, its byline the author, its image and first paragraph
+the rest. A story with "related stories" under it is still a story, and
+a grid of priced cards is a shop's, so neither reads as a list with any
+confidence. Cards alone can't tell a jobs board from a blog, so
+`JobPostingNavigation` read only from the layout says 0.35.
+
+A forum thread is a DiscussionForumPosting (or a Question with its
+answers) and its comments, with likes and replies from their
+interaction counts. Without structured data, the posts are the biggest
+group of look-alike blocks each with a date, and the topic is the page
+heading. Comments under an article are its comments, not a thread.
 
 ## Pages built in the browser
 

@@ -47,6 +47,10 @@ fuzz_target!(|data: &[u8]| {
         Schema::ProductNavigation,
         Schema::JobPosting,
         Schema::Article,
+        Schema::ArticleList,
+        Schema::ArticleNavigation,
+        Schema::JobPostingNavigation,
+        Schema::ForumThread,
     ] {
         let item = extract(schema, doc.root(), Some(&url), None, now);
         assert_eq!(item, extract(schema, doc.root(), Some(&url), None, now));

@@ -1,4 +1,4 @@
 {"type": "job-posting", "url": "https://jobs.example/search?l=london",
  "item": {"url": "https://jobs.example/search?l=london", "job_title": "Gardener", "hiring_organization": {"name": "Green Ltd", "name_raw": "Green Ltd"},
   "date_published": "2026-10-20", "date_published_raw": "2026-10-20"},
- "sources": {}, "probability": [0.2, 0.4], "validation": ["item"], "page_type": "other"}
+ "sources": {}, "probability": [0.2, 0.4], "validation": ["item"], "page_type": "job-posting-navigation"}

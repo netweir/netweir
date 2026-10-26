@@ -1,0 +1,5 @@
+{"type": "job-posting-navigation", "url": "https://jobs.example/search?l=london",
+ "item": {"url": "https://jobs.example/search?l=london", "category_name": "Jobs in London",
+  "items": [{"url": "https://jobs.example/j/1", "name": "Gardener"}, {"url": "https://jobs.example/j/2", "name": "Baker"}, {"url": "https://jobs.example/j/3", "name": "Driver"}]},
+ "sources": {"items": "json-ld"},
+ "probability": [0.85, 1.0], "validation": [], "page_type": "job-posting-navigation"}

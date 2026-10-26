@@ -409,3 +409,20 @@ def test_extract_command_reads_the_type_the_page_has(capsys):
     out = capsys.readouterr()
     assert "doesn't look like" in out.err
     assert "name" in json.loads(out.out)
+
+
+def test_lists_and_threads():
+    blog = page(fixture("article-list-dom"), url="https://lumo.example/journal")
+    assert blog.page_type() == "article-list"
+    articles = blog.extract(netweir.auto.ArticleList)["articles"]
+    assert [a["headline"] for a in articles][0] == "Choosing light for winter evenings"
+    nav = blog.extract(netweir.auto.ArticleNavigation)
+    assert nav["next_page"]["url"] == "https://lumo.example/journal?page=2"
+    thread = page(fixture("forum-dom"), url="https://community.lumo.example/t/flicker/88")
+    assert thread.page_type() == "forum-thread"
+    posts = thread.extract(netweir.auto.ForumThread)["posts"]
+    assert [p["reactions"]["likes"] for p in posts] == [3, 12, 1]
+    jobs = page(fixture("nav-jobs-jsonld"), url="https://jobs.example/search?l=london")
+    assert jobs.page_type() == "job-posting-navigation"
+    items = jobs.extract(netweir.auto.JobPostingNavigation)["items"]
+    assert [i["name"] for i in items] == ["Gardener", "Baker", "Driver"]

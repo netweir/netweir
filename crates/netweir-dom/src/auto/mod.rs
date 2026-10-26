@@ -9,6 +9,7 @@
 
 mod article;
 mod dom;
+mod feeds;
 pub mod fields;
 mod job;
 mod js_state;
@@ -31,6 +32,10 @@ pub enum Schema {
     ProductNavigation,
     JobPosting,
     Article,
+    ArticleList,
+    ArticleNavigation,
+    JobPostingNavigation,
+    ForumThread,
 }
 
 impl Schema {
@@ -42,11 +47,13 @@ impl Schema {
             Schema::ProductNavigation => list::NAVIGATION_FIELDS,
             Schema::JobPosting => job::FIELDS,
             Schema::Article => article::FIELDS,
+            Schema::ArticleList => feeds::ARTICLE_LIST_FIELDS,
+            Schema::ArticleNavigation | Schema::JobPostingNavigation => feeds::NAVIGATION_FIELDS,
+            Schema::ForumThread => feeds::THREAD_FIELDS,
         }
     }
 
-    /// The type's name: `product`, `product-list`, `product-navigation`,
-    /// `job-posting` or `article`.
+    /// The type's name, as `from_name` reads it.
     pub fn name(self) -> &'static str {
         match self {
             Schema::Product => "product",
@@ -54,11 +61,16 @@ impl Schema {
             Schema::ProductNavigation => "product-navigation",
             Schema::JobPosting => "job-posting",
             Schema::Article => "article",
+            Schema::ArticleList => "article-list",
+            Schema::ArticleNavigation => "article-navigation",
+            Schema::JobPostingNavigation => "job-posting-navigation",
+            Schema::ForumThread => "forum-thread",
         }
     }
 
-    /// `product`, `product-list`, `product-navigation`, `job-posting` or
-    /// `article` (underscores work too).
+    /// `product`, `product-list`, `product-navigation`, `job-posting`,
+    /// `job-posting-navigation`, `article`, `article-list`,
+    /// `article-navigation` or `forum-thread` (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -66,6 +78,10 @@ impl Schema {
             "product-navigation" => Schema::ProductNavigation,
             "job-posting" => Schema::JobPosting,
             "article" => Schema::Article,
+            "article-list" => Schema::ArticleList,
+            "article-navigation" => Schema::ArticleNavigation,
+            "job-posting-navigation" => Schema::JobPostingNavigation,
+            "forum-thread" => Schema::ForumThread,
             _ => return None,
         })
     }
@@ -77,7 +93,13 @@ impl Schema {
     pub fn kind_of(self, field: &str) -> Option<fields::FieldKind> {
         use fields::FieldKind as K;
         Some(match field {
-            "products" | "items" | "sub_categories" | "variants" | "additional_properties" => {
+            "products"
+            | "items"
+            | "sub_categories"
+            | "variants"
+            | "additional_properties"
+            | "articles"
+            | "posts" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -85,7 +107,7 @@ impl Schema {
             "currency_raw" => K::CurrencyRaw,
             "availability" => K::Availability,
             "gtin" => K::Gtin,
-            "brand" => K::Brand,
+            "brand" | "topic" => K::Brand,
             "aggregate_rating" => K::Rating,
             "breadcrumbs" => K::Breadcrumbs,
             "main_image" => K::Image,
@@ -159,8 +181,9 @@ pub fn extract(
     out
 }
 
-/// The type of item the page at `page` holds: a product, a listing, a
-/// job advert or an article, or None when it looks like none of them.
+/// The type of item the page at `page` holds: a product, a listing of
+/// products, a job advert, a board of jobs, a forum thread, a list of
+/// articles or an article, or None when it looks like none of them.
 /// With it, each type's probability, in the order tried. Arguments are
 /// as for [`extract`].
 pub fn page_type(
@@ -180,6 +203,9 @@ pub fn page_type(
         Schema::Product,
         Schema::JobPosting,
         Schema::ProductList,
+        Schema::ForumThread,
+        Schema::ArticleList,
+        Schema::JobPostingNavigation,
         Schema::Article,
     ] {
         let item = read(schema, &ctx);
@@ -229,6 +255,10 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::Article => article::read(ctx, &mut item),
         Schema::ProductList => list::read_list(ctx, &mut item),
         Schema::ProductNavigation => list::read_navigation(ctx, &mut item),
+        Schema::ArticleList => feeds::read_article_list(ctx, &mut item),
+        Schema::ArticleNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Articles),
+        Schema::JobPostingNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Jobs),
+        Schema::ForumThread => feeds::read_thread(ctx, &mut item),
     }
     item
 }

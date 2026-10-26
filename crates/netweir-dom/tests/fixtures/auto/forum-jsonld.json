@@ -1,0 +1,8 @@
+{"type": "forum-thread", "url": "https://forum.example/t/42",
+ "item": {"url": "https://forum.example/t/42", "topic": {"name": "Best bulbs for reading?"},
+  "posts": [
+   {"text": "Which colour temperature do you use for reading in bed?", "date_published": "2026-09-01T10:00:00Z", "date_published_raw": "2026-09-01T10:00:00Z", "reactions": {"likes": 5, "replies": 2}},
+   {"text": "2700K, always. Anything colder keeps me awake.", "date_published": "2026-09-01T11:30:00Z", "date_published_raw": "2026-09-01T11:30:00Z", "reactions": {"likes": 9}},
+   {"text": "Warm white with a dimmer, so it goes down as I get sleepy.", "date_published": "2026-09-02T07:05:00Z", "date_published_raw": "2026-09-02T07:05:00Z"}]},
+ "sources": {"posts": "json-ld"},
+ "probability": [0.85, 1.0], "validation": [], "page_type": "forum-thread"}

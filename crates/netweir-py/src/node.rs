@@ -849,7 +849,8 @@ impl Node {
     }
 
     /// What the page holds: "product", "product-list", "job-posting",
-    /// "article", or "other" when it looks like none of them. `url` is
+    /// "job-posting-navigation", "article", "article-list",
+    /// "forum-thread", or "other" when it looks like none of them. `url` is
     /// the page's, which its links are relative to.
     #[pyo3(signature = (url=None))]
     fn page_type(&self, py: Python<'_>, url: Option<&str>) -> &'static str {

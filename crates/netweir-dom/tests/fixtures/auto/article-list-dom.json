@@ -1,0 +1,8 @@
+{"type": "article-list", "url": "https://lumo.example/journal",
+ "item": {"url": "https://lumo.example/journal",
+  "articles": [
+   {"headline": "Choosing light for winter evenings", "url": "https://lumo.example/journal/winter-light", "date_published": "2026-10-20", "date_published_raw": "20 October 2026", "authors": [{"name": "Ana Ruiz", "name_raw": "Ana Ruiz"}], "main_image": {"url": "https://lumo.example/img/winter.jpg"}, "article_body": "Short days call for warmer light, and here's how we pick bulbs for each room.", "in_language": "en"},
+   {"headline": "A week in the weaving studio", "url": "https://lumo.example/journal/studio", "date_published": "2026-10-02", "date_published_raw": "2 October 2026", "authors": [{"name": "Tom Hale", "name_raw": "Tom Hale"}], "main_image": {"url": "https://lumo.example/img/studio.jpg"}, "article_body": "We spent a week with the people who weave our shades and came back with photographs.", "in_language": "en"},
+   {"headline": "How to rewire an old lamp", "url": "https://lumo.example/journal/repair", "date_published": "2026-09-15", "date_published_raw": "15 September 2026", "authors": [{"name": "Ana Ruiz", "name_raw": "Ana Ruiz"}], "main_image": {"url": "https://lumo.example/img/repair.jpg"}, "article_body": "A lamp from a car boot sale, a new flex and an afternoon: the steps, in order.", "in_language": "en"}]},
+ "sources": {"articles": "dom:div"},
+ "probability": [0.65, 0.8], "validation": [], "page_type": "article-list"}

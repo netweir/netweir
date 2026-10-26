@@ -109,6 +109,22 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    at most 2,000 prices and 16 card searches are made, and the stress
    pages in `tests/auto_layout.rs` and `tests/auto.rs` hold them to time
    limits.
+7. `auto::feeds` reads the list and thread types. Structured data
+   first: a Blog's `blogPost`, an ItemList of Articles or JobPostings,
+   several Articles or JobPostings all linking elsewhere, and a
+   DiscussionForumPosting, SocialMediaPosting or Question with its
+   comments or answers, likes and replies from `interactionStatistic`,
+   `upvoteCount` and `commentCount`. Then the layout. A card is the
+   highest element above a linked `<h2>`-`<h4>` (up to five levels)
+   that holds no other linked heading, and cards sharing tag, class
+   and grandparent are one listing; the largest of three or more wins.
+   A post is the highest element above a `<time>` that holds no other,
+   grouped the same way by parent, two or more with 20 bytes of text in
+   the biggest child that isn't the date, byline or buttons. A listing
+   or thread whose container neither holds nor sits inside the page's
+   main content is beside an article (related stories, comments) and
+   gets 0.3 or 0.25; a listing mostly of priced cards is a shop's and
+   gets 0.3.
 
 Meta-tag fallbacks for products apply only when the page has a Product
 or says `og:type` product: a news page asked for a product gives its URL
@@ -182,9 +198,9 @@ Some fields of the schema have no reader yet: a job's `headline`, a
 product's `features` and `style`, and the subcategories of navigation.
 They can be pinned meanwhile.
 
+- Per-item probabilities in lists, and ArticleList entries' `images`.
 - Generic records: the main repeated region of any page (table rows,
   cards, list entries) as rows with inferred column names, for public
   records, catalogues and directories.
-- The rest of the schema (ForumThread, ArticleList,
-  BusinessPlace, RealEstate, Serp and others), and spider templates run
-  with a URL.
+- The rest of the schema (BusinessPlace, RealEstate, Serp and others),
+  and spider templates run with a URL.

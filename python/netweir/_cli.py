@@ -256,7 +256,17 @@ def main(argv: list[str] | None = None) -> int:
     extract.add_argument(
         "--type",
         default=None,
-        choices=["product", "product-list", "product-navigation", "job-posting", "article"],
+        choices=[
+            "product",
+            "product-list",
+            "product-navigation",
+            "job-posting",
+            "job-posting-navigation",
+            "article",
+            "article-list",
+            "article-navigation",
+            "forum-thread",
+        ],
         help="what to read (default: what the page looks like)",
     )
     extract.add_argument(
@@ -684,8 +694,8 @@ def _extract(page, kind: str | None, field_names: str) -> None:
         kind = page.page_type()
         if kind == "other":
             print(
-                "netweir: this page doesn't look like a product, listing, job or "
-                "article; reading it as a product (--type picks another)",
+                "netweir: this page doesn't look like any type netweir.auto reads; "
+                "reading it as a product (--type picks another)",
                 file=sys.stderr,
             )
             kind = "product"
@@ -696,6 +706,10 @@ def _extract(page, kind: str | None, field_names: str) -> None:
         "product-navigation": auto.ProductNavigation,
         "job-posting": auto.JobPosting,
         "article": auto.Article,
+        "article-list": auto.ArticleList,
+        "article-navigation": auto.ArticleNavigation,
+        "job-posting-navigation": auto.JobPostingNavigation,
+        "forum-thread": auto.ForumThread,
     }[kind].extract(page)
     if field_names == "zyte":
         item = _camel(item)

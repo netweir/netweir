@@ -286,17 +286,23 @@ fn a_thread_with_pages_isnt_a_listing() {
 
 fn quick(html: &str) {
     let doc = Document::parse(html);
-    let start = std::time::Instant::now();
     for schema in [
         Schema::Product,
         Schema::ProductList,
         Schema::ProductNavigation,
         Schema::JobPosting,
+        Schema::ArticleList,
+        Schema::ArticleNavigation,
+        Schema::JobPostingNavigation,
+        Schema::ForumThread,
     ] {
+        // Each reader on its own, so adding readers doesn't eat the
+        // others' time.
+        let start = std::time::Instant::now();
         extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
+        let took = start.elapsed();
+        assert!(took.as_secs_f64() < 1.5, "{schema:?}: {took:?}");
     }
-    let took = start.elapsed();
-    assert!(took.as_secs_f64() < 3.0, "{took:?}");
 }
 
 #[test]
@@ -355,4 +361,62 @@ fn prose_with_a_date_or_a_byline_is_an_article_and_without_isnt() {
         typed(r#"<meta property="article:published_time" content="2026-10-01">"#),
         Some(Schema::Article)
     );
+}
+
+const STORY: &str = r#"<main><article><h1>The night market returns</h1>
+    <p class="byline">By <span class="author">Jo Park</span> · <time datetime="2026-10-20">20 October</time></p>
+    <p>After two years away the night market is back on the quay, with forty stalls and a band on the old ferry steps every Friday until Christmas.</p>
+    <p>Traders say the first night drew more people than any before the break, and the council has agreed to keep the lights up until midnight.</p>
+    <p>Parking is limited, so the organisers are asking people to come on foot or by the late bus, which will run every twenty minutes.</p>
+    </article>"#;
+
+fn typed(html: &str) -> Option<Schema> {
+    let doc = Document::parse(html);
+    let url = url::Url::parse(SHOP).unwrap();
+    netweir_dom::auto::page_type(doc.root(), Some(&url), None, Civil::date(2026, 10, 25)).0
+}
+
+#[test]
+fn a_story_with_comments_isnt_a_thread() {
+    let comment = |who: &str, when: &str| {
+        format!(
+            r#"<div class="comment"><span class="author">{who}</span> <time datetime="{when}">{when}</time>
+            <div class="comment-body"><p>Went on Friday and it was wonderful, the band played until late.</p></div></div>"#
+        )
+    };
+    let html = format!(
+        r#"{STORY}<section class="responses"><h2>3 responses</h2>{}{}{}</section></main>"#,
+        comment("a", "2026-10-21"),
+        comment("b", "2026-10-22"),
+        comment("c", "2026-10-23")
+    );
+    let thread = read(Schema::ForumThread, &html, SHOP);
+    assert!(thread.probability < 0.4, "{}", thread.probability);
+    assert_eq!(typed(&html), Some(Schema::Article));
+}
+
+#[test]
+fn a_story_with_related_stories_isnt_a_list() {
+    let related = |n: u32| {
+        format!(
+            r#"<li class="teaser"><h3><a href="/s/{n}">Another story about the quay, part {n}</a></h3></li>"#
+        )
+    };
+    let html = format!(
+        r#"{STORY}<aside class="more"><h2>More from the quay</h2><ul>{}{}{}</ul></aside></main>"#,
+        related(1),
+        related(2),
+        related(3)
+    );
+    let list = read(Schema::ArticleList, &html, SHOP);
+    assert!(list.probability < 0.4, "{}", list.probability);
+    assert_eq!(typed(&html), Some(Schema::Article));
+}
+
+#[test]
+fn a_shop_grid_isnt_an_article_list() {
+    let html = format!(r#"<main><h1>Lamps</h1>{GRID}</main>"#);
+    let list = read(Schema::ArticleList, &html, SHOP);
+    assert!(list.probability < 0.4, "{}", list.probability);
+    assert_eq!(typed(&html), Some(Schema::ProductList));
 }

@@ -197,7 +197,16 @@ class Node:
     def article(self, base_url: str | None = None) -> Article: ...
     def page_type(
         self, url: str | None = None
-    ) -> Literal["product", "product-list", "job-posting", "article", "other"]: ...
+    ) -> Literal[
+        "product",
+        "product-list",
+        "job-posting",
+        "job-posting-navigation",
+        "article",
+        "article-list",
+        "forum-thread",
+        "other",
+    ]: ...
     # attributes
     @property
     def attrs(self) -> dict[str, str]: ...

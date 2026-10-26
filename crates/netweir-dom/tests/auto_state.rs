@@ -319,17 +319,23 @@ fn a_long_key_over_many_children_is_cheap() {
 
 fn quick(html: &str) {
     let doc = Document::parse(html);
-    let start = std::time::Instant::now();
     for schema in [
         Schema::Product,
         Schema::ProductList,
         Schema::ProductNavigation,
         Schema::JobPosting,
+        Schema::ArticleList,
+        Schema::ArticleNavigation,
+        Schema::JobPostingNavigation,
+        Schema::ForumThread,
     ] {
+        // Each reader on its own, so adding readers doesn't eat the
+        // others' time.
+        let start = std::time::Instant::now();
         extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
+        let took = start.elapsed();
+        assert!(took.as_secs_f64() < 1.5, "{schema:?}: {took:?}");
     }
-    let took = start.elapsed();
-    assert!(took.as_secs_f64() < 3.0, "{took:?}");
 }
 
 #[test]

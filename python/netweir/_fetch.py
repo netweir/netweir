@@ -421,9 +421,10 @@ class Page:
 
     def page_type(self) -> str:
         """What the page holds, without being told: ``"product"``,
-        ``"product-list"``, ``"job-posting"``, ``"article"``, or
-        ``"other"`` when it looks like none of them. Pick the
-        ``netweir.auto`` type to extract from it."""
+        ``"product-list"``, ``"job-posting"``, ``"job-posting-navigation"``
+        (a board or search of jobs), ``"article"``, ``"article-list"``,
+        ``"forum-thread"``, or ``"other"`` when it looks like none of
+        them. Pick the ``netweir.auto`` type to extract from it."""
         return self.root.page_type(self.url)
 
     def urljoin(self, url: str) -> str:
