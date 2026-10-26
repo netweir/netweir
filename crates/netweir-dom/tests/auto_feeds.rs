@@ -334,3 +334,237 @@ fn a_blog_index_isnt_its_first_post() {
     );
     assert!(article.probability < 0.4, "{}", article.probability);
 }
+
+#[test]
+fn xenforo_with_its_avatar_links_is_a_thread() {
+    let post = |n: u32| {
+        format!(
+            r#"<article class="message message--post"><div class="message-inner">
+            <div class="message-cell message-cell--user"><div class="message-avatar"><a href="/members/u{n}.{n}/" class="avatar"><img src="/a/{n}.jpg" alt="u{n}"></a></div>
+            <h4 class="message-name"><a href="/members/u{n}.{n}/" class="username">u{n}</a></h4></div>
+            <div class="message-cell message-cell--main"><header class="message-attribution"><a href="/posts/{n}"><time datetime="2026-10-2{n}T10:00:00Z">Oct 2{n}</time></a></header>
+            <div class="message-content"><article class="message-body"><div class="bbWrapper">Reply {n}. {BODY}</div></article></div></div></div></article>"#
+        )
+    };
+    let html = format!(
+        r#"<main><h1>Flicker</h1><div class="block-body">{}{}{}</div></main>"#,
+        post(1),
+        post(2),
+        post(3)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 3);
+}
+
+#[test]
+fn phpbb_with_its_profile_column_is_a_thread_with_dates() {
+    let post = |n: u32| {
+        format!(
+            r#"<div class="post bg{}"><div class="inner"><dl class="postprofile"><dt><a href="./memberlist.php?mode=viewprofile&amp;u={n}" class="username">kit{n}</a></dt><dd>Posts: 12</dd></dl>
+            <div class="postbody"><p class="author">by <a href="./memberlist.php?mode=viewprofile&amp;u={n}" class="username">kit{n}</a> » <time datetime="2026-10-2{n}T10:00:00Z">Mon Oct 2{n}</time></p>
+            <div class="content">Post {n}. {BODY}</div></div></div></div>"#,
+            n % 2 + 1
+        )
+    };
+    let html = format!(
+        "<main><h1>Flicker</h1><div class=\"topic\">{}{}{}</div></main>",
+        post(1),
+        post(2),
+        post(3)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+    let thread = read(Schema::ForumThread, &html);
+    assert_eq!(texts(&thread).len(), 3);
+    assert_eq!(
+        get(&thread, "posts")[0]["date_published"],
+        "2026-10-21T10:00:00Z"
+    );
+}
+
+#[test]
+fn cards_opening_with_a_label_are_a_list_not_a_thread() {
+    let card = |n: u32| {
+        format!(
+            r#"<article class="card"><a href="/s/{n}"><img src="/i/{n}.jpg" alt=""></a><p class="eyebrow">News</p>
+            <h2><a href="/s/{n}">A long look at lamps, part {n}</a></h2><time datetime="2026-10-0{n}">Oct {n}</time>
+            <div class="byline">Ana Ruiz</div><p>{BODY}</p></article>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>News</h1>{}</main>",
+        (1..=5).map(card).collect::<String>()
+    );
+    assert_eq!(typed(&html), Some(Schema::ArticleList));
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+}
+
+#[test]
+fn a_reply_button_doesnt_make_a_post_a_teaser() {
+    let post = |n: u32| {
+        format!(
+            r#"<li class="postcontainer"><div class="userinfo"><a class="username" href="/member.php?u={n}">kit{n}</a></div>
+            <span class="date"><time datetime="2026-10-2{n}">Oct 2{n}</time></span>
+            <div class="postbody"><blockquote class="postcontent restore">Post {n}. {BODY}</blockquote></div>
+            <div class="postfoot"><a class="newreply" href="newreply.php?p={n}"><span>Reply With Quote</span></a></div></li>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>Flicker</h1><ol class=\"posts\">{}{}{}</ol></main>",
+        post(1),
+        post(2),
+        post(3)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn an_opening_post_with_extra_classes_keeps_its_replies() {
+    let post = |classes: &str, n: u32| {
+        format!(
+            r#"<div class="{classes}"><span class="author">u{n}</span> <time datetime="2026-10-2{n}">Oct 2{n}</time><div class="body"><p>Post {n}. {BODY}</p></div></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>Flicker</h1><div>{}{}{}{}</div></main>",
+        post("post original-post pinned-post", 1),
+        post("post", 2),
+        post("post", 3),
+        post("post", 4)
+    );
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 4);
+}
+
+#[test]
+fn replies_inside_main_under_an_article_arent_a_thread() {
+    let reply = |n: u32| {
+        format!(
+            r#"<div class="reply"><span class="author">Kit</span> <time datetime="2026-10-2{n}">Oct 2{n}</time><p>{BODY}</p></div>"#
+        )
+    };
+    let prose = format!("<p>{BODY} {BODY} {BODY}</p>").repeat(4);
+    let html = format!(
+        r#"<main><article><h1>The night market returns</h1>{prose}</article><section class="replies">{}{}{}</section></main>"#,
+        reply(1),
+        reply(2),
+        reply(3)
+    );
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+    assert_eq!(typed(&html), Some(Schema::Article));
+}
+
+#[test]
+fn a_post_keeps_every_paragraph() {
+    let post = |n: u32| {
+        format!(
+            r#"<li class="post"><span class="author">u{n}</span> <time datetime="2026-10-2{n}">Oct 2{n}</time>
+            <p>First paragraph of post {n}.</p><p>{BODY}</p><p>Third, short again.</p></li>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>T</h1><ul>{}{}{}</ul></main>",
+        post(1),
+        post(2),
+        post(3)
+    );
+    let first = &texts(&read(Schema::ForumThread, &html))[0];
+    assert!(first.starts_with("First paragraph of post 1."), "{first}");
+    assert!(first.ends_with("Third, short again."), "{first}");
+}
+
+#[test]
+fn a_member_directory_isnt_a_thread() {
+    let member = |n: u32| {
+        format!(
+            r#"<div class="member-card"><img src="/a/{n}.jpg" alt=""><a href="/members/u{n}">user{n}</a>
+            <div class="stats">Joined October 2020 · 234 posts · Leeds, United Kingdom</div></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>Members</h1>{}</main>",
+        (1..=6).map(member).collect::<String>()
+    );
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+    assert_ne!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn a_people_section_is_still_a_list() {
+    let card = |n: u32| {
+        format!(
+            r#"<div class="card"><h3><a href="/people/story-{n}">A profile of a lamp maker, part {n}</a></h3>
+            <time datetime="2026-10-0{n}">Oct {n}</time><p>{BODY}</p></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>People</h1>{}</main>",
+        (1..=4).map(card).collect::<String>()
+    );
+    assert_eq!(typed(&html), Some(Schema::ArticleList));
+}
+
+#[test]
+fn github_and_old_reddit_comments_are_threads() {
+    let github = |n: u32| {
+        format!(
+            r#"<div class="timeline-comment"><div class="timeline-comment-header"><a class="author" href="/kit{n}">kit{n}</a> commented <relative-time datetime="2026-10-2{n}T10:00:00Z">Oct 2{n}</relative-time></div>
+            <div class="comment-body"><p>Comment {n}. {BODY}</p></div></div>"#
+        )
+    };
+    let reddit = |n: u32| {
+        format!(
+            r#"<div class="thing comment"><div class="entry"><p class="tagline"><a href="/user/kit{n}" class="author">kit{n}</a> <time datetime="2026-10-2{n}T10:00:00Z">2 hours ago</time></p>
+            <div class="usertext-body"><div class="md"><p>Comment {n}. {BODY}</p></div></div></div></div>"#
+        )
+    };
+    for card in [github as fn(u32) -> String, reddit] {
+        let html = format!(
+            "<main><h1>Lamp flickers when dimmed</h1><div class=\"discussion\">{}{}{}</div></main>",
+            card(1),
+            card(2),
+            card(3)
+        );
+        assert_eq!(typed(&html), Some(Schema::ForumThread), "{html}");
+        let thread = read(Schema::ForumThread, &html);
+        assert_eq!(texts(&thread).len(), 3, "{html}");
+        assert_eq!(
+            get(&thread, "posts")[0]["date_published"],
+            "2026-10-21T10:00:00Z"
+        );
+    }
+}
+
+#[test]
+fn a_like_button_doesnt_hide_the_count() {
+    let post = |n: u32| {
+        format!(
+            r#"<div class="post"><span class="author">u{n}</span> <time datetime="2026-10-2{n}">Oct 2{n}</time><div class="body"><p>{BODY}</p></div>
+            <a class="like-button" href="/like">Like</a> <span class="like-count">{n}</span></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>T</h1><div>{}{}{}</div></main>",
+        post(1),
+        post(2),
+        post(3)
+    );
+    let posts = get(&read(Schema::ForumThread, &html), "posts").clone();
+    assert_eq!(posts[1]["reactions"]["likes"], 2);
+}
+
+#[test]
+fn a_thousand_profile_links_are_quick() {
+    let who: String = (0..20_000)
+        .map(|i| format!(r#"<li><a href="/members/u{i}">u{i}</a></li>"#))
+        .collect();
+    let html = format!("<main><h1>Online</h1><ul>{who}</ul></main>");
+    let doc = Document::parse(&html);
+    let start = std::time::Instant::now();
+    extract(
+        Schema::ForumThread,
+        doc.root(),
+        None,
+        None,
+        Civil::date(2026, 10, 25),
+    );
+    assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
+}

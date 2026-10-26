@@ -239,12 +239,15 @@ answers) and its comments, replies to replies included, with likes and
 replies from their interaction counts. Without structured data, the
 posts are the biggest group of look-alike blocks each with a date or a
 poster (a username, a link to a member's profile), most of them naming
-who wrote them, so a changelog or a blog's dated teasers aren't a
-thread. Each post's text is its block's biggest piece of text that
-isn't the date, the poster or the buttons, quotes of other posts
-included; likes are read as people write them (`1.2k`). That covers
-the usual forum software, XenForo and phpBB among it. Comments under an
-article are its comments, not a thread.
+who wrote them, so a changelog, a blog's dated teasers or a member
+directory aren't a thread. A post's text is everything in it but its
+date, poster and buttons, every paragraph and any quotes of other
+posts; likes are read as people write them (`1.2k`). The markup of
+XenForo, phpBB, vBulletin, GitHub's issue comments and old Reddit is
+read this way, along with hand-written forums that mark their posters.
+New Reddit, Hacker News and Disqus, whose comments arrive by script or
+without dates or posters marked, aren't yet. Comments under an article
+are its comments, not a thread.
 
 ## Pages built in the browser
 

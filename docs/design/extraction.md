@@ -122,12 +122,18 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    once classes that tell cards apart are left out (`post-12`, `odd`,
    `category-news`), are one listing; the largest of three or more wins,
    at 0.7 when most cards have a date or byline and 0.35 when not. A
-   post is the highest element (up to eight up) above a date or a
-   poster that holds no other of either, dates and posters inside
-   quotes not counting, grouped by parent the same way; a group needs
-   two posts, most of them with a poster, few of them led by a title
-   linking elsewhere, and is 0.75. A post's text is its element with the
-   most text holding none of its date, poster or furniture. A listing or
+   post is the highest element (up to eight up) above a date
+   (`<time>`, `<relative-time>`) or a poster that holds no other date
+   and no other poster, links to one profile counting as one poster and
+   dates and posters inside quotes not counting; comment sections,
+   boilerplate to the other readers, are read here. Posts are grouped by
+   parent the same way, with classes compared against what most members
+   share; a group needs two posts, most of them with a poster, few of
+   them led by a title linking elsewhere before any prose, and dates or
+   prose (80 bytes) in most, and is 0.75. A post's text is everything in
+   it but its date, poster and furniture. Posts the cards reading also
+   finds as a dated listing, or beside a few paragraphs of prose in the
+   main content, are 0.25. A listing or
    thread whose container neither holds nor sits inside the page's main
    content is beside an article (related stories, comments) and gets 0.3
    or 0.25; a listing mostly of priced cards is a shop's and gets 0.3.

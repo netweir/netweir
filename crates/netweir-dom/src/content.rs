@@ -1333,7 +1333,7 @@ pub(crate) fn author_of(n: Node<'_>) -> Option<String> {
         .find_map(|p| text.strip_prefix(p))
         .map_or(text.as_str(), str::trim);
     // "Ana Ruiz · 5 min read": the name, not what follows it.
-    let text = [" · ", " | ", " • ", " — ", " – "]
+    let text = [" · ", " • ", " — ", " – ", " - "]
         .iter()
         .filter_map(|sep| text.find(sep))
         .min()

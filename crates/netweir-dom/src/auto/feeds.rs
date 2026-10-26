@@ -112,9 +112,12 @@ pub(crate) fn own_article(page: &Page<'_, '_>) -> bool {
             .get("url")
             .and_then(Value::as_str)
             .is_some_and(|u| page.is_page_url(u))
-            || heading
-                .as_deref()
-                .is_some_and(|h| a.props.get("headline").and_then(f::text).as_deref() == Some(h))
+            // An article with no URL whose headline is the page heading;
+            // one linking elsewhere is an entry, whatever its headline.
+            || (!a.props.contains_key("url")
+                && heading.as_deref().is_some_and(|h| {
+                    a.props.get("headline").and_then(f::text).as_deref() == Some(h)
+                }))
     })
 }
 
@@ -311,9 +314,9 @@ fn block_above<'a>(n: Node<'a>, up: usize, stop: impl Fn(Node<'_>) -> bool) -> N
     block
 }
 
-/// The members of a group whose classes look like the first's: most of
-/// them shared, leaving out classes that tell blocks apart (`post-12`,
-/// `bg2`, `odd`, `category-news`).
+/// The members of a group whose classes look like the rest's, leaving out
+/// classes that tell blocks apart (`post-12`, `bg2`, `odd`,
+/// `category-news`).
 fn alike<T: Blocked>(group: Vec<T>) -> Vec<T> {
     let classes = |n: Node<'_>| -> Vec<String> {
         let mut out: Vec<String> = n
@@ -355,17 +358,29 @@ fn alike<T: Blocked>(group: Vec<T>) -> Vec<T> {
         out.dedup();
         out
     };
-    let Some(first) = group.first().map(|g| classes(g.block())) else {
-        return group;
-    };
+    // The classes most members have; a member needs half of them, so an
+    // opening post with extra classes stays with its replies.
+    let all: Vec<Vec<String>> = group.iter().map(|g| classes(g.block())).collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for c in all.iter().flatten() {
+        *counts.entry(c.as_str()).or_default() += 1;
+    }
+    let core: Vec<&str> = counts
+        .iter()
+        .filter(|(_, n)| **n * 2 > group.len())
+        .map(|(c, _)| *c)
+        .collect();
+    let keep: Vec<bool> = all
+        .iter()
+        .map(|mine| {
+            let shared = core.iter().filter(|c| mine.iter().any(|m| m == *c)).count();
+            shared * 2 >= core.len()
+        })
+        .collect();
     group
         .into_iter()
-        .filter(|g| {
-            let mine = classes(g.block());
-            let shared = mine.iter().filter(|c| first.contains(c)).count();
-            let all = mine.len() + first.len() - shared;
-            all == 0 || shared * 2 >= all
-        })
+        .zip(keep)
+        .filter_map(|(g, k)| k.then_some(g))
         .collect()
 }
 
@@ -386,7 +401,9 @@ impl Blocked for Node<'_> {
     }
 }
 
-/// A link to a member's profile, as forums link their posters.
+/// A link to a member's profile, as forum and comment software links its
+/// posters: `/members/kit.1/`, `memberlist.php?u=2`, `/user/kit`,
+/// `member.php?u=3`, `user?id=kit`.
 fn profile_link(a: Node<'_>) -> bool {
     a.attr("href").is_some_and(|h| {
         let h = h.to_ascii_lowercase();
@@ -395,10 +412,9 @@ fn profile_link(a: Node<'_>) -> bool {
             "/member/",
             "/users/",
             "/user/",
-            "/u/",
-            "/profile",
-            "/people/",
             "memberlist.php",
+            "member.php",
+            "user?id=",
         ]
         .iter()
         .any(|p| h.contains(p))
@@ -538,6 +554,29 @@ fn priced(found: &[Card<'_>]) -> bool {
         })
         .count();
     with_price * 2 > found.len()
+}
+
+fn holds(outer: Node<'_>, inner: Node<'_>) -> bool {
+    std::iter::successors(Some(inner), |n| n.parent()).any(|n| n.id() == outer.id())
+}
+
+/// Whether the page's main content holds a few paragraphs of prose
+/// outside `container`: an article above its replies, both inside
+/// `<main>`.
+fn prose_beside(root: Node<'_>, container: Node<'_>) -> bool {
+    let Some(main) = crate::content::main_content(root) else {
+        return false;
+    };
+    let mut prose = 0;
+    for p in main.node.descendants().filter(|n| n.tag() == Some("p")) {
+        if !holds(container, p) {
+            prose += p.text().trim().len();
+            if prose >= 400 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Whether the page has an article of its own beside the cards: main
@@ -820,11 +859,19 @@ pub(crate) fn read_thread(page: &Page<'_, '_>, item: &mut Builder) {
             Some(Value::Array(found.into_iter().map(Value::Object).collect())),
             super::dom::source(container),
         );
-        probability = if article_beside(page.root, container) {
-            0.25
-        } else {
-            0.75
-        };
+        // Posts beside an article are its comments, wherever they sit;
+        // dated teasers that the cards reading finds too are a list.
+        let listed = cards(page.root).is_some_and(|(c, found)| {
+            dated(&found)
+                && (c.id() == container.id() || holds(c, container) || holds(container, c))
+        });
+        probability =
+            if listed || article_beside(page.root, container) || prose_beside(page.root, container)
+            {
+                0.25
+            } else {
+                0.75
+            };
     }
     if let Some((h1, name)) = page
         .root
@@ -954,47 +1001,100 @@ fn poster(n: Node<'_>) -> bool {
             }))
 }
 
+/// Who a poster element names: the profile it links to, else its text.
+/// A post links its poster two or three times (avatar, name, byline),
+/// all one poster.
+fn who(n: Node<'_>) -> String {
+    std::iter::once(n)
+        .chain(n.descendants())
+        .find(|d| d.tag() == Some("a") && profile_link(*d))
+        .and_then(|a| a.attr("href"))
+        .map(|h| h.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            n.text()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        })
+}
+
+/// A date element: `<time>`, or GitHub's `<relative-time>`.
+fn is_date(n: Node<'_>) -> bool {
+    matches!(n.tag(), Some("time" | "relative-time"))
+}
+
+/// Whether an element is boilerplate for reading posts: comment
+/// sections are boilerplate beside an article but they're the posts
+/// here, so only boilerplate that isn't a comment section counts.
+fn not_posts(n: Node<'_>) -> bool {
+    says_boilerplate(n)
+        && !words(n).any(|w| {
+            [
+                "comment",
+                "comments",
+                "reply",
+                "replies",
+                "discussion",
+                "thing",
+            ]
+            .iter()
+            .any(|x| w.eq_ignore_ascii_case(x))
+        })
+}
+
 /// The page's posts: its largest group of look-alike blocks, each with
-/// one date or one poster (quoted posts' don't count), outside
-/// boilerplate. Two at least, most of them naming their poster, and not
-/// led by a title linking elsewhere (a blog's teasers are dated too).
+/// one date and one poster at most (quoted posts' don't count), outside
+/// boilerplate. Two at least, most of them naming their poster, few of
+/// them led by a title linking elsewhere (a blog's teasers are dated
+/// too), and dated or with some prose (a member list names people too).
 fn posts(root: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Vec<Map<String, Value>>)> {
     let mut dates: Vec<Node<'_>> = Vec::new();
     let mut posters: Vec<Node<'_>> = Vec::new();
-    let mut stack: Vec<(Node<'_>, bool)> = vec![(root, false)];
-    while let Some((n, quoted)) = stack.pop() {
+    let mut stack: Vec<(Node<'_>, bool, bool)> = vec![(root, false, false)];
+    while let Some((n, quoted, in_poster)) = stack.pop() {
         if n.kind() != NodeKind::Element && n.kind() != NodeKind::Document {
             continue;
         }
-        if says_boilerplate(n) || crate::markdown::unseen(n, false) {
+        if not_posts(n) || (crate::markdown::unseen(n, false) && n.tag() != Some("relative-time")) {
             continue;
         }
         let quoted = quoted || n.tag() == Some("blockquote");
+        let mut inside = in_poster;
         if !quoted {
-            if n.tag() == Some("time") {
+            if is_date(n) {
                 dates.push(n);
-            } else if poster(n) {
+            } else if !in_poster && poster(n) {
                 posters.push(n);
-                continue;
+                inside = true;
             }
         }
         let at = stack.len();
-        stack.extend(n.children().map(|c| (c, quoted)));
+        stack.extend(n.children().map(|c| (c, quoted, inside)));
         stack[at..].reverse();
     }
-    let count = |marks: &[Node<'_>]| {
-        let mut under: HashMap<NodeId, usize> = HashMap::new();
-        for m in marks {
-            for a in std::iter::successors(m.parent(), |n| n.parent()).take(POST_UP + 1) {
-                *under.entry(a.id()).or_default() += 1;
+    // How many dates, and how many different posters, sit under each
+    // element a few levels up from them.
+    let mut dated: HashMap<NodeId, usize> = HashMap::new();
+    for d in &dates {
+        for a in std::iter::successors(d.parent(), |n| n.parent()).take(POST_UP + 1) {
+            *dated.entry(a.id()).or_default() += 1;
+        }
+    }
+    let mut signed: HashMap<NodeId, HashSet<String>> = HashMap::new();
+    let poster_ids: HashSet<NodeId> = posters.iter().map(|p| p.id()).collect();
+    for p in &posters {
+        let name = who(*p);
+        for a in std::iter::successors(p.parent(), |n| n.parent()).take(POST_UP + 1) {
+            let names = signed.entry(a.id()).or_default();
+            if names.len() < 2 {
+                names.insert(name.clone());
             }
         }
-        under
-    };
-    let (dated, signed) = (count(&dates), count(&posters));
+    }
     let more_than_one = |a: Node<'_>| {
         dated.get(&a.id()).copied().unwrap_or(0) > 1
-            || signed.get(&a.id()).copied().unwrap_or(0) > 1
+            || signed.get(&a.id()).is_some_and(|s| s.len() > 1)
     };
     let mut seen: HashSet<NodeId> = HashSet::new();
     let mut groups: HashMap<(String, Option<NodeId>), Vec<Node<'_>>> = HashMap::new();
@@ -1018,8 +1118,8 @@ fn posts(root: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Vec<Map<S
             g.push(block);
         }
     }
-    let signed_by =
-        |b: Node<'_>| signed.contains_key(&b.id()) || posters.iter().any(|p| p.id() == b.id());
+    let signed_by = |b: Node<'_>| signed.contains_key(&b.id()) || poster_ids.contains(&b.id());
+    let dated_by = |b: Node<'_>| dated.contains_key(&b.id()) || is_date(b);
     let best = order
         .into_iter()
         .filter_map(|k| groups.remove(&k))
@@ -1028,9 +1128,18 @@ fn posts(root: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Vec<Map<S
         .filter(|g| g.iter().filter(|b| signed_by(**b)).count() * 2 >= g.len())
         .filter(|g| g.iter().filter(|b| titled(**b)).count() * 2 < g.len())
         .map(|g| {
-            g.into_iter()
-                .filter_map(|b| read_post(b, now))
-                .collect::<Vec<_>>()
+            let undated = g.iter().filter(|b| !dated_by(**b)).count() * 2 > g.len();
+            let read: Vec<(Node<'_>, Map<String, Value>)> =
+                g.into_iter().filter_map(|b| read_post(b, now)).collect();
+            // Without dates, posts need prose: a member directory's
+            // cards name people and say little.
+            let prose = read
+                .iter()
+                .filter(|(_, p)| p["text"].as_str().is_some_and(|t| t.len() >= 80))
+                .count()
+                * 2
+                >= read.len();
+            if undated && !prose { Vec::new() } else { read }
         })
         .filter(|g| g.len() >= 2)
         .max_by_key(|g| g.len())?;
@@ -1039,100 +1148,138 @@ fn posts(root: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Vec<Map<S
 }
 
 /// Whether a block opens with a title linking elsewhere, as a teaser
-/// does and a post doesn't: a linked heading, or a link of a few words
-/// before any paragraph.
+/// does and a post doesn't: a linked heading, or a link of a few words,
+/// before any prose. A short label (`<p class="eyebrow">News</p>`)
+/// isn't prose; buttons and links after the prose don't count.
 fn titled(block: Node<'_>) -> bool {
+    let mut prose = 0;
     for d in block.descendants() {
-        match d.tag() {
-            Some("p") => return false,
-            Some("h1" | "h2" | "h3" | "h4") => {
-                return d
-                    .descendants()
-                    .any(|a| a.tag() == Some("a") && goes_somewhere(a) && !profile_link(a));
+        if prose >= 40 {
+            return false;
+        }
+        match d.kind() {
+            NodeKind::Text => {
+                let in_link = std::iter::successors(d.parent(), |a| a.parent())
+                    .take_while(|a| a.id() != block.id())
+                    .any(|a| a.tag() == Some("a"));
+                if !in_link {
+                    prose += d.data().unwrap_or_default().trim().len();
+                }
             }
-            Some("a") if goes_somewhere(d) && !profile_link(d) && !poster(d) => {
-                let text = d.text();
-                if text.split_whitespace().count() >= 3
-                    && !d.descendants().any(|t| t.tag() == Some("time"))
+            NodeKind::Element => match d.tag() {
+                Some("h1" | "h2" | "h3" | "h4") => {
+                    return d
+                        .descendants()
+                        .any(|a| a.tag() == Some("a") && goes_somewhere(a) && !profile_link(a));
+                }
+                Some("a")
+                    if goes_somewhere(d)
+                        && !profile_link(d)
+                        && !poster(d)
+                        && d.text().split_whitespace().count() >= 3
+                        && !d.descendants().any(is_date) =>
                 {
                     return true;
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
     false
 }
 
-/// A post block's text (its element with the most text that holds none
-/// of its date, poster or buttons), date and likes; None when it has no
+/// Classes and ids of the parts of a post that aren't what it says.
+const FURNITURE: [&str; 14] = [
+    "meta",
+    "author",
+    "byline",
+    "actions",
+    "footer",
+    "header",
+    "likes",
+    "reactions",
+    "signature",
+    "attribution",
+    "avatar",
+    "userinfo",
+    "postprofile",
+    "tagline",
+];
+
+/// A post block read: its text (everything in it but its date, poster
+/// and furniture, quotes included), date and likes; None when it has no
 /// text to speak of.
 fn read_post(block: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Map<String, Value>)> {
     let furniture = |n: Node<'_>| {
-        words(n).any(|w| {
-            [
-                "meta",
-                "author",
-                "byline",
-                "actions",
-                "footer",
-                "header",
-                "likes",
-                "reactions",
-                "signature",
-                "attribution",
-                "avatar",
-            ]
-            .iter()
-            .any(|x| w.eq_ignore_ascii_case(x))
-        })
+        words(n).any(|w| FURNITURE.iter().any(|x| w.eq_ignore_ascii_case(x)))
+            || matches!(
+                n.tag(),
+                Some("button" | "form" | "img" | "header" | "footer")
+            )
     };
-    // Elements holding a date or a poster of the post itself (not of a
-    // quote inside it), found once.
-    let mut marked: HashSet<NodeId> = HashSet::new();
-    let mut stack: Vec<(Node<'_>, bool)> = vec![(block, false)];
-    while let Some((n, quoted)) = stack.pop() {
-        let quoted = quoted || n.tag() == Some("blockquote");
-        if !quoted && (n.tag() == Some("time") || poster(n) || furniture(n)) {
-            for a in std::iter::successors(Some(n), |p| p.parent()) {
-                if !marked.insert(a.id()) || a.id() == block.id() {
-                    break;
+    let mut parts: Vec<String> = Vec::new();
+    let mut stack: Vec<Node<'_>> = block.children().collect();
+    stack.reverse();
+    let mut visited = 0;
+    while let Some(n) = stack.pop() {
+        visited += 1;
+        if visited > 2000 {
+            break;
+        }
+        match n.kind() {
+            NodeKind::Text => {
+                let t = n.data().unwrap_or_default().trim();
+                if !t.is_empty() {
+                    parts.push(t.to_string());
                 }
             }
+            NodeKind::Element => {
+                let quote = n.tag() == Some("blockquote");
+                if !quote && (is_date(n) || poster(n) || furniture(n)) {
+                    continue;
+                }
+                let marked = !quote
+                    && n.descendants()
+                        .any(|d| is_date(d) || poster(d) || furniture(d));
+                if marked {
+                    let at = stack.len();
+                    stack.extend(n.children());
+                    stack[at..].reverse();
+                } else {
+                    let t = crate::markdown::clean_text(n);
+                    let t = t
+                        .split("\n\n")
+                        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !t.is_empty() {
+                        parts.push(t);
+                    }
+                }
+            }
+            _ => {}
         }
-        stack.extend(
-            n.children()
-                .filter(|c| c.kind() == NodeKind::Element)
-                .map(|c| (c, quoted)),
-        );
     }
-    let body = block
-        .descendants()
-        .filter(|n| n.kind() == NodeKind::Element && !marked.contains(&n.id()))
-        .take(400)
-        .map(|n| (n, short_len(n, 100_000)))
-        .fold(
-            None,
-            |best: Option<(Node<'_>, usize)>, (n, len)| match best {
-                Some((_, b)) if b >= len => best,
-                _ => Some((n, len)),
-            },
-        )?
-        .0;
-    let text = crate::markdown::clean_text(body);
-    let text = text
-        .split("\n\n")
-        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    // Words left between the poster and the date ("commented", "by", "»")
+    // aren't the post.
+    let parts: Vec<String> = parts
+        .into_iter()
+        .filter(|p| {
+            p.len() > 2
+                && !["commented", "wrote:", "said:", "by", "replied"]
+                    .contains(&p.to_lowercase().as_str())
+        })
+        .collect();
+    let text = parts.join("\n\n");
     if text.len() < 20 {
         return None;
     }
     let mut out = Map::new();
     out.insert("text".into(), Value::String(text));
     let date = block.descendants().find(|n| {
-        n.tag() == Some("time")
+        is_date(*n)
             && !std::iter::successors(Some(*n), |a| a.parent())
                 .take_while(|a| a.id() != block.id())
                 .any(|a| a.tag() == Some("blockquote"))
@@ -1150,35 +1297,27 @@ fn read_post(block: Node<'_>, now: crate::date::Civil) -> Option<(Node<'_>, Map<
             out.insert("date_published_raw".into(), Value::String(r));
         }
     }
+    // The first like-ish element that holds a number: a "Like" button
+    // before the count doesn't hide it.
     let likes = block
         .descendants()
         .filter(|n| n.kind() == NodeKind::Element)
-        .find(|n| {
+        .filter(|n| {
             words(*n).any(|w| {
-                ["likes", "like", "upvotes", "votes", "score", "points"]
-                    .iter()
-                    .any(|x| w.eq_ignore_ascii_case(x))
-            })
+                [
+                    "likes", "like", "upvotes", "votes", "vote", "score", "points",
+                ]
+                .iter()
+                .any(|x| w.eq_ignore_ascii_case(x))
+            }) || n
+                .attr("itemprop")
+                .is_some_and(|p| p.trim().eq_ignore_ascii_case("upvoteCount"))
         })
-        .and_then(|n| count(&n.text()));
+        .find_map(|n| count(&n.text()));
     if let Some(l) = likes {
         out.insert("reactions".into(), json!({ "likes": l }));
     }
     Some((block, out))
-}
-
-/// Text bytes at and below `n`, counted no further than `cap`.
-fn short_len(n: Node<'_>, cap: usize) -> usize {
-    let mut total = 0;
-    for d in n.descendants() {
-        if d.kind() == NodeKind::Text {
-            total += d.data().unwrap_or_default().trim().len();
-            if total >= cap {
-                break;
-            }
-        }
-    }
-    total
 }
 
 /// A count as people write it: `12`, `1,204`, `1.2k`, `3M`; None for a
@@ -1194,7 +1333,12 @@ fn count(text: &str) -> Option<i64> {
         .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
         .unwrap_or(rest.len());
     let number: f64 = rest[..end].replace(',', "").parse().ok()?;
-    let scale = match rest[end..].chars().next().map(|c| c.to_ascii_lowercase()) {
+    let scale = match rest[end..]
+        .trim_start()
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_lowercase())
+    {
         Some('k') => 1_000.0,
         Some('m') => 1_000_000.0,
         _ => 1.0,
