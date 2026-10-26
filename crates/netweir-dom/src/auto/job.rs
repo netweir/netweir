@@ -32,9 +32,18 @@ pub(crate) const FIELDS: &[&str] = &[
 pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     let jobs = of_type(&page.things, "JobPosting");
     let mut chosen: Vec<&Thing> = Vec::new();
+    let mut several = false;
     for source in [Source::JsonLd, Source::Microdata] {
         let here: Vec<&&Thing> = jobs.iter().filter(|t| t.source == source).collect();
         if let Some(first) = here.first() {
+            // Several jobs, the first linking to another page: a search
+            // or a board's listing, not an advert.
+            several |= here.len() > 1
+                && first
+                    .props
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| !page.is_page_url(u));
             if here.len() > 1 {
                 item.note(
                     "item",
@@ -49,7 +58,9 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     }
     let state = super::js_state::job(page, item);
     let layout = super::dom::job(page, item);
-    item.probability = if chosen.iter().any(|j| j.props.contains_key("title")) {
+    item.probability = if several {
+        0.3
+    } else if chosen.iter().any(|j| j.props.contains_key("title")) {
         0.95
     } else if !chosen.is_empty() {
         0.8

@@ -120,11 +120,15 @@ and a probability near zero, not its title as a product name.
 tags, app state) and runs the Product, JobPosting, ProductList and
 Article readers on it, keeping each probability. The highest wins if it
 reaches 0.4, the earlier type winning a tie. An article found only from
-its main content counts as 0.45 rather than 0.6, since any page with a
-few paragraphs reads that way, product pages with long descriptions
-included. A product reader that finds several products, none of them
-the page's own URL, or a product on a CollectionPage, gives 0.5: that's
-a listing. The corpus's answers each carry the type `page_type` must
+its main content counts as 0.45 rather than 0.6 when it has a byline, a
+date or `og:type` article, and 0.3 without, since any page with a few
+paragraphs reads that way, product pages with long descriptions and
+privacy policies included. A product (or job) reader that finds several
+in one source and the one it reads links to another page, or a product
+on a CollectionPage that links elsewhere, gives 0.3: that's a listing.
+Whether a URL is the page's ignores the scheme, `www.`, the query
+string, the fragment and a trailing slash, and a product with no URL is
+taken as the page's own. The corpus's answers each carry the type `page_type` must
 give.
 
 ## Pinning

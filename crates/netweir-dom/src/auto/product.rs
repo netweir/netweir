@@ -46,7 +46,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
             .filter(|t| t.source == source)
             .collect();
         if let Some(main) = main_product(page, &here) {
-            several |= here.len() > 1 && !is_the_page(page, main);
+            several |= here.len() > 1 && elsewhere(page, main);
             if here.len() > 1 {
                 item.note(
                     "item",
@@ -96,15 +96,17 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
             && (p.contains_key("offers") || p.contains_key("sku") || item.has("gtin"))
     });
     let layout = super::dom::product(page, item);
-    // Several products, none of them the page's own, or a product on a
-    // collection page: a listing, read as a product only if asked.
+    // Several products, the one read linking to another page, or a
+    // product on a collection page that links elsewhere: a listing's
+    // entries, read as a product only if asked.
     let collection = page.things.iter().any(|t| {
         t.types
             .iter()
             .any(|ty| ty == "CollectionPage" || ty == "SearchResultsPage")
-    }) && !chosen.iter().any(|t| is_the_page(page, t));
+    }) && !chosen.is_empty()
+        && chosen.iter().all(|t| elsewhere(page, t));
     item.probability = match (strong, !chosen.is_empty(), og_product, layout) {
-        _ if several || collection => 0.5,
+        _ if several || collection => 0.3,
         (true, ..) => 0.95,
         (_, true, ..) => 0.8,
         _ if state.is_some() => state.unwrap_or_default(),
@@ -143,54 +145,26 @@ pub(super) fn candidates(things: &[Thing]) -> Vec<&Thing> {
         .collect()
 }
 
-/// Whether a product's URL is the page's (or its canonical URL).
-fn is_the_page(page: &Page<'_, '_>, product: &Thing) -> bool {
-    let canonical = page
-        .meta("canonical")
-        .and_then(Value::as_str)
-        .and_then(|c| f::absolute(c, page.base));
-    let strip = |s: &str| {
-        s.split('#')
-            .next()
-            .unwrap_or(s)
-            .trim_end_matches('/')
-            .to_string()
-    };
-    product
+/// Whether a thing names a URL, and it isn't the page's.
+fn elsewhere(page: &Page<'_, '_>, thing: &Thing) -> bool {
+    thing
         .props
         .get("url")
         .and_then(Value::as_str)
-        .and_then(|u| f::absolute(u, page.base))
-        .is_some_and(|u| {
-            page.page.is_some_and(|p| strip(p.as_str()) == strip(&u))
-                || canonical.as_deref().is_some_and(|c| strip(c) == strip(&u))
-        })
+        .is_some_and(|u| !page.is_page_url(u))
 }
 
 /// The product the page is about: the one whose URL is the page's,
 /// else the first with an offer, else the first.
 fn main_product<'t>(page: &Page<'_, '_>, products: &[&'t Thing]) -> Option<&'t Thing> {
-    let canonical = page
-        .meta("canonical")
-        .and_then(Value::as_str)
-        .and_then(|c| f::absolute(c, page.base));
-    let same = |u: &str| {
-        let Some(u) = f::absolute(u, page.base) else {
-            return false;
-        };
-        let strip = |s: &str| {
-            s.split('#')
-                .next()
-                .unwrap_or(s)
-                .trim_end_matches('/')
-                .to_string()
-        };
-        page.page.is_some_and(|p| strip(p.as_str()) == strip(&u))
-            || canonical.as_deref().is_some_and(|c| strip(c) == strip(&u))
-    };
     products
         .iter()
-        .find(|p| p.props.get("url").and_then(Value::as_str).is_some_and(same))
+        .find(|p| {
+            p.props
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|u| page.is_page_url(u))
+        })
         .or_else(|| products.iter().find(|p| p.props.contains_key("offers")))
         .or_else(|| products.first())
         .copied()

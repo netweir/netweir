@@ -46,26 +46,31 @@ FIELDS = {
 
 TYPES = {"product": netweir.auto.Product, "job-posting": netweir.auto.JobPosting}
 
-STRUCTURED = re.compile(
-    r"<script[^>]*type=[\"']?application/ld\+json[\"']?[^>]*>.*?</script>", re.I | re.S
-)
-STATE = re.compile(
-    r"<script[^>]*>[^<]*(?:__NEXT_DATA__|__NUXT|__APOLLO_STATE__|__INITIAL_STATE__|"
-    r"__PRELOADED_STATE__)[^<]*</script>|<script[^>]*id=[\"']?__\w+__[\"']?[^>]*>.*?</script>",
-    re.I | re.S,
-)
-MICRODATA = re.compile(
-    r"\s(?:itemprop|itemscope|itemtype|itemid|itemref)(?:=(?:\"[^\"]*\"|'[^']*'|[^\s>]*))?", re.I
-)
+# Every inline script goes: JSON-LD, and the app state js_state reads
+# (whatever name it's under). Scripts loaded from a file stay.
+INLINE_SCRIPT = re.compile(r"<script\b(?![^>]*\bsrc=)[^>]*>.*?</script>", re.I | re.S)
 META = re.compile(r"<meta[^>]+(?:property|name)=[\"']?(?:og|product|twitter):[^>]*>", re.I)
+TAG = re.compile(r"<[a-zA-Z][^>]*>")
+ATTRIBUTE = re.compile(r"""\s+([^\s=>/]+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?""")
+MICRODATA = {"itemprop", "itemscope", "itemtype", "itemid", "itemref"}
+
+
+def _no_microdata(tag: re.Match) -> str:
+    text = tag.group(0)
+    name_end = re.match(r"<[a-zA-Z][^\s>/]*", text).end()
+    attrs = ATTRIBUTE.sub(
+        lambda a: "" if a.group(1).lower() in MICRODATA else a.group(0), text[name_end:]
+    )
+    return text[:name_end] + attrs
 
 
 def without_structured_data(html: str) -> str:
-    """The page as a shop without structured data would send it."""
-    html = STRUCTURED.sub("", html)
-    html = STATE.sub("", html)
+    """The page as a shop without structured data would send it: no
+    inline scripts, no Open Graph or product meta tags, and no microdata
+    attributes (taken out of tags only, never out of text or values)."""
+    html = INLINE_SCRIPT.sub("", html)
     html = META.sub("", html)
-    return MICRODATA.sub("", html)
+    return TAG.sub(_no_microdata, html)
 
 
 def same(field: str, want, got) -> bool:
@@ -82,14 +87,20 @@ def same(field: str, want, got) -> bool:
     if field == "breadcrumbs":
         names = lambda trail: [" ".join(c.get("name", "").split()).lower() for c in trail]  # noqa: E731
         w, g = names(want), names(got)
-        # A trail often ends with the product itself in one and not the other.
-        return w == g or w[:-1] == g or w == g[:-1]
+        # A trail often ends with the product itself in one and not the
+        # other; a trail of one crumb has to match whole.
+        if not w or not g:
+            return w == g
+        return w == g or (len(w) > 1 and w[:-1] == g) or (len(g) > 1 and w == g[:-1])
     if field == "main_image":
         path = lambda u: re.sub(r"^https?://[^/]+", "", u["url"]).split("?")[0]  # noqa: E731
         return path(want) == path(got)
     if field == "base_salary":
-        keys = ("value_min", "value_max", "currency")
-        return all(str(want.get(k)) == str(got.get(k)) for k in keys if want.get(k) is not None)
+        given = [k for k in ("value_min", "value_max") if want.get(k) is not None]
+        if not given:
+            return same("job_title", want.get("raw"), got.get("raw"))
+        amounts = all(same("price", want[k], got.get(k) or "x") for k in given)
+        return amounts and (want.get("currency") in (None, got.get("currency")))
     if isinstance(want, dict):
         want, got = want.get("name") or want.get("raw"), got.get("name") or got.get("raw")
     norm = lambda s: " ".join(str(s).split()).lower()  # noqa: E731

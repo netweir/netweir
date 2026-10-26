@@ -21,8 +21,10 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -80,6 +82,7 @@ def ask_zyte(key: str, url: str, kind: str) -> tuple[str, dict]:
         {
             "url": url,
             "httpResponseBody": True,
+            "httpResponseHeaders": True,
             field: True,
             f"{field}Options": {"extractFrom": "httpResponseBody"},
         }
@@ -92,10 +95,31 @@ def ask_zyte(key: str, url: str, kind: str) -> tuple[str, dict]:
             "Authorization": "Basic " + base64.b64encode(f"{key}:".encode()).decode(),
         },
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        answer = json.load(response)
-    html = base64.b64decode(answer["httpResponseBody"]).decode("utf-8", "replace")
-    return html, answer.get(field) or {}
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            answer = json.load(response)
+    except urllib.error.HTTPError as e:
+        # Zyte says why in the body: a ban, a bad key, a site it won't fetch.
+        raise RuntimeError(f"{e.code} {e.read().decode('utf-8', 'replace')[:300]}") from e
+    body = base64.b64decode(answer["httpResponseBody"])
+    return decode(body, answer.get("httpResponseHeaders") or []), answer.get(field) or {}
+
+
+def decode(body: bytes, headers: list) -> str:
+    """The page's text in the charset its headers, or else its `<meta>`,
+    name; UTF-8 when neither does."""
+    charset = None
+    for h in headers:
+        if h.get("name", "").lower() == "content-type":
+            found = re.search(r"charset=[\"']?([\w-]+)", h.get("value", ""), re.I)
+            charset = found and found.group(1)
+    if not charset:
+        found = re.search(rb"<meta[^>]+charset=[\"']?([\w-]+)", body[:4096], re.I)
+        charset = found and found.group(1).decode("ascii")
+    try:
+        return body.decode(charset or "utf-8", "replace")
+    except LookupError:
+        return body.decode("utf-8", "replace")
 
 
 def agree(field: str, zyte, ours) -> bool:

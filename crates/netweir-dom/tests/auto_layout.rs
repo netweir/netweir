@@ -332,3 +332,27 @@ fn nested_descriptions_are_quick() {
     html.push_str("</footer>");
     quick(&html);
 }
+
+#[test]
+fn prose_with_a_date_or_a_byline_is_an_article_and_without_isnt() {
+    let words = "<p>We opened the shop in a railway arch with four lamps and a borrowed till, \
+        and for the first year most of our customers were people sheltering from the rain.</p>"
+        .repeat(3);
+    let typed = |extra: &str| {
+        let html = format!(
+            "<html><head>{extra}</head><body><main><h1>Our story</h1>{words}</main></body></html>"
+        );
+        let doc = Document::parse(&html);
+        let url = url::Url::parse(SHOP).unwrap();
+        netweir_dom::auto::page_type(doc.root(), Some(&url), None, Civil::date(2026, 10, 25)).0
+    };
+    assert_eq!(typed(""), None);
+    assert_eq!(
+        typed(r#"<meta property="og:type" content="article">"#),
+        Some(Schema::Article)
+    );
+    assert_eq!(
+        typed(r#"<meta property="article:published_time" content="2026-10-01">"#),
+        Some(Schema::Article)
+    );
+}

@@ -1,0 +1,3 @@
+{"type": "product", "url": "https://shop.example/p/sofa?variant=2",
+ "item": {"url": "https://shop.example/p/sofa?variant=2", "name": "Linen sofa", "price": "899.00", "currency": "GBP", "currency_raw": "GBP", "sku": "SOFA-1"},
+ "sources": {"name": "json-ld"}, "probability": [0.9, 1.0], "validation": ["item"], "page_type": "product"}

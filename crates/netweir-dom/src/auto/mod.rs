@@ -174,25 +174,39 @@ pub fn page_type(
         None => page.map(|p| page_base(root, p)),
     };
     let ctx = Page::new(root, page, found_base.as_ref(), now);
-    let all: Vec<(Schema, f64)> = [
+    let mut all: Vec<(Schema, f64)> = Vec::new();
+    let mut weights: Vec<f64> = Vec::new();
+    for schema in [
         Schema::Product,
         Schema::JobPosting,
         Schema::ProductList,
         Schema::Article,
-    ]
-    .into_iter()
-    .map(|schema| (schema, read(schema, &ctx).probability))
-    .collect();
-    // Any page with a few paragraphs reads as an article from its main
-    // content alone (0.6), product pages with a long description too, so
-    // that counts for less than any other type's evidence.
-    let weight = |(schema, p): &(Schema, f64)| match schema {
-        Schema::Article if *p < 0.7 => p.min(0.45),
-        _ => *p,
-    };
+    ] {
+        let item = read(schema, &ctx);
+        // Any page with a few paragraphs reads as an article from its main
+        // content alone (0.6): product pages with a long description, an
+        // About page, a privacy policy. That counts for less than any other
+        // type's evidence, and for nothing without a byline, a date or
+        // `og:type` article.
+        let weight = match schema {
+            Schema::Article if item.probability < 0.7 => {
+                let said = ctx
+                    .meta("og:type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case("article"));
+                if said || item.has("authors") || item.has("date_published") {
+                    item.probability.min(0.45)
+                } else {
+                    item.probability.min(0.3)
+                }
+            }
+            _ => item.probability,
+        };
+        all.push((schema, item.probability));
+        weights.push(weight);
+    }
     let mut best: Option<(Schema, f64)> = None;
-    for one in &all {
-        let w = weight(one);
+    for (one, w) in all.iter().zip(weights) {
         if w >= TYPED && best.is_none_or(|(_, b)| w > b) {
             best = Some((one.0, w));
         }
@@ -268,6 +282,27 @@ impl<'p, 'a> Page<'p, 'a> {
             elements: Default::default(),
             state: Default::default(),
         }
+    }
+
+    /// Whether `url` is this page's address or its canonical one, written
+    /// any of the ways sites write it: `http` or `https`, with or without
+    /// `www.`, a trailing slash, a query string or a fragment.
+    pub fn is_page_url(&self, url: &str) -> bool {
+        let key = |u: &str| {
+            let u = Url::parse(u).ok()?;
+            let host = u.host_str()?.to_ascii_lowercase();
+            let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+            Some((host, u.path().trim_end_matches('/').to_string()))
+        };
+        let Some(want) = fields::absolute(url, self.base).and_then(|u| key(&u)) else {
+            return false;
+        };
+        let canonical = self
+            .meta("canonical")
+            .and_then(Value::as_str)
+            .and_then(|c| fields::absolute(c, self.base));
+        self.page.and_then(|p| key(p.as_str())) == Some(want.clone())
+            || canonical.and_then(|c| key(&c)) == Some(want)
     }
 
     /// The app state in the page's scripts (see [`js_state`]).

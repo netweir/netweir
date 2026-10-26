@@ -63,7 +63,10 @@ which: `"product"`, `"product-list"`, `"job-posting"`, `"article"`, or
 `"other"`. It runs each type's reader and keeps the one with the
 strongest evidence, so a product page with a long description is still
 a product, and a category page whose cards are marked up as products is
-a listing.
+a listing. A page that's only prose (an About page, terms and
+conditions) is `"other"` unless something says it's an article: a
+byline, a publication date, or `og:type` article. A home page showing a
+grid of priced products reads as a listing, which it is.
 
 ```python
 kinds = {
@@ -98,7 +101,10 @@ product["metadata"]
 `probability` is how sure Netweir is that the page holds one of these at
 all: around 0.95 for a page with a complete schema.org Product, lower when
 only its Open Graph tags say it's a product, and close to zero for a page
-that isn't one. Filter on it when a crawl reaches pages of every kind.
+that isn't one. A page whose structured data lists several products (or
+jobs) and links the one read to another page gets 0.3: it's a listing,
+and the item is its first entry. Filter on it when a crawl reaches pages
+of every kind.
 
 `sources` names the source of every field that has a value. JSON-LD comes
 first, then microdata, then the app's state in its scripts (`js:`), then
