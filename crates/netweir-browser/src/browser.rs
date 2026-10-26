@@ -2055,7 +2055,20 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let ran = std::process::Command::new(&fake).arg("--once").status();
+        // Linux won't run a file another process holds open for writing,
+        // and a process another test forks while the file is being
+        // written holds it until that child execs: "Text file busy" for
+        // a moment, then not.
+        let mut tries = 0;
+        let ran = loop {
+            match std::process::Command::new(&fake).arg("--once").status() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other,
+            }
+        };
         assert!(ran.unwrap().success());
         fake
     }
