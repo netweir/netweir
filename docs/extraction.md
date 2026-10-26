@@ -42,6 +42,13 @@ class Shop(netweir.Spider):
     pipelines = [netweir.export.jsonl("products.jsonl", field_names="zyte")]
 ```
 
+A price is kept as the page wrote it. In structured data that's
+schema.org's form, a point for decimals and nothing else, so `"59.990"`
+stays `"59.990"`; a price written as a JSON number has lost its trailing
+zeros before Netweir sees it, so `12.50` comes out `"12.5"`. A price
+read from the page's text (a pinned field) is read as people write it,
+so a German shop's `1.299 €` is `"1299"`.
+
 A field the page doesn't give is None. Netweir doesn't guess: a price
 written `$12` has `currency_raw` `"$"` and `currency` None, because `$`
 alone could be any of a dozen dollars.

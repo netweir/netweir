@@ -20,28 +20,51 @@ pub struct PriceFields {
     pub currency_raw: Option<String>,
 }
 
-/// A price from a number (`1299`, written as it is) or text
-/// (`"1.299,00 €"`, read by [`crate::price::parse_price`]).
+/// A price from structured data: a number, or a string. schema.org
+/// writes prices with a point for decimals and nothing else (`"59.990"`
+/// is fifty-nine and change), so a string in that form is taken as it
+/// is; anything else (`"£1,299.00"`, `"1.299,00 €"`) is read as page text.
 pub fn price_fields(v: &Value) -> PriceFields {
     match v {
         Value::Number(n) => PriceFields {
-            price: Some(n.to_string()),
+            price: decimal(n),
             ..PriceFields::default()
         },
-        Value::String(s) => match crate::price::parse_price(s) {
-            Some(p) => PriceFields {
-                price: Some(p.amount),
-                currency: p
-                    .currency
-                    .as_deref()
-                    .and_then(crate::price::currency_code)
-                    .map(str::to_string),
-                currency_raw: p.currency,
-            },
-            None => PriceFields::default(),
+        Value::String(s) if plain_decimal(s.trim()) => PriceFields {
+            price: Some(s.trim().trim_start_matches('+').to_string()),
+            ..PriceFields::default()
         },
+        Value::String(s) => price_text(s),
         _ => PriceFields::default(),
     }
+}
+
+/// A price as a page shows it, read by [`crate::price::parse_price`]:
+/// `1.299 €` is 1299, as a German shop means it.
+pub fn price_text(text: &str) -> PriceFields {
+    match crate::price::parse_price(text) {
+        Some(p) => PriceFields {
+            price: Some(p.amount),
+            currency: p
+                .currency
+                .as_deref()
+                .and_then(crate::price::currency_code)
+                .map(str::to_string),
+            currency_raw: p.currency,
+        },
+        None => PriceFields::default(),
+    }
+}
+
+/// `12`, `-3.50`, `+0.5`: digits with at most one point, nothing else.
+fn plain_decimal(s: &str) -> bool {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    let mut parts = digits.splitn(2, '.');
+    let whole = parts.next().unwrap_or("");
+    let frac = parts.next();
+    !whole.is_empty()
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && frac.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// A currency as written (`"EUR"`, `"£"`): its ISO code when it names
@@ -459,18 +482,8 @@ pub fn from_element(
                 .or_else(|| crate::markdown::image_source(node));
             string(link.and_then(|u| absolute(u, base)))
         }
-        FieldKind::Price => string(price_fields(&Value::String(words()?)).price),
-        FieldKind::Currency => {
-            let t = Value::String(words()?);
-            string(price_fields(&t).currency.or_else(|| currency(&t).currency))
-        }
-        FieldKind::CurrencyRaw => {
-            let t = Value::String(words()?);
-            string(
-                price_fields(&t)
-                    .currency_raw
-                    .or_else(|| currency(&t).currency_raw),
-            )
+        FieldKind::Price | FieldKind::Currency | FieldKind::CurrencyRaw => {
+            from_text(kind, &words()?, base, now)
         }
         FieldKind::Availability => {
             let link = node.attr("href").map(|h| Value::String(h.to_string()));
@@ -641,10 +654,10 @@ pub fn from_text(kind: FieldKind, text: &str, base: Option<&Url>, now: Civil) ->
     match kind {
         FieldKind::Text | FieldKind::Html => string(self::text(&v)),
         FieldKind::Url => string(absolute(text, base)),
-        FieldKind::Price => string(price_fields(&v).price),
-        FieldKind::Currency => string(price_fields(&v).currency.or_else(|| currency(&v).currency)),
+        FieldKind::Price => string(price_text(text).price),
+        FieldKind::Currency => string(price_text(text).currency.or_else(|| currency(&v).currency)),
         FieldKind::CurrencyRaw => string(
-            price_fields(&v)
+            price_text(text)
                 .currency_raw
                 .or_else(|| currency(&v).currency_raw),
         ),
@@ -712,10 +725,29 @@ fn count(v: &Value) -> Option<i64> {
     }
 }
 
+/// A JSON number as decimal digits: `1299`, `12.5`. JSON keeps no
+/// trailing zeros, so `12.50` arrives as 12.5; a whole number written as
+/// a float (`1299.0`, `1e3`) is written as the whole number.
+pub(crate) fn decimal(n: &serde_json::Number) -> Option<String> {
+    if n.is_i64() || n.is_u64() {
+        return Some(n.to_string());
+    }
+    let f = n.as_f64()?;
+    if !f.is_finite() {
+        return None;
+    }
+    if f.fract() == 0.0 && f.abs() < 1e15 {
+        return Some(format!("{}", f as i64));
+    }
+    // Shortest digits that read back as the same number; Rust never
+    // writes an exponent here.
+    Some(format!("{f}"))
+}
+
 /// A decimal string from a number or numeric text.
 fn amount(v: &Value) -> Option<String> {
     match v {
-        Value::Number(n) => Some(n.to_string()),
+        Value::Number(n) => decimal(n),
         Value::String(_) => price_fields(v).price,
         _ => None,
     }
@@ -765,6 +797,12 @@ mod tests {
         assert_eq!(price(json!("$12")), (s("12"), None, s("$")));
         assert_eq!(price(json!("USD 12")), (s("12"), s("USD"), s("USD")));
         assert_eq!(price(json!(0)), (s("0"), None, None));
+        assert_eq!(price(json!(1299.0)), (s("1299"), None, None));
+        // schema.org writes prices with a point and nothing else.
+        assert_eq!(price(json!("59.990")), (s("59.990"), None, None));
+        assert_eq!(price(json!("1.299")), (s("1.299"), None, None));
+        assert_eq!(price(json!(1e3)), (s("1000"), None, None));
+        assert_eq!(price(json!(-0.0)), (s("0"), None, None));
         assert_eq!(price(json!("Call for price")), (None, None, None));
         assert_eq!(price(json!(null)), (None, None, None));
     }
@@ -998,6 +1036,19 @@ mod tests {
 
     #[test]
     fn fields_from_elements_a_person_picked() {
+        // Page text is read as people write it: a German 1.299 is 1299.
+        assert_eq!(
+            el(r#"<span id=x>1.299 €</span>"#, FieldKind::Price),
+            Some(json!("1299"))
+        );
+        assert_eq!(
+            el(r#"<span id=x>1.299</span>"#, FieldKind::Price),
+            Some(json!("1299"))
+        );
+        assert_eq!(
+            from_text(FieldKind::Price, "1.299", None, now()),
+            Some(json!("1299"))
+        );
         assert_eq!(
             el(r#"<span id=x>$9.50 inc. VAT</span>"#, FieldKind::Price),
             Some(json!("9.50"))

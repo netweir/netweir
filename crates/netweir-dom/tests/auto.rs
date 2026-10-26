@@ -171,3 +171,21 @@ fn a_microdata_product_on_a_big_page_is_quick() {
     assert_eq!(found.len(), 1, "{path}");
     assert!(took.as_secs_f64() < 1.0, "{took:?}");
 }
+
+#[test]
+fn a_list_price_equal_to_the_price_is_no_regular_price() {
+    let html = r#"<script type="application/ld+json">{"@type": "Product", "name": "x",
+        "offers": {"price": "59.990", "priceCurrency": "GBP",
+        "priceSpecification": {"price": 59.99, "priceType": "https://schema.org/ListPrice"}}}</script>"#;
+    let doc = Document::parse(html);
+    let item = extract(
+        Schema::Product,
+        doc.root(),
+        None,
+        None,
+        Civil::date(2026, 10, 25),
+    );
+    let get = |f: &str| item.fields.iter().find(|(n, _)| *n == f).unwrap().1.clone();
+    assert_eq!(get("price"), "59.990");
+    assert_eq!(get("regular_price"), Value::Null);
+}

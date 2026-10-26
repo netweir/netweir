@@ -193,7 +193,7 @@ fn from_thing(page: &Page<'_, '_>, thing: &Thing, item: &mut Builder) {
         );
         let offer_src = src("offers");
         if let Some(regular) =
-            regular_price(offer).filter(|r| item.get("price").as_str() != Some(r))
+            regular_price(offer).filter(|r| !same_amount(item.get("price").as_str(), r))
         {
             item.offer(
                 "regular_price",
@@ -381,6 +381,12 @@ pub(super) fn regular_price(offer: &Map<String, Value>) -> Option<String> {
         .find(|s| is_list_price(s))
         .and_then(|s| s.get("price"))
         .and_then(|p| f::price_fields(p).price)
+}
+
+/// Whether two decimal strings are the same amount: `59.990` is `59.99`.
+fn same_amount(a: Option<&str>, b: &str) -> bool {
+    let n = |s: &str| s.parse::<f64>().ok();
+    a.is_some_and(|a| a == b || (n(a).is_some() && n(a) == n(b)))
 }
 
 fn properties(v: &Value) -> Option<Value> {
