@@ -1332,6 +1332,12 @@ pub(crate) fn author_of(n: Node<'_>) -> Option<String> {
         .iter()
         .find_map(|p| text.strip_prefix(p))
         .map_or(text.as_str(), str::trim);
+    // "Ana Ruiz · 5 min read": the name, not what follows it.
+    let text = [" · ", " | ", " • ", " — ", " – "]
+        .iter()
+        .filter_map(|sep| text.find(sep))
+        .min()
+        .map_or(text, |at| &text[..at]);
     let text = text.trim_end_matches([',', ';', ':', '·', '|', '-', ' ']);
     // A name, perhaps with a role; not a sentence about the author.
     let name = !text.is_empty() && text.chars().count() <= 60 && !text.contains(". ");

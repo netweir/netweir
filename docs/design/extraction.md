@@ -115,16 +115,24 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    DiscussionForumPosting, SocialMediaPosting or Question with its
    comments or answers, likes and replies from `interactionStatistic`,
    `upvoteCount` and `commentCount`. Then the layout. A card is the
-   highest element above a linked `<h2>`-`<h4>` (up to five levels)
-   that holds no other linked heading, and cards sharing tag, class
-   and grandparent are one listing; the largest of three or more wins.
-   A post is the highest element above a `<time>` that holds no other,
-   grouped the same way by parent, two or more with 20 bytes of text in
-   the biggest child that isn't the date, byline or buttons. A listing
-   or thread whose container neither holds nor sits inside the page's
-   main content is beside an article (related stories, comments) and
-   gets 0.3 or 0.25; a listing mostly of priced cards is a shop's and
-   gets 0.3.
+   highest element above a linked `<h2>`, `<h3>` or `<h4>` (one level at
+   a time, up to five elements up) that holds no other linked heading of
+   that level; a heading linking to a member's profile is a byline, not
+   a title. Cards sharing tag and grandparent, with classes mostly alike
+   once classes that tell cards apart are left out (`post-12`, `odd`,
+   `category-news`), are one listing; the largest of three or more wins,
+   at 0.7 when most cards have a date or byline and 0.35 when not. A
+   post is the highest element (up to eight up) above a date or a
+   poster that holds no other of either, dates and posters inside
+   quotes not counting, grouped by parent the same way; a group needs
+   two posts, most of them with a poster, few of them led by a title
+   linking elsewhere, and is 0.75. A post's text is its element with the
+   most text holding none of its date, poster or furniture. A listing or
+   thread whose container neither holds nor sits inside the page's main
+   content is beside an article (related stories, comments) and gets 0.3
+   or 0.25; a listing mostly of priced cards is a shop's and gets 0.3.
+   Structured lists leave out the page's own article, and several
+   Articles count as a list only when the page has none of its own.
 
 Meta-tag fallbacks for products apply only when the page has a Product
 or says `og:type` product: a news page asked for a product gives its URL

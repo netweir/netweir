@@ -226,16 +226,25 @@ JobPostings), and Netweir reads them from there first. Without it, the
 entries are the page's biggest group of look-alike cards each led by a
 heading that links somewhere: the card's heading is the headline, its
 `<time>` the date, its byline the author, its image and first paragraph
-the rest. A story with "related stories" under it is still a story, and
-a grid of priced cards is a shop's, so neither reads as a list with any
-confidence. Cards alone can't tell a jobs board from a blog, so
-`JobPostingNavigation` read only from the layout says 0.35.
+the rest. Cards with no dates or bylines (a shop grid without prices, a
+jobs board, a menu of links) give only 0.35, so they don't type a page
+as a list of articles. A story with "related stories" under it is still
+a story, and a grid of priced cards is a shop's, so neither reads as a
+list with any confidence either. Cards alone can't tell a jobs board
+from a blog, so `JobPostingNavigation` read only from the layout says
+0.35 too.
 
 A forum thread is a DiscussionForumPosting (or a Question with its
-answers) and its comments, with likes and replies from their
-interaction counts. Without structured data, the posts are the biggest
-group of look-alike blocks each with a date, and the topic is the page
-heading. Comments under an article are its comments, not a thread.
+answers) and its comments, replies to replies included, with likes and
+replies from their interaction counts. Without structured data, the
+posts are the biggest group of look-alike blocks each with a date or a
+poster (a username, a link to a member's profile), most of them naming
+who wrote them, so a changelog or a blog's dated teasers aren't a
+thread. Each post's text is its block's biggest piece of text that
+isn't the date, the poster or the buttons, quotes of other posts
+included; likes are read as people write them (`1.2k`). That covers
+the usual forum software, XenForo and phpBB among it. Comments under an
+article are its comments, not a thread.
 
 ## Pages built in the browser
 

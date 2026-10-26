@@ -52,7 +52,17 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     }
     from_meta(page, item);
     let found = from_content(page, item);
-    item.probability = if !chosen.is_empty() {
+    // An Article linking to another page, on a page that lists articles,
+    // is the list's first entry: the page is the list.
+    let an_entry = chosen.iter().all(|a| {
+        a.props
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|u| !page.is_page_url(u))
+    }) && super::feeds::listed_articles(page).is_some();
+    item.probability = if !chosen.is_empty() && an_entry {
+        0.3
+    } else if !chosen.is_empty() {
         0.9
     } else if found {
         0.6
