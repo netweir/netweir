@@ -6,6 +6,7 @@
   <a href="https://pypi.org/project/netweir/"><img src="https://img.shields.io/pypi/pyversions/netweir" alt="Python versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/netweir/netweir"><img src="https://api.scorecard.dev/projects/github.com/netweir/netweir/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/15970"><img src="https://www.bestpractices.dev/projects/15970/badge" alt="OpenSSF Best Practices"></a>
 </p>
 
 # Netweir
