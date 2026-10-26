@@ -568,3 +568,247 @@ fn a_thousand_profile_links_are_quick() {
     );
     assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
 }
+
+fn xenforo_post(n: u32, mention: bool) -> String {
+    let tail = if mention {
+        r#" Thanks <a href="/members/bob.9/" class="username">@bob</a>, that was it."#
+    } else {
+        ""
+    };
+    format!(
+        r#"<article class="message message--post"><div class="message-inner">
+        <div class="message-cell message-cell--user"><section class="message-user">
+        <div class="message-avatar"><a href="https://site.example/members/u{n}.{n}/" class="avatar"><img src="/a/{n}.jpg" alt="u{n}"></a></div>
+        <div class="message-userDetails"><h4 class="message-name"><a href="/members/u{n}.{n}/" class="username">u{n}</a></h4><h5 class="userTitle">Member</h5></div>
+        <div class="message-userExtras"><dl class="pairs"><dt>Joined</dt><dd>Mar 3, 2020</dd></dl><dl class="pairs"><dt>Messages</dt><dd>1,204</dd></dl></div>
+        </section></div>
+        <div class="message-cell message-cell--main"><div class="message-main"><header class="message-attribution"><ul class="listInline"><li><a href="/posts/{n}/"><time datetime="2026-10-2{n}T10:00:00Z">Oct 2{n}</time></a></li></ul></header>
+        <div class="message-content"><article class="message-body"><div class="bbWrapper">Reply {n}. {BODY}{tail}</div></article></div>
+        <footer class="message-footer"><a href="/posts/{n}/react" class="reaction">Like</a> <a href="/posts/{n}/reply">Reply</a></footer></div></div></div></article>"#
+    )
+}
+
+#[test]
+fn a_real_xenforo_thread_with_mentions_keeps_every_post_and_no_profile_text() {
+    let html = format!(
+        r#"<main><h1>Flicker</h1><div class="block-body">{}{}{}{}</div></main>"#,
+        xenforo_post(1, false),
+        xenforo_post(2, true),
+        xenforo_post(3, true),
+        xenforo_post(4, true)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+    let thread = read(Schema::ForumThread, &html);
+    let posts = texts(&thread);
+    assert_eq!(posts.len(), 4);
+    assert!(posts[0].starts_with("Reply 1."), "{}", posts[0]);
+    assert!(
+        posts[1].contains("Thanks @bob, that was it."),
+        "{}",
+        posts[1]
+    );
+    assert!(
+        posts
+            .iter()
+            .all(|p| !p.contains("Joined") && !p.contains("Reply\n")),
+        "{posts:?}"
+    );
+    assert_eq!(
+        get(&thread, "posts")[3]["date_published"],
+        "2026-10-24T10:00:00Z"
+    );
+}
+
+#[test]
+fn inline_dates_and_tables_dont_split_posts() {
+    let post = |n: u32, extra: &str| {
+        format!(
+            r#"<div class="post"><span class="author">u{n}</span> <time datetime="2026-10-2{n}">Oct 2{n}</time>
+            <div class="body"><p>Post {n}. {BODY}</p>{extra}</div></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>T</h1><div>{}{}{}{}{}</div></main>",
+        post(
+            1,
+            r#"<p>As I said <time datetime="2026-10-01">last week</time> in the other thread, it's the dimmer.</p>"#
+        ),
+        post(
+            2,
+            r#"<table><tr><td>Fitted</td><td><time datetime="2026-10-02">Oct 2</time></td></tr></table>"#
+        ),
+        post(3, ""),
+        post(4, ""),
+        post(5, "")
+    );
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 5);
+}
+
+#[test]
+fn githubs_real_comment_header_is_a_thread() {
+    let comment = |n: u32| {
+        format!(
+            r##"<div class="timeline-comment"><div class="timeline-comment-header"><h3 class="timeline-comment-header-text f5 text-normal">
+            <strong><a class="author Link--primary" href="/kit{n}">kit{n}</a></strong> commented <a href="#issuecomment-{n}"><relative-time datetime="2026-10-2{n}T10:00:00Z">Oct 2{n}</relative-time></a></h3></div>
+            <div class="edit-comment-hide"><table class="d-block"><tbody><tr><td class="comment-body markdown-body"><p>Comment {n}. {BODY}</p></td></tr></tbody></table></div></div>"##
+        )
+    };
+    let html = format!(
+        "<main><h1>Lamp flickers when dimmed</h1><div class=\"js-discussion\">{}{}{}</div></main>",
+        comment(1),
+        comment(2),
+        comment(3)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+    assert_eq!(texts(&read(Schema::ForumThread, &html)).len(), 3);
+}
+
+#[test]
+fn old_reddits_real_nested_comments_are_all_read() {
+    fn thing(n: u32, children: &str) -> String {
+        format!(
+            r#"<div class="thing comment" id="t1_{n}"><div class="entry unvoted"><p class="tagline">
+            <a href="https://old.reddit.com/user/kit{n}" class="author">kit{n}</a>
+            <span class="score dislikes">{} points</span><span class="score unvoted">{} points</span><span class="score likes">{} points</span>
+            <time datetime="2026-10-2{n}T10:00:00Z">2 hours ago</time></p>
+            <form class="usertext warn-on-unload"><div class="usertext-body"><div class="md"><p>Comment {n}. {BODY}</p></div></div></form>
+            <ul class="flat-list buttons"><li><a href="/r/x/c/{n}">permalink</a></li><li><a href="/reply">reply</a></li></ul></div>
+            <div class="child"><div class="sitetable listing">{children}</div></div></div>"#,
+            n + 1,
+            n + 2,
+            n + 3
+        )
+    }
+    let tree = format!(
+        "{}{}",
+        thing(1, &format!("{}{}", thing(2, &thing(3, "")), thing(4, ""))),
+        thing(5, &thing(6, ""))
+    );
+    let html = format!(
+        r#"<main><h1>Lamp flickers when dimmed</h1><div class="commentarea"><div class="sitetable nestedlisting">{tree}</div></div></main>"#
+    );
+    let thread = read(Schema::ForumThread, &html);
+    let posts = texts(&thread);
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+    assert_eq!(posts.len(), 6, "{posts:?}");
+    assert!(
+        posts
+            .iter()
+            .enumerate()
+            .all(|(i, p)| p == &format!("Comment {}. {BODY}", i + 1)),
+        "{posts:?}"
+    );
+}
+
+#[test]
+fn a_vbulletin_date_without_time_is_read() {
+    let post = |n: u32| {
+        format!(
+            r#"<li class="postcontainer"><div class="posthead"><span class="postdate"><span class="date">Oct 2{n}, 2026,&nbsp;<span class="time">10:00 AM</span></span></span><span class="nodecontrols">#{n}</span></div>
+            <div class="userinfo"><a class="username" href="member.php?u={n}">kit{n}</a></div>
+            <div class="postbody"><h2 class="title">Re: Flicker</h2><blockquote class="postcontent restore">Post {n}. {BODY}</blockquote></div>
+            <div class="postfoot"><a class="newreply" href="newreply.php?p={n}"><span>Reply With Quote</span></a></div></li>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>Flicker</h1><ol class=\"posts\">{}{}{}</ol></main>",
+        post(1),
+        post(2),
+        post(3)
+    );
+    let thread = read(Schema::ForumThread, &html);
+    let posts = texts(&thread);
+    assert_eq!(posts.len(), 3);
+    assert_eq!(posts[0], format!("Post 1. {BODY}"));
+    assert_eq!(
+        get(&thread, "posts")[0]["date_published"],
+        "2026-10-21T10:00:00"
+    );
+}
+
+#[test]
+fn a_byline_and_an_update_note_arent_posts() {
+    let html = format!(
+        r#"<main><article><h1>The night market returns</h1>
+        <div class="byline">By <span class="author">Ana Ruiz</span>, <time datetime="2026-10-20">Oct 20</time>, staff writer in Leeds covering housing and transport</div>
+        <div class="updated"><span class="author">Ana Ruiz</span> updated this story on <time datetime="2026-10-21">Oct 21</time> with a correction to the stall count</div>
+        <p>{BODY}</p><p>{BODY}</p><p>{BODY}</p></article></main>"#
+    );
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+}
+
+#[test]
+fn teasers_with_a_byline_before_the_title_are_a_list_not_a_thread() {
+    let card = |n: u32| {
+        format!(
+            r#"<div class="card"><div class="byline">By Ana Ruiz · <time datetime="2026-10-0{n}">October {n}, 2026</time> · 5 min read</div>
+            <h5 class="title"><a href="/b/{n}">A post about lamps, number {n}</a></h5><p>{BODY}</p></div>"#
+        )
+    };
+    let html = format!(
+        "<main><h1>Blog</h1>{}</main>",
+        (1..=5).map(card).collect::<String>()
+    );
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+}
+
+#[test]
+fn a_question_with_answers_is_a_thread() {
+    let answer = |n: u32| {
+        format!(
+            r#"<div class="answer"><div class="votecell"><div class="js-vote-count" itemprop="upvoteCount">{n}</div></div>
+            <div class="answercell"><div class="s-prose"><p>Answer {n}. {BODY}</p></div>
+            <div class="user-details" itemprop="author"><a href="/users/{n}/kit">kit{n}</a> <span class="relativetime" title="2026-10-2{n} 10:00:00Z">Oct 2{n}</span></div></div></div>"#
+        )
+    };
+    let question = format!(
+        r#"<div class="question"><div class="s-prose"><p>{BODY} {BODY} {BODY} {BODY} {BODY}</p></div>
+        <div class="user-details" itemprop="author"><a href="/users/9/lee">lee</a></div></div>"#
+    );
+    let html = format!(
+        r#"<main><h1>Why does my lamp flicker?</h1>{question}<div id="answers">{}{}{}</div></main>"#,
+        answer(1),
+        answer(2),
+        answer(3)
+    );
+    assert_eq!(typed(&html), Some(Schema::ForumThread));
+}
+
+#[test]
+fn a_product_with_reviews_is_a_product() {
+    let review = |n: u32| {
+        format!(
+            r#"<div class="review"><span class="review-author">Kit {n}</span> <time datetime="2026-10-2{n}">Oct 2{n}</time><p>{BODY}</p>
+            <span class="review-votes">{n} people found this helpful</span></div>"#
+        )
+    };
+    let html = format!(
+        r#"<main><h1>Oak stool</h1><span class="price">£59.00</span><button>Add to basket</button><p>A low stool.</p>
+        <section class="reviews">{}</section></main>"#,
+        (1..=5).map(review).collect::<String>()
+    );
+    assert_eq!(typed(&html), Some(Schema::Product));
+    assert!(read(Schema::ForumThread, &html).probability < 0.4);
+}
+
+#[test]
+fn deep_posts_are_quick() {
+    let deep = |n: u32| {
+        format!(
+            r#"<div class="post"><span class="author">u{n}</span>{}<time datetime="2026-10-2{n}">Oct</time>{}</div>"#,
+            "<div><p>Some words in a paragraph here.</p>".repeat(1500),
+            "</div>".repeat(1500)
+        )
+    };
+    let html = format!("<main><h1>T</h1><div>{}{}</div></main>", deep(1), deep(2));
+    let doc = Document::parse(&html);
+    let start = std::time::Instant::now();
+    extract(
+        Schema::ForumThread,
+        doc.root(),
+        None,
+        None,
+        Civil::date(2026, 10, 25),
+    );
+    assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
+}

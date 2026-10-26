@@ -415,6 +415,13 @@ fn same_amount(a: Option<&str>, b: Option<&str>) -> bool {
     a.is_some() && (a == b || (n(a).is_some() && n(a) == n(b)))
 }
 
+/// Whether the page shows a product of its own: a heading with a price
+/// beside it, as [`product`] reads one.
+pub(crate) fn shows_product(root: Node<'_>) -> bool {
+    let layout = Layout::of(root);
+    heading(root, &layout).is_some_and(|(h1, _)| main_price(&layout, root, h1).is_some())
+}
+
 /// What a page's layout says about the product it shows, offered after
 /// the structured sources. Returns the probability it gives, or None
 /// when the page doesn't look like a product: no heading, or no price

@@ -243,11 +243,12 @@ who wrote them, so a changelog, a blog's dated teasers or a member
 directory aren't a thread. A post's text is everything in it but its
 date, poster and buttons, every paragraph and any quotes of other
 posts; likes are read as people write them (`1.2k`). The markup of
-XenForo, phpBB, vBulletin, GitHub's issue comments and old Reddit is
-read this way, along with hand-written forums that mark their posters.
+XenForo, phpBB, vBulletin, GitHub's issue comments, old Reddit (replies
+to replies included) and question-and-answer pages is read this way,
+along with hand-written forums that mark their posters. Reviews under a
+product and comments under an article stay that page's, not a thread.
 New Reddit, Hacker News and Disqus, whose comments arrive by script or
-without dates or posters marked, aren't yet. Comments under an article
-are its comments, not a thread.
+without dates or posters marked, aren't yet.
 
 ## Pages built in the browser
 
