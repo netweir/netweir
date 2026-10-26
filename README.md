@@ -1,5 +1,13 @@
 <p align="center"><img src="https://raw.githubusercontent.com/netweir/netweir/main/docs/assets/header.gif" alt="Netweir: Rust does the work. You write Python." width="100%"></p>
 
+<p align="center">
+  <a href="https://github.com/netweir/netweir/actions/workflows/ci.yml"><img src="https://github.com/netweir/netweir/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://pypi.org/project/netweir/"><img src="https://img.shields.io/pypi/v/netweir" alt="PyPI"></a>
+  <a href="https://pypi.org/project/netweir/"><img src="https://img.shields.io/pypi/pyversions/netweir" alt="Python versions"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/netweir/netweir"><img src="https://api.scorecard.dev/projects/github.com/netweir/netweir/badge" alt="OpenSSF Scorecard"></a>
+</p>
+
 # Netweir
 
 An ultra-fast, self-healing, undetectable web scraper. Rust does the work;

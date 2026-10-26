@@ -154,11 +154,24 @@ jobs:
     permissions:
       # To create the release and attach the files.
       contents: write
+      # To sign the build provenance.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
+      # Signed provenance for every file, checkable with
+      # `gh attestation verify FILE --repo netweir/netweir`; the bundle is
+      # attached to the release too.
+      - id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - run: cp "$BUNDLE" "dist/netweir-${GITHUB_REF_NAME}.intoto.jsonl"
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
       # Notes list the pull requests merged since the last tag; the files
       # are the ones just published to PyPI.
       - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Netweir ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
