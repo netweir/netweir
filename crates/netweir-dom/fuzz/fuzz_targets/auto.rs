@@ -1,6 +1,6 @@
 //! Any HTML read as every auto-extracted item type, and each of its
-//! elements read as every kind of field: nothing panics, and the same
-//! page gives the same item every time.
+//! elements read as every kind of field, and its page type asked for:
+//! nothing panics, and the same page gives the same answer every time.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -52,6 +52,12 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(item, extract(schema, doc.root(), Some(&url), None, now));
         assert!((0.0..=1.0).contains(&item.probability));
     }
+    let (kind, all) = netweir_dom::auto::page_type(doc.root(), Some(&url), None, now);
+    assert_eq!(
+        (kind, all.clone()),
+        netweir_dom::auto::page_type(doc.root(), Some(&url), None, now)
+    );
+    assert!(all.iter().all(|(_, p)| (0.0..=1.0).contains(p)));
     for node in doc.root().descendants().filter(|n| n.kind() == NodeKind::Element).take(64) {
         css_path::css_path(node);
         for kind in KINDS {

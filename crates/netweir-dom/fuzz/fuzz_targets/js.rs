@@ -1,5 +1,5 @@
-//! Any string as script text: every literal in it, and the value of a name
-//! (the first line) assigned in the rest.
+//! Any string as script text: every literal in it, the value of a name
+//! (the first line) assigned in the rest, and Nuxt's state in it.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -10,4 +10,5 @@ fuzz_target!(|data: &[u8]| {
     let _ = js::all(&text);
     let (name, script) = text.split_once('\n').unwrap_or(("data", &text));
     let _ = js::assigned(script, name);
+    let _ = js::nuxt(&text);
 });
