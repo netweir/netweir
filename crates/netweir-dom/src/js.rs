@@ -58,8 +58,12 @@ const MAX_BUILT: usize = 1_000_000;
 /// of repeated values and called at once:
 /// `(function(a,b){return {name:a,price:b}}("Lamp",49.99))`.
 pub fn nuxt(text: &str) -> Option<JsValue> {
+    // The first mention may only read it (`if (window.__NUXT__) ...`).
+    memchr::memmem::find_iter(text.as_bytes(), b"__NUXT__").find_map(|at| nuxt_at(text, at))
+}
+
+fn nuxt_at(text: &str, at: usize) -> Option<JsValue> {
     let mut r = Reader::new(text);
-    let at = memchr::memmem::find(r.s, b"__NUXT__")?;
     r.pos = at + "__NUXT__".len();
     r.skip_space();
     if !r.eat(b'=') {

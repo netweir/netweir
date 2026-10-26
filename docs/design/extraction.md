@@ -70,11 +70,18 @@ an ordinary tracked selector, so self-healing keeps the fix working.
    the call: `js::nuxt`), Apollo's cache with `__ref`s followed, and the
    usual `window.__X__` names. Every object is weighed by its keys
    (matched without case, `_` or `-`): a product needs a name and a
-   price, a job a title and two facts; codes, images, brand, currency
-   and a `__typename` saying Product add weight. The heaviest object not
-   inside a list wins, or one in a list whose URL is the page's; the
-   longest list of three or more is a listing. Money in `centAmount`,
-   `priceInCents` and the like is divided by 100. The walk stops after
+   price, a job a title, two facts and one only adverts have (a salary,
+   a job type, an apply link); codes, images, brand, currency and a
+   `__typename` saying Product add weight. The page's product is the
+   heaviest with more than a name and a price that's in no list of two
+   or more and under no key saying basket, delivery, recommendations or
+   the like, or else one in a list whose URL is the page's (whole path
+   segments). The longest list of three or more priced products is a
+   listing, unless the page has a product of its own. `salePrice` and
+   its kind come before `price`, which is then the regular price. Money
+   in `centAmount`, `priceInCents` and the like is divided by 100 (by
+   `fractionDigits` when given, up to six). Paths in sources are built
+   only for what's kept, with keys holding dots or brackets quoted. The walk stops after
    100,000 values, looks at the first 1,000 entries of a list, and
    reference following shares one budget, so shared references can't
    multiply.

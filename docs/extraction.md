@@ -188,10 +188,12 @@ to draw. Netweir reads that state without running anything:
 (references followed), and the `__INITIAL_STATE__`-style objects
 Redux apps assign. It looks for objects shaped like a product (a name
 and a price, plus codes, images, a brand) or a job (a title plus a
-salary, location, employer or dates), whatever key the framework
-filed them under. A product that stands alone beats one in a list, so
-"related products" and the basket don't win; a list of three or more
-fills a listing.
+salary or job type, and more besides), whatever key the framework
+filed them under. A product that stands alone beats one in a list, and
+anything under a basket, a delivery option or recommendations is
+passed over, so related products and the basket don't win. A list of
+three or more priced products fills a listing, except on a product's
+own page, where such lists are its variants and related products.
 
 These fields say `js:` and the path to the value, such as
 `js:__NEXT_DATA__.props.pageProps.product.price`, so you can find the

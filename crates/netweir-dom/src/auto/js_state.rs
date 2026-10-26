@@ -93,7 +93,34 @@ fn roots(root: Node<'_>) -> Vec<(String, Value)> {
             }
         }
     }
-    out
+    let mut budget = BUDGET;
+    out.into_iter()
+        .map(|(name, v)| (name, apollo_within(v, 0, &mut budget)))
+        .collect()
+}
+
+/// `v` with any Apollo cache inside it (an object with a `ROOT_QUERY`, as
+/// Next.js apps pass `initialApolloState`) resolved.
+fn apollo_within(v: Value, depth: usize, budget: &mut usize) -> Value {
+    if depth > MAX_DEPTH || *budget == 0 {
+        return v;
+    }
+    *budget -= 1;
+    match v {
+        Value::Object(o) if o.contains_key("ROOT_QUERY") => apollo(Value::Object(o)),
+        Value::Object(o) => Value::Object(
+            o.into_iter()
+                .map(|(k, x)| (k, apollo_within(x, depth + 1, budget)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|x| apollo_within(x, depth + 1, budget))
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 fn to_json(v: JsValue) -> Value {
@@ -137,7 +164,9 @@ fn devalue(flat: &Value) -> Option<Value> {
                     None => Value::Null,
                 },
                 Some("Date" | "BigInt" | "RegExp") => items.get(1).cloned().unwrap_or_default(),
-                Some("Set" | "Map" | "null" | "Object") => Value::Null,
+                // Anything else tagged (`NuxtError`, `Island`, `URL`, a
+                // Map or Set) isn't data a page is about.
+                Some(_) => Value::Null,
                 _ => Value::Array(
                     items
                         .iter()
@@ -250,19 +279,41 @@ const NAME: [&str; 5] = [
     "displayname",
     "producttitle",
 ];
+/// Price keys, the price after any discount first: beside `salePrice`
+/// or `finalPrice`, `price` is the one before it.
 const PRICE: [&str; 11] = [
-    "price",
     "saleprice",
-    "currentprice",
+    "specialprice",
     "finalprice",
-    "sellingprice",
+    "currentprice",
     "offerprice",
+    "sellingprice",
+    "price",
     "priceamount",
     "priceincents",
     "pricecents",
     "amountincents",
-    "pricerange",
 ];
+
+/// Inside a price object, its parts: the current amount first.
+const AMOUNT: [&str; 13] = [
+    "sale",
+    "special",
+    "now",
+    "final",
+    "amount",
+    "value",
+    "centamount",
+    "current",
+    "raw",
+    "minvariantprice",
+    "min",
+    "formatted",
+    "display",
+];
+
+/// Inside a price object, the amount before a discount.
+const BEFORE: [&str; 6] = ["regular", "was", "list", "original", "compareat", "old"];
 const REGULAR: [&str; 9] = [
     "compareatprice",
     "listprice",
@@ -291,51 +342,27 @@ fn money(key: &str, v: &Value, depth: usize) -> PriceFields {
         return PriceFields::default();
     }
     let cents = CENTS.iter().any(|c| key_is(key, c));
+    let whole = |v: &Value| match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
     let mut out = match v {
-        Value::Number(n) if cents => {
-            let digits = n
-                .as_i64()
-                .map(|c| format!("{}.{:02}", c / 100, (c % 100).abs()));
-            PriceFields {
-                price: digits,
-                ..Default::default()
-            }
-        }
+        Value::Number(_) | Value::String(_) if cents => PriceFields {
+            price: whole(v).and_then(|c| scaled(c, 2)),
+            ..Default::default()
+        },
         Value::Number(_) | Value::String(_) => f::price_fields(v),
         Value::Object(o) => {
-            let inner = get(
-                o,
-                &[
-                    "amount",
-                    "value",
-                    "centamount",
-                    "current",
-                    "raw",
-                    "minvariantprice",
-                    "min",
-                    "formatted",
-                    "display",
-                ],
-            );
+            let inner = get(o, &AMOUNT);
             let mut m = inner
                 .map(|(k, x)| money(k, x, depth + 1))
                 .unwrap_or_default();
-            if let Some(("centAmount" | "centamount", Value::Number(n))) = inner
+            if let Some((k, x)) = inner
+                && key_is(k, "centamount")
                 && let Some(digits) = o.get("fractionDigits").and_then(Value::as_u64)
-                && let Some(c) = n.as_i64()
-                && digits != 2
             {
-                let scale = 10i64.pow(digits.min(6) as u32);
-                m.price = Some(if digits == 0 {
-                    c.to_string()
-                } else {
-                    format!(
-                        "{}.{:0w$}",
-                        c / scale,
-                        (c % scale).abs(),
-                        w = digits as usize
-                    )
-                });
+                m.price = whole(x).and_then(|c| scaled(c, digits));
             }
             if let Some((_, c)) = get(o, &CURRENCY) {
                 let c = f::currency(c);
@@ -358,16 +385,42 @@ fn money(key: &str, v: &Value, depth: usize) -> PriceFields {
     out
 }
 
-/// What a product object says, in the item's fields, each with the key
-/// it came from.
+/// `c` hundredths (or `digits`-ths) as a decimal string: 5900 at 2 is
+/// `59.00`, -50 is `-0.50`. More than six places isn't money.
+fn scaled(c: i64, digits: u64) -> Option<String> {
+    if digits > 6 {
+        return None;
+    }
+    if digits == 0 {
+        return Some(c.to_string());
+    }
+    let scale = 10u64.pow(digits as u32);
+    let n = c.unsigned_abs();
+    let sign = if c < 0 { "-" } else { "" };
+    Some(format!(
+        "{sign}{}.{:0w$}",
+        n / scale,
+        n % scale,
+        w = digits as usize
+    ))
+}
+
+/// What a product object says, in the item's fields, each with the path
+/// below the object it came from (`.price`, `.price.regular`).
 fn product_fields(
     o: &Map<String, Value>,
     base: Option<&url::Url>,
 ) -> Vec<(&'static str, Value, String)> {
     let mut out: Vec<(&'static str, Value, String)> = Vec::new();
+    // `key` is a key of the object, or a path below it already written.
     let mut put = |field: &'static str, value: Option<Value>, key: &str| {
         if let Some(v) = value.filter(|v| !v.is_null()) {
-            out.push((field, v, key.to_string()));
+            let path = if key.starts_with(['.', '[']) {
+                key.to_string()
+            } else {
+                key_part(key)
+            };
+            out.push((field, v, path));
         }
     };
     if let Some((k, v)) = get(o, &NAME) {
@@ -389,14 +442,26 @@ fn product_fields(
     }
     if let Some((k, m)) = &price {
         put("price", m.price.clone().map(Value::String), k);
-        let regular = get(o, &REGULAR)
-            .map(|(rk, rv)| (rk, money(rk, rv, 0)))
-            .filter(|(_, r)| {
-                let n = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<f64>().ok());
-                n(&r.price) > n(&m.price)
-            });
-        if let Some((rk, r)) = regular {
-            put("regular_price", r.price.map(Value::String), rk);
+        let n = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<f64>().ok());
+        // The old price: a key that says so, `price` beside a sale price,
+        // or the part of a price object that says so.
+        let inside = o
+            .get(*k)
+            .and_then(Value::as_object)
+            .and_then(|po| get(po, &BEFORE));
+        let plain = (!key_is(k, "price")).then(|| get(o, &["price"])).flatten();
+        let regular = [(get(o, &REGULAR), false), (plain, false), (inside, true)]
+            .into_iter()
+            .filter_map(|(found, nested)| Some((found?, nested)))
+            .map(|((rk, rv), nested)| (rk, money(rk, rv, 0), nested))
+            .find(|(_, r, _)| n(&r.price) > n(&m.price));
+        if let Some((rk, r, nested)) = regular {
+            let path = if nested {
+                format!("{}{}", key_part(k), key_part(rk))
+            } else {
+                key_part(rk)
+            };
+            put("regular_price", r.price.map(Value::String), &path);
         }
     }
     let ckey = price
@@ -577,29 +642,93 @@ fn product_score(o: &Map<String, Value>) -> u32 {
 }
 
 /// An object found in the state: where it is, how well it fits, and
-/// whether it sits in a list.
+/// whether it sits in a list (at any level above it).
 struct Found<'v> {
-    path: String,
+    step: usize,
     object: &'v Map<String, Value>,
     score: u32,
     listed: bool,
 }
 
-/// A list of objects in the state, with where it is.
-type Listed<'v> = (String, Vec<&'v Map<String, Value>>);
+/// One step of a path into the state. Paths are built only for the
+/// values that are kept, so a long key over many children costs nothing.
+enum Seg<'v> {
+    Root(&'v str),
+    Key(&'v str),
+    Index(usize),
+}
+
+/// Every step taken, each with the index of the step it hangs off.
+struct Steps<'v>(Vec<(usize, Seg<'v>)>);
+
+/// `.key`, or `["a.b"]` for a key a dot or bracket would make ambiguous.
+fn key_part(k: &str) -> String {
+    if !k.is_empty() && !k.contains(['.', '[', ']', '"']) {
+        format!(".{k}")
+    } else {
+        format!("[{}]", Value::String(k.to_string()))
+    }
+}
+
+/// A source label for key `k` of the object at `path`.
+fn key_label(path: &str, k: &str) -> String {
+    format!("{path}{}", key_part(k))
+}
+
+impl Steps<'_> {
+    /// The path to step `at` as sources write it:
+    /// `__NEXT_DATA__.props.items[2]`.
+    fn label(&self, mut at: usize) -> String {
+        let mut parts = Vec::new();
+        loop {
+            let (parent, seg) = &self.0[at];
+            parts.push(match seg {
+                Seg::Root(name) => name.to_string(),
+                Seg::Key(k) => key_part(k),
+                Seg::Index(i) => format!("[{i}]"),
+            });
+            if *parent == usize::MAX {
+                break;
+            }
+            at = *parent;
+        }
+        parts.reverse();
+        parts.concat()
+    }
+
+    /// The keys on the way to step `at`, nearest first.
+    fn keys(&self, mut at: usize) -> impl Iterator<Item = &str> {
+        std::iter::from_fn(move || {
+            while at != usize::MAX {
+                let (parent, seg) = &self.0[at];
+                at = *parent;
+                if let Seg::Key(k) = seg {
+                    return Some(*k);
+                }
+            }
+            None
+        })
+    }
+}
+
+/// A list of objects in the state: the step it's at, and its entries.
+type Listed<'v> = (usize, Vec<&'v Map<String, Value>>);
 
 /// Every object in the state that `score` gives a positive score, in the
 /// order met, and the lists of three or more such objects.
 fn search<'v>(
     roots: &'v [(String, Value)],
     score: impl Fn(&Map<String, Value>) -> u32,
-) -> (Vec<Found<'v>>, Vec<Listed<'v>>) {
+) -> (Steps<'v>, Vec<Found<'v>>, Vec<Listed<'v>>) {
+    let mut steps = Steps(Vec::new());
     let mut found = Vec::new();
     let mut lists = Vec::new();
     let mut budget = BUDGET;
     for (name, value) in roots {
-        let mut stack: Vec<(&Value, String, bool, usize)> = vec![(value, name.clone(), false, 0)];
-        while let Some((v, path, listed, depth)) = stack.pop() {
+        steps.0.push((usize::MAX, Seg::Root(name)));
+        let mut stack: Vec<(&Value, usize, bool, usize)> =
+            vec![(value, steps.0.len() - 1, false, 0)];
+        while let Some((v, step, listed, depth)) = stack.pop() {
             if budget == 0 {
                 break;
             }
@@ -612,7 +741,7 @@ fn search<'v>(
                     let s = score(o);
                     if s > 0 {
                         found.push(Found {
-                            path: path.clone(),
+                            step,
                             object: o,
                             score: s,
                             listed,
@@ -620,7 +749,8 @@ fn search<'v>(
                     }
                     for (k, x) in o.iter().rev() {
                         if matches!(x, Value::Object(_) | Value::Array(_)) {
-                            stack.push((x, format!("{path}.{k}"), false, depth + 1));
+                            steps.0.push((step, Seg::Key(k)));
+                            stack.push((x, steps.0.len() - 1, listed, depth + 1));
                         }
                     }
                 }
@@ -629,8 +759,7 @@ fn search<'v>(
                     // weighed counts against the budget.
                     let looked = items.len().min(LIST_SAMPLE).min(budget);
                     budget -= looked;
-                    let sample = &items[..looked];
-                    let fits = sample
+                    let fits = items[..looked]
                         .iter()
                         .filter_map(Value::as_object)
                         .filter(|o| score(o) > 0)
@@ -641,13 +770,17 @@ fn search<'v>(
                             .take(MAX_LISTED)
                             .filter_map(Value::as_object)
                             .collect();
-                        lists.push((path.clone(), all));
+                        lists.push((step, all));
                     }
                     // Past the first thousand, a list's entries are more
                     // of the same.
                     for (i, x) in items.iter().take(MAX_LISTED).enumerate().rev() {
                         if matches!(x, Value::Object(_) | Value::Array(_)) {
-                            stack.push((x, format!("{path}[{i}]"), true, depth + 1));
+                            steps.0.push((step, Seg::Index(i)));
+                            // A list of one is a wrapper (Nuxt 2's `data`),
+                            // not one of many.
+                            let many = listed || items.len() > 1;
+                            stack.push((x, steps.0.len() - 1, many, depth + 1));
                         }
                     }
                 }
@@ -655,7 +788,80 @@ fn search<'v>(
             }
         }
     }
-    (found, lists)
+    (steps, found, lists)
+}
+
+/// Words in the keys above an object that say it isn't the page's
+/// product or job: a basket's lines, a delivery option, a recommendation.
+const ASIDE: [&str; 17] = [
+    "cart",
+    "basket",
+    "bag",
+    "wishlist",
+    "recent",
+    "recommend",
+    "related",
+    "upsell",
+    "crosssell",
+    "similar",
+    "shipping",
+    "delivery",
+    "giftwrap",
+    "wrap",
+    "plan",
+    "subscription",
+    "option",
+];
+
+fn aside(steps: &Steps<'_>, at: usize) -> bool {
+    steps.keys(at).any(|k| {
+        let k: String = k
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        ASIDE.iter().any(|w| k.contains(w))
+    })
+}
+
+/// The page's own product in the state: the best fit standing alone
+/// (in no list, under no basket or recommendations, and more than a
+/// name and a price), else one in a list whose URL is the page's.
+fn main_product<'f, 'v>(
+    page: &Page<'_, '_>,
+    steps: &Steps<'v>,
+    found: &'f [Found<'v>],
+) -> Option<&'f Found<'v>> {
+    let path = page.page.map(|p| p.path().trim_matches('/').to_string());
+    let here = |o: &Map<String, Value>| {
+        get(o, &["url", "href", "slug", "handle", "permalink"])
+            .and_then(|(_, v)| v.as_str())
+            .zip(path.as_deref())
+            .is_some_and(|(u, p)| {
+                let u = u.trim();
+                let u = url::Url::parse(u)
+                    .map(|x| x.path().to_string())
+                    .unwrap_or_else(|_| u.to_string());
+                let u = u.trim_matches('/');
+                // Whole path segments: `slug: "g"` isn't `/p/thing`.
+                !u.is_empty() && (p == u || p.ends_with(&format!("/{u}")))
+            })
+    };
+    let weigh = |f: &&Found<'_>| f.score + if here(f.object) { 3 } else { 0 };
+    let usable = |f: &&Found<'_>| !aside(steps, f.step);
+    first_best(
+        found
+            .iter()
+            .filter(|f| !f.listed && f.score >= 3)
+            .filter(usable),
+        weigh,
+    )
+    .or_else(|| {
+        first_best(
+            found.iter().filter(|f| here(f.object)).filter(usable),
+            weigh,
+        )
+    })
 }
 
 /// The highest-weighed, the first met among equals.
@@ -683,50 +889,36 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     if roots.is_empty() {
         return None;
     }
-    let (found, _) = search(&roots, product_score);
-    // A product in a list is one of many (related products, a basket);
-    // the page's own stands alone. Among those, the best fit, and among
-    // equals the one whose URL is the page's.
-    let here = |o: &Map<String, Value>| {
-        let path = page
-            .page
-            .map(|p| p.path().trim_end_matches('/').to_string());
-        get(o, &["url", "href", "slug", "handle", "permalink"])
-            .and_then(|(_, v)| v.as_str())
-            .zip(path)
-            .is_some_and(|(u, p)| {
-                let u = u.trim_end_matches('/');
-                !u.is_empty() && (p.ends_with(u) || u.ends_with(&p))
-            })
-    };
-    let weigh = |f: &&Found<'_>| f.score + if here(f.object) { 3 } else { 0 };
-    let best = first_best(found.iter().filter(|f| !f.listed), weigh)
-        .or_else(|| first_best(found.iter().filter(|f| here(f.object)), weigh))?;
+    let (steps, found, _) = search(&roots, product_score);
+    let best = main_product(page, &steps, &found)?;
+    let path = steps.label(best.step);
     for (field, value, key) in product_fields(best.object, page.base) {
-        if field == "url" {
-            continue;
+        if field != "url" {
+            item.offer(field, Some(value), format!("js:{path}{key}"));
         }
-        item.offer(field, Some(value), format!("js:{}.{key}", best.path));
     }
     Some(if best.score >= 5 { 0.85 } else { 0.7 })
 }
 
-/// The products the page's app state lists: its longest list of product
-/// objects, each as a list shows it.
+/// The products the page's app state lists: its longest list of priced
+/// product objects, each as a list shows it. None on a product's own
+/// page, whose lists are its related products and variants.
 pub(crate) fn listing(page: &Page<'_, '_>) -> Option<(Vec<Map<String, Value>>, String)> {
     let roots = roots(page.root);
     if roots.is_empty() {
         return None;
     }
-    let listed = |o: &Map<String, Value>| {
-        let named = get(o, &NAME).is_some_and(|(_, v)| v.is_string());
-        let linked = get(o, &["url", "href", "link", "permalink"])
-            .and_then(|(_, v)| v.as_str())
-            .is_some_and(|u| u.starts_with('/') || u.starts_with("http"));
-        u32::from(named && (linked || product_score(o) > 0))
-    };
-    let (_, lists) = search(&roots, listed);
-    let (path, objects) = lists.into_iter().max_by_key(|(_, l)| l.len())?;
+    let (steps, found, lists) = search(&roots, product_score);
+    if found
+        .iter()
+        .any(|f| !f.listed && f.score >= 3 && !aside(&steps, f.step))
+    {
+        return None;
+    }
+    let (at, objects) = lists
+        .into_iter()
+        .filter(|(at, _)| !aside(&steps, *at))
+        .max_by_key(|(_, l)| l.len())?;
     let order = [
         "name",
         "price",
@@ -751,7 +943,7 @@ pub(crate) fn listing(page: &Page<'_, '_>) -> Option<(Vec<Map<String, Value>>, S
         })
         .filter(|p| !p.is_empty())
         .collect();
-    Some((products, format!("js:{path}")))
+    Some((products, format!("js:{}", steps.label(at))))
 }
 
 /// How much an object looks like a job: a title and two of the things
@@ -790,7 +982,24 @@ fn job_score(o: &Map<String, Value>) -> u32 {
         .or_else(|| o.get("@type"))
         .and_then(Value::as_str)
         .is_some_and(|t| t.to_ascii_lowercase().contains("job"));
-    if facts >= 2 || (typed && facts >= 1) {
+    // A place, a company and a date are on stories and reviews too; a
+    // salary, a job type or an apply link are only on adverts.
+    let only_jobs = get(
+        o,
+        &[
+            "salary",
+            "basesalary",
+            "compensation",
+            "employmenttype",
+            "jobtype",
+            "contracttype",
+            "applyurl",
+            "applicationurl",
+            "applylink",
+        ],
+    )
+    .is_some();
+    if (facts >= 2 && only_jobs) || (typed && facts >= 1) {
         facts + if typed { 3 } else { 0 }
     } else {
         0
@@ -803,10 +1012,14 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     if roots.is_empty() {
         return None;
     }
-    let (found, _) = search(&roots, job_score);
-    let best = first_best(found.iter().filter(|f| !f.listed), |f| f.score)?;
+    let (steps, found, _) = search(&roots, job_score);
+    let best = first_best(
+        found.iter().filter(|f| !f.listed && !aside(&steps, f.step)),
+        |f| f.score,
+    )?;
     let o = best.object;
-    let src = |k: &str| format!("js:{}.{k}", best.path);
+    let path = steps.label(best.step);
+    let src = |k: &str| format!("js:{}", key_label(&path, k));
     if let Some((k, v)) = get(o, &["title", "jobtitle", "name", "position"]) {
         item.offer("job_title", f::text(v).map(Value::String), src(k));
     }
@@ -883,13 +1096,7 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         (
             "date_published",
             "date_published_raw",
-            &[
-                "dateposted",
-                "postedat",
-                "publishedat",
-                "postingdate",
-                "createdat",
-            ][..],
+            &["dateposted", "postedat", "publishedat", "postingdate"][..],
         ),
         (
             "valid_through",

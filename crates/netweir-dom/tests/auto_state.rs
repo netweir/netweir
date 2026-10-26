@@ -90,6 +90,233 @@ fn a_story_with_a_place_isnt_a_job() {
     assert_eq!(get(&item, "job_title"), &Value::Null);
 }
 
+fn read_at(schema: Schema, html: &str, url: &str) -> Extracted {
+    let doc = Document::parse(html);
+    let url = url::Url::parse(url).unwrap();
+    extract(
+        schema,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 25),
+    )
+}
+
+#[test]
+fn a_menu_in_state_isnt_a_listing() {
+    let html = next(
+        r#"{"props":{"pageProps":{"post":{"title":"Winter lamps"},"nav":[{"name":"Home","url":"/"},
+        {"name":"About","url":"/about"},{"name":"Blog","url":"/blog"},{"name":"Contact","url":"/contact"}]}}}"#,
+    );
+    for schema in [Schema::ProductList, Schema::ProductNavigation] {
+        let item = read(schema, &html);
+        let field = if schema == Schema::ProductList {
+            "products"
+        } else {
+            "items"
+        };
+        assert_eq!(get(&item, field), &Value::Null, "{schema:?}");
+        assert!(item.probability < 0.2, "{schema:?}");
+    }
+}
+
+#[test]
+fn a_products_related_items_and_sizes_arent_a_listing() {
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/auto/product-next.html"
+    ))
+    .unwrap();
+    let item = read(Schema::ProductList, &page);
+    assert_eq!(get(&item, "products"), &Value::Null);
+    assert!(item.probability < 0.4, "{}", item.probability);
+    let sizes = next(
+        r#"{"props":{"pageProps":{"product":{"name":"Tee","price":20,"sku":"T1","variants":[
+        {"title":"S","price":20},{"title":"M","price":20},{"title":"L","price":20}]}}}}"#,
+    );
+    assert_eq!(
+        get(&read(Schema::ProductList, &sizes), "products"),
+        &Value::Null
+    );
+}
+
+#[test]
+fn a_basket_line_isnt_the_product() {
+    let item = read_at(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"cart":{"lines":[{"quantity":2,"merchandise":{"product":
+            {"title":"Mug","price":8,"sku":"M1","image":"/i/m.jpg"}}}]}}}}"#,
+        ),
+        "https://shop.example/cart",
+    );
+    assert_eq!(get(&item, "name"), &Value::Null);
+}
+
+#[test]
+fn cents_written_as_text_are_cents() {
+    let item = read(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"product":{"name":"Stool","priceInCents":"5900","currency":"USD","sku":"S1"}}}}"#,
+        ),
+    );
+    assert_eq!(get(&item, "price"), "59.00");
+    let negative = read(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"product":{"name":"Credit","priceInCents":-50,"currency":"USD","sku":"C1"}}}}"#,
+        ),
+    );
+    assert_eq!(get(&negative, "price"), "-0.50");
+    let odd = read(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"product":{"name":"Odd","price":{"centAmount":5900,"fractionDigits":20,"currencyCode":"EUR"},"sku":"O1"}}}}"#,
+        ),
+    );
+    assert_eq!(get(&odd, "price"), &Value::Null);
+}
+
+#[test]
+fn a_sale_price_is_the_price() {
+    for (data, price, regular) in [
+        (
+            r#"{"name":"Stool","price":100,"salePrice":80,"currency":"USD","sku":"S"}"#,
+            "80",
+            "100",
+        ),
+        (
+            r#"{"name":"Stool","price":120,"finalPrice":100,"currency":"USD","sku":"S"}"#,
+            "100",
+            "120",
+        ),
+        (
+            r#"{"name":"Stool","price":{"regular":100,"sale":80},"currency":"USD","sku":"S"}"#,
+            "80",
+            "100",
+        ),
+    ] {
+        let item = read(
+            Schema::Product,
+            &next(&format!(
+                r#"{{"props":{{"pageProps":{{"product":{data}}}}}}}"#
+            )),
+        );
+        assert_eq!(get(&item, "price"), price, "{data}");
+        assert_eq!(get(&item, "regular_price"), regular, "{data}");
+    }
+}
+
+#[test]
+fn a_category_or_a_shipping_option_isnt_a_product() {
+    for data in [
+        r#"{"category":{"name":"Lamps","priceRange":"£19 - £65","description":"All our lamps"}}"#,
+        r#"{"shippingOption":{"name":"Next day","price":5}}"#,
+        r#"{"giftWrap":{"name":"Gift wrap","price":3,"id":"gw"}}"#,
+    ] {
+        let item = read_at(
+            Schema::Product,
+            &next(&format!(r#"{{"props":{{"pageProps":{data}}}}}"#)),
+            "https://shop.example/c/lamps",
+        );
+        assert_eq!(get(&item, "name"), &Value::Null, "{data}");
+    }
+}
+
+#[test]
+fn news_and_testimonials_arent_jobs() {
+    for data in [
+        r#"{"article":{"title":"Floods in town","location":"Leeds","publishedAt":"2026-10-20"}}"#,
+        r#"{"review":{"title":"Great service","company":"Acme","location":"Leeds"}}"#,
+    ] {
+        let item = read(
+            Schema::JobPosting,
+            &next(&format!(r#"{{"props":{{"pageProps":{data}}}}}"#)),
+        );
+        assert_eq!(get(&item, "job_title"), &Value::Null, "{data}");
+    }
+}
+
+#[test]
+fn a_nuxt_error_doesnt_lose_the_state() {
+    let item = read(
+        Schema::Product,
+        r#"<script type="application/json" id="__NUXT_DATA__">[["ShallowReactive",1],{"data":2,"error":6},
+        {"product":3},{"name":4,"price":5,"sku":9},"Clay mug",18.5,["NuxtError",7],{"message":8},"boom","M2"]</script>"#,
+    );
+    assert_eq!(get(&item, "name"), "Clay mug");
+}
+
+#[test]
+fn a_slug_matches_whole_path_segments() {
+    let item = read(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"items":[{"name":"Other","price":1,"slug":"g"},
+            {"name":"Thing","price":2,"slug":"thing"}]}}}"#,
+        ),
+    );
+    assert_eq!(get(&item, "name"), "Thing");
+}
+
+#[test]
+fn nuxt_state_after_a_mention_of_it_is_read() {
+    let item = read(
+        Schema::Product,
+        r#"<script>if(window.__NUXT__&&window.__NUXT__.state){};window.__NUXT__=(function(a,b){return {data:[{product:{name:a,price:b,sku:"L1"}}]}}("Lamp",49.99));</script>"#,
+    );
+    assert_eq!(get(&item, "name"), "Lamp");
+}
+
+#[test]
+fn apollo_state_inside_next_data_is_followed() {
+    let item = read(
+        Schema::Product,
+        &next(
+            r#"{"props":{"pageProps":{"initialApolloState":{"ROOT_QUERY":{"p":{"__ref":"Product:1"}},
+            "Product:1":{"__typename":"Product","name":"Lamp","price":10,"image":{"__ref":"Image:1"}},
+            "Image:1":{"url":"/i/lamp.jpg"}}}}}"#,
+        ),
+    );
+    assert_eq!(
+        get(&item, "main_image")["url"],
+        "https://shop.example/i/lamp.jpg"
+    );
+}
+
+#[test]
+fn a_row_timestamp_isnt_a_posting_date() {
+    let item = read(
+        Schema::JobPosting,
+        &next(
+            r#"{"props":{"pageProps":{"job":{"title":"Gardener","salary":"£12 an hour","employmentType":"PART_TIME","createdAt":"2020-01-01"}}}}"#,
+        ),
+    );
+    assert_eq!(get(&item, "job_title"), "Gardener");
+    assert_eq!(get(&item, "date_published"), &Value::Null);
+}
+
+#[test]
+fn keys_with_dots_are_quoted_in_sources() {
+    let item = read(
+        Schema::Product,
+        &next(r#"{"props":{"pageProps":{"a.b":{"name":"Lamp","price":10,"sku":"L1"}}}}"#),
+    );
+    let source = &item.sources.iter().find(|(f, _)| *f == "name").unwrap().1;
+    assert_eq!(source, r#"js:__NEXT_DATA__.props.pageProps["a.b"].name"#);
+}
+
+#[test]
+fn a_long_key_over_many_children_is_cheap() {
+    let children: Vec<String> = (0..20_000).map(|i| format!(r#""c{i}":{{}}"#)).collect();
+    quick(&next(&format!(
+        r#"{{"props":{{"pageProps":{{"{}":{{{}}}}}}}}}"#,
+        "k".repeat(100_000),
+        children.join(",")
+    )));
+}
+
 fn quick(html: &str) {
     let doc = Document::parse(html);
     let start = std::time::Instant::now();
