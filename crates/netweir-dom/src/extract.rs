@@ -172,12 +172,32 @@ impl Field {
         if let Convert::Auto(kind) = self.convert {
             let now = crate::date::now_utc();
             for hit in hits {
-                let (found, text) = match hit {
-                    Hit::Node(n) if n.kind() == NodeKind::Element => (
+                let (found, text) = match (hit, &self.re) {
+                    // With a pattern, what it keeps of the element's text
+                    // (or the string) is what's read.
+                    (hit, Some(re)) => {
+                        let text = match hit {
+                            Hit::Node(n) if n.kind() == NodeKind::Element => n.text(),
+                            other => other.to_string_value(),
+                        };
+                        let kept = re.captures(&text).map(|caps| {
+                            let m = if re.captures_len() > 1 {
+                                caps.get(1)
+                            } else {
+                                caps.get(0)
+                            };
+                            m.map_or("", |m| m.as_str()).to_string()
+                        });
+                        match kept {
+                            Some(k) => (crate::auto::fields::from_text(kind, &k, base, now), k),
+                            None => (None, text),
+                        }
+                    }
+                    (Hit::Node(n), None) if n.kind() == NodeKind::Element => (
                         crate::auto::fields::from_element(kind, n, base, now),
                         n.text(),
                     ),
-                    other => {
+                    (other, None) => {
                         let text = other.to_string_value();
                         (crate::auto::fields::from_text(kind, &text, base, now), text)
                     }

@@ -262,3 +262,16 @@ def test_extract_command_rejects_an_unknown_type(capsys):
 
     with pytest.raises(SystemExit):
         _cli.main(["extract", "--type", "recipe", "x.html"])
+
+
+def test_re_on_a_pinned_field_picks_the_text_to_read():
+    html = SALE.replace('<span class="sale">$9.50</span>', '<span class="p">was $20.00 now $9.50</span>')
+
+    class ByText(netweir.auto.Product):
+        price = netweir.css("span.p::text", re=r"now (\S+)")
+
+    class ByElement(netweir.auto.Product):
+        price = netweir.css("span.p", re=r"now (\S+)")
+
+    assert ByText.extract(page(html))["price"] == "9.50"
+    assert ByElement.extract(page(html))["price"] == "9.50"
