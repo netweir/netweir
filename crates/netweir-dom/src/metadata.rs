@@ -139,14 +139,22 @@ impl<'d, 'a> Microdata<'d, 'a> {
         self.elements
             .iter()
             .filter(|n| n.attr("itemscope").is_some() && n.attr("itemprop").is_none())
-            .map(|n| self.item(*n, &mut Vec::new()))
+            .map(|n| self.item(*n, &mut std::collections::HashSet::new(), 0))
             .collect()
     }
 
-    /// One item; `within` holds the items being read above it, so an item
-    /// that contains itself through itemref ends instead of looping.
-    fn item(&self, node: Node<'a>, within: &mut Vec<crate::NodeId>) -> Value {
-        within.push(node.id());
+    /// One item; `read` holds the items already read for this top-level
+    /// item, so one that contains itself through itemref ends instead of
+    /// looping, and one several itemrefs name is read once rather than
+    /// copied into every parent (which doubles at each level). Items
+    /// nested deeper than 64 are left out.
+    fn item(
+        &self,
+        node: Node<'a>,
+        read: &mut std::collections::HashSet<crate::NodeId>,
+        depth: usize,
+    ) -> Value {
+        read.insert(node.id());
         let mut item = Map::new();
         let types: Vec<&str> = node
             .attr("itemtype")
@@ -175,10 +183,10 @@ impl<'d, 'a> Microdata<'d, 'a> {
         let mut properties = Map::new();
         for prop in self.properties(node) {
             let value = if prop.attr("itemscope").is_some() {
-                if within.contains(&prop.id()) {
+                if read.contains(&prop.id()) || depth >= 64 {
                     continue;
                 }
-                self.item(prop, within)
+                self.item(prop, read, depth + 1)
             } else {
                 Value::String(self.value(prop))
             };
@@ -187,7 +195,6 @@ impl<'d, 'a> Microdata<'d, 'a> {
             }
         }
         item.insert("properties".into(), Value::Object(properties));
-        within.pop();
         Value::Object(item)
     }
 
@@ -366,5 +373,24 @@ mod tests {
     fn an_item_that_refers_to_itself_does_not_loop() {
         let m = meta(r##"<div id="a" itemscope itemref="a"><span itemprop="x">1</span></div>"##);
         assert_eq!(m["microdata"][0]["properties"]["x"], "1");
+    }
+
+    #[test]
+    fn items_shared_by_itemrefs_are_read_once() {
+        let mut html = String::from(
+            r#"<div itemscope itemtype="https://schema.org/Product" itemref="l0 m0"><span itemprop="name">Lamp</span></div>"#,
+        );
+        for i in 0..40 {
+            let next = format!(r#"itemref="l{n} m{n}""#, n = i + 1);
+            for id in ["l", "m"] {
+                html.push_str(&format!(
+                    r#"<div id="{id}{i}" itemprop="related" itemscope {next}><span itemprop="name">t</span></div>"#
+                ));
+            }
+        }
+        let start = std::time::Instant::now();
+        let m = meta(&html);
+        assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        assert_eq!(m["microdata"][0]["properties"]["name"], "Lamp");
     }
 }

@@ -49,6 +49,13 @@ impl Thing {
 /// hurt a parser.
 const MAX_DEPTH: usize = 64;
 
+/// How many values JSON-LD's references may expand to, and how many
+/// microdata items may be read, on one page. Expanding a reference copies
+/// what it names, so things that each name the next twice double the work
+/// at every level without ever forming a cycle; past this, references
+/// stay references. Real pages use a few hundred.
+const BUDGET: usize = 50_000;
+
 /// Every typed object on the page, from JSON-LD and microdata, nested
 /// ones included, in the order they appear (JSON-LD first). In JSON-LD,
 /// `@graph` is flattened and an object that is only `{"@id": ...}` is
@@ -154,9 +161,10 @@ fn json_ld_things(top: Vec<Value>, out: &mut Vec<Thing>) {
         index(v, &mut by_id, 0);
     }
     let mut expanding = Vec::new();
+    let mut budget = BUDGET;
     let resolved: Vec<Value> = top
         .iter()
-        .map(|v| resolve(v, &by_id, &mut expanding, 0))
+        .map(|v| resolve(v, &by_id, &mut expanding, &mut budget, 0))
         .collect();
     let mut seen = std::collections::HashSet::new();
     for v in &resolved {
@@ -190,21 +198,24 @@ fn index<'v>(
 }
 
 /// `v` with references expanded and types shortened; `expanding` holds
-/// the ids being expanded above, so a cycle stays a reference.
+/// the ids being expanded above, so a cycle stays a reference, and
+/// `budget` the values still to be made (see [`BUDGET`]).
 fn resolve(
     v: &Value,
     by_id: &std::collections::HashMap<String, &Map<String, Value>>,
     expanding: &mut Vec<String>,
+    budget: &mut usize,
     depth: usize,
 ) -> Value {
     if depth > MAX_DEPTH {
         return Value::Null;
     }
+    *budget = budget.saturating_sub(1);
     match v {
         Value::Object(o) => {
             let id = o.get("@id").and_then(Value::as_str);
             let target = match id {
-                Some(id) if o.len() == 1 && !expanding.iter().any(|e| e == id) => {
+                Some(id) if o.len() == 1 && *budget > 0 && !expanding.iter().any(|e| e == id) => {
                     by_id.get(id).copied().unwrap_or(o)
                 }
                 _ => o,
@@ -229,7 +240,10 @@ fn resolve(
                         map.insert(k.clone(), value);
                     }
                     _ => {
-                        map.insert(k.clone(), resolve(child, by_id, expanding, depth + 1));
+                        map.insert(
+                            k.clone(),
+                            resolve(child, by_id, expanding, budget, depth + 1),
+                        );
                     }
                 }
             }
@@ -240,7 +254,7 @@ fn resolve(
         }
         Value::Array(list) => Value::Array(
             list.iter()
-                .map(|c| resolve(c, by_id, expanding, depth + 1))
+                .map(|c| resolve(c, by_id, expanding, budget, depth + 1))
                 .collect(),
         ),
         other => other.clone(),
@@ -293,23 +307,31 @@ fn collect(
 
 fn microdata_things(elements: &[Node<'_>], base: Option<&Url>, out: &mut Vec<Thing>) {
     let micro = crate::metadata::Microdata::new(elements, base);
+    let mut budget = BUDGET;
     for item in elements
         .iter()
         .filter(|n| n.attr("itemscope").is_some() && n.attr("itemprop").is_none())
     {
-        microdata_item(&micro, *item, out, &mut Vec::new());
+        let mut read = std::collections::HashSet::new();
+        microdata_item(&micro, *item, out, &mut Vec::new(), &mut read, &mut budget);
     }
 }
 
 /// Reads one microdata item into `out` (it, then the items inside it)
 /// and returns its value in JSON-LD form. `within` holds the items being
-/// read above, so itemref loops end and depth stays bounded.
+/// read above, so depth stays bounded; `read` the items already read for
+/// this top-level item, so itemref loops end and shared items aren't
+/// copied over and over.
 fn microdata_item<'a>(
     micro: &crate::metadata::Microdata<'_, 'a>,
     node: Node<'a>,
     out: &mut Vec<Thing>,
     within: &mut Vec<NodeId>,
+    read: &mut std::collections::HashSet<NodeId>,
+    budget: &mut usize,
 ) -> Value {
+    *budget = budget.saturating_sub(1);
+    read.insert(node.id());
     within.push(node.id());
     let types = node
         .attr("itemtype")
@@ -329,10 +351,13 @@ fn microdata_item<'a>(
     let mut prop_elements = Vec::new();
     for prop in micro.properties(node) {
         let value = if prop.attr("itemscope").is_some() {
-            if within.contains(&prop.id()) || within.len() >= MAX_DEPTH {
+            // An item several itemrefs name is read once per top-level
+            // item: reading it again for each would copy it into every
+            // parent, doubling at each level without a cycle.
+            if read.contains(&prop.id()) || within.len() >= MAX_DEPTH || *budget == 0 {
                 continue;
             }
-            microdata_item(micro, prop, out, within)
+            microdata_item(micro, prop, out, within, read, budget)
         } else {
             // Search engines read `content` on any element, and pages
             // rely on it (`<span itemprop="priceCurrency" content="USD">$`),
@@ -515,5 +540,41 @@ mod tests {
             ld(r#"{"@type": "Product", "name": "ok"}"#)
         ));
         assert_eq!(of_type(&found, "Product").len(), 1);
+    }
+
+    #[test]
+    fn shared_references_are_bounded() {
+        // Each thing names the next twice: no cycle, but expanding every
+        // reference in place doubles the work at each level.
+        let mut graph = vec![
+            r##"{"@type": "Product", "@id": "#p", "name": "Lamp", "isRelatedTo": {"@id": "#n0"}}"##
+                .to_string(),
+        ];
+        for i in 0..40 {
+            graph.push(format!(
+                r##"{{"@type": "Thing", "@id": "#n{i}", "name": "n{i}", "a": {{"@id": "#n{n}"}}, "b": {{"@id": "#n{n}"}}}}"##,
+                n = i + 1
+            ));
+        }
+        let start = std::time::Instant::now();
+        let found = read(&ld(&format!(r#"{{"@graph": [{}]}}"#, graph.join(","))));
+        assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        assert_eq!(of_type(&found, "Product")[0].props["name"], "Lamp");
+
+        let mut html = String::from(
+            r#"<div itemscope itemtype="https://schema.org/Product" itemref="l0 m0"><span itemprop="name">Lamp</span></div>"#,
+        );
+        for i in 0..40 {
+            let next = format!(r#"itemref="l{n} m{n}""#, n = i + 1);
+            for id in ["l", "m"] {
+                html.push_str(&format!(
+                    r#"<div id="{id}{i}" itemprop="isRelatedTo" itemscope itemtype="https://schema.org/Thing" {next}><span itemprop="name">t</span></div>"#
+                ));
+            }
+        }
+        let start = std::time::Instant::now();
+        let found = read(&html);
+        assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        assert_eq!(of_type(&found, "Product")[0].props["name"], "Lamp");
     }
 }
