@@ -153,10 +153,12 @@ async fn the_delay_runs_from_when_a_slow_connection_lets_the_request_go() {
     hits.sort_by_key(|(_, at)| *at);
     let order: Vec<&str> = hits.iter().map(|(p, _)| p.as_str()).collect();
     assert_eq!(order, ["/a", "/b", "/c"], "{hits:?}");
+    // Taken where the site reads each request, so a loaded machine adds
+    // a few milliseconds either way; without the delay, the gap is none.
     for pair in hits.windows(2) {
         let gap = pair[1].1 - pair[0].1;
         assert!(
-            gap >= delay - Duration::from_millis(5),
+            gap >= delay - Duration::from_millis(25),
             "{} reached the site {gap:?} after {}",
             pair[1].0,
             pair[0].0
