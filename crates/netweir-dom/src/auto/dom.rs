@@ -9,7 +9,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
+use url::Url;
 
 use super::fields::{self as f, FieldKind, PriceFields};
 use super::{Builder, Page};
@@ -133,8 +134,13 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
                 }
                 // A price split across elements (`£<b>49</b>.99`) is read
                 // from the smallest element around it that holds all of it.
-                for el in std::iter::successors(n.parent(), |a| a.parent()).take(3) {
-                    let whole = el.text();
+                // The text itself first, so `<s>£120</s> £99` reads £99
+                // for the element holding both.
+                let tries = std::iter::successors(n.parent(), |a| a.parent())
+                    .take(3)
+                    .map(|el| (el, el.text()));
+                let own = n.parent().map(|p| (p, text.to_string()));
+                for (el, whole) in own.into_iter().chain(tries) {
                     let whole = whole.split_whitespace().collect::<Vec<_>>().join(" ");
                     if whole.len() > 40 || wordy(&whole) {
                         break;
@@ -219,7 +225,7 @@ fn struck(n: Node<'_>) -> bool {
         || marked(n, &STRUCK_WORDS)
 }
 
-fn source(n: Node<'_>) -> String {
+pub(crate) fn source(n: Node<'_>) -> String {
     match crate::css_path::css_path(n) {
         Some(p) => format!("dom:{p}"),
         None => "dom".into(),
@@ -233,13 +239,9 @@ fn heading<'a>(root: Node<'a>, layout: &Layout<'_>) -> Option<(Node<'a>, String)
         .find_map(|n| Some((n, page_heading(n)?)))
 }
 
-/// What a page's layout says about the product it shows, offered after
-/// the structured sources. Returns the probability it gives, or None
-/// when the page doesn't look like a product: no heading, or no price
-/// outside a listing's cards.
-pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
-    let layout = Layout::of(page.root);
-    let (h1, name) = heading(page.root, &layout)?;
+/// The price nearest the heading outside cards and boilerplate, a
+/// marked price counting as half as far: the product's.
+fn main_price<'l, 'a>(layout: &'l Layout<'a>, h1: Node<'_>) -> Option<&'l Shown<'a>> {
     let at = h1.order() as f64;
     let distance = |s: &Shown<'_>| {
         let d = (s.node.order() as f64 - at).abs();
@@ -249,13 +251,22 @@ pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
             d
         }
     };
-    let usable = |s: &&Shown<'_>| !layout.in_card(s.node) && !in_boilerplate(s.node);
-    let price = layout
+    layout
         .shown
         .iter()
-        .filter(usable)
-        .filter(|s| !s.struck)
-        .min_by(|a, b| distance(a).total_cmp(&distance(b)))?;
+        .filter(|s| !s.struck && !layout.in_card(s.node) && !in_boilerplate(s.node))
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+}
+
+/// What a page's layout says about the product it shows, offered after
+/// the structured sources. Returns the probability it gives, or None
+/// when the page doesn't look like a product: no heading, or no price
+/// outside a listing's cards.
+pub(crate) fn product(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
+    let layout = Layout::of(page.root);
+    let (h1, name) = heading(page.root, &layout)?;
+    let price = main_price(&layout, h1)?;
+    let usable = |s: &&Shown<'_>| !layout.in_card(s.node) && !in_boilerplate(s.node);
     item.offer("name", Some(Value::String(name)), source(h1));
     let ours = price.money.price.clone();
     let agrees = !item.has("price") || item.get("price").as_str() == ours.as_deref();
@@ -409,6 +420,9 @@ fn buy_control(region: Node<'_>) -> bool {
 /// the page that says so, or from its buy button.
 fn availability(region: Node<'_>) -> Option<&'static str> {
     let read = |t: &str| {
+        if t.len() > 80 || t.len() < 7 {
+            return None;
+        }
         let t = t
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -564,4 +578,133 @@ pub(crate) fn breadcrumbs(root: Node<'_>) -> Option<Node<'_>> {
                 }))
             && n.descendants().any(|d| d.tag() == Some("a"))
     })
+}
+
+/// A listing read from the page's cards.
+pub(crate) struct Listing {
+    /// Each card as a list shows a product: name, price, regular price,
+    /// currency, URL and image, with only the fields it has.
+    pub products: Vec<Map<String, Value>>,
+    /// The element holding the cards.
+    pub source: String,
+    /// The page's heading and its source, unless the page is a product's
+    /// (whose cards are related products, not a category).
+    pub heading: Option<(String, String)>,
+    /// The page shows a product of its own beside the cards.
+    pub product_page: bool,
+}
+
+/// The page's listing: its largest group of priced cards outside
+/// boilerplate.
+pub(crate) fn listing(root: Node<'_>, base: Option<&Url>) -> Option<Listing> {
+    let layout = Layout::of(root);
+    let cards = layout
+        .groups
+        .iter()
+        .filter(|g| !in_boilerplate(g[0]))
+        .max_by_key(|g| g.len())?;
+    let products: Vec<Map<String, Value>> = cards
+        .iter()
+        .map(|c| card(*c, &layout, base))
+        .filter(|p| p.contains_key("url") || p.contains_key("name"))
+        .collect();
+    if products.len() < 3 {
+        return None;
+    }
+    let found = heading(root, &layout);
+    let product_page = found
+        .as_ref()
+        .is_some_and(|(h1, _)| main_price(&layout, *h1).is_some());
+    let container = cards[0].parent().unwrap_or(cards[0]);
+    Some(Listing {
+        products,
+        source: source(container),
+        heading: found
+            .filter(|_| !product_page)
+            .map(|(h1, text)| (text, source(h1))),
+        product_page,
+    })
+}
+
+/// One card as a listed product.
+fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Value> {
+    let mut out = Map::new();
+    let heading = c
+        .descendants()
+        .find(|n| matches!(n.tag(), Some("h2" | "h3" | "h4" | "h5" | "h6")));
+    let links = || {
+        std::iter::once(c)
+            .chain(c.descendants())
+            .filter(|n| n.tag() == Some("a") && n.attr("href").is_some())
+    };
+    let link = heading
+        .and_then(|h| {
+            std::iter::successors(Some(h), |n| n.parent())
+                .take_while(|n| n.id() != c.parent().map_or(c.id(), |p| p.id()))
+                .find(|n| n.tag() == Some("a"))
+                .or_else(|| h.descendants().find(|n| n.tag() == Some("a")))
+        })
+        .or_else(|| links().max_by_key(|a| a.text().trim().len()));
+    let tidy = |t: String| {
+        let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!t.is_empty()).then_some(t)
+    };
+    let image = c.descendants().find(|n| n.tag() == Some("img"));
+    let name = heading
+        .and_then(|h| tidy(crate::markdown::clean_text(h)))
+        .or_else(|| link.and_then(|a| tidy(a.text())))
+        .or_else(|| image.and_then(|i| tidy(i.attr("alt")?.to_string())));
+    if let Some(n) = name {
+        out.insert("name".into(), Value::String(n));
+    }
+    let inside = |s: &&Shown<'_>| {
+        std::iter::successors(Some(s.node), |n| n.parent()).any(|n| n.id() == c.id())
+    };
+    let shown: Vec<&Shown<'_>> = layout.shown.iter().filter(inside).collect();
+    let amount = |s: &Shown<'_>| s.money.price.as_deref().and_then(|a| a.parse::<f64>().ok());
+    if let Some(now) = shown.iter().find(|s| !s.struck) {
+        let money = &now.money;
+        for (k, v) in [
+            ("price", &money.price),
+            ("currency", &money.currency),
+            ("currency_raw", &money.currency_raw),
+        ] {
+            if let Some(v) = v {
+                out.insert(k.into(), Value::String(v.clone()));
+            }
+        }
+        if let Some(was) = shown
+            .iter()
+            .find(|s| s.struck && amount(s) > amount(now))
+            .and_then(|s| s.money.price.clone())
+        {
+            out.insert("regular_price".into(), Value::String(was));
+        }
+    }
+    if let Some(u) = link
+        .and_then(|a| a.attr("href"))
+        .and_then(|h| f::absolute(h, base))
+    {
+        out.insert("url".into(), Value::String(u));
+    }
+    if let Some(src) = image
+        .and_then(crate::markdown::image_source)
+        .and_then(|s| f::absolute(s, base))
+    {
+        out.insert("main_image".into(), serde_json::json!({ "url": src }));
+    }
+    // Keys in the order the list's other readers write them.
+    let order = [
+        "name",
+        "price",
+        "regular_price",
+        "currency",
+        "currency_raw",
+        "url",
+        "main_image",
+    ];
+    order
+        .iter()
+        .filter_map(|k| Some((k.to_string(), out.remove(*k)?)))
+        .collect()
 }

@@ -1,0 +1,8 @@
+{"type": "product-list", "url": "https://wood.example/p/stool",
+ "item": {"url": "https://wood.example/p/stool", 
+  "products": [
+   {"name": "Oak bench", "price": "140.00", "currency_raw": "$", "url": "https://wood.example/p/bench", "main_image": {"url": "https://wood.example/i/bench.jpg"}},
+   {"name": "Oak chair", "price": "95.00", "currency_raw": "$", "url": "https://wood.example/p/chair", "main_image": {"url": "https://wood.example/i/chair.jpg"}},
+   {"name": "Oak table", "price": "320.00", "currency_raw": "$", "url": "https://wood.example/p/table", "main_image": {"url": "https://wood.example/i/table.jpg"}},
+   {"name": "Oak shelf", "price": "45.00", "currency_raw": "$", "url": "https://wood.example/p/shelf", "main_image": {"url": "https://wood.example/i/shelf.jpg"}}]},
+ "sources": {}, "probability": [0.2, 0.4], "validation": []}

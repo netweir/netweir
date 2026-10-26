@@ -5,9 +5,9 @@
 use serde_json::{Map, Value};
 
 use super::fields as f;
-use super::product;
 use super::schema_org::{Source, Thing};
 use super::{Builder, Page};
+use super::{dom, product};
 
 pub(crate) const LIST_FIELDS: &[&str] = &[
     "url",
@@ -59,6 +59,28 @@ pub(crate) fn read_list(page: &Page<'_, '_>, item: &mut Builder) {
             page.source(list, "itemListElement"),
         );
     }
+    let cards = listed
+        .is_none()
+        .then(|| dom::listing(page.root, page.base))
+        .flatten();
+    if let Some(c) = &cards {
+        let products = c.products.iter().cloned().map(Value::Object).collect();
+        item.offer("products", Some(Value::Array(products)), c.source.clone());
+        if let Some((name, source)) = &c.heading {
+            item.offer(
+                "category_name",
+                Some(Value::String(name.clone())),
+                source.clone(),
+            );
+        }
+    }
+    if let Some(trail) = dom::breadcrumbs(page.root) {
+        item.offer(
+            "breadcrumbs",
+            f::from_element(f::FieldKind::Breadcrumbs, trail, page.base, page.now),
+            dom::source(trail),
+        );
+    }
     let m = |k: &str| page.meta(k).and_then(Value::as_str);
     if let Some((key, c)) = m("canonical")
         .map(|c| ("canonical", c))
@@ -79,7 +101,7 @@ pub(crate) fn read_list(page: &Page<'_, '_>, item: &mut Builder) {
         }
         item.offer("pagination_next", Some(Value::Object(link)), source.clone());
     }
-    item.probability = probability(listed.as_ref(), next.is_some());
+    item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
 }
 
 pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
@@ -108,6 +130,34 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
             );
         }
     }
+    let cards = listed
+        .is_none()
+        .then(|| dom::listing(page.root, page.base))
+        .flatten();
+    if let Some(c) = &cards {
+        let items: Vec<Value> = c
+            .products
+            .iter()
+            .filter_map(|p| {
+                let mut out = Map::new();
+                out.insert("url".into(), p.get("url")?.clone());
+                if let Some(name) = p.get("name") {
+                    out.insert("name".into(), name.clone());
+                }
+                Some(Value::Object(out))
+            })
+            .collect();
+        if !items.is_empty() {
+            item.offer("items", Some(Value::Array(items)), c.source.clone());
+        }
+        if let Some((name, source)) = &c.heading {
+            item.offer(
+                "category_name",
+                Some(Value::String(name.clone())),
+                source.clone(),
+            );
+        }
+    }
     let next = next_link(page);
     if let Some((url, text, source)) = &next {
         let mut request = Map::new();
@@ -117,13 +167,17 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
         }
         item.offer("next_page", Some(Value::Object(request)), source.clone());
     }
-    item.probability = probability(listed.as_ref(), next.is_some());
+    item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
 }
 
-fn probability(listed: Option<&Listed>, next: bool) -> f64 {
-    match listed.map_or(0, |l| l.products.len()) {
-        n if n >= 2 => 0.9,
-        1 => 0.6,
+fn probability(listed: Option<&Listed>, cards: Option<&dom::Listing>, next: bool) -> f64 {
+    match (listed.map_or(0, |l| l.products.len()), cards) {
+        (n, _) if n >= 2 => 0.9,
+        (1, _) => 0.6,
+        // A product page's related products are a list too, but not the
+        // page's.
+        (_, Some(c)) if c.product_page => 0.3,
+        (_, Some(_)) => 0.75,
         _ if next => 0.2,
         _ => 0.05,
     }

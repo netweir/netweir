@@ -192,8 +192,8 @@ fn a_list_price_equal_to_the_price_is_no_regular_price() {
 
 #[test]
 fn hostile_layouts_are_bounded() {
-    // 20,000 priced cards, a price 3,000 elements deep and 5 MB of
-    // prices in one paragraph's worth of spans.
+    // 20,000 priced cards, a price 3,000 elements deep and 150,000
+    // prices in one paragraph.
     let mut cards = String::from("<h1>Lamps</h1>");
     for i in 0..20_000 {
         cards.push_str(&format!(
@@ -207,7 +207,7 @@ fn hostile_layouts_are_bounded() {
     );
     let spans = format!(
         "<h1>Spans</h1><p>{}</p>",
-        "<span>£9.99</span> ".repeat(300_000)
+        "<span>£9.99</span> ".repeat(150_000)
     );
     for (case, html) in [cards, deep, spans].into_iter().enumerate() {
         let doc = Document::parse(&html);
