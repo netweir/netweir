@@ -53,8 +53,10 @@ const MAX_DEPTH: usize = 64;
 /// microdata items may be read, on one page. Expanding a reference copies
 /// what it names, so things that each name the next twice double the work
 /// at every level without ever forming a cycle; past this, references
-/// stay references. Real pages use a few hundred.
-const BUDGET: usize = 50_000;
+/// stay references. Real pages use a few hundred; every typed object is
+/// also copied out as a thing of its own, so the work is a multiple of
+/// this.
+const BUDGET: usize = 10_000;
 
 /// Every typed object on the page, from JSON-LD and microdata, nested
 /// ones included, in the order they appear (JSON-LD first). In JSON-LD,
@@ -558,6 +560,8 @@ mod tests {
         }
         let start = std::time::Instant::now();
         let found = read(&ld(&format!(r#"{{"@graph": [{}]}}"#, graph.join(","))));
+        // Seconds per level doubling without the budget; well under one
+        // with it, even unoptimised on a busy runner.
         assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
         assert_eq!(of_type(&found, "Product")[0].props["name"], "Lamp");
 
