@@ -502,6 +502,7 @@ impl Page {
         env.viewport = Some(viewport);
         env.validate()?;
         let metrics = mobile_metrics(&env, self.inner.browser.screen_scale);
+        let phone = metrics.is_some();
         let before = self.replace_environment(env);
         let mut arranged = self.arrange(true).await;
         if let (Ok(()), Some(metrics)) = (&arranged, metrics) {
@@ -512,8 +513,32 @@ impl Page {
         }
         if arranged.is_err() {
             self.replace_environment(before);
+        } else if !phone && self.inner.browser.arranges {
+            self.settle(viewport).await;
         }
         arranged
+    }
+
+    /// Waits, a second at most, for the page to see its window at the
+    /// size just set. The renderer hears of the viewport and of the
+    /// window as two messages, and on macOS a script run in between saw
+    /// the new innerWidth with the old outerWidth.
+    async fn settle(&self, viewport: Size) {
+        let Some(frame) = *self.inner.insets.lock().unwrap_or_else(|e| e.into_inner()) else {
+            return;
+        };
+        let want = json!([
+            viewport.width as i64 + frame.0,
+            viewport.height as i64 + frame.1
+        ]);
+        let ask = json!({"expression": "[outerWidth, outerHeight]", "returnByValue": true});
+        for _ in 0..50 {
+            match self.call("Runtime.evaluate", ask.clone()).await {
+                Ok(r) if r["result"]["value"] == want => return,
+                Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                Err(_) => return,
+            }
+        }
     }
 
     /// The page's viewport, as netweir last sized it: None for a page
