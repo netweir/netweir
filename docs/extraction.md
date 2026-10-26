@@ -119,7 +119,9 @@ without a column has None there.
 Menus, footers and prose don't count: a region needs two columns of
 text or images. The biggest region wins, and it stops at 5000 rows. When
 it picks the wrong one, or names a column badly, the selectors are there
-to copy into your own `netweir.Item`. `records()` returns None when
+to copy into your own `netweir.Item`. Each column's selector is written
+from one row, so check it on a row shaped differently from the rest
+(one cell spanning two, an element only some rows have). `records()` returns None when
 nothing repeats.
 
 ## Where each value came from
