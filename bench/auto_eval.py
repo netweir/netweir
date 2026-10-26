@@ -48,7 +48,7 @@ TYPES = {"product": netweir.auto.Product, "job-posting": netweir.auto.JobPosting
 
 # Every inline script goes: JSON-LD, and the app state js_state reads
 # (whatever name it's under). Scripts loaded from a file stay.
-INLINE_SCRIPT = re.compile(r"<script\b(?![^>]*\bsrc=)[^>]*>.*?</script>", re.I | re.S)
+INLINE_SCRIPT = re.compile(r"<script\b(?![^>]*\bsrc=)[^>]*>.*?</script\b[^>]*>", re.I | re.S)
 META = re.compile(r"<meta[^>]+(?:property|name)=[\"']?(?:og|product|twitter):[^>]*>", re.I)
 TAG = re.compile(r"<[a-zA-Z][^>]*>")
 ATTRIBUTE = re.compile(r"""\s+([^\s=>/]+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?""")
