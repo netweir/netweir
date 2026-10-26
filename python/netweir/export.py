@@ -334,8 +334,11 @@ class csv(_Exporter):  # noqa: N801
         batch: int | None = None,
         field_names: str = "snake",
     ):
-        self.fields = fields
         super().__init__(path, batch, field_names)
+        # Columns are named as the keys will be written.
+        self.fields = (
+            [_camel_key(f) for f in fields] if fields and field_names == "zyte" else fields
+        )
 
     def _open(self) -> CsvWriter:
         self._warned: set[str] = set()

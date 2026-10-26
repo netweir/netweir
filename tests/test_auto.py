@@ -265,7 +265,9 @@ def test_extract_command_rejects_an_unknown_type(capsys):
 
 
 def test_re_on_a_pinned_field_picks_the_text_to_read():
-    html = SALE.replace('<span class="sale">$9.50</span>', '<span class="p">was $20.00 now $9.50</span>')
+    html = SALE.replace(
+        '<span class="sale">$9.50</span>', '<span class="p">was $20.00 now $9.50</span>'
+    )
 
     class ByText(netweir.auto.Product):
         price = netweir.css("span.p::text", re=r"now (\S+)")
@@ -310,9 +312,15 @@ def test_pinned_structured_fields_keep_the_schemas_shape():
     ]
     assert story["videos"] == [{"url": "https://shop.example/v.mp4"}]
     listing = Listing.extract(p)
-    assert listing["pagination_next"] == {"url": "https://shop.example/c?page=3", "text": "Next page"}
+    assert listing["pagination_next"] == {
+        "url": "https://shop.example/c?page=3",
+        "text": "Next page",
+    }
     assert listing["page_number"] == 2
-    assert Nav.extract(p)["next_page"] == {"url": "https://shop.example/c?page=3", "name": "Next page"}
+    assert Nav.extract(p)["next_page"] == {
+        "url": "https://shop.example/c?page=3",
+        "name": "Next page",
+    }
 
 
 def test_fields_that_no_single_element_holds_cannot_be_pinned():
@@ -326,7 +334,9 @@ def test_fields_that_no_single_element_holds_cannot_be_pinned():
 
 
 def test_unreadable_values_in_a_pinned_list_are_noted():
-    html = SALE.replace('<span class="sale">$9.50</span>', '<i class="p">free</i><i class="p">$2</i>')
+    html = SALE.replace(
+        '<span class="sale">$9.50</span>', '<i class="p">free</i><i class="p">$2</i>'
+    )
 
     class Many(netweir.auto.Product):
         price = netweir.css("i.p", all=True)
@@ -346,3 +356,11 @@ def test_a_long_unreadable_text_is_shortened_in_the_note():
 
     [note] = Big.extract(page(html))["metadata"]["validation_messages"]["price"]
     assert len(note) < 200 and "…" in note
+
+
+def test_csv_columns_follow_zyte_field_names(tmp_path):
+    out = tmp_path / "items.csv"
+    write = netweir.export.csv(str(out), fields=["name", "regular_price"], field_names="zyte")
+    write({"name": "Lamp", "regular_price": "59.99"})
+    write.close()
+    assert out.read_text().splitlines() == ["name,regularPrice", "Lamp,59.99"]

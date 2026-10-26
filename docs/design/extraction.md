@@ -103,6 +103,12 @@ through a redesign, declarative crawls, exports and the command.
 
 ## Still to come
 
+Some fields of the schema have no reader yet, because schema.org data
+doesn't carry them: a job's `headline`, a product's `features` and
+`style`, and the page numbers and subcategories of listings and
+navigation. They're None until the layout readers find them, and can be
+pinned meanwhile.
+
 - Reading pages from their layout when they carry no structured data:
   the price nearest the title and the buy button, the main image, cards
   of a listing, pagination widgets. The main-content scoring, listing

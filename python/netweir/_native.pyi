@@ -634,16 +634,10 @@ class ItemSpec:
                 str | None,
                 bool,
                 bool,
-                Literal[
-                    "text",
-                    "int",
-                    "float",
-                    "bool",
-                    "markdown",
-                    "markdown_main",
-                    "clean_text",
-                    "clean_text_main",
-                ],
+                # "text", "int", "float", "bool", "markdown", "markdown_main",
+                # "clean_text", "clean_text_main", or "auto:<field>" for a
+                # pinned field of an auto item.
+                str,
                 object,
                 str | None,
             ]
