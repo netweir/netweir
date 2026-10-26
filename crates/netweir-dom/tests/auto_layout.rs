@@ -497,3 +497,22 @@ fn item_links_and_pages_are_not_sub_categories() {
         "the page itself, an item, a page of it"
     );
 }
+
+#[test]
+fn a_jobs_board_is_not_a_job() {
+    let cards: String = ["baker", "driver", "gardener"]
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!(
+                r#"<li class="job"><h3><a href="/jobs/{s}">{s}</a></h3><span>Leeds</span>
+                <span class="salary">£25,000 a year</span><time datetime="2026-10-0{}">x</time></li>"#,
+                i + 1
+            )
+        })
+        .collect();
+    let html = format!(r#"<h1>Jobs</h1><ul class="jobs">{cards}</ul>"#);
+    let item = read(Schema::JobPosting, &html, "https://jobs.example/jobs");
+    assert_eq!(get(&item, "base_salary"), &Value::Null);
+    assert!(item.probability < 0.3, "{}", item.probability);
+}

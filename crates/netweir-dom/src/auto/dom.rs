@@ -1133,10 +1133,12 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     let layout = Layout::of(page.root);
     let (h1, title) = heading(page.root, &layout)?;
     let schema = super::Schema::JobPosting;
-    let facts = labelled(page.root, &layout, &JOB_LABELS, |field, text| {
+    let mut facts = labelled(page.root, &layout, &JOB_LABELS, |field, text| {
         let kind = schema.kind_of(field)?;
         f::from_text(kind, text.trim(), page.base, page.now)
     });
+    // A board's cards each hold another job's facts.
+    facts.retain(|(_, _, n)| !in_listed_card(*n));
     let area = std::iter::successors(Some(h1), |n| n.parent())
         .find(|n| matches!(n.tag(), Some("article" | "main")))
         .or_else(|| std::iter::successors(Some(h1), |n| n.parent()).nth(3))
@@ -1185,9 +1187,11 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                 }
                 let s = f::salary(&Value::String(t.to_string()))?;
                 let parent = n.parent()?;
+                // One of a board's cards is another job's salary.
                 (!s["currency_raw"].is_null()
                     && !s["rate_type"].is_null()
-                    && !in_boilerplate(parent))
+                    && !in_boilerplate(parent)
+                    && !in_listed_card(parent))
                 .then_some((s, parent))
             })
     };
@@ -1274,6 +1278,19 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         item.offer("description_html", html.map(Value::String), source(d));
     }
     Some(0.5)
+}
+
+/// Whether `n` sits in one of several look-alike cards, each holding a
+/// link: an entry of a list, not the page's own.
+fn in_listed_card(n: Node<'_>) -> bool {
+    std::iter::successors(n.parent(), |a| a.parent())
+        .take(CARD_DEPTH)
+        .take_while(|a| !matches!(a.tag(), Some("body" | "html" | "main" | "article") | None))
+        .find(|a| {
+            a.descendants()
+                .any(|d| d.tag() == Some("a") && d.attr("href").is_some())
+        })
+        .is_some_and(|card| card.similar(crate::similar::SIMILAR).len() >= 2)
 }
 
 /// Whether `url` is `page` written another way: the same host, path
