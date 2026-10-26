@@ -102,18 +102,29 @@ pub struct Extracted {
     pub validation: Vec<(&'static str, String)>,
 }
 
-/// The `schema` item on the page at `page` (its URL, which the page's
-/// `<base href>` and links are resolved against). `now` is when the page
-/// was fetched, for relative dates.
-pub fn extract(schema: Schema, root: Node<'_>, page: Option<&Url>, now: Civil) -> Extracted {
-    let base = page.map(|p| page_base(root, p));
+/// The `schema` item on the page at `page`, its URL. `base` is what its
+/// relative links are relative to; None works it out from `page` and the
+/// page's `<base href>`. `now` is when the page was fetched, for relative
+/// dates.
+pub fn extract(
+    schema: Schema,
+    root: Node<'_>,
+    page: Option<&Url>,
+    base: Option<&Url>,
+    now: Civil,
+) -> Extracted {
+    let found_base = match base {
+        Some(b) => Some(b.clone()),
+        None => page.map(|p| page_base(root, p)),
+    };
     let ctx = Page {
         root,
         page,
-        base: base.as_ref(),
+        base: found_base.as_ref(),
         now,
-        things: schema_org::things(root, base.as_ref()),
+        things: schema_org::things(root, found_base.as_ref()),
         meta: meta(root),
+        elements: Default::default(),
     };
     let mut item = Builder::new(schema);
     if let Some(p) = page {
@@ -126,7 +137,44 @@ pub fn extract(schema: Schema, root: Node<'_>, page: Option<&Url>, now: Civil) -
         Schema::ProductList => list::read_list(&ctx, &mut item),
         Schema::ProductNavigation => list::read_navigation(&ctx, &mut item),
     }
-    item.finish()
+    let mut out = item.finish();
+    // Microdata sources name their element; its CSS path is worked out
+    // only now, for the fields that kept a value, once per element.
+    let elements = ctx.elements.into_inner();
+    let mut paths: Vec<Option<Option<String>>> = vec![None; elements.len()];
+    for (_, source) in &mut out.sources {
+        if let Some(i) = element_index(source) {
+            let path = paths[i].get_or_insert_with(|| {
+                // SAFETY: the ids came from `things(root)`, nodes of this document.
+                crate::css_path::css_path(unsafe { root.doc.node(elements[i]) })
+            });
+            *source = match path {
+                Some(p) => format!("microdata:{p}"),
+                None => "microdata".into(),
+            };
+        }
+    }
+    out
+}
+
+/// A source that stands for a microdata element: the element's index in
+/// `Page::elements`.
+fn element_index(source: &str) -> Option<usize> {
+    source.strip_prefix(ELEMENT)?.parse().ok()
+}
+
+/// Marks a source standing for a microdata element, until its CSS path
+/// is worked out.
+const ELEMENT: &str = "\u{1}microdata\u{1}";
+
+/// What a source says it is, for messages: `json-ld`, `microdata`,
+/// `meta`, `dom`, `css`.
+fn kind_of_source(source: &str) -> &str {
+    if source.starts_with(ELEMENT) {
+        "microdata"
+    } else {
+        source.split(':').next().unwrap_or(source)
+    }
 }
 
 /// What every item reader works from.
@@ -139,6 +187,8 @@ pub(crate) struct Page<'p, 'a> {
     /// Open Graph and other meta tags by property, lowercased, plus
     /// `canonical` for `<link rel=canonical>`.
     pub meta: Map<String, Value>,
+    /// Microdata elements sources have named, by index.
+    elements: std::cell::RefCell<Vec<crate::NodeId>>,
 }
 
 impl<'a> Page<'_, 'a> {
@@ -146,17 +196,19 @@ impl<'a> Page<'_, 'a> {
     pub fn source(&self, thing: &Thing, prop: &str) -> String {
         match thing.source {
             Source::JsonLd => "json-ld".into(),
-            Source::Microdata => {
-                let path = thing
-                    .element_of(prop)
-                    .or(thing.element)
-                    // SAFETY: the ids came from `things(root)`, nodes of this document.
-                    .and_then(|id| crate::css_path::css_path(unsafe { self.root.doc.node(id) }));
-                match path {
-                    Some(p) => format!("microdata:{p}"),
-                    None => "microdata".into(),
+            // The element's CSS path costs searches of the page, so it's
+            // left until `extract` knows the field kept this value.
+            Source::Microdata => match thing.element_of(prop).or(thing.element) {
+                Some(id) => {
+                    let mut elements = self.elements.borrow_mut();
+                    let i = elements.iter().position(|e| *e == id).unwrap_or_else(|| {
+                        elements.push(id);
+                        elements.len() - 1
+                    });
+                    format!("{ELEMENT}{i}")
                 }
-            }
+                None => "microdata".into(),
+            },
             Source::Meta => "meta".into(),
             Source::Dom => "dom".into(),
         }
@@ -265,7 +317,7 @@ impl Builder {
                 self.sources[i] = Some(source);
             }
             Some(first) => {
-                let structured = |s: &str| s == "json-ld" || s.starts_with("microdata");
+                let structured = |s: &str| matches!(kind_of_source(s), "json-ld" | "microdata");
                 if COMPARED.contains(&field)
                     && structured(first)
                     && structured(&source)
@@ -273,9 +325,9 @@ impl Builder {
                 {
                     let message = format!(
                         "{} gave {}, {} gave {}; kept the first",
-                        first.split(':').next().unwrap_or(first),
+                        kind_of_source(first),
                         self.values[i],
-                        source.split(':').next().unwrap_or(&source),
+                        kind_of_source(&source),
                         value
                     );
                     self.note(field, message);

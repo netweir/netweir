@@ -164,18 +164,34 @@ fn from_thing(page: &Page<'_, '_>, thing: &Thing, item: &mut Builder) {
     item.offer("name", f::text(get("name")).map(Value::String), src("name"));
     if let Some(offer) = main_offer(p) {
         let money = offer_money(offer);
-        let offer_src = src("offers");
-        item.offer("price", money.price.map(Value::String), offer_src.clone());
+        // In microdata the offer is an item of its own, whose properties
+        // know their elements: the price's source is its <span>.
+        let offer_thing = thing.element_of("offers").and_then(|e| {
+            page.things
+                .iter()
+                .find(|t| t.source == Source::Microdata && t.element == Some(e))
+        });
+        let osrc = |prop: &str| match offer_thing {
+            Some(o) if o.element_of(prop).is_some() => page.source(o, prop),
+            _ => src("offers"),
+        };
+        let price_prop = if offer.contains_key("price") {
+            "price"
+        } else {
+            "lowPrice"
+        };
+        item.offer("price", money.price.map(Value::String), osrc(price_prop));
         item.offer(
             "currency",
             money.currency.map(Value::String),
-            offer_src.clone(),
+            osrc("priceCurrency"),
         );
         item.offer(
             "currency_raw",
             money.currency_raw.map(Value::String),
-            offer_src.clone(),
+            osrc("priceCurrency"),
         );
+        let offer_src = src("offers");
         if let Some(regular) =
             regular_price(offer).filter(|r| item.get("price").as_str() != Some(r))
         {
@@ -191,7 +207,7 @@ fn from_thing(page: &Page<'_, '_>, thing: &Thing, item: &mut Builder) {
                 .get("availability")
                 .and_then(f::availability)
                 .map(Value::String),
-            offer_src,
+            osrc("availability"),
         );
     }
     // The product's own code before its offer's.

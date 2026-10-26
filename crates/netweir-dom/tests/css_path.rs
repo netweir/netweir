@@ -102,3 +102,13 @@ fn only_elements_have_a_path() {
         .unwrap();
     assert_eq!(css_path(text), None);
 }
+
+#[test]
+fn microdata_properties_are_named_by_itemprop() {
+    let html = r#"<div itemscope><span itemprop="price">1</span><span itemprop="currency">GBP</span></div>
+                  <div itemscope><span itemprop="price">2</span></div>"#;
+    assert_eq!(
+        path_of(html, r#"div:first-child span[itemprop=currency]"#),
+        r#"span[itemprop="currency"]"#
+    );
+}

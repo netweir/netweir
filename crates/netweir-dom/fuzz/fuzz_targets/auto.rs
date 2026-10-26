@@ -41,8 +41,8 @@ fuzz_target!(|data: &[u8]| {
         Schema::JobPosting,
         Schema::Article,
     ] {
-        let item = extract(schema, doc.root(), Some(&url), now);
-        assert_eq!(item, extract(schema, doc.root(), Some(&url), now));
+        let item = extract(schema, doc.root(), Some(&url), None, now);
+        assert_eq!(item, extract(schema, doc.root(), Some(&url), None, now));
         assert!((0.0..=1.0).contains(&item.probability));
     }
     for node in doc.root().descendants().filter(|n| n.kind() == NodeKind::Element).take(64) {

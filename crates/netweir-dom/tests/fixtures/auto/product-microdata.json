@@ -1,8 +1,36 @@
-{"type": "product", "url": "https://shop.example/p/apron",
- "item": {"url": "https://shop.example/p/apron", "name": "Linen apron", "price": "28.00",
-  "currency": "USD", "currency_raw": "USD", "availability": "InStock", "sku": "AP-7",
-  "brand": {"name": "Field & Loom"},
-  "main_image": {"url": "https://shop.example/p/apron.jpg"},
-  "images": [{"url": "https://shop.example/p/apron.jpg"}],
-  "description": "Washed linen, one size."},
- "sources": {"name": "microdata:h1", "sku": "microdata:meta"}, "probability": [0.9, 1.0], "validation": []}
+{
+ "type": "product",
+ "url": "https://shop.example/p/apron",
+ "item": {
+  "url": "https://shop.example/p/apron",
+  "name": "Linen apron",
+  "price": "28.00",
+  "currency": "USD",
+  "currency_raw": "USD",
+  "availability": "InStock",
+  "sku": "AP-7",
+  "brand": {
+   "name": "Field & Loom"
+  },
+  "main_image": {
+   "url": "https://shop.example/p/apron.jpg"
+  },
+  "images": [
+   {
+    "url": "https://shop.example/p/apron.jpg"
+   }
+  ],
+  "description": "Washed linen, one size."
+ },
+ "sources": {
+  "name": "microdata:h1",
+  "sku": "microdata:meta",
+  "price": "microdata:span[itemprop=\"price\"]",
+  "availability": "microdata:link"
+ },
+ "probability": [
+  0.9,
+  1.0
+ ],
+ "validation": []
+}

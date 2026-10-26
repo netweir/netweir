@@ -35,7 +35,13 @@ fn every_auto_fixture_matches_its_answer() {
         let schema = Schema::from_name(want["type"].as_str().unwrap()).unwrap();
         let url = url::Url::parse(want["url"].as_str().unwrap()).unwrap();
         let doc = Document::parse(&html);
-        let got = extract(schema, doc.root(), Some(&url), Civil::date(2026, 10, 25));
+        let got = extract(
+            schema,
+            doc.root(),
+            Some(&url),
+            None,
+            Civil::date(2026, 10, 25),
+        );
         // "@body" and "@html" stand for the article text and HTML
         // content::article reads, which its own corpus checks.
         let article = netweir_dom::content::article(doc.root(), Some(&url));
@@ -116,8 +122,52 @@ fn hostile_structured_data_is_bounded() {
             Schema::JobPosting,
             Schema::Article,
         ] {
-            extract(schema, doc.root(), None, Civil::date(2026, 10, 25));
+            extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
         }
         assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
     }
+}
+
+#[test]
+fn a_microdata_product_on_a_big_page_is_quick() {
+    // A ~1 MB page with the product's microdata in the middle, 14 plain
+    // divs deep among 9,000 others: the sources' CSS paths must not cost a
+    // document-wide search per ancestor per field.
+    let row =
+        |i: usize| format!(r#"<div class="row"><p>Paragraph {i} of boilerplate text.</p></div>"#);
+    let mut html = String::from("<html><body>");
+    (0..4500).for_each(|i| html.push_str(&row(i)));
+    html.push_str(&"<div>".repeat(14));
+    html.push_str(
+        r#"<div itemscope itemtype="https://schema.org/Product"><h2 itemprop="name">Linen apron</h2>
+           <img itemprop="image" src="apron.jpg"><span itemprop="brand">Loom</span>
+           <meta itemprop="sku" content="AP-7">
+           <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+           <span itemprop="price" content="28.00">28</span><meta itemprop="priceCurrency" content="USD">
+           <link itemprop="availability" href="https://schema.org/InStock"></div>
+           <div itemprop="description"><p>Washed linen.</p></div></div>"#,
+    );
+    html.push_str(&"</div>".repeat(14));
+    (4500..9000).for_each(|i| html.push_str(&row(i)));
+    html.push_str("</body></html>");
+    let doc = Document::parse(&html);
+    let url = url::Url::parse("https://shop.example/p/apron").unwrap();
+    let start = std::time::Instant::now();
+    let item = extract(
+        Schema::Product,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 25),
+    );
+    let took = start.elapsed();
+    assert_eq!(
+        item.fields.iter().find(|(f, _)| *f == "price").unwrap().1,
+        "28.00"
+    );
+    let source = &item.sources.iter().find(|(f, _)| *f == "sku").unwrap().1;
+    let path = source.strip_prefix("microdata:").unwrap();
+    let found = netweir_dom::Query::new(path).unwrap().select(doc.root());
+    assert_eq!(found.len(), 1, "{path}");
+    assert!(took.as_secs_f64() < 1.0, "{took:?}");
 }

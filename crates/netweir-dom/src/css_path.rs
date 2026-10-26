@@ -14,23 +14,62 @@ pub fn css_path(node: Node<'_>) -> Option<String> {
     if node.kind() != NodeKind::Element {
         return None;
     }
+    let chain: Vec<Node<'_>> = std::iter::successors(Some(node), |n| n.parent())
+        .take_while(|n| n.kind() == NodeKind::Element)
+        .collect();
     let top = std::iter::successors(Some(node), |n| n.parent())
         .last()
         .unwrap_or(node);
+    // Which of the chain's ids are unique in the document, in one walk
+    // rather than a search per id.
+    let ids: Vec<&str> = chain
+        .iter()
+        .filter_map(|n| n.attr("id"))
+        .filter(|id| !id.is_empty() && !generated(id))
+        .collect();
+    let mut counts: std::collections::HashMap<&str, usize> = Default::default();
+    if !ids.is_empty() {
+        for n in top.descendants() {
+            if let Some(id) = n.attr("id").filter(|id| ids.contains(id)) {
+                *counts.entry(id).or_default() += 1;
+            }
+        }
+    }
+    // Every segment tells its element from its siblings, so the path up to
+    // the root element, or to an element with a unique id, finds `node`
+    // alone without asking.
     let mut segments: Vec<String> = Vec::new();
-    let mut at = node;
-    loop {
-        segments.insert(0, segment(at));
-        let path = segments.join(" > ");
+    let mut anchored = false;
+    for at in &chain {
+        if let Some(id) = at.attr("id").filter(|id| counts.get(id) == Some(&1)) {
+            segments.insert(0, format!("#{}", escape(id)));
+            anchored = true;
+            break;
+        }
+        segments.insert(0, segment(*at));
+    }
+    // A shorter ending often finds it alone too; a few searches tell.
+    // Not with :nth-of-type, which a search checks by counting siblings
+    // for every candidate: among thousands of siblings, seconds.
+    for len in 1..segments.len().min(4) {
+        let ending = &segments[segments.len() - len..];
+        if ending.iter().any(|s| s.contains(":nth-of-type")) {
+            break;
+        }
+        let path = ending.join(" > ");
         if finds_only(&path, top, node) {
             return Some(path);
         }
-        match at.parent() {
-            Some(p) if p.kind() == NodeKind::Element => at = p,
-            // Every segment tells its element from its siblings, so the
-            // path from the root element finds only `node`.
-            _ => return Some(path),
-        }
+    }
+    let path = segments.join(" > ");
+    // In XML the root's tag can appear again further down.
+    if anchored
+        || chain.last().and_then(|n| n.tag()) == Some("html")
+        || finds_only(&path, top, node)
+    {
+        Some(path)
+    } else {
+        Some(format!(":root > {path}"))
     }
 }
 
@@ -38,23 +77,11 @@ fn finds_only(path: &str, top: Node<'_>, node: Node<'_>) -> bool {
     Query::cached(path).is_ok_and(|q| q.select(top) == [node])
 }
 
-/// How to write `node` so that none of its siblings matches: its id when
-/// that is unique in the document, else its tag with the fewest stable
-/// classes that do it, else its tag, else its tag and position.
+/// How to write `node` so that none of its siblings matches: its tag with
+/// the fewest stable classes that do it, else its tag, else its tag and
+/// position.
 fn segment(node: Node<'_>) -> String {
     let tag = escape(node.tag().unwrap_or("*"));
-    if let Some(id) = node
-        .attr("id")
-        .filter(|id| !id.is_empty() && !generated(id))
-    {
-        let by_id = format!("#{}", escape(id));
-        let top = std::iter::successors(Some(node), |n| n.parent())
-            .last()
-            .unwrap_or(node);
-        if finds_only(&by_id, top, node) {
-            return by_id;
-        }
-    }
     let siblings: Vec<Node<'_>> = node
         .parent()
         .map(|p| {
@@ -84,6 +111,18 @@ fn segment(node: Node<'_>) -> String {
         if !siblings.iter().any(|s| has(s, &[c])) {
             return format!("{tag}.{}", escape(c));
         }
+    }
+    // A microdata property names itself, and keeps its name through
+    // redesigns that rename classes.
+    if let Some(prop) = node
+        .attr("itemprop")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        && !siblings
+            .iter()
+            .any(|s| s.attr("itemprop").map(str::trim) == Some(prop))
+    {
+        return format!("{tag}[itemprop=\"{}\"]", prop.replace(['\\', '"'], ""));
     }
     for (i, &a) in classes.iter().enumerate() {
         for &b in &classes[i + 1..] {

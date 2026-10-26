@@ -138,7 +138,7 @@ impl ItemInner {
         base: Option<&Url>,
     ) -> Vec<Value> {
         let values = self.spec.extract(root, base);
-        self.assemble(root, page, values)
+        self.assemble(root, page, base, values)
     }
 
     /// An auto item's values: its type's fields as auto-extraction found
@@ -148,13 +148,14 @@ impl ItemInner {
         &self,
         root: netweir_dom::Node<'_>,
         page: Option<&Url>,
+        base: Option<&Url>,
         values: Vec<Value>,
     ) -> Vec<Value> {
         let Some(auto) = &self.auto else {
             return values;
         };
         let now = date::now_utc();
-        let found = auto::extract(auto.schema, root, page, now);
+        let found = auto::extract(auto.schema, root, page, base, now);
         let mut sources: Vec<(&str, String)> = found.sources.clone();
         let mut validation = found.validation.clone();
         let mut out = Vec::with_capacity(self.output.len());
@@ -224,7 +225,7 @@ impl ItemInner {
         ctx: &TrackContext<'_>,
     ) -> (Vec<Value>, Notes) {
         let (values, notes) = self.spec.extract_with(root, base, ctx);
-        let values = self.assemble(root, page, values);
+        let values = self.assemble(root, page, base, values);
         let notes = notes
             .into_iter()
             .map(|(i, t)| {
