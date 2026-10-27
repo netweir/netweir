@@ -55,23 +55,11 @@ fn is_home(t: &Thing) -> bool {
 }
 
 pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
-    let all: Vec<&Thing> = page.things.iter().filter(|t| is_home(t)).collect();
-    // The home a listing is about is read with the listing, not as a
-    // second property.
-    let nested: Vec<&Map<String, Value>> = all
+    // A listing's home, or a hotel's suite, is read with what holds it.
+    let homes: Vec<&Thing> = page
+        .things
         .iter()
-        .flat_map(|t| ["about", "mainEntity", "itemOffered"].map(|k| t.props.get(k)))
-        .flatten()
-        .filter_map(Value::as_object)
-        .collect();
-    let homes: Vec<&Thing> = all
-        .into_iter()
-        .filter(|t| {
-            !nested.iter().any(|n| {
-                n.iter().filter(|(k, _)| !k.starts_with('@')).count() == t.props.len()
-                    && t.props.iter().all(|(k, v)| n.get(k) == Some(v))
-            })
-        })
+        .filter(|t| is_home(t) && !t.nested)
         .collect();
     let mut chosen: Vec<&Thing> = Vec::new();
     let mut several = false;
@@ -279,7 +267,7 @@ fn from_thing(page: &Page<'_, '_>, home: &Thing, item: &mut Builder) {
 }
 
 /// `monthly` and the like, from a UN/CEFACT code (MON, WEE, ANN) or
-/// words such as `pcm`, `per week` or `/yr`.
+/// words such as `pcm`, `per week` or `/yr`, matched as whole words.
 fn period(text: &str) -> Option<&'static str> {
     let t = text.trim().to_ascii_lowercase();
     match t.as_str() {
@@ -288,7 +276,27 @@ fn period(text: &str) -> Option<&'static str> {
         "ann" => return Some("yearly"),
         _ => {}
     }
-    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+    // Words apart, `/` kept: "£1,250/mo" is "1 250/mo".
+    let spaced: String = t
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '/' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let spaced = format!(
+        " {} ",
+        spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
+    let has = |words: &[&str]| {
+        words.iter().any(|w| {
+            spaced.contains(&format!(" {w} "))
+                || (w.starts_with('/') && spaced.contains(&format!("{w} ")))
+        })
+    };
     if has(&[
         "pcm",
         "per month",
@@ -312,7 +320,8 @@ fn period(text: &str) -> Option<&'static str> {
         "/yr",
         "yearly",
         "annually",
-        " pa",
+        "pa",
+        "p/a",
     ]) {
         Some("yearly")
     } else {
@@ -331,7 +340,9 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     });
     static BATHS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(?i)\b(\d{1,2})\s*(?:-\s*)?bath(?:room)?s?\b|\bbath(?:room)?s?\s*:?\s*(\d{1,2})\b",
+            // "Bath: 2" is as likely the city; the label form wants
+            // `baths` or `bathroom(s)`.
+            r"(?i)\b(\d{1,2})\s*(?:-\s*)?bath(?:room)?s?\b|\b(?:baths|bathrooms?)\s*:?\s*(\d{1,2})\b",
         )
         .unwrap()
     });
@@ -419,19 +430,26 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     // The rent's period is written with the price (`£1,250 pcm`) or
     // right after it.
     let after = std::iter::successors(price_node.next_sibling(), |n| n.next_sibling())
-        .find_map(|n| words(n).filter(|w| w.len() <= 40))
+        .take(3)
+        .find_map(|n| super::dom::short_text(n, 40))
         .unwrap_or_default();
-    let beside = format!("{} {after}", words(price_node).unwrap_or_default());
+    let beside = format!(
+        "{} {after}",
+        super::dom::short_text(price_node, 60).unwrap_or_default()
+    );
     let rental = period(&beside);
     let lower = text.to_lowercase();
-    let trade = if rental.is_some()
-        || ["for rent", "to rent", "to let", "for lease"]
-            .iter()
-            .any(|w| lower.contains(w))
-    {
+    // A rent's period beside the price says rent; otherwise the page's
+    // own "For sale" outranks a mention of renting elsewhere on it.
+    let trade = if rental.is_some() {
         Some("rent")
     } else if lower.contains("for sale") {
         Some("sale")
+    } else if ["for rent", "to rent", "to let", "for lease"]
+        .iter()
+        .any(|w| lower.contains(w))
+    {
+        Some("rent")
     } else {
         None
     };
@@ -475,7 +493,9 @@ fn shown_price(main: Node<'_>) -> Option<(Node<'_>, f::PriceFields)> {
         if looked > LOOKED {
             break;
         }
-        let Some(words) = words(n).filter(|w| w.len() <= 40) else {
+        let Some(words) = super::dom::short_text(n, 40)
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+        else {
             continue;
         };
         let money = f::price_text(&words);

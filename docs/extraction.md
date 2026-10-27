@@ -347,10 +347,11 @@ hours come one entry a day, from OpeningHoursSpecification or from
 text such as `Mo-Fr 09:00-17:30`, with closed days left out. A page
 with none of that is still read when it shows a `tel:` link, an
 `<address>`, and opening hours or a map link, at a probability of 0.5.
-Many sites print the same LocalBusiness on every page, so it types a
-page as `"business-place"` only when it names this page, the page is
-the site's home, or the layout says so; `extract()` still reads it
-anywhere. `place_id`, `timezone`, `review_sites` and `is_verified` stay
+Many sites print the same LocalBusiness on every page, home page and
+products included, so structured data types a page as
+`"business-place"` only when the page reads as nothing else;
+`extract()` still reads it anywhere. A place inside something else (an
+event's venue, a hotel's suites) isn't the page's. `place_id`, `timezone`, `review_sites` and `is_verified` stay
 None: no page states them reliably.
 
 **A property** comes from a RealEstateListing (with the home it's
@@ -358,18 +359,21 @@ None: no page states them reliably.
 structured data, a page counts when it shows a price and two of
 bedrooms, bathrooms and floor area. Areas carry their unit, `SQMT`,
 `SQFT` or `ACRE`, and `area_type` `FLOOR` or `LOT` when structured data
-says which. A rent written `£1,250 pcm` gives `trade_type` `"rent"` and
+says which; either decimal separator reads (`85,5 m²`, `1,250 sq ft`). A rent written `£1,250 pcm` gives `trade_type` `"rent"` and
 `rental_period` `"monthly"`; `trade_type` is `"sale"` or `"rent"`.
 
 **A social media post** comes from a SocialMediaPosting, or from the
-Open Graph tags of a post's page whose address names a post
+Open Graph tags of a post's page whose address names a numbered post
 (`/@ada/113456789`, `/status/123`). Hashtags are read from the text,
 leaving out a `#` in a link. A SocialMediaPosting with comments is a
 forum thread instead.
 
 **A search results page** is read from its layout: the biggest group
 of results led by a linked heading, most of them leading to other
-sites, so a shop's or a blog's own search stays what it was. An
+sites, so a shop's or a blog's own search stays what it was. The page
+has to show the query from its address back, in its search box or its
+title, so `?p=123` on a blog isn't a search; a page of off-site links
+without one is a SERP only to `extract()`. An
 engine's redirect links (`/url?q=...`) give the address they lead to.
 `metadata` adds `searched_query` (from the address),
 `displayed_query` (from the search box) and `total_organic_results`

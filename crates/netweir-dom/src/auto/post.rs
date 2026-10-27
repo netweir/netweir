@@ -226,9 +226,9 @@ fn id_in_url(url: &url::Url) -> Option<String> {
     });
     let c = POST.captures(url.path())?;
     let id = &c[1];
-    // `/posts/` alone names a post only with a digit in it.
+    // Networks number their posts; `/posts/2026-rust-tips` is a blog's.
     id.bytes()
-        .any(|b| b.is_ascii_digit())
+        .all(|b| b.is_ascii_digit())
         .then(|| id.to_string())
 }
 

@@ -21,6 +21,20 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
             .map(|(_, v)| v.trim().to_string())
     });
     let displayed = displayed_query(page.root);
+    // A query in the address counts when the page shows it back, in its
+    // search box or its title: `?p=123` on a blog names a post, not a
+    // search.
+    let title = page
+        .root
+        .descendants()
+        .find(|n| n.tag() == Some("title"))
+        .and_then(words)
+        .map(|t| t.to_lowercase());
+    let searched = searched.filter(|q| {
+        let q = q.to_lowercase();
+        displayed.as_ref().is_some_and(|d| d.to_lowercase() == q)
+            || title.as_ref().is_some_and(|t| t.contains(&q))
+    });
     let Some((container, cards)) = super::feeds::cards(page.root) else {
         item.probability = 0.05;
         return;
@@ -51,8 +65,16 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
         item.probability = 0.05;
         return;
     }
+    // A result leads elsewhere; the engine's own links among them
+    // (its other tabs, its help) aren't results.
     let organic: Vec<Value> = results
         .iter()
+        .filter(|(_, _, u)| {
+            Url::parse(u)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                != host
+        })
         .enumerate()
         .map(|(i, (card, heading, url))| {
             let cite = card.descendants().find(|n| n.tag() == Some("cite"));
@@ -80,7 +102,7 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
     item.meta("searched_query", json!(searched));
     item.meta("displayed_query", json!(displayed));
     item.meta("total_organic_results", json!(total(page.root)));
-    if searched.is_some() || displayed.is_some() {
+    if searched.is_some() {
         item.probability = 0.85;
     } else {
         // Links to other sites under headings, and nothing saying what
@@ -129,23 +151,51 @@ fn displayed_query(root: Node<'_>) -> Option<String> {
     })
 }
 
-/// The result's excerpt: the longest text in its card outside its
-/// heading and its displayed address.
+/// The result's excerpt: the longest block of text in its card outside
+/// its heading, its links and its displayed address. A card's first few
+/// hundred nodes are read, and each block's first few hundred
+/// characters, so a card built to be deep costs little.
 fn snippet(card: Node<'_>, heading: Node<'_>) -> Option<String> {
-    let holds = |a: Node<'_>, b: Node<'_>| {
-        std::iter::successors(Some(b), |n| n.parent()).any(|n| n.id() == a.id())
-    };
-    card.descendants()
-        .filter(|n| n.tag().is_some())
-        .filter(|n| !holds(*n, heading) && !holds(heading, *n))
-        .filter(|n| {
-            !std::iter::successors(Some(*n), |a| a.parent())
-                .take_while(|a| a.id() != card.id())
-                .any(|a| matches!(a.tag(), Some("cite" | "a")))
-                && !n.descendants().any(|d| d.tag() == Some("cite"))
-        })
-        .filter_map(words)
-        .max_by_key(|t| t.len())
+    let mut best: Option<String> = None;
+    let mut stack = vec![card];
+    let mut visited = 0;
+    while let Some(n) = stack.pop() {
+        visited += 1;
+        if visited > 400 {
+            break;
+        }
+        if n.id() == heading.id() || matches!(n.tag(), Some("a" | "cite" | "script" | "style")) {
+            continue;
+        }
+        if n.kind() == crate::NodeKind::Text && !n.data().unwrap_or_default().trim().is_empty() {
+            // The block the text sits in, said whole if it's short.
+            let block = std::iter::successors(n.parent(), |p| p.parent())
+                .take(4)
+                .find(|p| {
+                    matches!(
+                        p.tag(),
+                        Some("p" | "div" | "span" | "li" | "td" | "section")
+                    )
+                })
+                .unwrap_or(card);
+            let text = if block.id() == card.id() {
+                n.data().map(str::to_string)
+            } else {
+                super::dom::short_text(block, 600).or_else(|| n.data().map(str::to_string))
+            };
+            let text = text.map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+            if let Some(t) = text.filter(|t| !t.is_empty())
+                && best.as_ref().is_none_or(|b| t.len() > b.len())
+            {
+                best = Some(t);
+            }
+            continue;
+        }
+        let at = stack.len();
+        stack.extend(n.children());
+        stack[at..].reverse();
+    }
+    best
 }
 
 /// The page number from `start=10` or `first=11` and the results a page

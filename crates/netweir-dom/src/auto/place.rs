@@ -36,6 +36,11 @@ pub(crate) const FIELDS: &[&str] = &[
     "tags",
 ];
 
+/// What a place that may be the site's rather than the page's counts
+/// for in `page_type`: just over what types a page at all, so any other
+/// type the page reads as wins.
+const FALLBACK: f64 = 0.41;
+
 /// Types too general to be a place's category.
 const GENERAL: [&str; 5] = [
     "Place",
@@ -46,7 +51,12 @@ const GENERAL: [&str; 5] = [
 ];
 
 pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
-    let places = of_type(&page.things, "Place");
+    // A place inside another thing (an event's venue, a hotel's suite)
+    // isn't the page's.
+    let places: Vec<&Thing> = of_type(&page.things, "Place")
+        .into_iter()
+        .filter(|t| !t.nested)
+        .collect();
     let mut chosen: Vec<&Thing> = Vec::new();
     let mut several = false;
     for source in [Source::JsonLd, Source::Microdata] {
@@ -75,18 +85,11 @@ pub(crate) fn read(page: &Page<'_, '_>, item: &mut Builder) {
         from_meta(page, item);
     }
     let layout = layout(page, item);
-    // The same LocalBusiness printed on every page of a site says what
-    // the site belongs to, not what this page is about.
-    let own_page = chosen.iter().any(|t| {
-        t.props
-            .get("url")
-            .and_then(Value::as_str)
-            .is_some_and(|u| page.is_page_url(u))
-    }) || page
-        .page
-        .is_some_and(|p| p.path().trim_end_matches('/').is_empty());
-    if !chosen.is_empty() && !own_page {
-        item.type_cap = Some(0.35);
+    // A business's structured data describes the business wherever it's
+    // printed, often on every page of its site: a shop's home page, a
+    // product, a blog post. It types a page only when nothing else does.
+    if !chosen.is_empty() {
+        item.type_cap = Some(FALLBACK);
     }
     let named = chosen
         .iter()
@@ -363,58 +366,74 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
 
 /// Opening hours shown as a table or a list, a row a day (or a run of
 /// days): the first table or list with three rows that read as hours.
+/// Each row is read once, and only its first few dozen characters.
 fn hours<'a>(all: &[Node<'a>]) -> Option<(Value, Node<'a>)> {
-    for container in all
-        .iter()
-        .filter(|n| matches!(n.tag(), Some("table" | "ul" | "ol" | "dl")))
-    {
-        let mut entries = Vec::new();
-        let mut rows = 0;
-        for row in container.descendants() {
-            let (days, rest) = match row.tag() {
-                Some("tr") => {
-                    let cells: Vec<String> = row
-                        .children()
-                        .filter(|c| matches!(c.tag(), Some("td" | "th")))
-                        .filter_map(words)
-                        .collect();
-                    let Some((first, rest)) = cells.split_first() else {
-                        continue;
-                    };
-                    (first.clone(), rest.join(" "))
-                }
-                Some("li") => {
-                    let Some(text) = words(row) else { continue };
-                    let at = text
-                        .find(|c: char| c.is_ascii_digit())
-                        .unwrap_or(text.len());
-                    (text[..at].to_string(), text[at..].to_string())
-                }
-                Some("dt") => {
-                    let Some(dd) = std::iter::successors(row.next_sibling(), |n| n.next_sibling())
-                        .find(|n| n.tag().is_some())
-                        .filter(|n| n.tag() == Some("dd"))
-                    else {
-                        continue;
-                    };
-                    (
-                        words(row).unwrap_or_default(),
-                        words(dd).unwrap_or_default(),
-                    )
-                }
-                _ => continue,
-            };
-            let found = f::hours_row(&days, &rest);
-            if !found.is_empty() {
-                rows += 1;
-                entries.extend(found);
+    let short = |n: Node<'_>| {
+        super::dom::short_text(n, 80).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+    };
+    let mut rows: Vec<(Node<'a>, Vec<Value>)> = Vec::new();
+    let mut index: std::collections::HashMap<crate::NodeId, usize> = Default::default();
+    for row in all {
+        let (days, rest) = match row.tag() {
+            Some("tr") => {
+                let cells: Vec<String> = row
+                    .children()
+                    .filter(|c| matches!(c.tag(), Some("td" | "th")))
+                    .take(4)
+                    .filter_map(short)
+                    .collect();
+                let Some((first, rest)) = cells.split_first() else {
+                    continue;
+                };
+                (first.clone(), rest.join(" "))
             }
+            Some("li") => {
+                let Some(text) = short(*row) else { continue };
+                let at = text
+                    .find(|c: char| c.is_ascii_digit())
+                    .unwrap_or(text.len());
+                (text[..at].to_string(), text[at..].to_string())
+            }
+            Some("dt") => {
+                let Some(dd) = std::iter::successors(row.next_sibling(), |n| n.next_sibling())
+                    .find(|n| n.tag().is_some())
+                    .filter(|n| n.tag() == Some("dd"))
+                else {
+                    continue;
+                };
+                (
+                    short(*row).unwrap_or_default(),
+                    short(dd).unwrap_or_default(),
+                )
+            }
+            _ => continue,
+        };
+        let found = f::hours_row(&days, &rest);
+        if found.is_empty() {
+            continue;
         }
-        if rows >= 3 {
-            return Some((Value::Array(entries), *container));
-        }
+        // A table's rows sit under its tbody; a list's items under it.
+        let Some(container) = std::iter::successors(row.parent(), |n| n.parent())
+            .take(2)
+            .find(|n| matches!(n.tag(), Some("table" | "ul" | "ol" | "dl")))
+        else {
+            continue;
+        };
+        let at = *index.entry(container.id()).or_insert_with(|| {
+            rows.push((container, Vec::new()));
+            rows.len() - 1
+        });
+        rows[at].1.push(Value::Array(found));
     }
-    None
+    rows.into_iter()
+        .find(|(_, r)| r.len() >= 3)
+        .map(|(container, r)| {
+            let flat: Vec<Value> = r
+                .into_iter()
+                .flat_map(|v| v.as_array().cloned().unwrap_or_default())
+                .collect();
+            (Value::Array(flat), container)
+        })
 }
 
 fn words(n: Node<'_>) -> Option<String> {

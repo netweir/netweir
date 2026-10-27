@@ -361,6 +361,36 @@ fn serp_metadata_names_the_query() {
 }
 
 #[test]
+fn item_main_xpath_holds_in_one_huge_div() {
+    let html = format!(
+        "<div>{}</div>",
+        "<p>One paragraph of a long page that has no landmarks at all, only text in a single div.</p>"
+            .repeat(2000)
+    );
+    let doc = Document::parse(&html);
+    let url = url::Url::parse("https://big.example/").unwrap();
+    let got = extract(
+        Schema::PageContent,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    );
+    let path = got
+        .fields
+        .iter()
+        .find(|(n, _)| *n == "item_main_xpath")
+        .unwrap()
+        .1
+        .clone();
+    let found = netweir_dom::extract::Selector::xpath(path.as_str().unwrap())
+        .unwrap()
+        .hits(doc.root())
+        .unwrap();
+    assert_eq!(found.len(), 1, "{path}");
+}
+
+#[test]
 fn item_main_xpath_finds_the_main_element() {
     for (name, url) in [
         ("content-page", "https://kitchen.example/notes/cast-iron"),
@@ -400,4 +430,176 @@ fn item_main_xpath_finds_the_main_element() {
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(text.contains(&main[..40]), "{name}: {text}");
     }
+}
+
+fn typed(html: &str, url: &str) -> &'static str {
+    let doc = Document::parse(html);
+    let url = url::Url::parse(url).unwrap();
+    netweir_dom::auto::page_type(doc.root(), Some(&url), None, Civil::date(2026, 10, 27))
+        .0
+        .map_or("other", Schema::name)
+}
+
+fn read_as(
+    schema: Schema,
+    html: &str,
+    url: &str,
+) -> std::collections::HashMap<&'static str, serde_json::Value> {
+    let doc = Document::parse(html);
+    let url = url::Url::parse(url).unwrap();
+    extract(
+        schema,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    )
+    .fields
+    .into_iter()
+    .collect()
+}
+
+fn timed(schema: Schema, html: &str, url: &str) -> f64 {
+    let doc = Document::parse(html);
+    let url = url::Url::parse(url).unwrap();
+    let start = std::time::Instant::now();
+    extract(
+        schema,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    );
+    start.elapsed().as_secs_f64()
+}
+
+#[test]
+fn nested_hours_lists_are_bounded() {
+    let html = format!(
+        r#"<a href="tel:0123">0123</a><address>1 Mill Lane</address>{}{}"#,
+        "<ul><li>Mon 9:00 - 17:00".repeat(10_000),
+        "</li></ul>".repeat(10_000)
+    );
+    let took = timed(Schema::BusinessPlace, &html, "https://a.example/visit");
+    assert!(took < 5.0, "{took}");
+}
+
+#[test]
+fn deep_serp_cards_are_bounded() {
+    let card = |i: usize, inner: &str| {
+        format!(
+            r#"<div class="r"><h3><a href="https://s{i}.example/">R {i}</a></h3><div>{inner}</div></div>"#
+        )
+    };
+    let deep = format!("{}text{}", "<div>".repeat(20_000), "</div>".repeat(20_000));
+    let html = format!("{}{}{}", card(0, &deep), card(1, "one"), card(2, "two"));
+    let took = timed(Schema::Serp, &html, "https://search.example/s?q=x");
+    assert!(took < 5.0, "{took}");
+}
+
+#[test]
+fn a_big_property_page_is_bounded() {
+    let html = format!(
+        "<h1>Flat</h1><main>{}</main>",
+        "£12 <b>a</b> 3 bed ".repeat(300_000)
+    );
+    let took = timed(Schema::RealEstate, &html, "https://homes.example/p/1");
+    assert!(took < 5.0, "{took}");
+}
+
+#[test]
+fn a_place_without_a_url_types_its_own_page() {
+    let html = r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"Restaurant",
+        "name":"Lumo Manchester","address":{"@type":"PostalAddress","streetAddress":"1 Iron St"},
+        "openingHours":"Mo-Su 12:00-22:00"}</script><h1>Lumo Manchester</h1>"#;
+    assert_eq!(
+        typed(html, "https://lumo.example/locations/manchester"),
+        "business-place"
+    );
+}
+
+#[test]
+fn a_shops_home_page_is_its_listing_not_its_store() {
+    let cards: String = (0..6)
+        .map(|i| format!(r#"<div class="p"><a href="/p/{i}">Lamp {i}</a><span class="price">£{i}9.00</span></div>"#))
+        .collect();
+    let html = format!(
+        r#"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"Store","name":"Lumo",
+        "url":"https://shop.example/","address":{{"@type":"PostalAddress","streetAddress":"1 Iron St"}}}}</script>
+        <h1>Lumo lamps</h1><main>{cards}</main>"#
+    );
+    assert_eq!(typed(&html, "https://shop.example/"), "product-list");
+}
+
+#[test]
+fn nested_places_and_homes_are_not_the_page() {
+    let event = r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"Event",
+        "name":"Folk night","location":{"@type":"Place","name":"The Mill","address":"1 Mill Lane"}}</script>"#;
+    assert_ne!(typed(event, "https://mill.example/"), "business-place");
+    let hotel = r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"Hotel",
+        "name":"The Grand","url":"https://grand.example/","address":{"@type":"PostalAddress","streetAddress":"2 Sea Rd"},
+        "containsPlace":{"@type":"Suite","name":"Sea view suite","numberOfRooms":2}}</script>"#;
+    assert_eq!(typed(hotel, "https://grand.example/"), "business-place");
+    assert!(read_as(Schema::RealEstate, hotel, "https://grand.example/")["name"].is_null());
+}
+
+#[test]
+fn links_pages_and_search_boxes_are_not_serps() {
+    let links: String = (0..5)
+        .map(|i| format!(r#"<div class="l"><h3><a href="https://s{i}.example/">Link {i}</a></h3><p>Why it's good.</p></div>"#))
+        .collect();
+    let roundup = format!("<title>Five links - Ada's blog</title><main>{links}</main>");
+    assert_ne!(typed(&roundup, "https://ada.example/?p=123"), "serp");
+    let aggregator = format!(r#"<form><input name="q" value="Search"></form><main>{links}</main>"#);
+    assert_ne!(typed(&aggregator, "https://news.example/"), "serp");
+}
+
+#[test]
+fn a_blog_post_at_a_posts_slug_is_not_a_social_post() {
+    let html = r#"<meta property="og:type" content="article"><meta property="og:title" content="Rust tips">
+        <meta property="og:description" content="Ten small things. #rust">
+        <article><h1>Rust tips</h1><p class="byline">By Ada, 2 May 2026</p>
+        <p>Ten small things that made my Rust faster this year, with numbers for each and a note on when not to bother.</p>
+        <p>Most of them are about allocation, and two are about the borrow checker telling you something useful.</p></article>"#;
+    assert_eq!(
+        typed(html, "https://ada.example/posts/2026-rust-tips"),
+        "article"
+    );
+}
+
+#[test]
+fn a_sale_isnt_read_as_a_rent() {
+    let html = r#"<main><h1>Cottage</h1><p class="price">£325,000</p><p>Part exchange considered</p>
+        <ul><li>3 bedrooms</li><li>1 bathroom</li><li>1,050 sq ft</li></ul><p>For sale.</p>
+        <aside>Looking for homes to rent? See our lettings.</aside></main>"#;
+    let got = read_as(Schema::RealEstate, html, "https://homes.example/p/9");
+    assert_eq!(got["trade_type"], "sale");
+    assert!(got["rental_period"].is_null());
+}
+
+#[test]
+fn european_areas_read_their_separators() {
+    use netweir_dom::auto::fields::area;
+    use serde_json::json;
+    assert_eq!(area(&json!("85,5 m²")).unwrap()["value"], json!(85.5));
+    assert_eq!(area(&json!("1.250 m²")).unwrap()["value"], json!(1250.0));
+    assert_eq!(
+        area(&json!("1,250.5 sq ft")).unwrap()["value"],
+        json!(1250.5)
+    );
+}
+
+#[test]
+fn small_misreads_stay_fixed() {
+    use netweir_dom::auto::fields::opening_hours;
+    let weds = opening_hours(&serde_json::json!("Weds 09:00-17:00")).unwrap();
+    assert_eq!(weds[0]["day_of_week"], "Wednesday");
+    let html = r#"<main><h1>Flat in Bath</h1><p class="price">£900 pcm</p><p>Bath: 2 bedroom flat, 60 m²</p></main>"#;
+    let got = read_as(Schema::RealEstate, html, "https://lets.example/f/1");
+    assert!(
+        got["number_of_bathrooms_total"].is_null(),
+        "{:?}",
+        got["number_of_bathrooms_total"]
+    );
+    assert_eq!(got["number_of_bedrooms"], 2);
 }

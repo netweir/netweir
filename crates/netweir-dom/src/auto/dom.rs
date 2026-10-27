@@ -216,7 +216,7 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
 
 /// The text at and below `n`, or None once it passes `cap` bytes: read
 /// no further than that, so asking costs little on a big element.
-fn short_text(n: Node<'_>, cap: usize) -> Option<String> {
+pub(crate) fn short_text(n: Node<'_>, cap: usize) -> Option<String> {
     let mut out = String::new();
     for (visited, d) in std::iter::once(n).chain(n.descendants()).enumerate() {
         if visited > 4 * cap + 16 {

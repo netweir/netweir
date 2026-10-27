@@ -1,0 +1,14 @@
+{
+ "type": "serp",
+ "url": "https://ada.example/?s=rust",
+ "item": {
+  "url": "https://ada.example/?s=rust"
+ },
+ "sources": {},
+ "probability": [
+  0.0,
+  0.1
+ ],
+ "validation": [],
+ "page_type": "article-list"
+}

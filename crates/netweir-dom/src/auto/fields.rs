@@ -483,7 +483,7 @@ pub(crate) fn with_geo(address: Option<Value>, geo: &Value) -> Option<Value> {
 pub fn area(v: &Value) -> Option<Value> {
     static AREA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(?i)(\d[\d,]*(?:\.\d+)?)\s*(m²|m2\b|sq\.?\s*m\b|sqm\b|square met(?:er|re)s?|sq\.?\s*ft\b|sqft\b|ft²|square f(?:ee|oo)t|acres?\b)",
+            r"(?i)(\d[\d,.]*)\s*(m²|m2\b|sq\.?\s*m\b|sqm\b|square met(?:er|re)s?|sq\.?\s*ft\b|sqft\b|ft²|square f(?:ee|oo)t|acres?\b)",
         )
         .unwrap()
     });
@@ -515,12 +515,38 @@ pub fn area(v: &Value) -> Option<Value> {
         other => {
             let t = text(other)?;
             let c = AREA.captures(&t)?;
-            let value: f64 = c[1].replace(',', "").parse().ok()?;
+            let value = area_number(c[1].trim_end_matches(['.', ',']))?;
             (value, unit(&c[2])?, c[0].to_string())
         }
     };
     (value > 0.0)
         .then(|| json!({"value": value, "unit_code": unit_code, "area_type": null, "raw": raw}))
+}
+
+/// An area's number, written with either separator: `1,250.5`,
+/// `1.250,5`, `85,5`, `1.250`. One separator followed by exactly three
+/// digits groups thousands; otherwise it's the decimal point.
+fn area_number(s: &str) -> Option<f64> {
+    let (comma, point) = (s.rfind(','), s.rfind('.'));
+    let decimal = match (comma, point) {
+        (Some(c), Some(p)) => Some(c.max(p)),
+        (Some(i), None) | (None, Some(i)) => {
+            let after = &s[i + 1..];
+            let grouped = after.len() == 3 && s[..i].len() <= 3 && !s[..i].is_empty();
+            let one = s.matches([',', '.']).count() == 1;
+            (!(grouped && one) && one).then_some(i)
+        }
+        (None, None) => None,
+    };
+    let digits: String = s
+        .char_indices()
+        .filter_map(|(i, ch)| match ch {
+            '0'..='9' => Some(ch),
+            _ if Some(i) == decimal => Some('.'),
+            _ => None,
+        })
+        .collect();
+    digits.parse().ok()
 }
 
 /// A whole number from a number, numeric text or a QuantitativeValue.
@@ -570,6 +596,9 @@ fn weekday(word: &str) -> Option<usize> {
         .to_ascii_lowercase();
     if w.len() < 2 {
         return None;
+    }
+    if w == "weds" {
+        return Some(2);
     }
     WEEKDAYS.iter().position(|d| {
         let d = d.to_ascii_lowercase();
