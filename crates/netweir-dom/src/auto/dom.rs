@@ -258,7 +258,7 @@ fn wordy(text: &str) -> bool {
         .any(|w| crate::price::currency_code(w).is_none())
 }
 
-const PRICE_WORDS: [&str; 5] = ["price", "prices", "pricing", "amount", "cost"];
+pub(crate) const PRICE_WORDS: [&str; 5] = ["price", "prices", "pricing", "amount", "cost"];
 
 const STRUCK_WORDS: [&str; 10] = [
     "was",
@@ -279,7 +279,7 @@ const WEAK_WORDS: [&str; 2] = ["list", "regular"];
 
 /// Whether `n` or one of the two elements above it has a class or id
 /// word from `list` (or, for prices, `itemprop=price`).
-fn marked(n: Node<'_>, list: &[&str]) -> bool {
+pub(crate) fn marked(n: Node<'_>, list: &[&str]) -> bool {
     std::iter::successors(Some(n), |a| a.parent())
         .take(3)
         .any(|a| {

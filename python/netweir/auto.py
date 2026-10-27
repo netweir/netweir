@@ -95,6 +95,13 @@ class BusinessPlace(Item):
     _schema = "business-place"
 
 
+class RealEstate(Item):
+    """A house, flat or plot for sale or to rent: price, rooms, floor
+    area, address and more."""
+
+    _schema = "real-estate"
+
+
 __all__ = [
     "Article",
     "ArticleList",
@@ -106,4 +113,5 @@ __all__ = [
     "Product",
     "ProductList",
     "ProductNavigation",
+    "RealEstate",
 ]

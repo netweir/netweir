@@ -69,6 +69,15 @@ def test_business_place_from_json_ld():
     assert item["telephone"] == "+44 161 496 0000"
 
 
+def test_real_estate_to_rent_from_the_page():
+    p = page(fixture("estate-rent-dom"), url="https://citylets.example/flat/5521")
+    assert p.page_type() == "real-estate"
+    item = p.extract(netweir.auto.RealEstate)
+    assert (item["price"], item["rental_period"], item["trade_type"]) == ("1250", "monthly", "rent")
+    assert item["area"]["unit_code"] == "SQMT"
+    assert item["number_of_bedrooms"] == 2
+
+
 def test_a_pinned_address_is_read_as_an_address():
     class Kettle(netweir.auto.BusinessPlace):
         address = netweir.css("address")

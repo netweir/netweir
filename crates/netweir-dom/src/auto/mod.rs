@@ -9,6 +9,7 @@
 
 mod article;
 mod dom;
+mod estate;
 mod feeds;
 pub mod fields;
 mod job;
@@ -38,6 +39,7 @@ pub enum Schema {
     JobPostingNavigation,
     ForumThread,
     BusinessPlace,
+    RealEstate,
 }
 
 impl Schema {
@@ -53,6 +55,7 @@ impl Schema {
             Schema::ArticleNavigation | Schema::JobPostingNavigation => feeds::NAVIGATION_FIELDS,
             Schema::ForumThread => feeds::THREAD_FIELDS,
             Schema::BusinessPlace => place::FIELDS,
+            Schema::RealEstate => estate::FIELDS,
         }
     }
 
@@ -69,13 +72,14 @@ impl Schema {
             Schema::JobPostingNavigation => "job-posting-navigation",
             Schema::ForumThread => "forum-thread",
             Schema::BusinessPlace => "business-place",
+            Schema::RealEstate => "real-estate",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
-    /// `article-navigation`, `forum-thread` or `business-place`
-    /// (underscores work too).
+    /// `article-navigation`, `forum-thread`, `business-place` or
+    /// `real-estate` (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -88,6 +92,7 @@ impl Schema {
             "job-posting-navigation" => Schema::JobPostingNavigation,
             "forum-thread" => Schema::ForumThread,
             "business-place" => Schema::BusinessPlace,
+            "real-estate" => Schema::RealEstate,
             _ => return None,
         })
     }
@@ -138,6 +143,10 @@ impl Schema {
             "page_number" => K::Int,
             "videos" | "audios" => K::Media,
             "address" => K::Address,
+            "area" => K::Area,
+            "virtual_tour_url" => K::Url,
+            "year_built" => K::Int,
+            f if f.starts_with("number_of_") => K::Int,
             "map" | "website" => K::Url,
             "categories" | "tags" => K::Texts,
             f if f.ends_with("_raw") => K::Text,
@@ -224,6 +233,7 @@ pub fn page_type(
         Schema::JobPostingNavigation,
         Schema::Article,
         Schema::BusinessPlace,
+        Schema::RealEstate,
     ] {
         let item = read(schema, &ctx);
         // Any page with a few paragraphs reads as an article from its main
@@ -278,6 +288,7 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::JobPostingNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Jobs),
         Schema::ForumThread => feeds::read_thread(ctx, &mut item),
         Schema::BusinessPlace => place::read(ctx, &mut item),
+        Schema::RealEstate => estate::read(ctx, &mut item),
     }
     item
 }

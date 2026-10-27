@@ -118,23 +118,7 @@ fn from_thing(page: &Page<'_, '_>, place: &Thing, item: &mut Builder) {
     let src = |k: &str| page.source(place, k);
     let string = |k: &str| f::text(get(k)).map(Value::String);
     item.offer("name", string("name"), src("name"));
-    let mut address = f::address(get("address"));
-    if let Value::Object(geo) = get("geo") {
-        let coordinate = |k: &str| match geo.get(k) {
-            Some(Value::Number(n)) => n.as_f64(),
-            Some(Value::String(s)) => s.trim().parse().ok(),
-            _ => None,
-        };
-        if let (Some(lat), Some(lon)) = (coordinate("latitude"), coordinate("longitude")) {
-            let a = address.get_or_insert_with(|| {
-                let mut empty = f::address_text("");
-                empty["address_raw"] = Value::Null;
-                empty
-            });
-            a["latitude"] = json!(lat);
-            a["longitude"] = json!(lon);
-        }
-    }
+    let address = f::with_geo(f::address(get("address")), get("geo"));
     item.offer("address", address, src("address"));
     item.offer(
         "reservation_action",

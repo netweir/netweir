@@ -321,3 +321,21 @@ fn a_postal_address_is_split_and_a_string_is_raw() {
             .unwrap();
     assert_eq!(nested["address_country"], "GB");
 }
+
+#[test]
+fn areas_read_in_their_units() {
+    use netweir_dom::auto::fields::area;
+    use serde_json::json;
+    let read =
+        |v: serde_json::Value| area(&v).map(|a| (a["value"].clone(), a["unit_code"].clone()));
+    assert_eq!(read(json!("120 m²")), Some((json!(120.0), json!("SQMT"))));
+    assert_eq!(
+        read(json!("1,250 sq ft")),
+        Some((json!(1250.0), json!("SQFT")))
+    );
+    assert_eq!(read(json!("0.5 acres")), Some((json!(0.5), json!("ACRE"))));
+    let q = area(&json!({"value": 120, "unitCode": "MTK"})).unwrap();
+    assert_eq!(q["unit_code"], "SQMT");
+    assert_eq!(q["raw"], "120 MTK");
+    assert_eq!(read(json!("big")), None);
+}

@@ -457,6 +457,82 @@ pub fn address(v: &Value) -> Option<Value> {
     }))
 }
 
+/// `address` with the latitude and longitude of a GeoCoordinates, made
+/// an address of its own (no raw text) when there was none.
+pub(crate) fn with_geo(address: Option<Value>, geo: &Value) -> Option<Value> {
+    let Value::Object(geo) = geo else {
+        return address;
+    };
+    let coordinate = |k: &str| geo.get(k).and_then(number);
+    let (Some(lat), Some(lon)) = (coordinate("latitude"), coordinate("longitude")) else {
+        return address;
+    };
+    let mut a = address.unwrap_or_else(|| {
+        let mut empty = address_text("");
+        empty["address_raw"] = Value::Null;
+        empty
+    });
+    a["latitude"] = json!(lat);
+    a["longitude"] = json!(lon);
+    Some(a)
+}
+
+/// `{value, unit_code, area_type, raw}` from a QuantitativeValue
+/// (`unitCode` MTK, FTK or ACR) or text such as `120 m²`, `1,250 sq ft`
+/// or `0.5 acres`. `area_type` is left null for the caller.
+pub fn area(v: &Value) -> Option<Value> {
+    static AREA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(\d[\d,]*(?:\.\d+)?)\s*(m²|m2\b|sq\.?\s*m\b|sqm\b|square met(?:er|re)s?|sq\.?\s*ft\b|sqft\b|ft²|square f(?:ee|oo)t|acres?\b)",
+        )
+        .unwrap()
+    });
+    let unit = |u: &str| {
+        let u = u.to_ascii_lowercase();
+        Some(match u.as_str() {
+            "mtk" => "SQMT",
+            "ftk" => "SQFT",
+            "acr" => "ACRE",
+            _ if u.starts_with("acre") => "ACRE",
+            _ if u.contains("ft") || u.contains("feet") || u.contains("foot") => "SQFT",
+            _ if u.starts_with('m') || u.contains("met") || u.ends_with('m') => "SQMT",
+            _ => return None,
+        })
+    };
+    let (value, unit_code, raw) = match v {
+        Value::Object(o) => {
+            let value = o.get("value").and_then(number)?;
+            let code = o
+                .get("unitCode")
+                .or_else(|| o.get("unitText"))
+                .and_then(text)?;
+            let shown = match o.get("value")? {
+                Value::Number(n) => n.to_string(),
+                other => text(other)?,
+            };
+            (value, unit(code.trim())?, format!("{shown} {code}"))
+        }
+        other => {
+            let t = text(other)?;
+            let c = AREA.captures(&t)?;
+            let value: f64 = c[1].replace(',', "").parse().ok()?;
+            (value, unit(&c[2])?, c[0].to_string())
+        }
+    };
+    (value > 0.0)
+        .then(|| json!({"value": value, "unit_code": unit_code, "area_type": null, "raw": raw}))
+}
+
+/// A whole number from a number, numeric text or a QuantitativeValue.
+pub(crate) fn whole(v: &Value) -> Option<i64> {
+    match v {
+        Value::Object(o) => o.get("value").and_then(whole),
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
 /// An address as written, in `address_raw`, the other parts null.
 pub fn address_text(text: &str) -> Value {
     json!({
@@ -680,6 +756,8 @@ pub enum FieldKind {
     Media,
     /// `{address_raw, ...}`: the address as written.
     Address,
+    /// `{value, unit_code, area_type, raw}` from text such as `120 m²`.
+    Area,
 }
 
 /// A field's value from an element a person chose for it.
@@ -845,6 +923,7 @@ pub fn from_element(
             (!urls.is_empty()).then_some(Value::Array(urls))
         }
         FieldKind::Address => words().map(|t| address_text(&t)),
+        FieldKind::Area => words().and_then(|t| area(&Value::String(t))),
         FieldKind::Texts => {
             let lis: Vec<Node<'_>> = node
                 .descendants()
@@ -920,6 +999,7 @@ pub fn from_text(kind: FieldKind, text: &str, base: Option<&Url>, now: Civil) ->
         }
         FieldKind::Media => Some(json!([{"url": absolute(text, base)?}])),
         FieldKind::Address => self::text(&v).map(|t| address_text(&t)),
+        FieldKind::Area => area(&v),
         FieldKind::Texts => self::text(&v).map(|t| Value::Array(vec![Value::String(t)])),
     }
 }
