@@ -261,10 +261,25 @@ impl std::ops::Deref for TestBrowser {
 }
 
 /// Launches Chrome with `options`, once it's this test's turn.
+///
+/// A test's short timeout is for the wait it's about, and since a launch
+/// keeps to the same timeout, a busy runner's Chrome could miss it before
+/// the test began. Here launching is only setup, so a launch that timed
+/// out gets two more tries; the tests about launching call
+/// `Browser::launch` themselves.
 pub async fn launch(options: netweir_browser::LaunchOptions) -> TestBrowser {
     let turn = turn();
+    let mut tries = 0;
+    let browser = loop {
+        match netweir_browser::Browser::launch(options.clone()).await {
+            Err(netweir_browser::Error::Launch(m)) if m.contains("didn't answer") && tries < 2 => {
+                tries += 1;
+            }
+            other => break other.unwrap(),
+        }
+    };
     TestBrowser {
-        browser: netweir_browser::Browser::launch(options).await.unwrap(),
+        browser,
         _turn: turn,
     }
 }
