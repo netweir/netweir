@@ -893,7 +893,10 @@ pub(crate) fn read_thread(page: &Page<'_, '_>, item: &mut Builder) {
         if !posts.is_empty() {
             item.offer("posts", Some(Value::Array(posts)), label(t.source));
         }
-        item.probability = 0.9;
+        // A social post nobody has answered is a post, not a thread.
+        let lone =
+            t.types.iter().all(|ty| ty == "SocialMediaPosting") && !super::post::has_comments(t);
+        item.probability = if lone { 0.25 } else { 0.9 };
         return;
     }
     if !threads.is_empty() {

@@ -16,6 +16,7 @@ mod job;
 mod js_state;
 mod list;
 mod place;
+mod post;
 mod product;
 pub mod schema_org;
 
@@ -40,6 +41,7 @@ pub enum Schema {
     ForumThread,
     BusinessPlace,
     RealEstate,
+    SocialMediaPost,
 }
 
 impl Schema {
@@ -56,6 +58,7 @@ impl Schema {
             Schema::ForumThread => feeds::THREAD_FIELDS,
             Schema::BusinessPlace => place::FIELDS,
             Schema::RealEstate => estate::FIELDS,
+            Schema::SocialMediaPost => post::FIELDS,
         }
     }
 
@@ -73,13 +76,14 @@ impl Schema {
             Schema::ForumThread => "forum-thread",
             Schema::BusinessPlace => "business-place",
             Schema::RealEstate => "real-estate",
+            Schema::SocialMediaPost => "social-media-post",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
-    /// `article-navigation`, `forum-thread`, `business-place` or
-    /// `real-estate` (underscores work too).
+    /// `article-navigation`, `forum-thread`, `business-place`,
+    /// `real-estate` or `social-media-post` (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -93,6 +97,7 @@ impl Schema {
             "forum-thread" => Schema::ForumThread,
             "business-place" => Schema::BusinessPlace,
             "real-estate" => Schema::RealEstate,
+            "social-media-post" => Schema::SocialMediaPost,
             _ => return None,
         })
     }
@@ -117,7 +122,9 @@ impl Schema {
             | "review_sites"
             | "star_rating"
             | "reservation_action"
-            | "contained_in_place" => {
+            | "contained_in_place"
+            | "author"
+            | "reactions" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -148,7 +155,8 @@ impl Schema {
             "year_built" => K::Int,
             f if f.starts_with("number_of_") => K::Int,
             "map" | "website" => K::Url,
-            "categories" | "tags" => K::Texts,
+            "categories" | "tags" | "hashtags" => K::Texts,
+            "media_urls" => K::Media,
             f if f.ends_with("_raw") => K::Text,
             f if f.starts_with("date_") || f == "valid_through" || f == "job_start_date" => K::Date,
             _ => K::Text,
@@ -229,6 +237,7 @@ pub fn page_type(
         Schema::JobPosting,
         Schema::ProductList,
         Schema::ForumThread,
+        Schema::SocialMediaPost,
         Schema::ArticleList,
         Schema::JobPostingNavigation,
         Schema::Article,
@@ -289,6 +298,7 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::ForumThread => feeds::read_thread(ctx, &mut item),
         Schema::BusinessPlace => place::read(ctx, &mut item),
         Schema::RealEstate => estate::read(ctx, &mut item),
+        Schema::SocialMediaPost => post::read(ctx, &mut item),
     }
     item
 }

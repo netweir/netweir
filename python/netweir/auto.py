@@ -102,6 +102,13 @@ class RealEstate(Item):
     _schema = "real-estate"
 
 
+class SocialMediaPost(Item):
+    """A single social media post: its text, date, hashtags, media,
+    reactions and what the page says about its author."""
+
+    _schema = "social-media-post"
+
+
 __all__ = [
     "Article",
     "ArticleList",
@@ -114,4 +121,5 @@ __all__ = [
     "ProductList",
     "ProductNavigation",
     "RealEstate",
+    "SocialMediaPost",
 ]

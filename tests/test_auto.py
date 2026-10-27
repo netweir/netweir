@@ -78,6 +78,16 @@ def test_real_estate_to_rent_from_the_page():
     assert item["number_of_bedrooms"] == 2
 
 
+def test_a_social_post_and_its_hashtags():
+    p = page(fixture("post-jsonld"), url="https://social.example/ada/posts/77812")
+    assert p.page_type() == "social-media-post"
+    item = p.extract(netweir.auto.SocialMediaPost)
+    assert item["hashtags"] == ["rust", "Netweir"]
+    assert item["reactions"]["likes"] == 12
+    assert netweir.export._camel(item)["reactions"]["likes"] == 12
+    assert "mediaUrls" in netweir.export._camel(item)
+
+
 def test_a_pinned_address_is_read_as_an_address():
     class Kettle(netweir.auto.BusinessPlace):
         address = netweir.css("address")
