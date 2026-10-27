@@ -492,3 +492,56 @@ fn odd_tags_are_escaped_in_the_row_selector() {
     let r = read(&html).unwrap();
     selectors_hold(&html, &r);
 }
+
+#[test]
+fn small_record_selector_has_no_nth_child() {
+    let rows: String = (0..3)
+        .map(|i| {
+            format!(
+                r#"<div class="row"><b class="name">Item {i}</b><i class="value">Value {i}</i></div>"#
+            )
+        })
+        .collect();
+    let html = format!("<main>{rows}</main>");
+    let r = read(&html).unwrap();
+    assert!(!r.selector.contains(":nth-child"), "{}", r.selector);
+    selectors_hold(&html, &r);
+}
+
+#[test]
+fn table_selector_stops_at_max_rows() {
+    let rows: String = (0..5001)
+        .map(|i| {
+            let separator = if i % 1000 == 0 {
+                "<tr><th>Heading</th><th>Not a data row</th></tr>"
+            } else {
+                ""
+            };
+            format!("{separator}<tr><td>Item {i}</td><td>Value {i}</td></tr>")
+        })
+        .collect();
+    let html = format!("<table><tbody>{rows}</tbody></table>");
+    let r = read(&html).unwrap();
+    assert_eq!(r.rows.len(), 5000);
+    selectors_hold(&html, &r);
+}
+
+#[test]
+fn repeat_selector_stops_at_max_rows_with_other_siblings() {
+    let rows: String = (0..5001)
+        .map(|i| {
+            let separator = if i % 1000 == 0 {
+                "<div class=\"ad\"><b>Advertisement</b><i>Skip</i></div>"
+            } else {
+                ""
+            };
+            format!(
+                "{separator}<div class=\"row\"><b class=\"name\">Item {i}</b><i class=\"value\">Value {i}</i></div>"
+            )
+        })
+        .collect();
+    let html = format!("<main>{rows}</main>");
+    let r = read(&html).unwrap();
+    assert_eq!(r.rows.len(), 5000);
+    selectors_hold(&html, &r);
+}

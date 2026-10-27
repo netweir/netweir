@@ -82,11 +82,17 @@ pub fn records(root: Node<'_>, base: Option<&Url>) -> Option<Records> {
     match c {
         Candidate::Table(t, rows) => Some(read_table(t, &rows, base)),
         Candidate::Repeat(rows, tag, shared) => {
-            let mut selector = format!("{} > {}", css_path(rows[0].parent()?)?, escape(tag));
+            let mut row_selector = escape(tag);
             for c in &shared {
-                selector.push('.');
-                selector.push_str(&escape(c));
+                row_selector.push('.');
+                row_selector.push_str(&escape(c));
             }
+            let parent = css_path(rows[0].parent()?)?;
+            let selector = if rows.len() > MAX_ROWS {
+                format!("{parent} > {row_selector}:nth-child(-n+{MAX_ROWS} of {row_selector})")
+            } else {
+                format!("{parent} > {row_selector}")
+            };
             read_repeat(selector, &rows, base)
         }
     }
@@ -625,8 +631,17 @@ fn read_table<'a>(table: Node<'a>, rows: &[Node<'a>], base: Option<&Url>) -> Rec
         })
         .collect();
     let at = css_path(table).unwrap_or_else(|| "table".into());
+    let row_selector = "tr:has(> td)";
+    // ponytail: the cap applies per row parent, so tables split across multiple tbody elements can exceed MAX_ROWS.
+    let selector = if rows.len() > MAX_ROWS {
+        format!(
+            "{at} > * > {row_selector}:nth-child(-n+{MAX_ROWS} of {row_selector}), {at} > {row_selector}:nth-child(-n+{MAX_ROWS} of {row_selector})"
+        )
+    } else {
+        format!("{at} > * > {row_selector}, {at} > {row_selector}")
+    };
     Records {
-        selector: format!("{at} > * > tr:has(> td), {at} > tr:has(> td)"),
+        selector,
         columns: columns
             .into_iter()
             .zip(names)
