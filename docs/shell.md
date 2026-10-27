@@ -65,8 +65,10 @@ netweir extract --type article --field-names zyte https://paper.example/story
 ```
 
 `--type` is `product`, `product-list`, `product-navigation`,
-`job-posting` or `article`; without it, the command reads whichever the
-page looks like (see `page.page_type()`), and a page that looks like
+`job-posting`, `job-posting-navigation`, `article`, `article-list`,
+`article-navigation`, `forum-thread`, `business-place`, `real-estate`,
+`social-media-post`, `serp` or `page-content`; without it, the
+command reads whichever the page looks like (see `page.page_type()`), and a page that looks like
 none of them as a product, with a note saying so. The item ends with
 `metadata`, whose `sources` say where each field came from: `json-ld`, `microdata:` and the element's
 CSS path, `meta:` and the tag, `js:` and the path in the app's state, or

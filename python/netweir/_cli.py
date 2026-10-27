@@ -263,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     _fetch_options(fetch, browser=True)
     extract = commands.add_parser(
-        "extract", help="read a page's product, job or article without selectors, as JSON"
+        "extract",
+        help="read a page's product, job, article or other item without selectors, as JSON",
     )
     extract.add_argument("url")
     extract.add_argument(
