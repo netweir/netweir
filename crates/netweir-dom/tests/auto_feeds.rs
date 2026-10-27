@@ -992,3 +992,41 @@ fn many_classless_posts_are_quick() {
     );
     assert!(start.elapsed().as_secs_f64() < 6.0, "{:?}", start.elapsed());
 }
+
+#[test]
+fn a_blog_section_names_its_sub_categories() {
+    let html = r#"<html><body><h1>Journal</h1>
+      <ul class="categories"><li><a href="/journal/lighting">Lighting</a></li><li><a href="/journal/rooms">Rooms</a></li></ul>
+      <article><h2><a href="/journal/a">Light in winter</a></h2><time datetime="2026-10-01">1 Oct</time></article>
+      <article><h2><a href="/journal/b">Small rooms</a></h2><time datetime="2026-09-20">20 Sep</time></article>
+      <article><h2><a href="/journal/c">Lamps for reading</a></h2><time datetime="2026-09-02">2 Sep</time></article>
+      </body></html>"#;
+    let doc = netweir_dom::Document::parse(html);
+    let url = url::Url::parse("https://lumo.example/journal").unwrap();
+    let item = netweir_dom::auto::extract(
+        netweir_dom::auto::Schema::ArticleNavigation,
+        doc.root(),
+        Some(&url),
+        None,
+        netweir_dom::date::Civil::date(2026, 10, 25),
+    );
+    let subs = &item
+        .fields
+        .iter()
+        .find(|(f, _)| *f == "sub_categories")
+        .unwrap()
+        .1;
+    let urls: Vec<&str> = subs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://lumo.example/journal/lighting",
+            "https://lumo.example/journal/rooms"
+        ]
+    );
+}

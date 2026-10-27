@@ -214,6 +214,55 @@ In a callback, `page.extract(netweir.auto.Product)` or
 URL its links are relative to: `netweir.auto.Product.extract(root,
 url="https://shop.example/p/arc-lamp")`.
 
+## A whole site from one URL
+
+You have a shop's address and want every product on it. You don't
+want to work out where its categories live or how it pages. The
+templates do that part:
+
+```
+netweir crawl ecommerce --url https://shop.example/ -o products.jsonl
+netweir crawl article --url https://blog.example/journal -o posts.jsonl
+netweir crawl job --url https://jobs.example/search?q=baker -o jobs.jsonl
+```
+
+Each reads the navigation on every listing it reaches (the items, the
+next page, the sub-categories) with the navigation types above, and
+extracts the items it lists. No selectors, and no Python per page.
+`--strategy` says how far it goes:
+
+| Strategy | Goes |
+|---|---|
+| `navigation` | through sub-categories and next pages, taking every item listed |
+| `pagination_only` | through the start listing's pages only |
+| `full` | everywhere on the site; any page that is an item gives one, even if no listing shows it |
+| `direct_item` | nowhere: the start URLs are the items. For checking a few pages every day |
+| `automatic` | `full` from a home page, `navigation` from anywhere else. The default |
+
+Every strategy stays on the start URLs' sites. The usual settings stop
+it sooner: `-s max_pages=500`, `-s max_items=1000`, `-s max_depth=4`.
+
+They're Spiders, so you can subclass one, for instance to pin a field
+the site gets wrong:
+
+```python
+class Lumo(netweir.auto.Product):
+    price = netweir.css("span.sale")
+
+
+class Shop(netweir.templates.Ecommerce):
+    start_urls = ["https://shop.example/c/lamps"]
+    strategy = "navigation"
+    item = Lumo
+```
+
+The rules they're made of work in any spider.
+`netweir.Follow(navigation=netweir.auto.ProductNavigation, part="items",
+extract=Lumo)` follows the items a page lists. `part="next_page"` and
+`part="sub_categories"` follow the rest of its navigation. And
+`netweir.Extract(Lumo, when="product")` takes the item from any page
+the rules reach that reads as a product.
+
 ## Field readers on their own
 
 The readers behind the fields work on any text:

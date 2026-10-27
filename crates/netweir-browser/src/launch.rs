@@ -2,7 +2,7 @@
 
 use std::io::{PipeReader, PipeWriter};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::{Error, Result};
@@ -651,7 +651,7 @@ pub(crate) fn check_profile(executable: &Path, dir: &Path) -> Result<()> {
 }
 
 impl Said {
-    fn read(stderr: ChildStderr) -> Said {
+    fn read(stderr: PipeReader) -> Said {
         let said = Said::default();
         let writing = said.clone();
         let _ = std::thread::Builder::new()
@@ -720,6 +720,63 @@ impl Said {
     }
 }
 
+/// A pipe whose ends no process started from now on comes by, unless
+/// it's handed them. Elsewhere std's pipe is that already: its ends are
+/// made close-on-exec as they're made.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+    std::io::pipe()
+}
+
+/// macOS has no pipe2, so std's pipe is made open to every process and
+/// only then marked close-on-exec; a process the program starts in
+/// between, on any thread, keeps its ends. One that kept Chrome's
+/// writing end held the pipe open past Chrome's death, which then went
+/// unseen. A named pipe's ends are opened close-on-exec instead, at
+/// once, and the name is gone before they're used.
+#[cfg(target_os = "macos")]
+pub(crate) fn pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = loop {
+        let path = std::env::temp_dir().join(format!(
+            "netweir-pipe-{}-{}",
+            std::process::id(),
+            COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } == 0 {
+            break path;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(e);
+        }
+    };
+    // Read first, without waiting for a writer, then write, which has its
+    // reader. std opens everything close-on-exec.
+    let ends = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .and_then(|reader| {
+            let writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+            Ok((reader, writer))
+        });
+    let _ = std::fs::remove_file(&path);
+    let (reader, writer) = ends?;
+    if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, 0) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((
+        PipeReader::from(std::os::fd::OwnedFd::from(reader)),
+        PipeWriter::from(std::os::fd::OwnedFd::from(writer)),
+    ))
+}
+
 /// Taken while a process is started with handles made inheritable for it
 /// (see start).
 static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -734,14 +791,17 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     let failed =
         |e: std::io::Error| Error::Launch(format!("can't start {}: {e}", executable.display()));
     // Chrome reads commands from one pipe and writes replies to the other.
-    let (chrome_reads, commands) = std::io::pipe().map_err(failed)?;
-    let (replies, chrome_writes) = std::io::pipe().map_err(failed)?;
+    let (chrome_reads, commands) = pipe().map_err(failed)?;
+    let (replies, chrome_writes) = pipe().map_err(failed)?;
+    // Its stderr too, so no process started meanwhile keeps the writing
+    // end and Said waits on it after Chrome has gone.
+    let (stderr, chrome_says) = pipe().map_err(failed)?;
     let mut command = Command::new(executable);
     command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::from(chrome_says));
     // In a group of its own, which its helpers join: what the watcher
     // ends (see tie).
     #[cfg(unix)]
@@ -758,22 +818,25 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     // turns through that window, and each starts its watcher in its own
     // turn: a watcher started during another launch's window took that
     // Chrome's ends and kept them for as long as it ran.
-    let (mut child, lifeline) = {
+    let (child, lifeline) = {
         let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
         hand_over(&mut command, &chrome_reads, &chrome_writes).map_err(failed)?;
         let child = command.spawn().map_err(failed)?;
-        // Our copies of Chrome's ends must close, or we'd never see it exit.
-        drop((chrome_reads, chrome_writes));
+        // Our copies of Chrome's ends must close, or we'd never see it exit;
+        // the command holds its stderr's.
+        drop((chrome_reads, chrome_writes, command));
         let lifeline = tie(&child);
         (child, lifeline)
     };
+    #[cfg(windows)]
+    let mut child = child;
     #[cfg(windows)]
     if let Err(e) = resume(&child) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(failed(e));
     }
-    let said = child.stderr.take().map(Said::read).unwrap_or_default();
+    let said = Said::read(stderr);
     Ok(Started {
         child,
         commands,
@@ -804,7 +867,7 @@ const WATCH: &str = "exec >/dev/null 2>&1; read _; kill -INT \"$1\"; n=0; \
 fn tie(chrome: &Child) -> Lifeline {
     use std::os::unix::process::CommandExt;
 
-    let watcher = std::io::pipe().and_then(|(held, end)| {
+    let watcher = pipe().and_then(|(held, end)| {
         let watcher = Command::new("/bin/sh")
             .args(["-c", WATCH, "netweir-watch", &chrome.id().to_string()])
             .stdin(held)
@@ -1017,7 +1080,7 @@ fn watch(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<(PipeWriter
     // the program's own folder nor an environment that may be empty.
     let system = system_dir()?;
     let ping = system.join("PING.EXE");
-    let (held, end) = std::io::pipe()?;
+    let (held, end) = pipe()?;
     let mut command = Command::new(system.join("cmd.exe"));
     command
         .raw_arg(format!(
@@ -1424,6 +1487,73 @@ pub(crate) fn running(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pipe made while another thread starts processes is none of
+    /// theirs: once its writer is dropped, its reader reads the end, with
+    /// every process started meanwhile still running. A Chrome that came
+    /// by another's end of its pipe would hide that one's death.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_made_while_processes_start_reaches_none_of_them() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+
+        // Processes lasting a second, past each check below, started for
+        // two seconds.
+        let starter = std::thread::spawn(|| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            std::iter::from_fn(|| (std::time::Instant::now() < until).then_some(()))
+                .map(|_| {
+                    Command::new("sleep")
+                        .arg("1")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap()
+                })
+                .collect::<Vec<_>>()
+        });
+        let ended = |reader: &mut PipeReader| {
+            let read = reader.read(&mut [0]);
+            !matches!(read, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        };
+        // Pipes made on eight threads at once, so most moments have one
+        // being made.
+        let held: usize = std::thread::scope(|s| {
+            let makers: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut held = 0;
+                        while !starter.is_finished() {
+                            let (mut reader, writer) = pipe().unwrap();
+                            drop(writer);
+                            unsafe {
+                                libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK)
+                            };
+                            // A process still starting holds it for a
+                            // moment, whatever it's marked; one that came
+                            // by it holds it for good.
+                            if !ended(&mut reader) {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                held += usize::from(!ended(&mut reader));
+                            }
+                        }
+                        held
+                    })
+                })
+                .collect();
+            makers.into_iter().map(|m| m.join().unwrap()).sum()
+        });
+        for mut child in starter.join().unwrap() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert_eq!(
+            held, 0,
+            "{held} pipes were held by processes started meanwhile"
+        );
+    }
 
     #[test]
     fn switches_from_the_environment_are_split_on_whitespace() {

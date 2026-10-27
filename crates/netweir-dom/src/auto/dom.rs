@@ -1133,10 +1133,12 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     let layout = Layout::of(page.root);
     let (h1, title) = heading(page.root, &layout)?;
     let schema = super::Schema::JobPosting;
-    let facts = labelled(page.root, &layout, &JOB_LABELS, |field, text| {
+    let mut facts = labelled(page.root, &layout, &JOB_LABELS, |field, text| {
         let kind = schema.kind_of(field)?;
         f::from_text(kind, text.trim(), page.base, page.now)
     });
+    // A board's cards each hold another job's facts.
+    facts.retain(|(_, _, n)| !in_listed_card(*n));
     let area = std::iter::successors(Some(h1), |n| n.parent())
         .find(|n| matches!(n.tag(), Some("article" | "main")))
         .or_else(|| std::iter::successors(Some(h1), |n| n.parent()).nth(3))
@@ -1185,9 +1187,11 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                 }
                 let s = f::salary(&Value::String(t.to_string()))?;
                 let parent = n.parent()?;
+                // One of a board's cards is another job's salary.
                 (!s["currency_raw"].is_null()
                     && !s["rate_type"].is_null()
-                    && !in_boilerplate(parent))
+                    && !in_boilerplate(parent)
+                    && !in_listed_card(parent))
                 .then_some((s, parent))
             })
     };
@@ -1276,6 +1280,26 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     Some(0.5)
 }
 
+/// Whether `n` sits in one of several look-alike cards, each holding a
+/// link and a title (a heading, or something classed as one): an entry
+/// of a list, not the page's own. A job's own facts, a row each with a
+/// link to more jobs in Leeds, have no title.
+fn in_listed_card(n: Node<'_>) -> bool {
+    std::iter::successors(n.parent(), |a| a.parent())
+        .take(CARD_DEPTH)
+        .take_while(|a| !matches!(a.tag(), Some("body" | "html" | "main" | "article") | None))
+        .find(|a| {
+            a.descendants()
+                .any(|d| d.tag() == Some("a") && d.attr("href").is_some())
+        })
+        .is_some_and(|card| {
+            card.descendants().any(|d| {
+                matches!(d.tag(), Some("h2" | "h3" | "h4" | "h5" | "h6"))
+                    || words(d).any(|w| w.eq_ignore_ascii_case("title"))
+            }) && card.similar(crate::similar::SIMILAR).len() >= 2
+        })
+}
+
 /// Whether `url` is `page` written another way: the same host, path
 /// (with or without its trailing slash) and query.
 fn same_page(page: &Url, url: &str) -> bool {
@@ -1291,4 +1315,254 @@ fn same_page(page: &Url, url: &str) -> bool {
     page.host_str() == other.host_str()
         && path(page) == path(&other)
         && query(page) == query(&other)
+}
+
+/// Links looked at for sub-categories, and kept, at most.
+const MAX_LINKS_READ: usize = 20_000;
+const MAX_SUB_CATEGORIES: usize = 200;
+
+/// Words in a link's text that make it the site's furniture, not a
+/// category.
+const FURNITURE: &[&str] = &[
+    "login", "log in", "sign in", "sign up", "register", "account", "basket", "cart", "bag",
+    "checkout", "wishlist", "help", "contact", "about", "privacy", "terms", "cookies", "faq",
+    "delivery", "returns", "careers", "home",
+];
+
+/// Path segments of links that do something rather than show a category.
+const ACTIONS: &[&str] = &[
+    "add",
+    "compare",
+    "product_compare",
+    "cart",
+    "basket",
+    "wishlist",
+    "login",
+    "logout",
+    "account",
+    "checkout",
+    "share",
+];
+
+/// Query parameters that page, sort or display the same listing.
+const LISTING_PARAMS: &[&str] = &[
+    "page", "p", "pg", "start", "offset", "sort", "order", "orderby", "dir", "limit", "mode",
+    "view", "per_page", "display",
+];
+
+/// How sure a link is a sub-category: in a list marked as the page's
+/// sub-categories or one level below its path; in a list marked as
+/// categories; in a home page's menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rank {
+    Menu,
+    Marked,
+    Sub,
+}
+
+/// The categories a page leads to, `{url, name}` each, with the source of
+/// the first. Links in a list marked as sub-categories (`subcategories`,
+/// or `categories`, `departments`, `collections`) or one level below the
+/// page's own path (`/c/lamps/desk` on `/c/lamps`) come first; on a home
+/// page with none, its main menu. A list counts as marked by its own
+/// classes, a few levels up at most, and not when it's a list of products
+/// (`category-products`, `featured-collection`). Never the page itself or
+/// another page or sort of it, an item in `items` or a priced card, a
+/// link off the site, in a footer, the breadcrumbs or a language
+/// switcher, or one that does something (add to basket, compare, sign in).
+pub(crate) fn sub_categories(
+    root: Node<'_>,
+    page: Option<&Url>,
+    base: Option<&Url>,
+    items: &HashSet<String>,
+) -> Option<(Vec<Value>, String)> {
+    let page = page?;
+    let layout = Layout::of(root);
+    let trail = breadcrumbs(root);
+    let lower_words = |n: Node<'_>| words(n).map(str::to_ascii_lowercase).collect::<Vec<_>>();
+    let footer = |n: Node<'_>| {
+        std::iter::successors(Some(n), |p| p.parent()).any(|p| {
+            p.tag() == Some("footer")
+                || p.attr("role") == Some("contentinfo")
+                || trail == Some(p)
+                || lower_words(p).iter().any(|w| w == "footer")
+        })
+    };
+    let languages = |n: Node<'_>| {
+        n.attr("hreflang").is_some()
+            || std::iter::successors(Some(n), |p| p.parent())
+                .take(4)
+                .any(|p| {
+                    lower_words(p).iter().any(|w| {
+                        matches!(
+                            w.as_str(),
+                            "lang" | "language" | "languages" | "locale" | "locales" | "country"
+                        )
+                    })
+                })
+    };
+    let marked = |n: Node<'_>| -> Option<Rank> {
+        std::iter::successors(n.parent(), |p| p.parent())
+            .take(4)
+            .take_while(|p| !matches!(p.tag(), Some("body" | "html" | "main") | None))
+            .find_map(|p| {
+                let w = lower_words(p);
+                if w.iter()
+                    .any(|w| w.contains("product") || w.contains("featured") || w == "items")
+                {
+                    return None;
+                }
+                let label = p
+                    .attr("aria-label")
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_default();
+                if w.iter().any(|w| w.starts_with("subcat")) || label.contains("subcategor") {
+                    Some(Rank::Sub)
+                } else if w.iter().any(|w| {
+                    ["categor", "department", "collection"]
+                        .iter()
+                        .any(|k| w.starts_with(k))
+                }) || label.contains("categor")
+                    || label.contains("department")
+                {
+                    Some(Rank::Marked)
+                } else {
+                    None
+                }
+            })
+    };
+    let in_menu = |n: Node<'_>| {
+        std::iter::successors(n.parent(), |p| p.parent()).any(|p| {
+            matches!(p.tag(), Some("nav" | "header"))
+                || p.attr("role") == Some("navigation")
+                || lower_words(p).iter().any(|w| {
+                    matches!(
+                        w.as_str(),
+                        "menu" | "nav" | "navbar" | "navigation" | "header" | "megamenu"
+                    )
+                })
+        })
+    };
+    let own_path = page.path().trim_end_matches('/').to_string();
+    let home = own_path.is_empty()
+        || (["/index.php", "/index.html", "/home"]
+            .iter()
+            .any(|h| own_path == *h)
+            && page.query().is_none_or(|q| q.contains("home")));
+    let child = |u: &Url| {
+        !own_path.is_empty()
+            && u.path()
+                .trim_end_matches('/')
+                .strip_prefix(&own_path)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+    };
+    let params = |u: &Url| -> Vec<(String, String)> {
+        let mut q: Vec<(String, String)> = u
+            .query_pairs()
+            .into_owned()
+            .filter(|(k, _)| !LISTING_PARAMS.contains(&k.to_ascii_lowercase().as_str()))
+            .collect();
+        q.sort();
+        q
+    };
+    let own_params = params(page);
+    let locale = |u: &Url| {
+        let p = u.path().trim_matches('/');
+        let (lang, region) = p.split_once(['-', '_']).unwrap_or((p, ""));
+        lang.len() == 2
+            && lang.chars().all(|c| c.is_ascii_alphabetic())
+            && (region.is_empty()
+                || (region.len() == 2 && region.chars().all(|c| c.is_ascii_alphabetic())))
+    };
+    // (url, name, node, rank)
+    let mut found: Vec<(String, String, Node<'_>, Rank)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for a in root
+        .descendants()
+        .filter(|n| n.tag() == Some("a"))
+        .take(MAX_LINKS_READ)
+    {
+        let Some(href) = a.attr("href").map(str::trim) else {
+            continue;
+        };
+        if href.is_empty()
+            || href.starts_with('#')
+            || href.to_ascii_lowercase().starts_with("javascript:")
+        {
+            continue;
+        }
+        let Some(mut url) = base.unwrap_or(page).join(href).ok() else {
+            continue;
+        };
+        url.set_fragment(None);
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str() != page.host_str()
+            || items.contains(url.as_str())
+            || url.path_segments().is_some_and(|mut s| {
+                s.any(|seg| ACTIONS.contains(&seg.to_ascii_lowercase().as_str()))
+            })
+        {
+            continue;
+        }
+        let rank = if child(&url) {
+            Some(Rank::Sub)
+        } else {
+            marked(a)
+        };
+        // The page itself, or another page or order of it, unless a
+        // marked list sends it to another category by its query.
+        if url.path().trim_end_matches('/') == own_path
+            && (rank.is_none() || params(&url) == own_params)
+        {
+            continue;
+        }
+        let rank = match rank {
+            Some(r) => r,
+            None if home && in_menu(a) => Rank::Menu,
+            None => continue,
+        };
+        let name = a.text().split_whitespace().collect::<Vec<_>>().join(" ");
+        let lower = name.to_ascii_lowercase();
+        if name.is_empty()
+            || name.chars().count() > 60
+            || lower.starts_with("my ")
+            || FURNITURE.iter().any(|w| {
+                lower == *w
+                    || lower.starts_with(&format!("{w} "))
+                    || lower.ends_with(&format!(" {w}"))
+            })
+            || footer(a)
+            || languages(a)
+            || (home && locale(&url))
+            || layout.in_card(a)
+        {
+            continue;
+        }
+        let url = String::from(url);
+        if seen.insert(url.clone()) {
+            found.push((url, name, a, rank));
+        }
+    }
+    // The surest kind there is, the page's own sub-categories first.
+    let best = found.iter().map(|f| f.3).max()?;
+    let floor = if best == Rank::Menu {
+        Rank::Menu
+    } else {
+        Rank::Marked
+    };
+    found.retain(|f| f.3 >= floor);
+    found.sort_by_key(|f| std::cmp::Reverse(f.3));
+    found.truncate(MAX_SUB_CATEGORIES);
+    let source = source(found.first()?.2);
+    let list = found
+        .into_iter()
+        .map(|(url, name, ..)| {
+            let mut m = Map::new();
+            m.insert("url".into(), Value::String(url));
+            m.insert("name".into(), Value::String(name));
+            Value::Object(m)
+        })
+        .collect();
+    Some((list, source))
 }

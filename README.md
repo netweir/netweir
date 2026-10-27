@@ -96,7 +96,9 @@ Working today:
   Zyte's API uses, with where each field came from. When one field is
   wrong for a site, pin it with a selector and the rest stay automatic;
   it works in declarative spiders, and `netweir extract URL` tries it from
-  the command line. See [docs/extraction.md](docs/extraction.md).
+  the command line. `netweir crawl ecommerce --url URL` (or `article`,
+  `job`) crawls a whole site with it, finding the categories and pages
+  itself. See [docs/extraction.md](docs/extraction.md).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Downloader and spider

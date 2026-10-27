@@ -241,6 +241,12 @@ class Follow:
     and none of ``deny``. ``allow_domains`` and ``deny_domains`` do the same
     by site, a domain covering its subdomains.
 
+    With ``navigation`` (a navigation item type from ``netweir.auto``,
+    such as ``netweir.auto.ProductNavigation``) in place of a query, the
+    links are one ``part`` of the item auto-extraction reads from the page:
+    the ``"items"`` it lists, its ``"next_page"``, or its
+    ``"sub_categories"``. No selectors needed.
+
     ``browser=True`` fetches the pages it leads to in Chrome, so their item
     and links come from the page as its scripts built it. ``steps`` is
     what to do on each first (see ``netweir.steps``), in place of the
@@ -262,6 +268,7 @@ class Follow:
         "priority",
         "query",
         "steps",
+        "when",
     )
 
     def __init__(
@@ -269,6 +276,8 @@ class Follow:
         css: str | None = None,
         *,
         xpath: str | None = None,
+        navigation: type[Item] | None = None,
+        part: str | None = None,
         extract: type[Item] | None = None,
         callback: Callable[..., Any] | str | None = None,
         follow: bool | None = None,
@@ -280,13 +289,27 @@ class Follow:
         browser: bool = False,
         steps: Iterable[Any] | None = None,
     ):
-        if (css is None) == (xpath is None):
-            raise TypeError("Follow takes a css query or an xpath query, not both or neither")
+        if [css, xpath, navigation].count(None) != 2:
+            raise TypeError(
+                "Follow takes a css query, an xpath query or a navigation type: one of them"
+            )
+        if navigation is not None:
+            schema = getattr(navigation, "_schema", None)
+            if schema is None or not schema.endswith("navigation"):
+                raise TypeError("navigation= takes a navigation type from netweir.auto")
+            if part not in ("items", "next_page", "sub_categories"):
+                raise ValueError(f"part= is 'items', 'next_page' or 'sub_categories', not {part!r}")
+        elif part is not None:
+            raise TypeError("part= goes with navigation=")
         if extract is not None and not (isinstance(extract, type) and issubclass(extract, Item)):
             raise TypeError("extract= takes an Item subclass")
         if not isinstance(priority, int):
             raise TypeError(f"priority takes an int, not {priority!r}")
-        self.kind, self.query = ("css", css) if css is not None else ("xpath", xpath)
+        if navigation is not None:
+            self.kind, self.query = "navigation", f"{navigation._schema}:{part}"
+        else:
+            self.kind, self.query = ("css", css) if css is not None else ("xpath", xpath)
+        self.when = None
         self.extract = extract
         self.callback = callback
         self.follow = (extract is None and callback is None) if follow is None else follow
@@ -298,6 +321,22 @@ class Follow:
 
         self.steps = None if steps is None else _steps(steps, "Follow's steps")
         self.browser = bool(browser or self.steps)
+
+
+class Extract(Follow):
+    """A rule for a Spider's ``rules`` that takes ``item`` from the pages
+    the rules run on (the start pages, and those rules follow), rather
+    than from pages links lead to. With ``when``, a page type
+    (``"product"``, ``"article"``, ...; see ``Page.page_type``), only
+    from pages of that type. A page a rule already took an item from
+    gives no second one."""
+
+    def __init__(self, item: type[Item], *, when: str | None = None):
+        if not (isinstance(item, type) and issubclass(item, Item)):
+            raise TypeError("Extract takes an Item subclass")
+        super().__init__("a", extract=item, follow=False)
+        self.kind, self.query = "here", ""
+        self.when = when
 
 
 def _patterns(what: str, patterns: Iterable[str]) -> list[str]:

@@ -1069,6 +1069,7 @@ class _Run:
                 deny_domains=rule.deny_domains,
                 browser=rule.browser,
                 steps=self.rule_steps[-1],
+                when=rule.when,
             )
         # parse runs alongside the rules only if the spider writes its own.
         self.has_parse = type(spider).parse is not Spider.parse
@@ -2592,12 +2593,16 @@ class _Run:
         if self.rules and request.callback is None:
             # The rules read it, as they read a fetched page: the links
             # they find are queued in Rust.
-            error, ignored = self.engine.apply_rules(page._response, request.url, request.depth)
+            error, ignored, items = self.engine.apply_rules(
+                page._response, request.url, request.depth
+            )
             if error is not None:
                 log.warning("%s: %s", request.url, error)
             if ignored is not None:
                 self.counts["pages_ignored"] += 1
                 log.info("rules skipped %s: %s", request.url, ignored)
+            for event in items:
+                await self.dispatch(event)
             if not self.has_parse:
                 return
         rid = next(self.ids)

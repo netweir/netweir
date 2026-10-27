@@ -177,7 +177,29 @@ pub(crate) fn read_navigation(page: &Page<'_, '_>, item: &mut Builder) {
     if let Some((n, source)) = dom::page_number(page.root, page.page).filter(|_| listing) {
         item.offer("page_number", Some(Value::from(n)), source);
     }
+    offer_sub_categories(page, item);
     item.probability = probability(listed.as_ref(), cards.as_ref(), next.is_some());
+}
+
+/// The page's sub-categories, past the items it lists and its next page.
+pub(crate) fn offer_sub_categories(page: &Page<'_, '_>, item: &mut Builder) {
+    let mut skip: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for field in ["items", "next_page"] {
+        match item.get(field) {
+            Value::Array(list) => skip.extend(
+                list.iter()
+                    .filter_map(|i| i.get("url").and_then(Value::as_str))
+                    .map(str::to_string),
+            ),
+            Value::Object(link) => {
+                skip.extend(link.get("url").and_then(Value::as_str).map(str::to_string))
+            }
+            _ => {}
+        }
+    }
+    if let Some((list, source)) = dom::sub_categories(page.root, page.page, page.base, &skip) {
+        item.offer("sub_categories", Some(Value::Array(list)), source);
+    }
 }
 
 fn probability(listed: Option<&Listed>, cards: Option<&dom::Listing>, next: bool) -> f64 {

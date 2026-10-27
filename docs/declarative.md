@@ -80,6 +80,14 @@ from every page the rules apply to:
 | `browser=` | True fetches the pages the rule leads to in Chrome, so the item and links come from the page its scripts built |
 | `steps=` | what to do on those pages in Chrome before they're read, such as `[steps.click("button.load-more")]`; implies `browser=True`. See [Steps](steps.md#in-rules) |
 
+In place of a query, `navigation=` takes a navigation type from
+`netweir.auto` and `part=` names which of its links to take: `"items"`,
+`"next_page"` or `"sub_categories"`. They're read from each page without
+selectors (see [Auto-extraction](extraction.md#a-whole-site-from-one-url)).
+`netweir.Extract(item, when=None)` is a rule for the pages the rules run
+on rather than the pages they lead to: it takes `item` from each, or
+from those of page type `when` (`"product"`, `"article"`, ...).
+
 A matched element gives its `href`; a query ending in `::attr(...)` or
 `@attr` gives that value instead. Links are resolved the way a browser
 resolves them, deduplicated per page, and anything but http(s) is skipped.

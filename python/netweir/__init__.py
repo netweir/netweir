@@ -1,6 +1,6 @@
 """Fast web scraping with a Rust engine."""
 
-from netweir import auto, export, loader, repair, signals, steps
+from netweir import auto, export, loader, repair, signals, steps, templates
 from netweir._browser import browser, devices
 from netweir._crawl import Settings, Spider
 from netweir._errors import (
@@ -48,7 +48,7 @@ from netweir._native import (
     parse_salary,
 )
 from netweir._request import Request
-from netweir._rules import Follow, Item, clean_text, css, markdown, xpath
+from netweir._rules import Extract, Follow, Item, clean_text, css, markdown, xpath
 from netweir._stats import Stats
 
 __all__ = [
@@ -71,6 +71,7 @@ __all__ = [
     "DontCloseSpider",
     "DropItem",
     "Follow",
+    "Extract",
     "File",
     "Form",
     "IgnoreRequest",
@@ -120,6 +121,7 @@ __all__ = [
     "request",
     "signals",
     "steps",
+    "templates",
     "submit",
     "validate",
     "xpath",

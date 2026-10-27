@@ -25,7 +25,7 @@ use crate::date::Civil;
 use schema_org::{Source, Thing};
 
 /// The item types auto-extraction knows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Schema {
     Product,
     ProductList,
