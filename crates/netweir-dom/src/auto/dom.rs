@@ -1181,8 +1181,12 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                 let headline = std::iter::successors(n.parent(), |a| a.parent())
                     .take(3)
                     .any(|a| matches!(a.tag(), Some("h1" | "h2" | "h3" | "h4" | "h5" | "h6")));
-                // No words, no rate: `£9.99` isn't a salary.
-                if !starts || headline || !t.chars().any(char::is_alphabetic) {
+                // No words, no rate: `£9.99` isn't a salary. And `pcm`
+                // (per calendar month) is how lettings write a rent.
+                let rent = lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "pcm");
+                if !starts || headline || rent || !t.chars().any(char::is_alphabetic) {
                     return None;
                 }
                 let s = f::salary(&Value::String(t.to_string()))?;

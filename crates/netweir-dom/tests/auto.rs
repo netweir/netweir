@@ -339,3 +339,21 @@ fn areas_read_in_their_units() {
     assert_eq!(q["raw"], "120 MTK");
     assert_eq!(read(json!("big")), None);
 }
+
+#[test]
+fn a_rent_is_not_a_salary() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/auto/estate-rent-dom.html"),
+    )
+    .unwrap();
+    let doc = Document::parse(&html);
+    let url = url::Url::parse("https://citylets.example/flat/5521").unwrap();
+    let job = extract(
+        Schema::JobPosting,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    );
+    assert!(job.probability < 0.1, "{}", job.probability);
+}
