@@ -116,6 +116,19 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends redis-server
       - if: runner.os == 'macOS'
         run: brew install redis
+      # A fresh runner's first Chrome start is the slow one, and a test
+      # with a few seconds' timeout can't wait for it: start it once here.
+      - name: Start Chrome once
+        shell: bash
+        run: |
+          uv run python - <<'EOF'
+          import asyncio, netweir
+
+          async def start():
+              await (await netweir.browser(timeout=120)).close()
+
+          asyncio.run(start())
+          EOF
       # A hung test fails the step, which keeps its log; cancelling the
       # run instead loses it.
       - run: cargo test --workspace --exclude netweir-py
