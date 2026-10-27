@@ -238,8 +238,11 @@ fn hostile_layouts_are_bounded() {
             let start = std::time::Instant::now();
             extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
             let took = start.elapsed();
+            // About a second at most in a debug build on a laptop, and
+            // twice that on a busy CI runner. Quadratic work on 150,000
+            // spans would take minutes.
             assert!(
-                took.as_secs_f64() < 2.0,
+                took.as_secs_f64() < 5.0,
                 "case {case}, {schema:?}: {took:?}"
             );
         }
