@@ -346,24 +346,42 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         .find(|n| n.tag() == Some("main"))
         .unwrap_or(root);
     let (price_node, money) = shown_price(main)?;
-    // The fact and the smallest element that says it.
+    // Each text, once: an element's own words, not all it holds, so a
+    // page nested thousands deep is read in one pass.
+    let texts: Vec<(Node<'_>, String)> = main
+        .descendants()
+        .filter(|n| n.kind() == crate::NodeKind::Text)
+        .filter_map(|n| {
+            let t = n.data()?.split_whitespace().collect::<Vec<_>>().join(" ");
+            Some((n.parent()?, t)).filter(|(_, t)| !t.is_empty())
+        })
+        .collect();
+    // A property's facts come near the top of its page; reading only
+    // that much keeps a page of a million words quick.
+    let mut text = words(main).unwrap_or_default();
+    if text.len() > READ {
+        let mut end = READ;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    // The fact, and the element that says it whole (or the main content
+    // when it's split across elements).
     let fact = |re: &regex::Regex| -> Option<(i64, Node<'_>)> {
-        let found = |n: Node<'_>| {
-            let t = words(n)?;
-            let c = re.captures(&t)?;
+        let number = |t: &str| {
+            let c = re.captures(t)?;
             c.get(1).or(c.get(2))?.as_str().parse::<i64>().ok()
         };
-        let value = found(main)?;
-        let at = main
-            .descendants()
-            .filter(|n| n.tag().is_some() && found(*n) == Some(value))
-            .last()
-            .unwrap_or(main);
-        Some((value, holder(at)))
+        let value = number(&text)?;
+        let at = texts
+            .iter()
+            .find(|(_, t)| number(t) == Some(value))
+            .map_or(main, |(n, _)| holder(*n));
+        Some((value, at))
     };
     let beds = fact(&BEDS);
     let baths = fact(&BATHS);
-    let text = words(main).unwrap_or_default();
     let area = f::area(&Value::String(text.clone()));
     if [beds.is_some(), baths.is_some(), area.is_some()]
         .iter()
@@ -398,7 +416,12 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
         money.currency_raw.map(Value::String),
         src(price_node),
     );
-    let beside = price_node.parent().and_then(words).unwrap_or_default();
+    // The rent's period is written with the price (`£1,250 pcm`) or
+    // right after it.
+    let after = std::iter::successors(price_node.next_sibling(), |n| n.next_sibling())
+        .find_map(|n| words(n).filter(|w| w.len() <= 40))
+        .unwrap_or_default();
+    let beside = format!("{} {after}", words(price_node).unwrap_or_default());
     let rental = period(&beside);
     let lower = text.to_lowercase();
     let trade = if rental.is_some()
@@ -426,27 +449,40 @@ fn layout(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
     Some(if address.is_some() { 0.6 } else { 0.55 })
 }
 
+/// How much of the main content's text the facts are read from.
+const READ: usize = 20_000;
+
 /// The price the page shows: the first short text in the main content
 /// that reads as an amount with a currency, one marked as a price
 /// (`class="price"`) first. Not in a link, which would be another
 /// property's.
 fn shown_price(main: Node<'_>) -> Option<(Node<'_>, f::PriceFields)> {
+    // A property's own price comes early; a page of thousands of prices
+    // isn't one property's, and isn't read to the end.
+    const LOOKED: usize = 200;
     let mut first = None;
-    for n in main.descendants().filter(|n| n.tag().is_some()) {
-        if std::iter::successors(Some(n), |a| a.parent()).any(|a| a.tag() == Some("a")) {
+    let mut looked = 0;
+    for t in main
+        .descendants()
+        .filter(|n| n.kind() == crate::NodeKind::Text)
+    {
+        let Some(n) = t.parent() else { continue };
+        let raw = t.data().unwrap_or_default();
+        if raw.len() > 80 || !raw.bytes().any(|b| b.is_ascii_digit()) {
             continue;
         }
-        let Some(t) = words(n).filter(|t| t.len() <= 40) else {
+        looked += 1;
+        if looked > LOOKED {
+            break;
+        }
+        let Some(words) = words(n).filter(|w| w.len() <= 40) else {
             continue;
         };
-        let money = f::price_text(&t);
+        let money = f::price_text(&words);
         if money.price.is_none() || money.currency_raw.is_none() {
             continue;
         }
-        // The smallest element holding it.
-        if n.children().any(|c| {
-            c.tag().is_some() && words(c).is_some_and(|ct| f::price_text(&ct).price == money.price)
-        }) {
+        if std::iter::successors(Some(n), |a| a.parent()).any(|a| a.tag() == Some("a")) {
             continue;
         }
         if super::dom::marked(n, &super::dom::PRICE_WORDS) {

@@ -49,6 +49,24 @@ pub enum Schema {
 }
 
 impl Schema {
+    /// Every type, in the order they were added.
+    pub const ALL: [Schema; 14] = [
+        Schema::Product,
+        Schema::ProductList,
+        Schema::ProductNavigation,
+        Schema::JobPosting,
+        Schema::Article,
+        Schema::ArticleList,
+        Schema::ArticleNavigation,
+        Schema::JobPostingNavigation,
+        Schema::ForumThread,
+        Schema::BusinessPlace,
+        Schema::RealEstate,
+        Schema::SocialMediaPost,
+        Schema::Serp,
+        Schema::PageContent,
+    ];
+
     /// The type's fields, in the order items list them.
     pub fn fields(self) -> &'static [&'static str] {
         match self {

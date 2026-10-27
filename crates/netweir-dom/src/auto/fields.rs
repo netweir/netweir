@@ -686,7 +686,12 @@ pub fn opening_hours(v: &Value) -> Option<Value> {
         .unwrap()
     });
     let mut out = Vec::new();
-    for one in each(Some(v)) {
+    // A week's hours, with room for split shifts and seasons; a page
+    // listing more isn't listing one place's.
+    for one in each(Some(v)).take(MAX_HOURS) {
+        if out.len() >= MAX_HOURS {
+            break;
+        }
         match one {
             Value::Object(o) => {
                 let (Some(opens), Some(closes)) = (
@@ -704,7 +709,7 @@ pub fn opening_hours(v: &Value) -> Option<Value> {
             }
             other => {
                 let Some(t) = text(other) else { continue };
-                for c in SPAN.captures_iter(&t) {
+                for c in SPAN.captures_iter(&t).take(MAX_HOURS) {
                     if let Some(days) = weekdays(&c[1]) {
                         out.extend(hours_entries(c[1].trim(), &days, &c[2], &c[3]));
                     }
@@ -712,8 +717,12 @@ pub fn opening_hours(v: &Value) -> Option<Value> {
             }
         }
     }
+    out.truncate(MAX_HOURS);
     (!out.is_empty()).then_some(Value::Array(out))
 }
+
+/// The most opening hours entries an item keeps.
+const MAX_HOURS: usize = 100;
 
 /// What kind of value a field holds, which decides how an element a
 /// person picked for it is read.

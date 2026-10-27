@@ -125,17 +125,7 @@ fn hostile_structured_data_is_bounded() {
     for html in [deep, big] {
         let doc = Document::parse(&html);
         let start = std::time::Instant::now();
-        for schema in [
-            Schema::Product,
-            Schema::ProductList,
-            Schema::ProductNavigation,
-            Schema::JobPosting,
-            Schema::Article,
-            Schema::ArticleList,
-            Schema::ArticleNavigation,
-            Schema::JobPostingNavigation,
-            Schema::ForumThread,
-        ] {
+        for schema in Schema::ALL {
             extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
         }
         assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
@@ -225,16 +215,7 @@ fn hostile_layouts_are_bounded() {
     );
     for (case, html) in [cards, deep, spans].into_iter().enumerate() {
         let doc = Document::parse(&html);
-        for schema in [
-            Schema::Product,
-            Schema::ProductList,
-            Schema::ProductNavigation,
-            Schema::JobPosting,
-            Schema::ArticleList,
-            Schema::ArticleNavigation,
-            Schema::JobPostingNavigation,
-            Schema::ForumThread,
-        ] {
+        for schema in Schema::ALL {
             let start = std::time::Instant::now();
             extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
             let took = start.elapsed();
