@@ -357,3 +357,24 @@ fn a_rent_is_not_a_salary() {
     );
     assert!(job.probability < 0.1, "{}", job.probability);
 }
+
+#[test]
+fn serp_metadata_names_the_query() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/auto/serp-dom.html"),
+    )
+    .unwrap();
+    let doc = Document::parse(&html);
+    let url = url::Url::parse("https://search.example/search?q=rust+html+parser").unwrap();
+    let got = extract(
+        Schema::Serp,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    );
+    let meta: std::collections::HashMap<_, _> = got.extra_metadata.into_iter().collect();
+    assert_eq!(meta["searched_query"], "rust html parser");
+    assert_eq!(meta["displayed_query"], "rust html parser");
+    assert_eq!(meta["total_organic_results"], 1230);
+}

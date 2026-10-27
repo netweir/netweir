@@ -88,6 +88,15 @@ def test_a_social_post_and_its_hashtags():
     assert "mediaUrls" in netweir.export._camel(item)
 
 
+def test_serp_metadata_has_the_query():
+    p = page(fixture("serp-dom"), url="https://search.example/search?q=rust+html+parser")
+    assert p.page_type() == "serp"
+    item = p.extract(netweir.auto.Serp)
+    assert item["metadata"]["searched_query"] == "rust html parser"
+    assert item["metadata"]["total_organic_results"] == 1230
+    assert item["organic_results"][1]["url"] == "https://github.com/servo/html5ever"
+
+
 def test_a_pinned_address_is_read_as_an_address():
     class Kettle(netweir.auto.BusinessPlace):
         address = netweir.css("address")

@@ -209,6 +209,7 @@ class Node:
         "business-place",
         "real-estate",
         "social-media-post",
+        "serp",
         "other",
     ]: ...
     # attributes

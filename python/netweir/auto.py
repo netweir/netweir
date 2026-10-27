@@ -109,6 +109,14 @@ class SocialMediaPost(Item):
     _schema = "social-media-post"
 
 
+class Serp(Item):
+    """A search engine's results page: each organic result's title, link,
+    excerpt and rank. ``metadata`` adds the query and the count of
+    results the page states."""
+
+    _schema = "serp"
+
+
 __all__ = [
     "Article",
     "ArticleList",
@@ -121,5 +129,6 @@ __all__ = [
     "ProductList",
     "ProductNavigation",
     "RealEstate",
+    "Serp",
     "SocialMediaPost",
 ]

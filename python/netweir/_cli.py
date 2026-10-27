@@ -282,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             "business-place",
             "real-estate",
             "social-media-post",
+            "serp",
         ],
         help="what to read (default: what the page looks like)",
     )
@@ -742,6 +743,7 @@ def _extract(page, kind: str | None, field_names: str) -> None:
         "business-place": auto.BusinessPlace,
         "real-estate": auto.RealEstate,
         "social-media-post": auto.SocialMediaPost,
+        "serp": auto.Serp,
     }[kind].extract(page)
     if field_names == "zyte":
         item = _camel(item)

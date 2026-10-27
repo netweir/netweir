@@ -19,6 +19,7 @@ mod place;
 mod post;
 mod product;
 pub mod schema_org;
+mod serp;
 
 use serde_json::{Map, Value};
 use url::Url;
@@ -42,6 +43,7 @@ pub enum Schema {
     BusinessPlace,
     RealEstate,
     SocialMediaPost,
+    Serp,
 }
 
 impl Schema {
@@ -59,6 +61,7 @@ impl Schema {
             Schema::BusinessPlace => place::FIELDS,
             Schema::RealEstate => estate::FIELDS,
             Schema::SocialMediaPost => post::FIELDS,
+            Schema::Serp => serp::FIELDS,
         }
     }
 
@@ -77,13 +80,15 @@ impl Schema {
             Schema::BusinessPlace => "business-place",
             Schema::RealEstate => "real-estate",
             Schema::SocialMediaPost => "social-media-post",
+            Schema::Serp => "serp",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
     /// `article-navigation`, `forum-thread`, `business-place`,
-    /// `real-estate` or `social-media-post` (underscores work too).
+    /// `real-estate`, `social-media-post` or `serp` (underscores work
+    /// too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -98,6 +103,7 @@ impl Schema {
             "business-place" => Schema::BusinessPlace,
             "real-estate" => Schema::RealEstate,
             "social-media-post" => Schema::SocialMediaPost,
+            "serp" => Schema::Serp,
             _ => return None,
         })
     }
@@ -124,7 +130,9 @@ impl Schema {
             | "reservation_action"
             | "contained_in_place"
             | "author"
-            | "reactions" => {
+            | "reactions"
+            | "organic_results"
+            | "ai_overview" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -176,6 +184,9 @@ pub struct Extracted {
     pub probability: f64,
     /// Problems, by field (`item` for the item as a whole).
     pub validation: Vec<(&'static str, String)>,
+    /// What a type adds to `metadata` besides the usual: a SERP's query
+    /// and its count of results.
+    pub extra_metadata: Vec<(&'static str, Value)>,
 }
 
 /// The `schema` item on the page at `page`, its URL. `base` is what its
@@ -238,6 +249,7 @@ pub fn page_type(
         Schema::ProductList,
         Schema::ForumThread,
         Schema::SocialMediaPost,
+        Schema::Serp,
         Schema::ArticleList,
         Schema::JobPostingNavigation,
         Schema::Article,
@@ -299,6 +311,7 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::BusinessPlace => place::read(ctx, &mut item),
         Schema::RealEstate => estate::read(ctx, &mut item),
         Schema::SocialMediaPost => post::read(ctx, &mut item),
+        Schema::Serp => serp::read(ctx, &mut item),
     }
     item
 }
@@ -465,6 +478,7 @@ pub(crate) struct Builder {
     /// the reader knows the page isn't about the item it read.
     pub type_cap: Option<f64>,
     validation: Vec<(&'static str, String)>,
+    extra_metadata: Vec<(&'static str, Value)>,
 }
 
 impl Builder {
@@ -477,6 +491,7 @@ impl Builder {
             probability: 0.0,
             type_cap: None,
             validation: Vec::new(),
+            extra_metadata: Vec::new(),
         }
     }
 
@@ -535,6 +550,13 @@ impl Builder {
         self.sources[i] = Some(source);
     }
 
+    /// Adds `key` to the item's `metadata`.
+    pub fn meta(&mut self, key: &'static str, value: Value) {
+        if !value.is_null() {
+            self.extra_metadata.push((key, value));
+        }
+    }
+
     pub fn note(&mut self, field: &'static str, message: String) {
         self.validation.push((field, message));
     }
@@ -550,6 +572,7 @@ impl Builder {
             fields: names.iter().copied().zip(self.values).collect(),
             probability: self.probability,
             validation: self.validation,
+            extra_metadata: self.extra_metadata,
         }
     }
 }
