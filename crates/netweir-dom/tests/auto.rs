@@ -378,3 +378,45 @@ fn serp_metadata_names_the_query() {
     assert_eq!(meta["displayed_query"], "rust html parser");
     assert_eq!(meta["total_organic_results"], 1230);
 }
+
+#[test]
+fn item_main_xpath_finds_the_main_element() {
+    for (name, url) in [
+        ("content-page", "https://kitchen.example/notes/cast-iron"),
+        ("content-page-no-landmarks", "https://hall.example/times"),
+    ] {
+        let html = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/auto/{name}.html")),
+        )
+        .unwrap();
+        let doc = Document::parse(&html);
+        let url = url::Url::parse(url).unwrap();
+        let got = extract(
+            Schema::PageContent,
+            doc.root(),
+            Some(&url),
+            None,
+            Civil::date(2026, 10, 27),
+        );
+        let field = |f: &str| got.fields.iter().find(|(n, _)| *n == f).unwrap().1.clone();
+        let main = field("item_main");
+        let main = main
+            .as_str()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let path = field("item_main_xpath");
+        let found = netweir_dom::extract::Selector::xpath(path.as_str().unwrap())
+            .unwrap()
+            .hits(doc.root())
+            .unwrap();
+        assert_eq!(found.len(), 1, "{name}: {path}");
+        let netweir_dom::Hit::Node(n) = found[0] else {
+            panic!("{name}: not an element")
+        };
+        let text = netweir_dom::markdown::clean_text(n);
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains(&main[..40]), "{name}: {text}");
+    }
+}

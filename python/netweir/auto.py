@@ -117,12 +117,21 @@ class Serp(Item):
     _schema = "serp"
 
 
+class PageContent(Item):
+    """Any page's content: its main text and the XPath of the element
+    holding it, its headline and title, breadcrumbs, menus, pager and
+    next page."""
+
+    _schema = "page-content"
+
+
 __all__ = [
     "Article",
     "ArticleList",
     "ArticleNavigation",
     "BusinessPlace",
     "ForumThread",
+    "PageContent",
     "JobPosting",
     "JobPostingNavigation",
     "Product",

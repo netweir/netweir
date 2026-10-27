@@ -8,6 +8,7 @@
 //! item says so in its validation messages.
 
 mod article;
+mod content_page;
 mod dom;
 mod estate;
 mod feeds;
@@ -44,6 +45,7 @@ pub enum Schema {
     RealEstate,
     SocialMediaPost,
     Serp,
+    PageContent,
 }
 
 impl Schema {
@@ -62,6 +64,7 @@ impl Schema {
             Schema::RealEstate => estate::FIELDS,
             Schema::SocialMediaPost => post::FIELDS,
             Schema::Serp => serp::FIELDS,
+            Schema::PageContent => content_page::FIELDS,
         }
     }
 
@@ -81,14 +84,15 @@ impl Schema {
             Schema::RealEstate => "real-estate",
             Schema::SocialMediaPost => "social-media-post",
             Schema::Serp => "serp",
+            Schema::PageContent => "page-content",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
     /// `article-navigation`, `forum-thread`, `business-place`,
-    /// `real-estate`, `social-media-post` or `serp` (underscores work
-    /// too).
+    /// `real-estate`, `social-media-post`, `serp` or `page-content`
+    /// (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -104,6 +108,7 @@ impl Schema {
             "real-estate" => Schema::RealEstate,
             "social-media-post" => Schema::SocialMediaPost,
             "serp" => Schema::Serp,
+            "page-content" => Schema::PageContent,
             _ => return None,
         })
     }
@@ -132,7 +137,11 @@ impl Schema {
             | "author"
             | "reactions"
             | "organic_results"
-            | "ai_overview" => {
+            | "ai_overview"
+            | "navigation_header"
+            | "navigation_footer"
+            | "navigation_sidebar"
+            | "pagination" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -312,6 +321,7 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::RealEstate => estate::read(ctx, &mut item),
         Schema::SocialMediaPost => post::read(ctx, &mut item),
         Schema::Serp => serp::read(ctx, &mut item),
+        Schema::PageContent => content_page::read(ctx, &mut item),
     }
     item
 }

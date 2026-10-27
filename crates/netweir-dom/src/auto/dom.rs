@@ -983,7 +983,7 @@ fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Val
 
 /// A page's pagination widget: an element labelled or classed as one,
 /// with links in it.
-fn pagers(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
+pub(crate) fn pagers(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     root.descendants().filter(|n| {
         n.kind() == NodeKind::Element
             && (n

@@ -1,0 +1,88 @@
+{
+ "type": "page-content",
+ "url": "https://kitchen.example/notes/cast-iron",
+ "item": {
+  "url": "https://kitchen.example/notes/cast-iron",
+  "canonical_url": "https://kitchen.example/notes/cast-iron",
+  "headline": "Caring for cast iron",
+  "title": "Caring for cast iron - Kitchen Notes",
+  "item_main": "@body",
+  "item_main_xpath": "/html/body/div/main/article",
+  "breadcrumbs": [
+   {
+    "name": "Home",
+    "url": "https://kitchen.example/"
+   },
+   {
+    "name": "Notes",
+    "url": "https://kitchen.example/notes"
+   },
+   {
+    "name": "Cast iron",
+    "url": null
+   }
+  ],
+  "navigation_header": [
+   {
+    "name": "Kitchen Notes",
+    "url": "https://kitchen.example/"
+   },
+   {
+    "name": "Notes",
+    "url": "https://kitchen.example/notes"
+   },
+   {
+    "name": "Recipes",
+    "url": "https://kitchen.example/recipes"
+   },
+   {
+    "name": "About",
+    "url": "https://kitchen.example/about"
+   }
+  ],
+  "navigation_footer": [
+   {
+    "name": "Privacy",
+    "url": "https://kitchen.example/privacy"
+   },
+   {
+    "name": "Contact",
+    "url": "https://kitchen.example/contact"
+   }
+  ],
+  "navigation_sidebar": [
+   {
+    "name": "Sharpening knives",
+    "url": "https://kitchen.example/notes/knives"
+   },
+   {
+    "name": "Making stock",
+    "url": "https://kitchen.example/notes/stock"
+   }
+  ],
+  "pagination": [
+   {
+    "name": "1",
+    "url": "https://kitchen.example/notes/page/1"
+   },
+   {
+    "name": "3",
+    "url": "https://kitchen.example/notes/page/3"
+   }
+  ],
+  "next_page": {
+   "name": "Next",
+   "url": "https://kitchen.example/notes/page/3"
+  }
+ },
+ "sources": {
+  "item_main": "dom:article",
+  "navigation_header": "dom:header"
+ },
+ "probability": [
+  1.0,
+  1.0
+ ],
+ "validation": [],
+ "page_type": "other"
+}

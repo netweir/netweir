@@ -97,6 +97,15 @@ def test_serp_metadata_has_the_query():
     assert item["organic_results"][1]["url"] == "https://github.com/servo/html5ever"
 
 
+def test_page_content_keeps_menus_apart_from_the_text():
+    p = page(fixture("content-page"), url="https://kitchen.example/notes/cast-iron")
+    item = p.extract(netweir.auto.PageContent)
+    assert item["item_main"].startswith("Caring for cast iron")
+    assert "Privacy" not in item["item_main"]
+    assert [link["name"] for link in item["navigation_footer"]] == ["Privacy", "Contact"]
+    assert len(p.xpath(item["item_main_xpath"])) == 1
+
+
 def test_a_pinned_address_is_read_as_an_address():
     class Kettle(netweir.auto.BusinessPlace):
         address = netweir.css("address")
