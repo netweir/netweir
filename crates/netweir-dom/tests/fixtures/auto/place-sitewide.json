@@ -1,0 +1,8 @@
+{"type": "business-place", "url": "https://lumo.example/blog/spring-menu",
+ "item": {"url": "https://lumo.example/blog/spring-menu", "name": "Trattoria Lumo",
+  "address": {"address_raw": "1 Iron St, Manchester", "street_address": "1 Iron St",
+   "address_city": null, "address_locality": "Manchester", "address_region": null,
+   "address_country": null, "postal_code": null, "postal_code_aux": null,
+   "latitude": null, "longitude": null},
+  "categories": ["Restaurant"], "telephone": "+44 161 496 0000"},
+ "sources": {"name": "json-ld"}, "probability": [0.9, 1.0], "validation": [], "page_type": "article"}

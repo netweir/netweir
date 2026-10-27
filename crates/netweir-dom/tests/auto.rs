@@ -248,3 +248,76 @@ fn hostile_layouts_are_bounded() {
         }
     }
 }
+
+#[test]
+fn restaurant_subtype_is_a_business_place() {
+    let html = r#"<script type="application/ld+json">{"@context":"https://schema.org",
+        "@type":"Restaurant","name":"Lumo","url":"https://lumo.example/",
+        "address":{"@type":"PostalAddress","streetAddress":"1 Iron St"}}</script>"#;
+    let doc = Document::parse(html);
+    let url = url::Url::parse("https://lumo.example/").unwrap();
+    let got = extract(
+        Schema::BusinessPlace,
+        doc.root(),
+        Some(&url),
+        None,
+        Civil::date(2026, 10, 27),
+    );
+    let name = got.fields.iter().find(|(f, _)| *f == "name").unwrap();
+    assert_eq!(name.1, "Lumo");
+    assert!(got.probability >= 0.9, "{}", got.probability);
+}
+
+#[test]
+fn opening_hours_string_expands_per_day() {
+    use netweir_dom::auto::fields::opening_hours;
+    let got = opening_hours(&serde_json::json!(
+        "Mo-Fr 09:00-17:30, Sa 10:00-14:00, Su closed"
+    ))
+    .unwrap();
+    let days: Vec<&str> = got
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["day_of_week"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        days,
+        [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday"
+        ]
+    );
+    assert_eq!(
+        got[0],
+        serde_json::json!({"day_of_week": "Monday", "opens": "09:00:00", "closes": "17:30:00",
+            "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"})
+    );
+    assert_eq!(got[5]["closes"], "14:00:00");
+}
+
+#[test]
+fn a_postal_address_is_split_and_a_string_is_raw() {
+    use netweir_dom::auto::fields::address;
+    let got = address(&serde_json::json!({"streetAddress": "1 Iron St",
+        "addressLocality": "Manchester", "postalCode": "M1 1AA", "addressCountry": "GB"}))
+    .unwrap();
+    assert_eq!(got["street_address"], "1 Iron St");
+    assert_eq!(got["address_locality"], "Manchester");
+    assert_eq!(got["address_city"], serde_json::Value::Null);
+    assert_eq!(got["postal_code"], "M1 1AA");
+    assert_eq!(got["address_country"], "GB");
+    assert_eq!(got["address_raw"], "1 Iron St, Manchester, M1 1AA, GB");
+    let raw = address(&serde_json::json!("1 Iron St, Manchester")).unwrap();
+    assert_eq!(raw["address_raw"], "1 Iron St, Manchester");
+    assert_eq!(raw["street_address"], serde_json::Value::Null);
+    // A country written as an object gives its name.
+    let nested =
+        address(&serde_json::json!({"addressCountry": {"@type": "Country", "name": "GB"}}))
+            .unwrap();
+    assert_eq!(nested["address_country"], "GB");
+}

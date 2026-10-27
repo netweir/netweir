@@ -59,6 +59,25 @@ class Lamps(netweir.auto.Product):
     price = netweir.css("span.sale")
 
 
+def test_business_place_from_json_ld():
+    p = page(fixture("place-jsonld"), url="https://lumo.example/")
+    assert p.page_type() == "business-place"
+    item = p.extract(netweir.auto.BusinessPlace)
+    assert item["name"] == "Trattoria Lumo"
+    assert item["address"]["postal_code"] == "M1 1AA"
+    assert item["opening_hours"][0]["day_of_week"] == "Monday"
+    assert item["telephone"] == "+44 161 496 0000"
+
+
+def test_a_pinned_address_is_read_as_an_address():
+    class Kettle(netweir.auto.BusinessPlace):
+        address = netweir.css("address")
+
+    item = Kettle.extract(page(fixture("place-dom"), url="https://kettle.example/visit"))
+    assert item["address"]["address_raw"] == "14 Canal Walk, Hebden Bridge, HX7 8AD"
+    assert item["metadata"]["sources"]["address"] == "css:address"
+
+
 def test_override_one_field_keeps_the_rest():
     item = Lamps.extract(page(SALE))
     assert item["price"] == "9.50"

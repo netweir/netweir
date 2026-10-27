@@ -1,0 +1,16 @@
+{"type": "business-place", "url": "https://kettle.example/visit",
+ "item": {"url": "https://kettle.example/visit", "name": "The Copper Kettle",
+  "address": {"address_raw": "14 Canal Walk, Hebden Bridge, HX7 8AD", "street_address": null,
+   "address_city": null, "address_locality": null, "address_region": null,
+   "address_country": null, "postal_code": null, "postal_code_aux": null,
+   "latitude": null, "longitude": null},
+  "map": "https://www.openstreetmap.org/?mlat=53.74&mlon=-2.01",
+  "opening_hours": [
+   {"day_of_week": "Tuesday", "opens": "09:00:00", "closes": "17:00:00", "raw_day_of_week": "Tuesday", "raw_opens": "9:00", "raw_closes": "17:00"},
+   {"day_of_week": "Wednesday", "opens": "09:00:00", "closes": "17:00:00", "raw_day_of_week": "Wed", "raw_opens": "9:00", "raw_closes": "17:00"},
+   {"day_of_week": "Thursday", "opens": "09:00:00", "closes": "17:00:00", "raw_day_of_week": "Thursday", "raw_opens": "9am", "raw_closes": "5pm"},
+   {"day_of_week": "Friday", "opens": "09:00:00", "closes": "19:30:00", "raw_day_of_week": "Friday", "raw_opens": "9:00", "raw_closes": "19:30"},
+   {"day_of_week": "Saturday", "opens": "10:00:00", "closes": "18:00:00", "raw_day_of_week": "Saturday", "raw_opens": "10:00", "raw_closes": "18:00"}],
+  "telephone": "+441422555010"},
+ "sources": {"telephone": "dom:p > a", "address": "dom:address"},
+ "probability": [0.45, 0.55], "validation": [], "page_type": "business-place"}

@@ -14,6 +14,7 @@ pub mod fields;
 mod job;
 mod js_state;
 mod list;
+mod place;
 mod product;
 pub mod schema_org;
 
@@ -36,6 +37,7 @@ pub enum Schema {
     ArticleNavigation,
     JobPostingNavigation,
     ForumThread,
+    BusinessPlace,
 }
 
 impl Schema {
@@ -50,6 +52,7 @@ impl Schema {
             Schema::ArticleList => feeds::ARTICLE_LIST_FIELDS,
             Schema::ArticleNavigation | Schema::JobPostingNavigation => feeds::NAVIGATION_FIELDS,
             Schema::ForumThread => feeds::THREAD_FIELDS,
+            Schema::BusinessPlace => place::FIELDS,
         }
     }
 
@@ -65,12 +68,14 @@ impl Schema {
             Schema::ArticleNavigation => "article-navigation",
             Schema::JobPostingNavigation => "job-posting-navigation",
             Schema::ForumThread => "forum-thread",
+            Schema::BusinessPlace => "business-place",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
-    /// `article-navigation` or `forum-thread` (underscores work too).
+    /// `article-navigation`, `forum-thread` or `business-place`
+    /// (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -82,6 +87,7 @@ impl Schema {
             "article-navigation" => Schema::ArticleNavigation,
             "job-posting-navigation" => Schema::JobPostingNavigation,
             "forum-thread" => Schema::ForumThread,
+            "business-place" => Schema::BusinessPlace,
             _ => return None,
         })
     }
@@ -99,7 +105,14 @@ impl Schema {
             | "variants"
             | "additional_properties"
             | "articles"
-            | "posts" => {
+            | "posts"
+            | "opening_hours"
+            | "amenity_features"
+            | "actions"
+            | "review_sites"
+            | "star_rating"
+            | "reservation_action"
+            | "contained_in_place" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -124,6 +137,9 @@ impl Schema {
             "next_page" => K::Request,
             "page_number" => K::Int,
             "videos" | "audios" => K::Media,
+            "address" => K::Address,
+            "map" | "website" => K::Url,
+            "categories" | "tags" => K::Texts,
             f if f.ends_with("_raw") => K::Text,
             f if f.starts_with("date_") || f == "valid_through" || f == "job_start_date" => K::Date,
             _ => K::Text,
@@ -207,6 +223,7 @@ pub fn page_type(
         Schema::ArticleList,
         Schema::JobPostingNavigation,
         Schema::Article,
+        Schema::BusinessPlace,
     ] {
         let item = read(schema, &ctx);
         // Any page with a few paragraphs reads as an article from its main
@@ -228,6 +245,7 @@ pub fn page_type(
             }
             _ => item.probability,
         };
+        let weight = item.type_cap.map_or(weight, |cap| weight.min(cap));
         all.push((schema, item.probability));
         weights.push(weight);
     }
@@ -259,6 +277,7 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::ArticleNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Articles),
         Schema::JobPostingNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Jobs),
         Schema::ForumThread => feeds::read_thread(ctx, &mut item),
+        Schema::BusinessPlace => place::read(ctx, &mut item),
     }
     item
 }
@@ -421,6 +440,9 @@ pub(crate) struct Builder {
     values: Vec<Value>,
     sources: Vec<Option<String>>,
     pub probability: f64,
+    /// The most this item's probability counts for in `page_type`, when
+    /// the reader knows the page isn't about the item it read.
+    pub type_cap: Option<f64>,
     validation: Vec<(&'static str, String)>,
 }
 
@@ -432,6 +454,7 @@ impl Builder {
             values: vec![Value::Null; n],
             sources: vec![None; n],
             probability: 0.0,
+            type_cap: None,
             validation: Vec::new(),
         }
     }

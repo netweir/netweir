@@ -118,6 +118,40 @@ const SUBTYPES: &[(&str, &[&str])] = &[
         "Organization",
         &["Corporation", "LocalBusiness", "OnlineStore", "Store"],
     ),
+    // Places a business place is read from: a LocalBusiness and the
+    // kinds of one people look up most.
+    (
+        "Place",
+        &[
+            "LocalBusiness",
+            "Restaurant",
+            "FoodEstablishment",
+            "CafeOrCoffeeShop",
+            "BarOrPub",
+            "Bakery",
+            "FastFoodRestaurant",
+            "Hotel",
+            "LodgingBusiness",
+            "BedAndBreakfast",
+            "Store",
+            "AutoRepair",
+            "AutomotiveBusiness",
+            "Dentist",
+            "MedicalBusiness",
+            "Pharmacy",
+            "HealthAndBeautyBusiness",
+            "HairSalon",
+            "ProfessionalService",
+            "LegalService",
+            "FinancialService",
+            "RealEstateAgent",
+            "SportsActivityLocation",
+            "ExerciseGym",
+            "EntertainmentBusiness",
+            "Museum",
+            "TouristAttraction",
+        ],
+    ),
 ];
 
 pub(crate) fn is_a(ty: &str, wanted: &str) -> bool {

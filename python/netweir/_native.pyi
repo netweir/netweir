@@ -206,6 +206,7 @@ class Node:
         "article",
         "article-list",
         "forum-thread",
+        "business-place",
         "other",
     ]: ...
     # attributes

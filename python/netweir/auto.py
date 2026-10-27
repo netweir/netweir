@@ -88,10 +88,18 @@ class ForumThread(Item):
     _schema = "forum-thread"
 
 
+class BusinessPlace(Item):
+    """A shop's, restaurant's or other business's page: name, address,
+    phone, opening hours, rating, categories and more."""
+
+    _schema = "business-place"
+
+
 __all__ = [
     "Article",
     "ArticleList",
     "ArticleNavigation",
+    "BusinessPlace",
     "ForumThread",
     "JobPosting",
     "JobPostingNavigation",
