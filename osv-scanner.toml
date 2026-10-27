@@ -1,0 +1,47 @@
+# Advisories OSV-Scanner (and the OpenSSF Scorecard) report against
+# uv.lock that don't reach Netweir or its users. Scrapy and Twisted are in
+# the dev group only, for the Scrapy compatibility tests and the crawl
+# benchmark; nothing Netweir ships depends on either.
+
+# Scrapy 1.4's 2017 advisory has no fixed version in its record, so every
+# release matches it. It's about a feature as Scrapy 1.4 had it.
+[[IgnoredVulns]]
+id = "PYSEC-2017-83"
+reason = "Recorded against Scrapy 1.4 with no upper bound; dev-only dependency"
+
+# Twisted's fixes are only in 26.10.0rc1 so far. None of these parts of
+# Twisted run in Netweir's tests or benchmarks. Look again when 26.10 is out.
+[[IgnoredVulns]]
+id = "GHSA-2qrf-pqgx-qh9v"
+ignoreUntil = 2026-12-31
+reason = "Twisted IMAP4 server; unused, dev-only via Scrapy"
+
+[[IgnoredVulns]]
+id = "GHSA-8pqf-f4m5-798g"
+ignoreUntil = 2026-12-31
+reason = "Twisted IMAP4; unused, dev-only via Scrapy"
+
+[[IgnoredVulns]]
+id = "GHSA-3476-c5c2-fr73"
+ignoreUntil = 2026-12-31
+reason = "Twisted words (XMPP); unused, dev-only via Scrapy"
+
+[[IgnoredVulns]]
+id = "GHSA-53xc-49m8-p798"
+ignoreUntil = 2026-12-31
+reason = "Twisted IRC server; unused, dev-only via Scrapy"
+
+[[IgnoredVulns]]
+id = "GHSA-cwm5-jh59-mwxr"
+ignoreUntil = 2026-12-31
+reason = "Twisted conch Telnet; unused, dev-only via Scrapy"
+
+[[IgnoredVulns]]
+id = "GHSA-jj36-9pvh-vj5r"
+ignoreUntil = 2026-12-31
+reason = "twisted.names DNS client; Scrapy resolves through the system resolver; dev-only"
+
+[[IgnoredVulns]]
+id = "GHSA-q7qq-6mhp-9rc4"
+ignoreUntil = 2026-12-31
+reason = "twisted.web server request parsing; no Twisted server runs; dev-only via Scrapy"
