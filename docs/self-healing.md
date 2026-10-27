@@ -208,8 +208,8 @@ resumed run writes the next part beside it (`books.1.parquet`). A crawl
 that can't start leaves its output files as they were.
 
 With a checkpoint, callbacks are saved by name, so they must be methods of
-the spider, and `meta` must be JSON. Delete the directory to start the crawl
-over.
+the spider, and `meta` and `cb_kwargs` must be JSON. Delete the directory to
+start the crawl over.
 
 If a commit to the checkpoint fails (a full disk, or on Windows a file
 another program holds for a moment), the crawl warns once and carries on,

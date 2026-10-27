@@ -33,7 +33,11 @@ A callback receives a `Page` and yields (or returns) items and requests:
 A callback can be an async generator, a generator, a coroutine or a plain
 function. Override `start()` instead of setting `start_urls` when the first
 requests need more than a URL; it can be an async generator, a generator or
-return a list.
+return a list. A spider from before Scrapy 2.13 overrides `start_requests()`
+instead, and that works as it is: the default `start()` yields what
+`start_requests()` gives, and the default `start_requests()` gives
+`start_urls` and `sitemap_urls`, so `yield from super().start_requests()`
+adds to them.
 
 `allowed_domains` keeps a crawl on the sites you mean it to visit:
 
@@ -57,6 +61,7 @@ netweir.Request(
     callback="item",            # a method name, or a function
     errback="lost",             # called with (request, error) if no response arrives
     meta={"category": "tools"}, # comes back as page.meta
+    cb_kwargs={"shelf": "new"}, # called as item(page, shelf="new"); page.cb_kwargs too
     priority=5,                 # higher first, among one site's requests
     headers={"Accept-Language": "de-DE"},
     dont_filter=False,          # True fetches it even if seen before

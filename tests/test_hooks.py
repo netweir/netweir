@@ -1245,6 +1245,74 @@ def test_process_start_and_process_start_requests(base):
     assert sorted(items) == [base + "/extra", base + "/one"]
 
 
+def test_process_start_requests_sees_what_start_requests_yields(base):
+    seen = []
+
+    class Legacy:
+        def process_start_requests(self, start_requests, spider):
+            for request in start_requests:
+                seen.append(request.url)
+                yield request
+
+    class Old(netweir.Spider):
+        settings = FAST
+        spider_middlewares = [Legacy()]
+
+        def start_requests(self):
+            yield netweir.Request(base + "/one")
+
+        def parse(self, page):
+            yield {"url": page.url}
+
+    assert Old().run()["items"] == 1
+    assert seen == [base + "/one"]
+
+
+def test_cb_kwargs_reach_the_callback_through_the_middlewares(base):
+    stored = netweir.get(base + "/stored")
+    seen = []
+
+    class Store:
+        def process_request(self, request, spider):
+            seen.append(("request", request.cb_kwargs))
+            if request.url.endswith("/never"):
+                return stored
+
+        def process_response(self, request, page, spider):
+            seen.append(("response", request.cb_kwargs, page.cb_kwargs))
+            return page
+
+    class Output:
+        async def process_spider_output(self, response, result, spider):
+            async for out in result:
+                yield out
+
+    class Site(netweir.Spider):
+        settings = FAST
+        middlewares = [Store()]
+        spider_middlewares = [Output()]
+
+        def start(self):
+            yield netweir.Request(base + "/never", cb_kwargs={"n": 1})
+            yield netweir.Request(base + "/fetched", cb_kwargs={"n": 2})
+
+        def parse(self, page, n):
+            seen.append(("parse", page.url, n))
+
+    assert Site().run()["callback_errors"] == 0
+    assert sorted(seen, key=str) == sorted(
+        [
+            ("request", {"n": 1}),
+            ("request", {"n": 2}),
+            ("response", {"n": 1}, {"n": 1}),
+            ("response", {"n": 2}, {"n": 2}),
+            ("parse", base + "/stored", 1),
+            ("parse", base + "/fetched", 2),
+        ],
+        key=str,
+    )
+
+
 def test_spider_middlewares_with_workers(base):
     import os
 

@@ -111,6 +111,14 @@ def test_workers_write_what_one_process_writes(base, tmp_path):
     assert stats["callback_errors"] == 0
 
 
+def test_cb_kwargs_reach_a_callback_in_a_worker(base):
+    items, stats = crawl(worker_spiders.Shelved, base + "/", workers=2)
+    assert stats["callback_errors"] == 0
+    assert len(items) == ITEMS
+    assert all(i["shelf"] == base + "/" for i in items)
+    assert os.getpid() not in {i["pid"] for i in items}
+
+
 def test_a_callback_that_breaks_in_a_worker_is_counted_and_logged(base, caplog):
     with caplog.at_level(logging.ERROR, logger="netweir"):
         items, stats = crawl(worker_spiders.Breaks, base + "/", workers=2)

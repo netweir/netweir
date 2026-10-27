@@ -506,6 +506,99 @@ def test_start_can_be_a_plain_generator(base):
     assert Plain().run()["items"] == 1
 
 
+def test_a_spider_with_only_start_requests_crawls_what_it_yields(base):
+    class Old(netweir.Spider):
+        settings = FAST
+
+        def start_requests(self):
+            yield netweir.Request(f"{base}/book/a")
+            yield netweir.Request(f"{base}/book/b")
+
+        def parse(self, page):
+            yield {"url": page.url}
+
+    assert Old().run()["items"] == 2
+
+
+def test_start_requests_can_return_a_list(base):
+    class Listed(netweir.Spider):
+        settings = FAST
+
+        def start_requests(self):
+            return [netweir.Request(f"{base}/book/a")]
+
+        def parse(self, page):
+            yield {"url": page.url}
+
+    assert Listed().run()["items"] == 1
+
+
+def test_start_requests_can_build_on_the_default_one(base):
+    urls = []
+
+    class Extended(netweir.Spider):
+        settings = FAST
+        start_urls = [f"{base}/book/a"]
+
+        def start_requests(self):
+            yield from super().start_requests()
+            yield netweir.Request(f"{base}/book/b")
+
+        def parse(self, page):
+            urls.append(page.url)
+
+    Extended().run()
+    assert sorted(urls) == [f"{base}/book/a", f"{base}/book/b"]
+
+
+def test_cb_kwargs_are_the_callback_s_keyword_arguments(base):
+    seen = []
+
+    class Shelved(netweir.Spider):
+        settings = FAST
+
+        async def start(self):
+            yield netweir.Request(f"{base}/page/3", cb_kwargs={"shelf": "fiction"})
+
+        def parse(self, page, shelf):
+            seen.append(("parse", shelf, page.cb_kwargs))
+            yield page.follow("/book/3-0", callback=self.book, cb_kwargs={"shelf": shelf, "n": 0})
+
+        async def book(self, page, shelf, n):
+            seen.append(("book", shelf, n, page.cb_kwargs))
+            yield {"shelf": shelf}
+
+    stats = Shelved().run()
+    assert stats["callback_errors"] == 0
+    assert seen == [
+        ("parse", "fiction", {"shelf": "fiction"}),
+        ("book", "fiction", 0, {"shelf": "fiction", "n": 0}),
+    ]
+    assert stats["items"] == 1
+
+
+def test_an_errback_gets_no_cb_kwargs(base):
+    lost = []
+
+    class Failing(netweir.Spider):
+        settings = netweir.Settings(**{**vars(FAST), "obey_robots": False, "obey_tdmrep": False})
+
+        async def start(self):
+            yield netweir.Request(
+                "http://127.0.0.1:9/nothing", cb_kwargs={"n": 1}, errback=self.lost
+            )
+
+        def lost(self, request, error):
+            lost.append(request.cb_kwargs)
+
+    assert Failing().run()["callback_errors"] == 0
+    assert lost == [{"n": 1}]
+
+
+def test_a_page_outside_a_crawl_has_no_cb_kwargs(base):
+    assert netweir.get(f"{base}/book/a").cb_kwargs == {}
+
+
 def test_command_line_spiders_can_use_dataclasses(base, tmp_path):
     script = tmp_path / "netweir.py"  # a name that could shadow the package
     script.write_text(

@@ -405,6 +405,39 @@ def test_callbacks_and_meta_must_travel_as_data(base, redis):
         spider.run()
 
 
+def test_cb_kwargs_travel_through_the_queue(base, redis):
+    class Shelved(netweir.Spider):
+        def start(self):
+            yield netweir.Request(f"{base}/page/{PAGES}", cb_kwargs={"shelf": "last"})
+
+        def parse(self, page, shelf):
+            for href in page.css("a.item::attr(href)").getall():
+                yield page.follow(href, callback="item", cb_kwargs={"shelf": shelf})
+
+        def item(self, page, shelf):
+            yield {"name": page.css("h1::text").get(), "shelf": shelf}
+
+    items = []
+    spider = Shelved()
+    spider.settings = settings(redis)
+    spider.pipelines = [lambda item: items.append(item) or item]
+    stats = finishes(spider)
+    assert stats["callback_errors"] == 0
+    assert sorted(i["name"] for i in items) == [f"{PAGES}-{i}" for i in range(PER_PAGE)]
+    assert {i["shelf"] for i in items} == {"last"}
+
+
+def test_cb_kwargs_must_travel_as_data(base, redis):
+    class Kwargs(netweir.Spider):
+        def start(self):
+            yield netweir.Request(f"{base}/page/1", cb_kwargs={"when": object()})
+
+    spider = Kwargs()
+    spider.settings = settings(redis)
+    with pytest.raises(TypeError, match="with a queue, cb_kwargs must be JSON"):
+        spider.run()
+
+
 def test_a_queue_that_cannot_be_reached_stops_the_crawl_before_it_starts(tmp_path, capsys):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

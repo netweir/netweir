@@ -159,7 +159,7 @@ def run(name: str, response: Any, request: Request) -> tuple:
     asking = _track._repairs.set(ask if _repairing else None)
     error = None
     try:
-        result = getattr(_spider, name)(Page(response, request, parse=parse))
+        result = getattr(_spider, name)(Page(response, request, parse=parse), **request.cb_kwargs)
         if inspect.isasyncgen(result):
             asyncio.run(_drain(result, outputs))
         else:

@@ -73,7 +73,7 @@ Every key starts with the crawl's `queue_key` (default: the spider's
 A request is one member: 16 hex digits of its number from `KEY:seq`,
 then the request as JSON (URL, method, headers, body in hex, priority,
 depth, `dont_filter`, proxy, referer and the caller's payload: callback
-names and meta, or the rule that found it), the same fields a checkpoint
+names, meta and cb_kwargs, or the rule that found it), the same fields a checkpoint
 keeps. Members with the same score sort by their bytes, so the hex
 number puts equal priorities in the order they were queued, across
 every process. Each member is unique, so the same URL queued twice with

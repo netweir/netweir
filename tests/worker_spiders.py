@@ -192,3 +192,14 @@ class Feed(netweir.Spider):
 
     def parse(self, page):
         yield {"title": page.xpath("//title/text()").get()}
+
+
+class Shelved(netweir.Spider):
+    start_urls: list[str] = []
+
+    def parse(self, page):
+        for href in page.css("a.item::attr(href)").getall():
+            yield page.follow(href, callback="item", cb_kwargs={"shelf": page.url})
+
+    def item(self, page, shelf):
+        yield {"name": page.css("h1::text").get(), "shelf": shelf, "pid": os.getpid()}

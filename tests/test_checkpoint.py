@@ -111,6 +111,40 @@ def test_an_interrupted_crawl_resumes_without_losing_or_repeating(base, tmp_path
     assert stats["fetched"] < PAGES + PAGES * PER_PAGE, "finished pages aren't fetched again"
 
 
+def test_a_resumed_crawl_keeps_cb_kwargs(base, tmp_path):
+    out = tmp_path / "items.jsonl"
+    stop_after = [7]
+
+    class Items(netweir.Spider):
+        start_urls = [f"{base}/page/1"]
+
+        def parse(self, page):
+            for href in page.css("a.item::attr(href)").getall():
+                yield page.follow(href, callback="item", cb_kwargs={"listing": page.url})
+            if nxt := page.css("a.next::attr(href)").get():
+                yield page.follow(nxt)
+
+        def item(self, page, listing):
+            stop_after[0] -= 1
+            if stop_after[0] < 0:
+                raise Stop
+            yield {"name": page.css("h1::text").get(), "listing": listing}
+
+    spider = Items()
+    spider.settings = settings(tmp_path, fail_fast=True)
+    with pytest.raises(Stop):
+        spider.run(output=str(out))
+
+    stop_after[0] = 10**6
+    spider = Items()
+    spider.settings = settings(tmp_path)
+    stats = spider.run(output=str(out))
+    assert stats["callback_errors"] == 0
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == PAGES * PER_PAGE
+    assert all(r["listing"].endswith(f"/page/{r['name'].split('-')[0]}") for r in rows)
+
+
 def holds_open(path) -> bool:
     """Whether this process still has a file under ``path`` open."""
     if os.name == "nt":
@@ -171,6 +205,23 @@ def test_meta_must_be_json(base, tmp_path, caplog):
     with caplog.at_level("ERROR", logger="netweir"):
         assert spider.run()["callback_errors"] == 1
     assert "JSON" in caplog.text
+
+
+def test_cb_kwargs_must_be_json(base, tmp_path, caplog):
+    class Kwargs(netweir.Spider):
+        start_urls = [f"{base}/page/1"]
+
+        def parse(self, page):
+            yield page.follow("/item/x", callback="item", cb_kwargs={"when": object()})
+
+        def item(self, page, when):
+            pass
+
+    spider = Kwargs()
+    spider.settings = settings(tmp_path)
+    with caplog.at_level("ERROR", logger="netweir"):
+        assert spider.run()["callback_errors"] == 1
+    assert "with a checkpoint, cb_kwargs must be JSON" in caplog.text
 
 
 SPIDER = textwrap.dedent(

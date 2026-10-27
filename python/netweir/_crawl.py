@@ -589,7 +589,16 @@ class Spider:
 
     async def start(self) -> AsyncIterator[Request]:
         """The first requests. An async generator by default; a plain
-        generator or a list works too."""
+        generator or a list works too. By default, what
+        ``start_requests()`` gives, as in Scrapy, so a spider written for
+        Scrapy before 2.13, with only ``start_requests()``, works as it is."""
+        for request in self.start_requests():
+            yield request
+
+    def start_requests(self) -> Iterable[Request]:
+        """Scrapy's older way to give the first requests, which the default
+        ``start()`` yields: a generator or a list. By default, a request
+        for each of ``start_urls``, then each of ``sitemap_urls``."""
         for url in self.start_urls:
             yield Request(url)
         for url in self.sitemap_urls:
@@ -1286,13 +1295,19 @@ class _Run:
 
     def payload(self, request: Request) -> str:
         """The request's own part, saved in the checkpoint or sent to the
-        shared queue as JSON: callbacks by name, and meta."""
+        shared queue as JSON: callbacks by name, meta and cb_kwargs."""
         if not self.by_name:
             return "{}"
         try:
             meta = json.dumps(request.meta)
         except TypeError as e:
             raise TypeError(f"with a {self.keeper}, meta must be JSON: {e}") from None
+        cb_kwargs = ""
+        if request.cb_kwargs:
+            try:
+                cb_kwargs = f', "cb_kwargs": {json.dumps(request.cb_kwargs)}'
+            except TypeError as e:
+                raise TypeError(f"with a {self.keeper}, cb_kwargs must be JSON: {e}") from None
         callback = json.dumps(self.method_name(request.callback))
         errback = json.dumps(self.method_name(request.errback))
         browser = json.dumps(request.browser)
@@ -1304,7 +1319,7 @@ class _Run:
             steps = f', "steps": {steps_json(request.steps, self.step_name)}'
         return (
             f'{{"callback": {callback}, "errback": {errback}, "meta": {meta}, '
-            f'"browser": {browser}{cookies}{steps}}}'
+            f'"browser": {browser}{cb_kwargs}{cookies}{steps}}}'
         )
 
     def ruled_request(self, rule: int, url: str, depth: int = 0) -> Request:
@@ -2727,6 +2742,9 @@ class _Run:
         self.from_page = self.delta_of(self.page.request) if self.page is not None else None
         self.gave = False
         self.position = 0
+        # A page's callback gets its request's cb_kwargs; an errback and
+        # on_block, which have no page, get none, as in Scrapy.
+        kwargs = self.page.cb_kwargs if self.page is not None else {}
         stream = None
         try:
             fn = self.resolve(fn, default)
@@ -2734,7 +2752,7 @@ class _Run:
                 page = self.page
                 stream = await self.spider_mw.scrape(
                     page,
-                    functools.partial(fn, *args),
+                    functools.partial(fn, *args, **kwargs),
                     functools.partial(self.input_errback, page.request),
                     failed,
                 )
@@ -2742,7 +2760,7 @@ class _Run:
                     await self.handle(out)
                 self.page_done()
                 return
-            result = fn(*args)
+            result = fn(*args, **kwargs)
             if inspect.isasyncgen(result):
                 async for out in result:
                     await self.handle(out)
@@ -3201,6 +3219,7 @@ def _restored(
         auth=auth[:2] if auth is not None and auth[2] is None else None,
         cookies=data.get("cookies"),
         steps=data.get("steps"),
+        cb_kwargs=data.get("cb_kwargs"),
     )
     return request, data
 

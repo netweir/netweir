@@ -739,14 +739,15 @@ def parse(args) -> int:
             failed.append(request.url)
             print(f"netweir: {request.url}: {error}", file=sys.stderr)
 
-        return request.replace(callback=callback, errback=lost)
+        # Its cb_kwargs are in how, for _outputs: the wrapper takes none.
+        return request.replace(callback=callback, errback=lost, cb_kwargs={})
 
     def _how_of(request: Any) -> tuple:
         if id(request) in hows:
             return hows[id(request)]
         if request.callback is not None:
-            return ("callback", request.callback, {})
-        return ("start",) if spider.rules else ("callback", "parse", {})
+            return ("callback", request.callback, request.cb_kwargs)
+        return ("start",) if spider.rules else ("callback", "parse", request.cb_kwargs)
 
     # Asked for by name, so fetched even if the spider's domains leave it out.
     _run(spider, [wrap(Request(args.url, meta=meta, dont_filter=True), how, 1)])

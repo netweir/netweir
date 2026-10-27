@@ -414,6 +414,12 @@ class Page:
         """The meta of the Request this page answers; empty outside a crawl."""
         return self.request.meta if self.request is not None else {}
 
+    @property
+    def cb_kwargs(self) -> dict:
+        """The cb_kwargs of the Request this page answers, which its callback
+        was given; empty outside a crawl."""
+        return self.request.cb_kwargs if self.request is not None else {}
+
     def extract(self, item: type) -> dict:
         """``item.extract(self)``: the Item (often one of ``netweir.auto``'s)
         found on this page."""

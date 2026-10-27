@@ -16,7 +16,10 @@ class Request:
     ``callback`` is a function, or the name of a spider method, called with
     the Page; it defaults to the spider's ``parse``. ``errback`` is called
     with the Request and the FetchError when no response arrives. ``meta``
-    travels with the request and comes back as ``page.meta``. ``depth`` is
+    travels with the request and comes back as ``page.meta``.
+    ``cb_kwargs`` are keyword arguments for the callback, as in Scrapy: it's
+    called as ``callback(page, **cb_kwargs)``, and they're ``page.cb_kwargs``
+    too; the errback doesn't get them. ``depth`` is
     set by the crawl: 0 for a start request, one more than its page's for
     a request a callback yields. ``browser=True`` fetches it in Chrome,
     and the callback's ``page.browser`` is the page, open until the
@@ -105,9 +108,15 @@ class Request:
     #: URL with other steps is another request, unless
     #: ``meta["steps_in_fingerprint"]`` is False.
     steps: list[Any] | None = None
+    #: Keyword arguments for the callback, as Scrapy's ``Request.cb_kwargs``.
+    #: Kept as a dict of their own. With a checkpoint or a shared queue
+    #: they must be JSON, as meta must.
+    cb_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         from netweir._fetch import checked_auth, login_of, redirect_limit, seconds
+
+        self.cb_kwargs = dict(self.cb_kwargs or {})
 
         self.url, self.auth = login_of(self.url, checked_auth(self.auth))
         if self.timeout is not None:

@@ -98,11 +98,11 @@ when the crawl is over.
 The same goes for `warc` and `har`: each process archives what it
 fetched itself, so give each one its own file.
 
-Callbacks and `meta` travel between machines as data, the same rule as a
-[checkpoint](self-healing.md#checkpoints): a request's callback has to be
-a method of the spider, and its `meta` has to be JSON. Requests carry
-callbacks by name and rules by their place in `rules`, so run the same
-spider on every machine.
+Callbacks, `meta` and `cb_kwargs` travel between machines as data, the
+same rule as a [checkpoint](self-healing.md#checkpoints): a request's
+callback has to be a method of the spider, and its `meta` and `cb_kwargs`
+have to be JSON. Requests carry callbacks by name and rules by their
+place in `rules`, so run the same spider on every machine.
 
 ## When the crawl ends
 
