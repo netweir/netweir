@@ -2,7 +2,7 @@
 
 - [Getting started](getting-started.md): install, fetch a page, write and run a spider.
 - [Fetching pages](fetching.md): query strings, logins, redirects, timeouts and certificates.
-- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles and Markdown, prices, dates and the data in scripts.
+- [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles, Markdown and chunks for retrieval, prices, dates and the data in scripts.
 - [XML, feeds and CSV](xml.md): XML responses, namespaces, the limits on hostile XML, XMLFeedSpider and CSVFeedSpider.
 - [Auto-extraction](extraction.md): products, listings, job postings and articles read without selectors, in the common item schema, with one wrong field pinned by a selector.
 - [Item loaders](loaders.md): filling items as Scrapy's loaders do, with input and output processors.
@@ -48,7 +48,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/xml.md](design/xml.md): XML in the same tree and XPath engine as HTML, namespaces, and what hostile XML may cost.
 - [design/loaders.md](design/loaders.md): item loaders, and why they're Netweir's own rather than the itemloaders package.
 - [design/threads.md](design/threads.md): what kept threads from scaling on free-threaded Python, and what replaced it.
-- [design/content.md](design/content.md): finding a page's main content, reading it as an article, and Markdown.
+- [design/content.md](design/content.md): finding a page's main content, reading it as an article, Markdown, and chunks for retrieval.
 - [design/extraction.md](design/extraction.md): auto-extraction, its sources and field readers, and pinning a field.
 - [design/distributed.md](design/distributed.md): one crawl shared by many machines through Redis.
 - [design/serve.md](design/serve.md): the job service.

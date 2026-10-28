@@ -1,5 +1,6 @@
-"""How long finding the main content, and writing Markdown and text, take
-on large pages, and how that compares with trafilatura and markdownify.
+"""How long finding the main content, writing Markdown and text, and
+cutting it into chunks take on large pages, and how that compares with
+trafilatura and markdownify.
 
     uv run --group bench python bench/content.py [--check]
 
@@ -62,6 +63,7 @@ TASKS = {
     "markdown()": lambda doc: doc.markdown("https://example.com/"),
     "clean_text(main_only=True)": lambda doc: doc.clean_text(main_only=True),
     "article()": lambda doc: doc.article("https://example.com/"),
+    "chunks(2000)": lambda doc: doc.chunks("https://example.com/", True, 2000, 0),
     "parse (for scale)": None,
 }
 

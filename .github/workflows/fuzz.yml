@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [parse, css, xpath, js, text, edit, markdown, xml, auto]
+        target: [parse, css, xpath, js, text, edit, markdown, xml, auto, chunk]
         crate: [netweir-dom]
         include:
           - target: parse

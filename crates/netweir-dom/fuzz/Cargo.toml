@@ -76,5 +76,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "chunk"
+path = "fuzz_targets/chunk.rs"
+test = false
+doc = false
+bench = false
+
 # Built with cargo-fuzz on nightly, outside the workspace.
 [workspace]

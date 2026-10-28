@@ -56,6 +56,10 @@ class Post(netweir.Item):
     body = netweir.markdown(main_only=True)
 ```
 
+`netweir.chunks(query)` holds the element's Markdown cut into chunks for
+retrieval, as `page.chunks()` cuts it, a dict per chunk; it takes the
+same `max_chars`, `overlap` and `main_only` (on by default).
+
 They need an element, so a query ending in `::text` or `::attr()` raises
 where it's written. On a Node rather than a Page, pass the URL its links
 are relative to: `Post.extract(root, url="https://example.com/post")`.
