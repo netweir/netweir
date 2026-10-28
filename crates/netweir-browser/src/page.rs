@@ -1891,7 +1891,23 @@ impl Page {
         self.call("Input.setInterceptDrags", json!({"enabled": true}))
             .await?;
         self.state().dragging = None;
-        let dragged = self.drag_by_steps(from, to).await;
+        let (mut data, mut at) = (None, from);
+        let dragged = self.drag_by_steps(from, to, &mut data, &mut at).await;
+        if dragged.is_err() {
+            // Not left holding the button, or a drag nobody ends: called
+            // off where the mouse got to, as Escape would.
+            let data = data.or_else(|| self.state().dragging.take());
+            let _ = match &data {
+                Some(d) => {
+                    let cancel = json!({"type": "dragCancel", "x": at.0, "y": at.1, "data": d, "modifiers": 0});
+                    self.call("Input.dispatchDragEvent", cancel).await
+                }
+                None => {
+                    let up = json!({"type": "mouseReleased", "x": at.0, "y": at.1, "button": "left", "buttons": 0, "clickCount": 1});
+                    self.call("Input.dispatchMouseEvent", up).await
+                }
+            };
+        }
         // Handed-over drags nobody carries on would hang the page's next.
         let _ = self
             .call("Input.setInterceptDrags", json!({"enabled": false}))
@@ -1899,7 +1915,16 @@ impl Page {
         dragged
     }
 
-    async fn drag_by_steps(&self, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+    /// [`Page::mouse_drag`]'s steps, keeping what the drag carries, once
+    /// the page has begun one, in `data`, and where the mouse is in `at`,
+    /// for calling it off if a step fails.
+    async fn drag_by_steps(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        data: &mut Option<Value>,
+        at: &mut (f64, f64),
+    ) -> Result<()> {
         let mouse = |kind: &str, (x, y): (f64, f64), buttons: u32| json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1});
         let drag = |kind: &str, (x, y): (f64, f64), data: &Value| json!({"type": kind, "x": x, "y": y, "data": data, "modifiers": 0});
         self.call("Input.dispatchMouseEvent", mouse("mousePressed", from, 1))
@@ -1908,26 +1933,25 @@ impl Page {
         // A step about every 20 pixels, as a hand moves at a fair pace.
         let distance = (to.0 - from.0).hypot(to.1 - from.1);
         let steps = (distance / 20.0).ceil().clamp(5.0, 40.0) as u32;
-        let mut data: Option<Value> = None;
         for i in 1..=steps {
             let t = f64::from(i) / f64::from(steps);
             // Eased: slow to start and to arrive.
             let t = 0.5 - 0.5 * (std::f64::consts::PI * t).cos();
-            let at = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            match &data {
+            *at = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            match &*data {
                 Some(d) => {
-                    self.call("Input.dispatchDragEvent", drag("dragOver", at, d))
+                    self.call("Input.dispatchDragEvent", drag("dragOver", *at, d))
                         .await?
                 }
                 None => {
-                    self.call("Input.dispatchMouseEvent", mouse("mouseMoved", at, 1))
+                    self.call("Input.dispatchMouseEvent", mouse("mouseMoved", *at, 1))
                         .await?
                 }
             };
             if data.is_none() {
-                data = self.state().dragging.take();
-                if let Some(d) = &data {
-                    self.call("Input.dispatchDragEvent", drag("dragEnter", at, d))
+                *data = self.state().dragging.take();
+                if let Some(d) = &*data {
+                    self.call("Input.dispatchDragEvent", drag("dragEnter", *at, d))
                         .await?;
                 }
             }
@@ -1937,8 +1961,8 @@ impl Page {
             // A drag begun by the last move is told of a moment later:
             // once the page has answered, Chrome has said.
             self.main_frame().helper("0").await?;
-            data = self.state().dragging.take();
-            if let Some(d) = &data {
+            *data = self.state().dragging.take();
+            if let Some(d) = &*data {
                 self.call("Input.dispatchDragEvent", drag("dragEnter", to, d))
                     .await?;
                 self.call("Input.dispatchDragEvent", drag("dragOver", to, d))
@@ -1946,7 +1970,7 @@ impl Page {
             }
         }
         tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
-        match &data {
+        match &*data {
             Some(d) => self.call("Input.dispatchDragEvent", drag("drop", to, d)),
             None => self.call("Input.dispatchMouseEvent", mouse("mouseReleased", to, 0)),
         }

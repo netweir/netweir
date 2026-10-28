@@ -1622,3 +1622,137 @@ async fn undo_and_redo_take_back_typing_on_each_system() {
     }
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn drag_to_a_target_out_of_view_with_the_source_says_so_and_presses_nothing() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div style="height: 3000px"></div>
+<div id=bin style="width: 200px; height: 100px">bin</div>
+<script>
+  window.seen = [];
+  for (const type of ['mousedown', 'dragstart', 'drop']) addEventListener(type, () => seen.push(type));
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let err = page.drag("#item", "#bin", None).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Invalid(m) if m.contains("drag #item to #bin") && m.contains("in view")),
+        "{err}"
+    );
+    assert_eq!(page.evaluate("seen").await.unwrap(), json!([]));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_drag_cut_short_is_cancelled_not_left_hanging() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    // Chrome's answers wait a second at most, so a page that stops
+    // answering fails the drag partway.
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        timeout: Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div id=bin style="width: 200px; height: 100px; margin-top: 150px">bin</div>
+<script>
+  window.seen = [];
+  item.ondragstart = e => { seen.push('dragstart'); e.dataTransfer.setData('text/plain', 'x'); };
+  item.ondragend = () => seen.push('dragend');
+  // Busy for longer than Chrome's answers wait, the first time.
+  let busy = true;
+  bin.ondragenter = e => {
+    e.preventDefault();
+    if (busy) { busy = false; const end = Date.now() + 2500; while (Date.now() < end); }
+  };
+  bin.ondragover = e => e.preventDefault();
+  bin.ondrop = e => { e.preventDefault(); seen.push('drop'); };
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let err = page
+        .drag("#item", "#bin", Some(Duration::from_secs(10)))
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::Timeout(_)), "{err}");
+    // Once the page answers again, the drag is called off: no drop.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = page.evaluate("seen").await;
+        if let Ok(seen) = &seen
+            && seen.as_array().is_some_and(|s| s.len() >= 2)
+        {
+            assert_eq!(*seen, json!(["dragstart", "dragend"]));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the drag was never ended: {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_frame_drags_within_itself_wherever_it_sits_in_the_page() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<!DOCTYPE html>
+<iframe name=inner src="/inner" style="position: absolute; left: 200px; top: 150px; width: 400px; height: 300px; border: 0"></iframe>"#,
+            ),
+        ),
+        (
+            "/inner",
+            html(
+                r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div id=bin style="width: 200px; height: 80px; margin-top: 100px">bin</div>
+<script>
+  item.ondragstart = e => e.dataTransfer.setData('text/plain', 'in a frame');
+  bin.ondragover = e => e.preventDefault();
+  bin.ondrop = e => { e.preventDefault(); window.dropped = e.dataTransfer.getData('text/plain'); };
+</script>"#,
+            ),
+        ),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    frame_reaches(&page, "inner", |u| u.ends_with("/inner")).await;
+    let frame = page
+        .frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name() == "inner")
+        .unwrap();
+    frame.drag("#item", "#bin", None).await.unwrap();
+    assert_eq!(
+        frame.evaluate("window.dropped").await.unwrap(),
+        json!("in a frame")
+    );
+    browser.close().await.unwrap();
+}

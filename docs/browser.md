@@ -412,7 +412,12 @@ an HTML5 drag and drop instead, and the page sees `dragstart`,
 `dragenter`, `dragover`, `drop` and `dragend`, with whatever the page put
 in `dataTransfer` there to read on the drop. `source` must be visible,
 still and not covered, as for a click; `target` must be visible and
-still. A phone's page has no mouse, so `drag` raises `ValueError` there.
+still. Both have to show in the window at once, since a held mouse can't
+scroll the page: if they don't, `drag` raises `ValueError` before
+pressing anything, and you can scroll or make the window bigger. If a
+drag fails partway, it's called off and the button let go, so the page
+isn't left mid-drag. A phone's page has no mouse, so `drag` raises
+`ValueError` there too.
 
 ### Frames
 

@@ -553,7 +553,9 @@ impl Frame {
     /// Drags the element `source` onto `target` with the mouse: the mouse
     /// comes over the source's centre once it's visible, still and not
     /// covered, the button goes down, and the mouse moves to the centre
-    /// of the target, which must be visible and still, and lets go there.
+    /// of the target, which must be visible and still and show in the
+    /// window with the source, and lets go there. A drag that fails
+    /// partway is called off, the button let go.
     /// That drags anything that follows the mouse (a slider's handle, a
     /// sortable list's row) and, from a draggable element, makes an
     /// HTML5 drag and drop, dataTransfer and all.
@@ -575,6 +577,20 @@ impl Frame {
         let to = self
             .actionable("drag", target, &landing, false, left(deadline))
             .await?;
+        // A mouse can't go past the window's edge, and nothing scrolls the
+        // page while it's held, so both must show at once.
+        let size = self
+            .page
+            .main_frame()
+            .helper("[innerWidth, innerHeight]")
+            .await?;
+        let inside = |at: f64, i: usize| at >= 0.0 && at < size[i].as_f64().unwrap_or(0.0);
+        if !inside(to.0, 0) || !inside(to.1, 1) {
+            return Err(Error::Invalid(format!(
+                "drag {source} to {target}: the target isn't in view with the source; \
+                 scroll so both show, or make the window bigger"
+            )));
+        }
         self.page.mouse_drag(from, to).await
     }
 

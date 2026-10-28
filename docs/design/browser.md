@@ -522,7 +522,10 @@ scroll puts the element under a still mouse.
 **Dragging.** `drag(source, target)` checks the target is attached,
 visible and stable (scrolling it into view), brings the mouse over the
 source as `hover` does, then reads the target's centre again, where
-bringing the source into view left it. With `Input.setInterceptDrags`
+bringing the source into view left it. If that centre is outside the
+window, the drag is refused before the button goes down: Netweir doesn't
+scroll the page while the button is held, and a point off the window
+would let go over nothing. With `Input.setInterceptDrags`
 on, it presses the left button, moves in eased steps of about 20 pixels
 every 16 ms, and lets go at the target. A page that only follows the
 mouse gets mouse events throughout. When the source is draggable,
@@ -536,8 +539,12 @@ sees no `mouseup`, as with a real drag. A drag that starts on the last
 step is caught by a round trip to the page before letting go. Headless
 Chrome on macOS also completes a plain mouse drag without the intercept,
 but with a window it would enter the OS's modal drag loop, and the
-intercept makes the events the same everywhere. Intercepting is turned
-off again afterwards, so a page's own later drags aren't left waiting.
+intercept makes the events the same everywhere. A step that fails (the
+page stopped answering, say) leaves the drag called off: a
+`dragCancel` where the mouse got to if Chrome had handed a drag over,
+otherwise `mouseReleased`, so neither the button nor a drag is left
+held. Intercepting is turned off again afterwards, so a page's own later
+drags aren't left waiting.
 
 **Scrolling.** `scroll(selector=None, *, x=0, y=None, times=None,
 idle=2.0, timeout=None)` turns the mouse wheel: a `mouseMoved` to where
