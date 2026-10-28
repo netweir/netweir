@@ -228,7 +228,7 @@ returns its new response.
 | `dblclick(selector)` | double-clicks it the same way |
 | `fill(selector, text)` | replaces what's in a field with `text` in one go, as pasting would |
 | `type(selector, text, delay=None)` | clicks the field and replaces what's in it by typing `text` a key at a time, each held for a person's time, Shift and all; between keys a pause within `delay` (seconds, or a `(least, most)` pair; 0.08 to 0.25 by default). See [Typing](steps.md#typing) |
-| `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` |
+| `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`. Hold modifiers with it by naming them first, joined with `+`: `"Shift+Tab"`, `"Control+A"`, `"Meta+Shift+ArrowLeft"`. See [Keyboard shortcuts](#keyboard-shortcuts) |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
 | `hover(selector)` | moves the mouse over the element |
 | `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
@@ -243,6 +243,33 @@ visible, enabled field that isn't read-only.
 If the time runs out, `netweir.BrowserTimeout` (a `TimeoutError`) says
 which of those never happened, such as "something else was always at its
 centre, covering it". Each method takes `timeout=` in seconds.
+
+### Keyboard shortcuts
+
+The modifiers are `Shift`, `Control`, `Alt` and `Meta` (Command on a
+Mac), and `ControlOrMeta`, which is Meta when the page says it's on a Mac
+and Control anywhere else. That's the one to use for the shortcuts that
+differ, so your script works whatever system your pages say they're on:
+
+```python
+await page.click("#notes")
+await page.press("ControlOrMeta+A")
+await page.press("Backspace")
+```
+
+Each modifier goes down in the order you name it, a moment apart, then
+the key, then they come up in reverse, so the page sees the same
+`keydown` and `keyup` events, `ctrlKey`, `shiftKey` and all, that a
+keyboard sends. `"+"` on its own is the plus key, and so is the last `+`
+of `"Shift++"`. A modifier or key Netweir doesn't know raises
+`ValueError` before anything is pressed.
+
+In a text field, the editing shortcuts act as they do on the system the
+page says it's on: select all, deleting and moving a word at a time
+(`Control` off a Mac, `Alt` on one), to the start or end of the line or
+field (`Meta` and the arrows on a Mac, `Control+Home` and `Control+End`
+elsewhere), and with `Shift` held a move selects as it goes. Copy, cut
+and paste don't work in headless Chrome.
 
 ## Scrolling, forms and frames
 

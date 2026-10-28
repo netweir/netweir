@@ -308,7 +308,17 @@ that one is unexplained, and the test now says what the link, the guard
 and the server saw.) `fill` focuses the element, selects
 what's in it and inserts the text with `Input.insertText`, which fires the
 same input events typing does. `press` sends a key down and up, with the
-key's code and text for the common keys.
+key's code and text for the common keys. Modifiers named before the key
+("Control+Shift+a") each go down with the flags held so far, then the key
+with all of them, then come up in reverse; a letter held with modifiers
+is its lower case unless Shift is among them, and with Control, Alt or
+Meta a key carries no text. A real keyboard's editing shortcuts reach
+Chrome as commands the OS made of them (all of them, on macOS), and
+keys sent over CDP never pass through the OS, so the keydown names the
+command (`selectAll`, `deleteWordBackward`, `moveToEndOfLine`...) by a
+small table for the system the page claims, Mac or not, which needn't be
+the one Chrome runs on. Chrome runs the command in place of its own
+binding, and not at all if the page cancels the keydown.
 
 ### Other page methods
 

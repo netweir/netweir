@@ -1223,3 +1223,205 @@ async fn hover_sends_mouseover_even_with_the_mouse_already_on_the_spot() {
     }
     browser.close().await.unwrap();
 }
+
+/// A page that says it runs on `system` ("Windows" or "Mac"), in the
+/// Chrome running.
+async fn page_on(browser: &netweir_browser::Browser, system: &str) -> netweir_browser::Page {
+    let major = browser
+        .version()
+        .split('/')
+        .nth(1)
+        .and_then(|v| v.split('.').next())
+        .unwrap()
+        .to_string();
+    let os = match system {
+        "Windows" => "Windows NT 10.0; Win64; x64",
+        _ => "Macintosh; Intel Mac OS X 10_15_7",
+    };
+    browser
+        .new_page_with(netweir_browser::Environment {
+            user_agent: Some(format!(
+                "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/{major}.0.0.0 Safari/537.36"
+            )),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+}
+
+/// A field, and every key event the page hears as "type key modifiers",
+/// the modifiers as C, S, A and M for Control, Shift, Alt and Meta.
+const KEYS: &str = r#"<!DOCTYPE html>
+<input id=a><input id=b><input id=c value="one two three">
+<script>
+  window.heard = [];
+  for (const type of ['keydown', 'keyup']) {
+    addEventListener(type, e => heard.push(`${type} ${e.key} ` +
+      (e.ctrlKey ? 'C' : '') + (e.shiftKey ? 'S' : '') + (e.altKey ? 'A' : '') + (e.metaKey ? 'M' : '')));
+  }
+</script>"#;
+
+#[tokio::test]
+async fn control_or_meta_a_selects_the_field_on_each_system_and_backspace_empties_it() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    for (system, held) in [("Windows", "C"), ("Mac", "M")] {
+        let page = page_on(&browser, system).await;
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        page.click("#c", None).await.unwrap();
+        page.evaluate("heard.length = 0").await.unwrap();
+        page.press("ControlOrMeta+A").await.unwrap();
+        let down = page.evaluate("heard[1]").await.unwrap();
+        assert_eq!(down, json!(format!("keydown a {held}")), "{system}");
+        page.press("Backspace").await.unwrap();
+        assert_eq!(
+            page.evaluate("document.querySelector('#c').value")
+                .await
+                .unwrap(),
+            json!(""),
+            "{system}"
+        );
+        page.close().await.unwrap();
+    }
+    // Control-A is select-all off a Mac, as it is on Windows.
+    let page = page_on(&browser, "Windows").await;
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#c", None).await.unwrap();
+    page.press("Control+A").await.unwrap();
+    page.press("Delete").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.querySelector('#c').value")
+            .await
+            .unwrap(),
+        json!("")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn word_and_line_shortcuts_edit_the_field_as_each_system_does() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let value = "document.querySelector('#c').value";
+    let windows = page_on(&browser, "Windows").await;
+    windows
+        .goto(&server.url, WaitUntil::Load, None)
+        .await
+        .unwrap();
+    windows.click("#c", None).await.unwrap();
+    windows.press("End").await.unwrap();
+    windows.press("Control+Backspace").await.unwrap();
+    assert_eq!(windows.evaluate(value).await.unwrap(), json!("one two "));
+    windows.press("Control+Shift+ArrowLeft").await.unwrap();
+    windows.press("Delete").await.unwrap();
+    assert_eq!(windows.evaluate(value).await.unwrap(), json!("one "));
+
+    let mac = page_on(&browser, "Mac").await;
+    mac.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    mac.click("#c", None).await.unwrap();
+    mac.press("End").await.unwrap();
+    mac.press("Alt+Backspace").await.unwrap();
+    assert_eq!(mac.evaluate(value).await.unwrap(), json!("one two "));
+    mac.press("Meta+Shift+ArrowLeft").await.unwrap();
+    mac.press("Backspace").await.unwrap();
+    assert_eq!(mac.evaluate(value).await.unwrap(), json!(""));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn modifiers_go_down_in_order_and_up_in_reverse_and_the_page_sees_them() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Meta+Shift+ArrowLeft").await.unwrap();
+    page.press("Control+Alt+x").await.unwrap();
+    assert_eq!(
+        page.evaluate("heard").await.unwrap(),
+        json!([
+            "keydown Meta M",
+            "keydown Shift SM",
+            "keydown ArrowLeft SM",
+            "keyup ArrowLeft SM",
+            "keyup Shift M",
+            "keyup Meta ",
+            "keydown Control C",
+            "keydown Alt CA",
+            "keydown x CA",
+            "keyup x CA",
+            "keyup Alt C",
+            "keyup Control ",
+        ])
+    );
+    // Shift with a letter types its capital; "+" is a key of its own.
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Shift+a").await.unwrap();
+    page.press("+").await.unwrap();
+    page.press("Shift++").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.querySelector('#a').value")
+            .await
+            .unwrap(),
+        json!("A++")
+    );
+    assert_eq!(
+        page.evaluate("heard[1]").await.unwrap(),
+        json!("keydown A S")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn shift_tab_moves_focus_backwards() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#c", None).await.unwrap();
+    page.press("Shift+Tab").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.activeElement.id").await.unwrap(),
+        json!("b")
+    );
+    page.press("Tab").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.activeElement.id").await.unwrap(),
+        json!("c")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unknown_modifier_or_key_is_refused_before_anything_is_pressed() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    for (keys, says) in [
+        ("Hyper+a", "unknown modifier \"Hyper\""),
+        ("Control+Nope", "unknown key \"Nope\""),
+        ("Control+", "unknown key \"\""),
+        ("Shift+é", "isn't on the keyboard"),
+    ] {
+        let err = page.press(keys).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::Invalid(m) if m.contains(says)),
+            "{keys}: {err}"
+        );
+    }
+    assert_eq!(page.evaluate("heard").await.unwrap(), json!([]));
+    browser.close().await.unwrap();
+}

@@ -1546,10 +1546,36 @@ impl Page {
 
     /// Presses and releases a key in whatever has focus: a character, or
     /// a name such as "Enter", "Tab", "Escape", "Backspace" or "ArrowDown".
-    pub async fn press(&self, key: &str) -> Result<()> {
-        let k = Key::of(key)?;
+    /// Modifiers go before it, joined by "+": "Control+A", "Shift+Tab",
+    /// "Meta+Shift+ArrowLeft". They're "Shift", "Control", "Alt", "Meta"
+    /// and "ControlOrMeta", which is Meta on a page that says it's on a
+    /// Mac and Control elsewhere. Each goes down in turn, a moment apart,
+    /// and comes up in reverse after the key. "+" alone is the plus key,
+    /// as is the last "+" of "Shift++".
+    pub async fn press(&self, keys: &str) -> Result<()> {
+        let (names, name) = split_keys(keys);
+        let mut k = Key::of(name)?;
+        if !names.is_empty() && k.code.is_empty() {
+            return Err(Error::Invalid(format!(
+                "{keys:?}: {name} isn't on the keyboard, so nothing can be held with it"
+            )));
+        }
+        let mac = if names.is_empty() {
+            false
+        } else {
+            self.mac().await?
+        };
+        let mut held: Vec<Modifier> = Vec::new();
+        for n in names {
+            let m = modifier(n, mac)
+                .ok_or_else(|| Error::Invalid(format!("unknown modifier {n:?} in {keys:?}")))?;
+            if !held.contains(&m) {
+                held.push(m);
+            }
+        }
         self.to_front().await?;
-        if let (true, Some(text)) = (self.touches(), &k.text)
+        if held.is_empty()
+            && let (true, Some(text)) = (self.touches(), &k.text)
             && k.key != "Enter"
         {
             // A phone's on-screen keyboard tells the page nothing of the
@@ -1572,11 +1598,35 @@ impl Page {
             self.call("Input.insertText", json!({"text": text})).await?;
             return Ok(());
         }
-        let modifiers = if k.shift { SHIFT } else { 0 };
-        if k.shift {
-            self.call("Input.dispatchKeyEvent", shift_key("rawKeyDown", SHIFT))
-                .await?;
+        if !held.is_empty() && k.code.starts_with("Key") {
+            // A letter held with others is its key, a capital only with
+            // Shift: Control-A is "a", as a keyboard sends it.
+            let shift = held.contains(&SHIFT_KEY);
+            k.key = if shift {
+                k.key.to_ascii_uppercase()
+            } else {
+                k.key.to_ascii_lowercase()
+            };
+            k.text = Some(k.key.clone());
+            k.shift = false;
+        }
+        // A symbol typed with Shift on a US keyboard ("!", "+") gets it.
+        if k.shift && !held.contains(&SHIFT_KEY) {
+            held.push(SHIFT_KEY);
+        }
+        let mut modifiers = 0;
+        for m in &held {
+            modifiers |= m.3;
+            self.call(
+                "Input.dispatchKeyEvent",
+                modifier_event(m, "rawKeyDown", modifiers),
+            )
+            .await?;
             tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+        }
+        // Held with Control, Alt or Meta, a key types nothing.
+        if modifiers & !SHIFT != 0 {
+            k.text = None;
         }
         let mut down = json!({
             "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
@@ -1589,6 +1639,9 @@ impl Page {
             down["text"] = Value::from(text.as_str());
             down["unmodifiedText"] = Value::from(text.as_str());
         }
+        if let Some(command) = edit_command(mac, modifiers, &k.key) {
+            down["commands"] = json!([command]);
+        }
         self.call("Input.dispatchKeyEvent", down).await?;
         // Held as a person holds a key, not let go in the same instant.
         tokio::time::sleep(crate::events::key_hold()).await;
@@ -1597,46 +1650,32 @@ impl Page {
             json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
         )
         .await?;
-        if k.shift {
+        for m in held.iter().rev() {
             tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-            self.call("Input.dispatchKeyEvent", shift_key("keyUp", 0))
-                .await?;
+            modifiers &= !m.3;
+            self.call(
+                "Input.dispatchKeyEvent",
+                modifier_event(m, "keyUp", modifiers),
+            )
+            .await?;
         }
         Ok(())
+    }
+
+    /// Whether the page says it's on a Mac (or an iPhone), where Command
+    /// does what Control does elsewhere.
+    async fn mac(&self) -> Result<bool> {
+        Ok(self
+            .main_frame()
+            .helper("/Mac|iPhone|iPad/.test(navigator.platform)")
+            .await?
+            == true)
     }
 
     /// Selects everything in the field that has focus, with the keys a
     /// person uses: Control-A, or Command-A on a Mac.
     pub(crate) async fn select_all(&self) -> Result<()> {
-        let mac = self
-            .main_frame()
-            .helper("/Mac|iPhone|iPad/.test(navigator.platform)")
-            .await?
-            == true;
-        let (key, code, key_code, flag) = if mac {
-            ("Meta", "MetaLeft", 91, META)
-        } else {
-            ("Control", "ControlLeft", 17, CONTROL)
-        };
-        let modifier = |kind: &str, modifiers: u32| json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "modifiers": modifiers});
-        self.call("Input.dispatchKeyEvent", modifier("rawKeyDown", flag))
-            .await?;
-        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "rawKeyDown", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag, "commands": ["selectAll"]}),
-        )
-        .await?;
-        tokio::time::sleep(crate::events::key_hold()).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "keyUp", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag}),
-        )
-        .await?;
-        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-        self.call("Input.dispatchKeyEvent", modifier("keyUp", 0))
-            .await?;
-        Ok(())
+        self.press("ControlOrMeta+a").await
     }
 
     /// Moves the mouse to (x, y) in the viewport.
@@ -2912,17 +2951,86 @@ const BUTTON_HOLD: (Duration, Duration) = (Duration::from_millis(50), Duration::
 const DOUBLE_GAP: (Duration, Duration) = (Duration::from_millis(70), Duration::from_millis(160));
 
 /// CDP's modifier flags.
-const SHIFT: u32 = 8;
+const ALT: u32 = 1;
 const CONTROL: u32 = 2;
 const META: u32 = 4;
+const SHIFT: u32 = 8;
 
-/// How long Shift (or Control) goes down before the key it changes, and
-/// up after it.
+/// How long a modifier goes down before the key it changes, and each
+/// comes up after it.
 const SHIFT_LEAD: (Duration, Duration) = (Duration::from_millis(30), Duration::from_millis(90));
 
-/// The left Shift key, going `kind` ("rawKeyDown" or "keyUp").
-fn shift_key(kind: &str, modifiers: u32) -> Value {
-    json!({"type": kind, "key": "Shift", "code": "ShiftLeft", "windowsVirtualKeyCode": 16, "modifiers": modifiers})
+/// A modifier key, on the left: its key, code, Windows key code and
+/// CDP flag.
+type Modifier = (&'static str, &'static str, u32, u32);
+
+const SHIFT_KEY: Modifier = ("Shift", "ShiftLeft", 16, SHIFT);
+
+/// The modifier `name` stands for; "ControlOrMeta" is Meta on a Mac.
+fn modifier(name: &str, mac: bool) -> Option<Modifier> {
+    const CONTROL_KEY: Modifier = ("Control", "ControlLeft", 17, CONTROL);
+    const META_KEY: Modifier = ("Meta", "MetaLeft", 91, META);
+    Some(match name {
+        "Shift" => SHIFT_KEY,
+        "Control" => CONTROL_KEY,
+        "Alt" => ("Alt", "AltLeft", 18, ALT),
+        "Meta" => META_KEY,
+        "ControlOrMeta" if mac => META_KEY,
+        "ControlOrMeta" => CONTROL_KEY,
+        _ => return None,
+    })
+}
+
+/// The modifier `m` going `kind` ("rawKeyDown" or "keyUp"), with
+/// `modifiers` held after it.
+fn modifier_event(m: &Modifier, kind: &str, modifiers: u32) -> Value {
+    json!({"type": kind, "key": m.0, "code": m.1, "windowsVirtualKeyCode": m.2, "modifiers": modifiers})
+}
+
+/// "Control+Shift+a" as its modifiers' names and its key's. A "+" at
+/// the end is the plus key, alone or after another "+".
+fn split_keys(keys: &str) -> (Vec<&str>, &str) {
+    if keys == "+" {
+        return (Vec::new(), "+");
+    }
+    if let Some(names) = keys.strip_suffix("++") {
+        return (names.split('+').collect(), "+");
+    }
+    match keys.rsplit_once('+') {
+        Some((names, key)) => (names.split('+').collect(), key),
+        None => (Vec::new(), keys),
+    }
+}
+
+/// The editing command a shortcut stands for in a text field. A real
+/// keyboard's shortcuts reach Chrome as commands the OS's key bindings
+/// made of them (on a Mac, all of them), and keys sent over CDP never
+/// pass through the OS, so they're named here: for the system the page
+/// says it's on, which needn't be the one Chrome runs on. A page that
+/// cancels the keydown cancels the command too. Shift alone and plain
+/// keys Chrome handles itself; copy, cut and paste never work headless.
+fn edit_command(mac: bool, modifiers: u32, key: &str) -> Option<String> {
+    let shift = modifiers & SHIFT != 0;
+    let (command, selects) = match (mac, modifiers & !SHIFT, key) {
+        (true, META, "a") | (false, CONTROL, "a") => ("selectAll", false),
+        (true, ALT, "Backspace") | (false, CONTROL, "Backspace") => ("deleteWordBackward", false),
+        (true, ALT, "Delete") | (false, CONTROL, "Delete") => ("deleteWordForward", false),
+        (true, META, "Backspace") => ("deleteToBeginningOfLine", false),
+        (true, META, "Delete") => ("deleteToEndOfLine", false),
+        (true, ALT, "ArrowLeft") | (false, CONTROL, "ArrowLeft") => ("moveWordLeft", true),
+        (true, ALT, "ArrowRight") | (false, CONTROL, "ArrowRight") => ("moveWordRight", true),
+        (true, META, "ArrowLeft") => ("moveToBeginningOfLine", true),
+        (true, META, "ArrowRight") => ("moveToEndOfLine", true),
+        (true, META, "ArrowUp") | (false, CONTROL, "Home") => ("moveToBeginningOfDocument", true),
+        (true, META, "ArrowDown") | (false, CONTROL, "End") => ("moveToEndOfDocument", true),
+        _ => return None,
+    };
+    match (shift, selects) {
+        (false, _) => Some(command.to_string()),
+        // With Shift, a move selects as it goes.
+        (true, true) => Some(format!("{command}AndModifySelection")),
+        (true, false) => None,
+    }
 }
 
 /// Where a printable ASCII character is on a US keyboard: its key's

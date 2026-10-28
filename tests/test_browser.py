@@ -286,6 +286,17 @@ async def test_going_back_forward_and_reloading_return_responses(browser, base):
         assert (again.status, again.url) == (404, base + "/missing")
 
 
+async def test_press_holds_the_modifiers_named_before_the_key(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.fill("#q", "scones")
+        await page.press("ControlOrMeta+A")
+        await page.press("Backspace")
+        assert await page.evaluate("document.querySelector('#q').value") == ""
+        with pytest.raises(ValueError, match="unknown modifier"):
+            await page.press("Hyper+a")
+
+
 async def test_failures_raise_what_they_are(browser, base):
     page = await browser.new_page()
     await page.goto(base + "/")

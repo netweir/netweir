@@ -933,6 +933,10 @@ impl BrowserPage {
         })
     }
 
+    /// Presses a key in whatever has focus: a character, or a name such
+    /// as "Enter", "Tab" or "ArrowDown", after any of the modifiers
+    /// "Shift", "Control", "Alt", "Meta" and "ControlOrMeta" (Meta on a
+    /// Mac), joined by "+": "ControlOrMeta+A", "Shift+Tab".
     fn press<'py>(&self, py: Python<'py>, key: String) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move { page.press(&key).await.map_err(raise) })
