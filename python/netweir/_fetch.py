@@ -13,7 +13,7 @@ from netweir import _jmespath, _track
 from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
-from netweir._helpers import Article, Records
+from netweir._helpers import Article, Chunk, Records, _chunk_sizes
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _encode, _response
 from netweir._request import Request
 
@@ -473,6 +473,25 @@ class Page:
         without the boilerplate inside it; None when there's no main
         content."""
         return self.root.markdown(self.urljoin(""), main_only)
+
+    def chunks(
+        self, max_chars: int = 2000, *, overlap: int = 0, main_only: bool = True
+    ) -> list[Chunk]:
+        """The page's Markdown in pieces of at most ``max_chars``
+        characters, for retrieval: cut at its headings first, then
+        between blocks, and code blocks and tables kept whole where they
+        fit. ``overlap`` starts each chunk after the first in a section
+        with up to that many characters from the end of the one before.
+        With ``main_only`` (the default), only the main content's, or the
+        whole page's when it has none. See ``Chunk``."""
+        _chunk_sizes(max_chars, overlap)
+        base = self.urljoin("")
+        return [
+            Chunk(id, text, tuple(headings), i, base)
+            for i, (id, text, headings) in enumerate(
+                self.root.chunks(base, main_only, max_chars, overlap)
+            )
+        ]
 
     def article(self) -> Article:
         """The article on the page: its title, byline, publication date,

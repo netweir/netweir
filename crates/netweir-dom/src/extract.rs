@@ -57,6 +57,12 @@ pub enum Convert {
     CleanText {
         main_only: bool,
     },
+    /// An element's Markdown in chunks for retrieval (see
+    /// [`crate::chunk`]), as a list of JSON objects.
+    Chunks {
+        main_only: bool,
+        options: crate::chunk::Options,
+    },
     /// What an auto-extracted field of this kind holds, read from the
     /// element or string found (a price element gives `"9.50"`).
     Auto(crate::auto::fields::FieldKind),
@@ -66,7 +72,10 @@ impl Convert {
     /// Whether this works on the element a query found rather than on
     /// its text.
     pub fn takes_element(self) -> bool {
-        matches!(self, Convert::Markdown { .. } | Convert::CleanText { .. })
+        matches!(
+            self,
+            Convert::Markdown { .. } | Convert::CleanText { .. } | Convert::Chunks { .. }
+        )
     }
 }
 
@@ -258,9 +267,10 @@ impl Field {
                 "false" | "no" | "off" | "0" => Value::Bool(false),
                 _ => Value::Invalid(text),
             },
-            Convert::Markdown { .. } | Convert::CleanText { .. } | Convert::Auto(_) => {
-                Value::Invalid(text)
-            }
+            Convert::Markdown { .. }
+            | Convert::CleanText { .. }
+            | Convert::Chunks { .. }
+            | Convert::Auto(_) => Value::Invalid(text),
         }
     }
 
@@ -271,6 +281,11 @@ impl Field {
             Hit::Node(n) if n.kind() == NodeKind::Element => n,
             other => return Value::Invalid(other.to_string_value()),
         };
+        if let Convert::Chunks { main_only, options } = self.convert {
+            let url = base.map_or("", Url::as_str);
+            let chunks = crate::chunk::node_chunks(node, base, url, main_only, options);
+            return Value::Json(chunks.iter().map(|c| c.to_json(base)).collect());
+        }
         let text = match self.convert {
             Convert::Markdown { main_only: false } => Some(crate::markdown::markdown(node, base)),
             Convert::Markdown { main_only: true } => {

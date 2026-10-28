@@ -480,6 +480,51 @@ doc.get_text()    # 'SpecsOak,hand finished46 cm2 kg'
 doc.clean_text()  # 'Specs\n\nOak,\nhand finished\n\n46 cm\n2 kg'
 ```
 
+### Chunks for retrieval
+
+A retrieval pipeline wants a page in pieces small enough to embed, each
+one still making sense on its own. `page.chunks()` cuts the page's
+Markdown along its headings, then packs the blocks under each heading into
+chunks of at most `max_chars` characters:
+
+```python
+for chunk in page.chunks(1000):
+    chunk.id        # 'bd0d75a5b00504ff2a46d322c479820e'
+    chunk.headings  # ('Guide', 'Install')
+    chunk.text      # '## Install\n\nRun the installer...\n\n```sh\npip install netweir\n```'
+    chunk.index     # 1
+    chunk.url       # 'https://docs.example/guide'
+```
+
+- Every heading starts a new chunk, and `headings` holds the path to it,
+  outermost first. A heading with nothing under it but a deeper heading
+  shares that heading's chunk.
+- A code block or table is never cut while it fits in one chunk. A
+  bigger one is cut between lines, and each piece is fenced again or keeps
+  the table's header row, so it still renders. A paragraph or list that's
+  too long is cut at line breaks first, then at the end of a sentence, then
+  between words.
+- `max_chars` counts characters, not bytes and not tokens, and defaults
+  to 2,000. `overlap=200` starts each chunk after the first in a section
+  with up to 200 characters from the end of the one before, cut at a
+  space. Overlap never crosses a heading.
+- By default only the main content is chunked, so menus and footers stay
+  out of your index. A page with no main content, such as a listing, is
+  chunked whole. `main_only=False` always takes the whole page.
+- `id` is a hash of the page's URL, the headings and the text. The same
+  chunk of the same page gets the same id on the next crawl, so your
+  store can skip what it already holds, and an edit to one section
+  doesn't change the ids of the others. A chunk that appears twice under
+  the same headings gets `-2` after its id the second time.
+
+`chunk.to_dict()` gives a dict ready for JSON. `chunk.to_langchain()`
+gives a LangChain `Document` and `chunk.to_llamaindex()` a LlamaIndex
+`TextNode`, each with the chunk's id, and its URL, headings and index as
+metadata. Install `langchain-core` or `llama-index-core` yourself to use
+them. Netweir doesn't embed chunks or store them: that's your vector
+store's job. In an item, `netweir.chunks()` holds the same list of dicts
+(see [declarative spiders](declarative.md)).
+
 ## Prices, dates and data in scripts
 
 Three things turn up on nearly every job, and each is a regular
