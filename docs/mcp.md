@@ -53,17 +53,23 @@ in Chrome and read once its scripts have run, for pages that build
 themselves in JavaScript. The first such call starts Chrome (install it
 with `netweir install chrome`), and later calls reuse it.
 
-A page that can't be fetched, answers with an error status, or is a bot
-protection page comes back as a tool error saying why, so the agent can
-try another URL or `browser=true`.
+A page that can't be fetched, answers with an error status, is a bot
+protection page, or isn't a web page (a PDF, an image) comes back as a
+tool error saying why, so the agent can try another URL or
+`browser=true`. So does `extract` when the page has nothing of the type
+asked for. Only `http` and `https` URLs are fetched, with or without
+Chrome, so an agent can't be talked into reading `file:` URLs on your
+machine. The counts (`max_chars`, `max_results`) must be at least 1.
 
 ## What to know
 
 - The server speaks over stdin and stdout only. It doesn't open a port,
   and it only fetches when the agent calls a tool.
-- It fetches whatever URL the agent asks for, from your machine and your
-  network, the way your browser would. Robots.txt isn't checked, since
-  each call is one page an agent was asked to read, not a crawl. For a
-  crawl, write a spider.
+- It fetches whatever web page the agent asks for, from your machine and
+  your network, the way your browser would, addresses on your local
+  network included. Robots.txt isn't checked, since each call is one
+  page an agent was asked to read, not a crawl. For a crawl, write a
+  spider.
 - Each call fetches the page again. Cookies a site sets are kept for the
-  rest of the session, as a browser keeps them.
+  rest of the session, as a browser keeps them. If Chrome closes or
+  crashes, the next `browser=true` call starts another.

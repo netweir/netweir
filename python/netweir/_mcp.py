@@ -4,8 +4,10 @@ Model Context Protocol on stdin and stdout. Needs the ``mcp`` package
 
 from __future__ import annotations
 
+import asyncio
 import sys
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 #: The auto-extracted types, by the name ``page_type()`` gives them.
 _TYPES = (
@@ -29,6 +31,22 @@ CSS selector finds, and links for where a page leads. Set browser=true
 for a page that builds itself in JavaScript; it's slower."""
 
 
+try:
+    from pydantic import Field
+except ImportError:  # without the extra; _module() says what to install
+    Count = Results = Overlap = int
+else:
+    # Limits the SDK checks before a tool runs. At module level, where it
+    # reads the tools' annotations.
+    Count = Annotated[int, Field(ge=1, le=1_000_000)]
+    Results = Annotated[int, Field(ge=1, le=10_000)]
+    Overlap = Annotated[int, Field(ge=0, le=1_000_000)]
+
+#: What a page's Content-Type may be: HTML, or text read as such. A
+#: response without one is read too, as a browser would sniff it.
+_READABLE = ("text/html", "application/xhtml+xml", "text/plain")
+
+
 def _module():
     try:
         from mcp.server import MCPServer
@@ -44,6 +62,7 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
     started the first time a tool asks for it."""
     import netweir
     from netweir import Blocked, BrowserError, FetchError, auto
+    from netweir._cli import _utf8
     from netweir._native import _response
 
     MCPServer, ToolError = _module()
@@ -54,19 +73,31 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
     async def in_chrome(url: str) -> netweir.Page:
         if "browser" not in chrome:
             chrome["browser"] = await netweir.browser(proxy=proxy, timeout=timeout)
-        tab = await chrome["browser"].new_page()
+        try:
+            tab = await chrome["browser"].new_page()
+        except BrowserError:
+            # Chrome went away (it crashed, or was closed): the next call
+            # starts another.
+            chrome.pop("browser", None)
+            raise
         try:
             response = await tab.goto(url)
             content = (await tab.content()).encode()
-            return netweir.Page(
-                _response(tab.url, response.status, "browser", response.headers, content)
-            )
+            headers = _utf8(response.headers)
+            return netweir.Page(_response(tab.url, response.status, "browser", headers, content))
         finally:
-            await tab.close()
+            try:
+                await tab.close()
+            except BrowserError:
+                chrome.pop("browser", None)
 
     async def fetch(url: str, browser: bool) -> netweir.Page:
         if "://" not in url:
             url = "https://" + url
+        # Chrome opens file: and other schemes the HTTP client refuses,
+        # and a page an agent reads could ask it for a local file.
+        if urlsplit(url).scheme.lower() not in ("http", "https"):
+            raise ToolError(f"{url} isn't a web page: only http and https URLs are fetched")
         try:
             page = await in_chrome(url) if browser else await client.get(url)
         except Blocked as e:
@@ -75,11 +106,19 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
             raise ToolError(f"{url} couldn't be fetched: {e}") from None
         if page.status >= 400:
             raise ToolError(f"{url} answered {page.status}")
+        kind = (page.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if kind and kind not in _READABLE:
+            raise ToolError(f"{url} is {kind}, not a web page")
         return page
+
+    async def off_loop(work):
+        """``work()`` on a thread, so parsing a big page doesn't hold up
+        the other calls."""
+        return await asyncio.to_thread(work)
 
     @mcp.tool()
     async def read_page(
-        url: str, main_only: bool = True, max_chars: int = 20_000, browser: bool = False
+        url: str, main_only: bool = True, max_chars: Count = 20_000, browser: bool = False
     ) -> dict[str, Any]:
         """A web page as Markdown: its main content (the article, post,
         product description or docs page, without menus, ads and
@@ -88,27 +127,32 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
         final URL, title and page_type (product, article, job-posting,
         ...; other when it's none)."""
         page = await fetch(url, browser)
-        markdown = (page.markdown(main_only=True) if main_only else None) or page.markdown()
-        return {
-            "url": page.url,
-            "title": page.css("title::text").get(),
-            "page_type": page.page_type(),
-            "markdown": markdown[:max_chars],
-            "truncated": len(markdown) > max_chars,
-        }
+
+        def read() -> dict[str, Any]:
+            markdown = (page.markdown(main_only=True) if main_only else None) or page.markdown()
+            return {
+                "url": page.url,
+                "title": page.css("title::text").get(),
+                "page_type": page.page_type(),
+                "markdown": markdown[:max_chars],
+                "truncated": len(markdown) > max_chars,
+            }
+
+        return await off_loop(read)
 
     @mcp.tool()
     async def chunks(
-        url: str, max_chars: int = 2000, overlap: int = 0, browser: bool = False
+        url: str, max_chars: Count = 2000, overlap: Overlap = 0, browser: bool = False
     ) -> list[dict[str, Any]]:
         """A web page's main content as Markdown, cut at its headings into
         chunks of at most max_chars characters, each with its id, text,
         headings (the path of headings above it) and index."""
         page = await fetch(url, browser)
         try:
-            return [c.to_dict() for c in page.chunks(max_chars, overlap=overlap)]
+            found = await off_loop(lambda: page.chunks(max_chars, overlap=overlap))
         except ValueError as e:
             raise ToolError(str(e)) from None
+        return [c.to_dict() for c in found]
 
     @mcp.tool()
     async def extract(url: str, type: str = "auto", browser: bool = False) -> dict[str, Any]:
@@ -121,7 +165,7 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
             raise ToolError(f"type is auto or one of {', '.join(_TYPES)}, not {type!r}")
         page = await fetch(url, browser)
         if type == "auto":
-            type = page.page_type()
+            type = await off_loop(page.page_type)
             if type == "other":
                 raise ToolError(
                     f"{url} doesn't look like a product, listing, job, article or thread; "
@@ -129,41 +173,51 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
                 )
         item = {name.lower(): cls for name, cls in vars(auto).items()}
         cls = item[type.replace("-", "")]
-        return {"type": type, "item": cls.extract(page)}
+        found = await off_loop(lambda: cls.extract(page))
+        if all(v in (None, [], {}, "") for k, v in found.items() if k not in ("url", "metadata")):
+            raise ToolError(f"{url} has nothing that reads as a {type}")
+        return {"type": type, "item": found}
 
     @mcp.tool()
-    async def select(url: str, css: str, max_results: int = 50, browser: bool = False) -> list[str]:
+    async def select(
+        url: str, css: str, max_results: Results = 50, browser: bool = False
+    ) -> list[str]:
         """What a CSS selector finds on a web page, up to max_results: each
         element's text as a reader sees it, or the strings ::text and
         ::attr(name) give."""
         page = await fetch(url, browser)
-        try:
+
+        def run() -> list[str]:
             found = page.css(css)
+            return [h if isinstance(h, str) else h.clean_text() for h in found[:max_results]]
+
+        try:
+            return await off_loop(run)
         except ValueError as e:
             raise ToolError(f"{css!r} isn't a selector Netweir reads: {e}") from None
-        out = []
-        for hit in found[:max_results]:
-            out.append(hit if isinstance(hit, str) else hit.clean_text())
-        return out
 
     @mcp.tool()
     async def links(
-        url: str, max_results: int = 200, browser: bool = False
+        url: str, max_results: Results = 200, browser: bool = False
     ) -> list[dict[str, str]]:
         """The links on a web page, up to max_results, each with its
         absolute url and its text, in page order, without repeats."""
         page = await fetch(url, browser)
-        seen: set[str] = set()
-        out = []
-        for a in page.css("a[href]"):
-            href = page.urljoin(a.attrs.get("href", ""))
-            if not href.startswith(("http://", "https://")) or href in seen:
-                continue
-            seen.add(href)
-            out.append({"url": href, "text": a.clean_text()})
-            if len(out) >= max_results:
-                break
-        return out
+
+        def run() -> list[dict[str, str]]:
+            seen: set[str] = set()
+            out = []
+            for a in page.css("a[href]"):
+                href = page.urljoin(a.attrs.get("href", ""))
+                if not href.startswith(("http://", "https://")) or href in seen:
+                    continue
+                seen.add(href)
+                out.append({"url": href, "text": a.clean_text()})
+                if len(out) >= max_results:
+                    break
+            return out
+
+        return await off_loop(run)
 
     return mcp
 

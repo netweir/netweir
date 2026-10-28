@@ -869,7 +869,16 @@ class _Session:
             tab = await browser.new_page()
             response = await tab.goto(url)
             content = (await tab.content()).encode()
-            return _response(tab.url, response.status, "browser", response.headers, content)
+            headers = _utf8(response.headers)
+            return _response(tab.url, response.status, "browser", headers, content)
+
+
+def _utf8(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Chrome's response headers for the HTML it gives back, which is a
+    str whatever the page's charset was: Content-Type says UTF-8, which
+    the HTML is encoded in."""
+    kept = [(k, v) for k, v in headers if k.lower() != "content-type"]
+    return [*kept, ("content-type", "text/html; charset=utf-8")]
 
 
 def _say_if_blocked(page):

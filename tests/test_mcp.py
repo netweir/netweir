@@ -4,6 +4,7 @@ client against a local site."""
 import asyncio
 import sys
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -12,6 +13,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
+import netweir  # noqa: E402
 from netweir import _mcp  # noqa: E402
 
 PRODUCT = """<html><head><title>Arc lamp</title>
@@ -25,7 +27,8 @@ of brushed steel, with a linen shade and a dimmer on the cord.</p>
 use polish on it, as polish clouds the brushed finish over time.</p></main>
 <footer>Lumo Ltd</footer></body></html>"""
 
-PAGES = {"/arc": PRODUCT}
+PAGES = {"/arc": PRODUCT, "/empty": "<html><body><p>Hello.</p></body></html>"}
+FILES = {"/manual.pdf": ("application/pdf", b"%PDF-1.4 binary")}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -35,6 +38,14 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path in FILES:
+            kind, data = FILES[self.path]
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         found = PAGES.get(self.path)
         data = (found or "missing").encode()
         self.send_response(200 if found else 404)
@@ -122,3 +133,79 @@ def test_without_the_sdk_it_says_what_to_install(monkeypatch):
     monkeypatch.setitem(sys.modules, "mcp.server", None)
     with pytest.raises(ImportError, match=r"netweir\[mcp\]"):
         _mcp.server()
+
+
+def test_only_web_pages_are_fetched(base):
+    for url in ("file:///etc/hosts", "view-source:https://example.com/", "ftp://example.com/"):
+        for browser in (False, True):
+            result = call("read_page", url=url, browser=browser)
+            assert result.is_error, url
+            assert "only http and https" in result.content[0].text
+    result = call("chunks", url=f"{base}/manual.pdf")
+    assert result.is_error
+    assert "application/pdf, not a web page" in result.content[0].text
+
+
+def test_limits_are_checked_before_fetching(base):
+    for tool, arguments in [
+        ("read_page", {"max_chars": -5}),
+        ("chunks", {"max_chars": 0}),
+        ("select", {"css": "p", "max_results": -1}),
+        ("links", {"max_results": 0}),
+    ]:
+        assert call(tool, url=f"{base}/arc", **arguments).is_error, (tool, arguments)
+
+
+def test_a_type_with_nothing_to_read_is_a_tool_error(base):
+    result = call("extract", url=f"{base}/empty", type="product")
+    assert result.is_error
+    assert "nothing that reads as a product" in result.content[0].text
+
+
+class FakeTab:
+    def __init__(self, html):
+        self.html, self.url = html, None
+
+    async def goto(self, url):
+        self.url = url
+        return types.SimpleNamespace(
+            status=200, headers=[("Content-Type", "text/html; charset=iso-8859-1")]
+        )
+
+    async def content(self):
+        return self.html
+
+    async def close(self):
+        pass
+
+
+class FakeChrome:
+    started = 0
+
+    def __init__(self, dies):
+        FakeChrome.started += 1
+        self.dies = dies
+
+    async def new_page(self):
+        if self.dies:
+            raise netweir.BrowserError("the browser has closed")
+        return FakeTab("<html><body><main><h1>Café</h1><p>Crème brûlée, à la carte.</p></main>")
+
+
+def test_chrome_pages_read_as_utf8_and_a_dead_chrome_is_replaced(monkeypatch):
+    async def browser(**kwargs):
+        return FakeChrome(dies=FakeChrome.started == 0)
+
+    monkeypatch.setattr(netweir, "browser", browser)
+
+    async def go():
+        async with Client(_mcp.server()) as client:
+            first = await client.call_tool("read_page", {"url": "https://e.com/", "browser": True})
+            second = await client.call_tool("read_page", {"url": "https://e.com/", "browser": True})
+            return first, second
+
+    first, second = asyncio.run(go())
+    assert first.is_error
+    assert not second.is_error, second.content
+    assert second.structured_content["markdown"].startswith("# Café")
+    assert FakeChrome.started == 2
