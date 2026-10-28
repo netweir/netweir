@@ -8,14 +8,19 @@
 //! item says so in its validation messages.
 
 mod article;
+mod content_page;
 mod dom;
+mod estate;
 mod feeds;
 pub mod fields;
 mod job;
 mod js_state;
 mod list;
+mod place;
+mod post;
 mod product;
 pub mod schema_org;
+mod serp;
 
 use serde_json::{Map, Value};
 use url::Url;
@@ -36,9 +41,32 @@ pub enum Schema {
     ArticleNavigation,
     JobPostingNavigation,
     ForumThread,
+    BusinessPlace,
+    RealEstate,
+    SocialMediaPost,
+    Serp,
+    PageContent,
 }
 
 impl Schema {
+    /// Every type, in the order they were added.
+    pub const ALL: [Schema; 14] = [
+        Schema::Product,
+        Schema::ProductList,
+        Schema::ProductNavigation,
+        Schema::JobPosting,
+        Schema::Article,
+        Schema::ArticleList,
+        Schema::ArticleNavigation,
+        Schema::JobPostingNavigation,
+        Schema::ForumThread,
+        Schema::BusinessPlace,
+        Schema::RealEstate,
+        Schema::SocialMediaPost,
+        Schema::Serp,
+        Schema::PageContent,
+    ];
+
     /// The type's fields, in the order items list them.
     pub fn fields(self) -> &'static [&'static str] {
         match self {
@@ -50,6 +78,11 @@ impl Schema {
             Schema::ArticleList => feeds::ARTICLE_LIST_FIELDS,
             Schema::ArticleNavigation | Schema::JobPostingNavigation => feeds::NAVIGATION_FIELDS,
             Schema::ForumThread => feeds::THREAD_FIELDS,
+            Schema::BusinessPlace => place::FIELDS,
+            Schema::RealEstate => estate::FIELDS,
+            Schema::SocialMediaPost => post::FIELDS,
+            Schema::Serp => serp::FIELDS,
+            Schema::PageContent => content_page::FIELDS,
         }
     }
 
@@ -65,12 +98,19 @@ impl Schema {
             Schema::ArticleNavigation => "article-navigation",
             Schema::JobPostingNavigation => "job-posting-navigation",
             Schema::ForumThread => "forum-thread",
+            Schema::BusinessPlace => "business-place",
+            Schema::RealEstate => "real-estate",
+            Schema::SocialMediaPost => "social-media-post",
+            Schema::Serp => "serp",
+            Schema::PageContent => "page-content",
         }
     }
 
     /// `product`, `product-list`, `product-navigation`, `job-posting`,
     /// `job-posting-navigation`, `article`, `article-list`,
-    /// `article-navigation` or `forum-thread` (underscores work too).
+    /// `article-navigation`, `forum-thread`, `business-place`,
+    /// `real-estate`, `social-media-post`, `serp` or `page-content`
+    /// (underscores work too).
     pub fn from_name(name: &str) -> Option<Schema> {
         Some(match name.replace('_', "-").as_str() {
             "product" => Schema::Product,
@@ -82,6 +122,11 @@ impl Schema {
             "article-navigation" => Schema::ArticleNavigation,
             "job-posting-navigation" => Schema::JobPostingNavigation,
             "forum-thread" => Schema::ForumThread,
+            "business-place" => Schema::BusinessPlace,
+            "real-estate" => Schema::RealEstate,
+            "social-media-post" => Schema::SocialMediaPost,
+            "serp" => Schema::Serp,
+            "page-content" => Schema::PageContent,
             _ => return None,
         })
     }
@@ -99,7 +144,22 @@ impl Schema {
             | "variants"
             | "additional_properties"
             | "articles"
-            | "posts" => {
+            | "posts"
+            | "opening_hours"
+            | "amenity_features"
+            | "actions"
+            | "review_sites"
+            | "star_rating"
+            | "reservation_action"
+            | "contained_in_place"
+            | "author"
+            | "reactions"
+            | "organic_results"
+            | "ai_overview"
+            | "navigation_header"
+            | "navigation_footer"
+            | "navigation_sidebar"
+            | "pagination" => {
                 return None;
             }
             "price" | "regular_price" => K::Price,
@@ -124,6 +184,14 @@ impl Schema {
             "next_page" => K::Request,
             "page_number" => K::Int,
             "videos" | "audios" => K::Media,
+            "address" => K::Address,
+            "area" => K::Area,
+            "virtual_tour_url" => K::Url,
+            "year_built" => K::Int,
+            f if f.starts_with("number_of_") => K::Int,
+            "map" | "website" => K::Url,
+            "categories" | "tags" | "hashtags" => K::Texts,
+            "media_urls" => K::Media,
             f if f.ends_with("_raw") => K::Text,
             f if f.starts_with("date_") || f == "valid_through" || f == "job_start_date" => K::Date,
             _ => K::Text,
@@ -143,6 +211,9 @@ pub struct Extracted {
     pub probability: f64,
     /// Problems, by field (`item` for the item as a whole).
     pub validation: Vec<(&'static str, String)>,
+    /// What a type adds to `metadata` besides the usual: a SERP's query
+    /// and its count of results.
+    pub extra_metadata: Vec<(&'static str, Value)>,
 }
 
 /// The `schema` item on the page at `page`, its URL. `base` is what its
@@ -204,9 +275,13 @@ pub fn page_type(
         Schema::JobPosting,
         Schema::ProductList,
         Schema::ForumThread,
+        Schema::SocialMediaPost,
+        Schema::Serp,
         Schema::ArticleList,
         Schema::JobPostingNavigation,
         Schema::Article,
+        Schema::BusinessPlace,
+        Schema::RealEstate,
     ] {
         let item = read(schema, &ctx);
         // Any page with a few paragraphs reads as an article from its main
@@ -228,6 +303,7 @@ pub fn page_type(
             }
             _ => item.probability,
         };
+        let weight = item.type_cap.map_or(weight, |cap| weight.min(cap));
         all.push((schema, item.probability));
         weights.push(weight);
     }
@@ -259,6 +335,11 @@ fn read(schema: Schema, ctx: &Page<'_, '_>) -> Builder {
         Schema::ArticleNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Articles),
         Schema::JobPostingNavigation => feeds::read_navigation(ctx, &mut item, feeds::Leads::Jobs),
         Schema::ForumThread => feeds::read_thread(ctx, &mut item),
+        Schema::BusinessPlace => place::read(ctx, &mut item),
+        Schema::RealEstate => estate::read(ctx, &mut item),
+        Schema::SocialMediaPost => post::read(ctx, &mut item),
+        Schema::Serp => serp::read(ctx, &mut item),
+        Schema::PageContent => content_page::read(ctx, &mut item),
     }
     item
 }
@@ -421,7 +502,11 @@ pub(crate) struct Builder {
     values: Vec<Value>,
     sources: Vec<Option<String>>,
     pub probability: f64,
+    /// The most this item's probability counts for in `page_type`, when
+    /// the reader knows the page isn't about the item it read.
+    pub type_cap: Option<f64>,
     validation: Vec<(&'static str, String)>,
+    extra_metadata: Vec<(&'static str, Value)>,
 }
 
 impl Builder {
@@ -432,7 +517,9 @@ impl Builder {
             values: vec![Value::Null; n],
             sources: vec![None; n],
             probability: 0.0,
+            type_cap: None,
             validation: Vec::new(),
+            extra_metadata: Vec::new(),
         }
     }
 
@@ -491,6 +578,13 @@ impl Builder {
         self.sources[i] = Some(source);
     }
 
+    /// Adds `key` to the item's `metadata`.
+    pub fn meta(&mut self, key: &'static str, value: Value) {
+        if !value.is_null() {
+            self.extra_metadata.push((key, value));
+        }
+    }
+
     pub fn note(&mut self, field: &'static str, message: String) {
         self.validation.push((field, message));
     }
@@ -506,6 +600,7 @@ impl Builder {
             fields: names.iter().copied().zip(self.values).collect(),
             probability: self.probability,
             validation: self.validation,
+            extra_metadata: self.extra_metadata,
         }
     }
 }

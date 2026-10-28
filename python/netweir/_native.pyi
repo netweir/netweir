@@ -209,6 +209,10 @@ class Node:
         "article",
         "article-list",
         "forum-thread",
+        "business-place",
+        "real-estate",
+        "social-media-post",
+        "serp",
         "other",
     ]: ...
     # attributes

@@ -1,0 +1,6 @@
+{"type": "real-estate", "url": "https://citylets.example/flat/5521",
+ "item": {"url": "https://citylets.example/flat/5521", "name": "Two bedroom flat, Ancoats",
+  "area": {"value": 68.0, "unit_code": "SQMT", "area_type": null, "raw": "68 m²"},
+  "number_of_bathrooms_total": 1, "number_of_bedrooms": 2,
+  "trade_type": "rent", "price": "1250", "rental_period": "monthly", "currency": "GBP", "currency_raw": "£"},
+ "sources": {"price": "dom:div.summary > span"}, "probability": [0.5, 0.6], "validation": [], "page_type": "real-estate"}

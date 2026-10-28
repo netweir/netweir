@@ -1,0 +1,5 @@
+{"type": "social-media-post", "url": "https://mastodon.example/@ada/113456789",
+ "item": {"url": "https://mastodon.example/@ada/113456789", "post_id": "113456789",
+  "text": "Wild garlic season again. #foraging", "hashtags": ["foraging"],
+  "media_urls": [{"url": "https://mastodon.example/media/garlic.jpg"}]},
+ "sources": {"text": "meta:og:description"}, "probability": [0.45, 0.55], "validation": [], "page_type": "social-media-post"}

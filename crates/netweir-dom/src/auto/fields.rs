@@ -419,6 +419,340 @@ pub fn text(v: &Value) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// `{address_raw, street_address, ...}` from a PostalAddress, or from
+/// an address written as text (which fills `address_raw` alone). The
+/// raw form of a PostalAddress is its parts joined, street first.
+pub fn address(v: &Value) -> Option<Value> {
+    let Value::Object(o) = v else {
+        return text(v).map(|t| address_text(&t));
+    };
+    let part = |k: &str| match o.get(k) {
+        Some(Value::Object(inner)) => inner.get("name").and_then(text),
+        Some(other) => text(other),
+        None => None,
+    };
+    let street = part("streetAddress");
+    let locality = part("addressLocality");
+    let region = part("addressRegion");
+    let postal = part("postalCode");
+    let country = part("addressCountry");
+    let raw: Vec<&str> = [&street, &locality, &region, &postal, &country]
+        .into_iter()
+        .filter_map(|p| p.as_deref())
+        .collect();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "address_raw": raw.join(", "),
+        "street_address": street,
+        "address_city": null,
+        "address_locality": locality,
+        "address_region": region,
+        "address_country": country,
+        "postal_code": postal,
+        "postal_code_aux": null,
+        "latitude": null,
+        "longitude": null,
+    }))
+}
+
+/// `address` with the latitude and longitude of a GeoCoordinates, made
+/// an address of its own (no raw text) when there was none.
+pub(crate) fn with_geo(address: Option<Value>, geo: &Value) -> Option<Value> {
+    let Value::Object(geo) = geo else {
+        return address;
+    };
+    let coordinate = |k: &str| geo.get(k).and_then(number);
+    let (Some(lat), Some(lon)) = (coordinate("latitude"), coordinate("longitude")) else {
+        return address;
+    };
+    let mut a = address.unwrap_or_else(|| {
+        let mut empty = address_text("");
+        empty["address_raw"] = Value::Null;
+        empty
+    });
+    a["latitude"] = json!(lat);
+    a["longitude"] = json!(lon);
+    Some(a)
+}
+
+/// `{value, unit_code, area_type, raw}` from a QuantitativeValue
+/// (`unitCode` MTK, FTK or ACR) or text such as `120 m²`, `1,250 sq ft`
+/// or `0.5 acres`. `area_type` is left null for the caller.
+pub fn area(v: &Value) -> Option<Value> {
+    static AREA: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(\d[\d,.]*)\s*(m²|m2\b|sq\.?\s*m\b|sqm\b|square met(?:er|re)s?|sq\.?\s*ft\b|sqft\b|ft²|square f(?:ee|oo)t|acres?\b)",
+        )
+        .unwrap()
+    });
+    let unit = |u: &str| {
+        let u = u.to_ascii_lowercase();
+        Some(match u.as_str() {
+            "mtk" => "SQMT",
+            "ftk" => "SQFT",
+            "acr" => "ACRE",
+            _ if u.starts_with("acre") => "ACRE",
+            _ if u.contains("ft") || u.contains("feet") || u.contains("foot") => "SQFT",
+            _ if u.starts_with('m') || u.contains("met") || u.ends_with('m') => "SQMT",
+            _ => return None,
+        })
+    };
+    let (value, unit_code, raw) = match v {
+        Value::Object(o) => {
+            let value = o.get("value").and_then(number)?;
+            let code = o
+                .get("unitCode")
+                .or_else(|| o.get("unitText"))
+                .and_then(text)?;
+            let shown = match o.get("value")? {
+                Value::Number(n) => n.to_string(),
+                other => text(other)?,
+            };
+            (value, unit(code.trim())?, format!("{shown} {code}"))
+        }
+        other => {
+            let t = text(other)?;
+            let c = AREA.captures(&t)?;
+            let value = area_number(c[1].trim_end_matches(['.', ',']))?;
+            (value, unit(&c[2])?, c[0].to_string())
+        }
+    };
+    (value > 0.0)
+        .then(|| json!({"value": value, "unit_code": unit_code, "area_type": null, "raw": raw}))
+}
+
+/// An area's number, written with either separator: `1,250.5`,
+/// `1.250,5`, `85,5`, `1.250`. One separator followed by exactly three
+/// digits groups thousands; otherwise it's the decimal point.
+fn area_number(s: &str) -> Option<f64> {
+    let (comma, point) = (s.rfind(','), s.rfind('.'));
+    let decimal = match (comma, point) {
+        (Some(c), Some(p)) => Some(c.max(p)),
+        (Some(i), None) | (None, Some(i)) => {
+            let after = &s[i + 1..];
+            let grouped = after.len() == 3 && s[..i].len() <= 3 && !s[..i].is_empty();
+            let one = s.matches([',', '.']).count() == 1;
+            (!(grouped && one) && one).then_some(i)
+        }
+        (None, None) => None,
+    };
+    let digits: String = s
+        .char_indices()
+        .filter_map(|(i, ch)| match ch {
+            '0'..='9' => Some(ch),
+            _ if Some(i) == decimal => Some('.'),
+            _ => None,
+        })
+        .collect();
+    digits.parse().ok()
+}
+
+/// A whole number from a number, numeric text or a QuantitativeValue.
+pub(crate) fn whole(v: &Value) -> Option<i64> {
+    match v {
+        Value::Object(o) => o.get("value").and_then(whole),
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// An address as written, in `address_raw`, the other parts null.
+pub fn address_text(text: &str) -> Value {
+    json!({
+        "address_raw": text,
+        "street_address": null,
+        "address_city": null,
+        "address_locality": null,
+        "address_region": null,
+        "address_country": null,
+        "postal_code": null,
+        "postal_code_aux": null,
+        "latitude": null,
+        "longitude": null,
+    })
+}
+
+const WEEKDAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
+/// The weekday a word names, Monday first: `Mo`, `Mon`, `Monday`,
+/// `Tues`, or a schema.org URL ending in the day.
+fn weekday(word: &str) -> Option<usize> {
+    let w = word
+        .trim()
+        .rsplit('/')
+        .next()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if w.len() < 2 {
+        return None;
+    }
+    if w == "weds" {
+        return Some(2);
+    }
+    WEEKDAYS.iter().position(|d| {
+        let d = d.to_ascii_lowercase();
+        d.starts_with(&w) && (w.len() <= 3 || w == d || w == "tues" || w == "thur" || w == "thurs")
+    })
+}
+
+/// The days a list such as `Mo-Fr`, `Mon – Wed, Sat` or `Saturday`
+/// names, in order; None when any part isn't a day.
+fn weekdays(list: &str) -> Option<Vec<usize>> {
+    let mut days = Vec::new();
+    for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.split_once(['-', '–', '—']) {
+            Some((a, b)) => {
+                let (a, b) = (weekday(a)?, weekday(b)?);
+                let mut d = a;
+                loop {
+                    days.push(d);
+                    if d == b {
+                        break;
+                    }
+                    d = (d + 1) % 7;
+                }
+            }
+            None => days.push(weekday(part)?),
+        }
+    }
+    (!days.is_empty()).then_some(days)
+}
+
+/// A time of day as `HH:MM:SS`, from `9`, `9:00`, `17:30:00`, `9am` or
+/// `5.30 pm`.
+pub(crate) fn clock(s: &str) -> Option<String> {
+    static TIME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^(\d{1,2})(?:[:.](\d{2}))?(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?$")
+            .unwrap()
+    });
+    let c = TIME.captures(s.trim())?;
+    let mut h: u32 = c[1].parse().ok()?;
+    let m: u32 = c.get(2).map_or(Some(0), |m| m.as_str().parse().ok())?;
+    let sec: u32 = c.get(3).map_or(Some(0), |m| m.as_str().parse().ok())?;
+    if let Some(half) = c.get(4) {
+        if h == 0 || h > 12 {
+            return None;
+        }
+        let pm = half.as_str().to_ascii_lowercase().starts_with('p');
+        h = match (pm, h) {
+            (false, 12) => 0,
+            (true, 12) => 12,
+            (true, h) => h + 12,
+            (false, h) => h,
+        };
+    }
+    (m < 60 && sec < 60 && (h < 24 || (h == 24 && m == 0 && sec == 0)))
+        .then(|| format!("{h:02}:{m:02}:{sec:02}"))
+}
+
+/// The times written in `text`, as written: `9:00`, `9am`, `17.30`.
+fn clock_tokens(text: &str) -> Vec<&str> {
+    static TOKEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b\d{1,2}(?:[:.]\d{2}){0,2}(?:\s*(?:am|pm|a\.m\.|p\.m\.))?")
+            .unwrap()
+    });
+    TOKEN
+        .find_iter(text)
+        .map(|m| m.as_str().trim())
+        .filter(|t| t.contains([':', '.']) || t.to_ascii_lowercase().contains(['a', 'p']))
+        .collect()
+}
+
+/// One entry for each day `days` names, open from `opens` to `closes`.
+fn hours_entries(days_raw: &str, days: &[usize], opens: &str, closes: &str) -> Vec<Value> {
+    let (Some(o), Some(c)) = (clock(opens), clock(closes)) else {
+        return Vec::new();
+    };
+    days.iter()
+        .map(|d| {
+            json!({
+                "day_of_week": WEEKDAYS[*d],
+                "opens": o,
+                "closes": c,
+                "raw_day_of_week": days_raw,
+                "raw_opens": opens,
+                "raw_closes": closes,
+            })
+        })
+        .collect()
+}
+
+/// A row of an opening hours table: the day or days, and the rest of
+/// the row, which must hold an opening and a closing time. Closed days
+/// give nothing.
+pub(crate) fn hours_row(days_raw: &str, rest: &str) -> Vec<Value> {
+    let days_raw = days_raw.trim().trim_end_matches(':').trim();
+    let Some(days) = weekdays(days_raw) else {
+        return Vec::new();
+    };
+    match clock_tokens(rest).as_slice() {
+        [opens, closes, ..] => hours_entries(days_raw, &days, opens, closes),
+        _ => Vec::new(),
+    }
+}
+
+/// `[{day_of_week, opens, closes, raw_...}]` from schema.org's
+/// OpeningHoursSpecification, or from `openingHours` text such as
+/// `Mo-Fr 09:00-17:30, Sa 10:00-14:00`. Closed days are left out.
+pub fn opening_hours(v: &Value) -> Option<Value> {
+    static SPAN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        let day = r"[A-Za-z]{2,9}\.?";
+        let time = r"\d{1,2}(?:[:.]\d{2}){0,2}(?:\s*(?:am|pm))?";
+        regex::Regex::new(&format!(
+            r"(?i)({day}(?:\s*[-–,]\s*{day})*)\s*:?\s+({time})\s*[-–—]\s*({time})"
+        ))
+        .unwrap()
+    });
+    let mut out = Vec::new();
+    // A week's hours, with room for split shifts and seasons; a page
+    // listing more isn't listing one place's.
+    for one in each(Some(v)).take(MAX_HOURS) {
+        if out.len() >= MAX_HOURS {
+            break;
+        }
+        match one {
+            Value::Object(o) => {
+                let (Some(opens), Some(closes)) = (
+                    o.get("opens").and_then(text),
+                    o.get("closes").and_then(text),
+                ) else {
+                    continue;
+                };
+                for day in each(o.get("dayOfWeek")) {
+                    let Some(raw) = text(day) else { continue };
+                    if let Some(d) = weekday(&raw) {
+                        out.extend(hours_entries(&raw, &[d], &opens, &closes));
+                    }
+                }
+            }
+            other => {
+                let Some(t) = text(other) else { continue };
+                for c in SPAN.captures_iter(&t).take(MAX_HOURS) {
+                    if let Some(days) = weekdays(&c[1]) {
+                        out.extend(hours_entries(c[1].trim(), &days, &c[2], &c[3]));
+                    }
+                }
+            }
+        }
+    }
+    out.truncate(MAX_HOURS);
+    (!out.is_empty()).then_some(Value::Array(out))
+}
+
+/// The most opening hours entries an item keeps.
+const MAX_HOURS: usize = 100;
+
 /// What kind of value a field holds, which decides how an element a
 /// person picked for it is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,6 +792,10 @@ pub enum FieldKind {
     Int,
     /// `[{url}]` for videos or audio: their sources, or links.
     Media,
+    /// `{address_raw, ...}`: the address as written.
+    Address,
+    /// `{value, unit_code, area_type, raw}` from text such as `120 m²`.
+    Area,
 }
 
 /// A field's value from an element a person chose for it.
@@ -622,6 +960,8 @@ pub fn from_element(
             }
             (!urls.is_empty()).then_some(Value::Array(urls))
         }
+        FieldKind::Address => words().map(|t| address_text(&t)),
+        FieldKind::Area => words().and_then(|t| area(&Value::String(t))),
         FieldKind::Texts => {
             let lis: Vec<Node<'_>> = node
                 .descendants()
@@ -696,6 +1036,8 @@ pub fn from_text(kind: FieldKind, text: &str, base: Option<&Url>, now: Civil) ->
                 .map(Value::from)
         }
         FieldKind::Media => Some(json!([{"url": absolute(text, base)?}])),
+        FieldKind::Address => self::text(&v).map(|t| address_text(&t)),
+        FieldKind::Area => area(&v),
         FieldKind::Texts => self::text(&v).map(|t| Value::Array(vec![Value::String(t)])),
     }
 }

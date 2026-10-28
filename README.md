@@ -95,7 +95,9 @@ Working today:
   `to_llamaindex()` hand them on. See
   [docs/selecting.md](docs/selecting.md#chunks-for-retrieval).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
-  a category page's listing, a job posting or an article from the
+  a category page's listing, a job posting, an article, a forum thread,
+  a business's page, a property, a social post or a search engine's
+  results from the
   structured data the page carries (JSON-LD, microdata, Open Graph), the
   state apps keep in their scripts (Next.js, Nuxt, Apollo), and its
   layout where those run out, in the common item schema
