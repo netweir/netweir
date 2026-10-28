@@ -969,6 +969,19 @@ impl BrowserPage {
         act::hover(py, self.inner.main_frame(), selector, timeout)
     }
 
+    /// Drags the element `source` onto `target` with the mouse: anything
+    /// that follows the mouse, or an HTML5 drag and drop.
+    #[pyo3(signature = (source, target, timeout=None))]
+    fn drag<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::drag(py, self.inner.main_frame(), source, target, timeout)
+    }
+
     /// Scrolls with the mouse wheel. Resolves to how many times more of
     /// the page loaded, when scrolling to the bottom; otherwise 0.
     #[pyo3(signature = (selector=None, *, x=0.0, y=None, times=None, idle=2.0, timeout=None))]
@@ -1574,6 +1587,17 @@ impl BrowserFrame {
         act::hover(py, self.inner.clone(), selector, timeout)
     }
 
+    #[pyo3(signature = (source, target, timeout=None))]
+    fn drag<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::drag(py, self.inner.clone(), source, target, timeout)
+    }
+
     #[pyo3(signature = (selector=None, *, x=0.0, y=None, times=None, idle=2.0, timeout=None))]
     #[allow(clippy::too_many_arguments)]
     fn scroll<'py>(
@@ -1735,6 +1759,19 @@ mod act {
         let timeout = seconds("timeout", timeout)?;
         crate::aio::future_into_py(py, async move {
             frame.hover(&selector, timeout).await.map_err(raise)
+        })
+    }
+
+    pub(super) fn drag<'py>(
+        py: Python<'py>,
+        frame: CoreFrame,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        crate::aio::future_into_py(py, async move {
+            frame.drag(&source, &target, timeout).await.map_err(raise)
         })
     }
 

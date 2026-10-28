@@ -297,6 +297,20 @@ async def test_press_holds_the_modifiers_named_before_the_key(browser, base):
             await page.press("Hyper+a")
 
 
+async def test_drag_drops_one_element_onto_another(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.evaluate("""() => {
+            document.body.insertAdjacentHTML('beforeend',
+                '<div id=item draggable=true>item</div><div id=bin style="height: 50px">bin</div>');
+            item.ondragstart = e => e.dataTransfer.setData('text/plain', 'item');
+            bin.ondragover = e => e.preventDefault();
+            bin.ondrop = e => { e.preventDefault(); window.dropped = e.dataTransfer.getData('text/plain'); };
+        }""")
+        await page.drag("#item", "#bin")
+        assert await page.evaluate("window.dropped") == "item"
+
+
 async def test_failures_raise_what_they_are(browser, base):
     page = await browser.new_page()
     await page.goto(base + "/")

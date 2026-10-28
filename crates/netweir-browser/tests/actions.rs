@@ -1425,3 +1425,115 @@ async fn an_unknown_modifier_or_key_is_refused_before_anything_is_pressed() {
     assert_eq!(page.evaluate("heard").await.unwrap(), json!([]));
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn drag_drops_an_item_by_html5_drag_and_drop() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>
+  #item { width: 60px; height: 30px; background: #ccc; }
+  #bin { width: 200px; height: 100px; margin-top: 150px; background: #eee; }
+</style>
+<div id=item draggable=true>item</div>
+<div id=bin></div>
+<button id=after onclick="seen.push('click')">after</button>
+<script>
+  window.seen = [];
+  item.addEventListener('dragstart', e => {
+    seen.push('dragstart');
+    e.dataTransfer.setData('text/plain', 'item-1');
+  });
+  bin.addEventListener('dragenter', e => { e.preventDefault(); seen.push('dragenter'); });
+  bin.addEventListener('dragover', e => {
+    e.preventDefault();
+    if (seen.at(-1) !== 'dragover') seen.push('dragover');
+  });
+  bin.addEventListener('drop', e => {
+    e.preventDefault();
+    seen.push('drop ' + e.dataTransfer.getData('text/plain'));
+    bin.appendChild(item);
+  });
+  item.addEventListener('dragend', () => seen.push('dragend'));
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.drag("#item", "#bin", None).await.unwrap();
+    assert_eq!(
+        page.evaluate("item.parentElement.id").await.unwrap(),
+        json!("bin")
+    );
+    // The mouse is free again after the drop.
+    page.click("#after", None).await.unwrap();
+    assert_eq!(
+        page.evaluate("seen").await.unwrap(),
+        json!([
+            "dragstart",
+            "dragenter",
+            "dragover",
+            "drop item-1",
+            "dragend",
+            "click"
+        ])
+    );
+    let err = page.drag("#item", "#nowhere", SHORT).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Timeout(m) if m.contains("drag #nowhere")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn drag_moves_a_handle_that_follows_the_mouse() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>
+  #track { position: relative; width: 300px; height: 20px; margin: 50px; background: #eee; }
+  #handle { position: absolute; left: 0; top: 0; width: 20px; height: 20px; background: #333; }
+  #mark { position: absolute; left: 290px; top: 100px; width: 20px; height: 20px; }
+</style>
+<div id=track><div id=handle></div></div>
+<div id=mark></div>
+<script>
+  let grab = null;
+  window.moves = 0;
+  window.ups = 0;
+  handle.addEventListener('mousedown', e => { grab = e.clientX - handle.offsetLeft; });
+  addEventListener('mousemove', e => {
+    if (grab === null) return;
+    moves++;
+    handle.style.left = Math.max(0, Math.min(280, e.clientX - grab)) + 'px';
+  });
+  addEventListener('mouseup', () => { grab = null; ups++; });
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.drag("#handle", "#mark", None).await.unwrap();
+    let r = page
+        .evaluate(
+            "() => { const h = handle.getBoundingClientRect(), m = mark.getBoundingClientRect(); \
+             return [Math.round(h.x + h.width / 2 - (m.x + m.width / 2)), moves > 3, ups]; }",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r,
+        json!([0, true, 1]),
+        "the handle's centre is on the mark's"
+    );
+    browser.close().await.unwrap();
+}

@@ -315,6 +315,9 @@ pub(crate) struct State {
     /// Whether the last document committed came back whole from the
     /// back-forward cache: loaded already, it fires no load events again.
     restored: bool,
+    /// What an HTML5 drag the page began carries, once Chrome has handed
+    /// the drag over (`Input.setInterceptDrags`).
+    dragging: Option<Value>,
     /// Lifecycle events seen, by loader.
     events: HashMap<String, Vec<String>>,
     responses: HashMap<String, Response>,
@@ -448,6 +451,7 @@ impl State {
                 }
                 self.tell(PageEvent::Response(response));
             }
+            "Input.dragIntercepted" => self.dragging = Some(p["data"].clone()),
             "Inspector.targetCrashed" | GONE => {
                 self.gone = true;
                 // Listeners hear there's nothing more: their receivers end.
@@ -1484,6 +1488,11 @@ impl Page {
         self.main_frame().hover(selector, timeout).await
     }
 
+    /// See [`Frame::drag`].
+    pub async fn drag(&self, source: &str, target: &str, timeout: Option<Duration>) -> Result<()> {
+        self.main_frame().drag(source, target, timeout).await
+    }
+
     /// See [`Frame::scroll`].
     pub async fn scroll(
         &self,
@@ -1688,6 +1697,82 @@ impl Page {
         Ok(())
     }
 
+    /// Drags with the left button from `from`, where the mouse already
+    /// is, to `to`: down, a moment, a move every 16 ms along the way, and
+    /// up. An HTML5 drag the page begins on the way (from a draggable
+    /// element) is one Chrome hands over rather than starting the OS's,
+    /// which headless has none of: from then on the moves go as drag
+    /// events, carrying what the page put in its dataTransfer, and the
+    /// button comes up as a drop, after which Chrome ends the drag
+    /// (dragend) as it would. The page sees no mouseup then, as with a
+    /// real drag.
+    pub(crate) async fn mouse_drag(&self, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+        self.call("Input.setInterceptDrags", json!({"enabled": true}))
+            .await?;
+        self.state().dragging = None;
+        let dragged = self.drag_by_steps(from, to).await;
+        // Handed-over drags nobody carries on would hang the page's next.
+        let _ = self
+            .call("Input.setInterceptDrags", json!({"enabled": false}))
+            .await;
+        dragged
+    }
+
+    async fn drag_by_steps(&self, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+        let mouse = |kind: &str, (x, y): (f64, f64), buttons: u32| json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1});
+        let drag = |kind: &str, (x, y): (f64, f64), data: &Value| json!({"type": kind, "x": x, "y": y, "data": data, "modifiers": 0});
+        self.call("Input.dispatchMouseEvent", mouse("mousePressed", from, 1))
+            .await?;
+        tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
+        // A step about every 20 pixels, as a hand moves at a fair pace.
+        let distance = (to.0 - from.0).hypot(to.1 - from.1);
+        let steps = (distance / 20.0).ceil().clamp(5.0, 40.0) as u32;
+        let mut data: Option<Value> = None;
+        for i in 1..=steps {
+            let t = f64::from(i) / f64::from(steps);
+            // Eased: slow to start and to arrive.
+            let t = 0.5 - 0.5 * (std::f64::consts::PI * t).cos();
+            let at = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            match &data {
+                Some(d) => {
+                    self.call("Input.dispatchDragEvent", drag("dragOver", at, d))
+                        .await?
+                }
+                None => {
+                    self.call("Input.dispatchMouseEvent", mouse("mouseMoved", at, 1))
+                        .await?
+                }
+            };
+            if data.is_none() {
+                data = self.state().dragging.take();
+                if let Some(d) = &data {
+                    self.call("Input.dispatchDragEvent", drag("dragEnter", at, d))
+                        .await?;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        if data.is_none() {
+            // A drag begun by the last move is told of a moment later:
+            // once the page has answered, Chrome has said.
+            self.main_frame().helper("0").await?;
+            data = self.state().dragging.take();
+            if let Some(d) = &data {
+                self.call("Input.dispatchDragEvent", drag("dragEnter", to, d))
+                    .await?;
+                self.call("Input.dispatchDragEvent", drag("dragOver", to, d))
+                    .await?;
+            }
+        }
+        tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
+        match &data {
+            Some(d) => self.call("Input.dispatchDragEvent", drag("drop", to, d)),
+            None => self.call("Input.dispatchMouseEvent", mouse("mouseReleased", to, 0)),
+        }
+        .await?;
+        Ok(())
+    }
+
     /// Clicks the left button at (x, y), where the mouse already is; on a
     /// phone, taps there, as a finger does: down, a moment, and up.
     pub(crate) async fn mouse_press(&self, x: f64, y: f64) -> Result<()> {
@@ -1784,7 +1869,7 @@ impl Page {
         let frame = self.main_frame();
         let at = |v: &Value, i: usize| v[i].as_f64().unwrap_or(0.0);
         let start = frame.helper(&mark(false)).await.unwrap_or(Value::Null);
-        self.drag(x, y, dx, dy).await?;
+        self.finger_drag(x, y, dx, dy).await?;
         if !start.is_array() {
             // Nothing to measure by: the page went while it was asked.
             return Ok(());
@@ -1832,13 +1917,13 @@ impl Page {
                 });
             }
             last = now;
-            self.drag(x, y, left_x, left_y).await?;
+            self.finger_drag(x, y, left_x, left_y).await?;
         }
         Ok(())
     }
 
     /// One swipe's drags (see [`Page::swipe`]).
-    async fn drag(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+    async fn finger_drag(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
         if dx == 0.0 && dy == 0.0 {
             return Ok(());
         }

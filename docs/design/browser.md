@@ -37,7 +37,9 @@ In this design:
   running (milestone 10)
 - The rest of the actions Playwright users reach for: hovering,
   scrolling (endless feeds included), dropdowns, checkboxes, file
-  uploads, frames, and a profile kept between runs (milestone 33)
+  uploads, frames, and a profile kept between runs (milestone 33);
+  then going back, forward and reloading, keyboard shortcuts with
+  modifiers, and dragging
 
 Not in this design: tracing, PDF, Safari (no BiDi), Camoufox (a third
 protocol), and Firefox for now (see below). Reading what a page fetches,
@@ -504,6 +506,26 @@ no `mouseover` within a few frames is made again from just outside the
 element, as a person moves off and back on, until the timeout. The page
 sees at least one `mouseover`; Chrome may send one of its own when a
 scroll puts the element under a still mouse.
+
+**Dragging.** `drag(source, target)` checks the target is attached,
+visible and stable (scrolling it into view), brings the mouse over the
+source as `hover` does, then reads the target's centre again, where
+bringing the source into view left it. With `Input.setInterceptDrags`
+on, it presses the left button, moves in eased steps of about 20 pixels
+every 16 ms, and lets go at the target. A page that only follows the
+mouse gets mouse events throughout. When the source is draggable,
+Chrome starts an HTML5 drag on the first move past its threshold and,
+intercepting, hands it over as `Input.dragIntercepted` with the
+`dataTransfer` items the page set in `dragstart`, instead of starting
+the OS's drag loop. From then on each step is `Input.dispatchDragEvent`
+(`dragEnter` once, then `dragOver`) carrying those items, and the
+release is a `drop`, after which Chrome fires `dragend` itself; the page
+sees no `mouseup`, as with a real drag. A drag that starts on the last
+step is caught by a round trip to the page before letting go. Headless
+Chrome on macOS also completes a plain mouse drag without the intercept,
+but with a window it would enter the OS's modal drag loop, and the
+intercept makes the events the same everywhere. Intercepting is turned
+off again afterwards, so a page's own later drags aren't left waiting.
 
 **Scrolling.** `scroll(selector=None, *, x=0, y=None, times=None,
 idle=2.0, timeout=None)` turns the mouse wheel: a `mouseMoved` to where

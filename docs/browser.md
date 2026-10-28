@@ -231,6 +231,7 @@ returns its new response.
 | `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`. Hold modifiers with it by naming them first, joined with `+`: `"Shift+Tab"`, `"Control+A"`, `"Meta+Shift+ArrowLeft"`. See [Keyboard shortcuts](#keyboard-shortcuts) |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
 | `hover(selector)` | moves the mouse over the element |
+| `drag(source, target)` | drags one element onto another with the mouse. See [Dragging](#dragging) |
 | `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
 
 Selectors are CSS, or XPath after `xpath=` (`page.click("xpath=//button[2]")`).
@@ -381,6 +382,24 @@ input. With `connect`, the paths are read on the machine Chrome runs on.
 `hover(selector)` moves the mouse over the element, for menus and
 tooltips that only appear on `:hover` or `mouseover`.
 
+### Dragging
+
+`drag(source, target)` presses the mouse on the middle of `source`, moves
+it a step at a time to the middle of `target` and lets go:
+
+```python
+await page.drag("#card-7", "#column-done")
+```
+
+That works for both kinds of drag a page can have. Sliders, sortable
+lists and map panning follow the mouse itself, and see `mousedown`, a
+run of `mousemove` and `mouseup`. An element with `draggable=true` makes
+an HTML5 drag and drop instead, and the page sees `dragstart`,
+`dragenter`, `dragover`, `drop` and `dragend`, with whatever the page put
+in `dataTransfer` there to read on the drop. `source` must be visible,
+still and not covered, as for a click; `target` must be visible and
+still. A phone's page has no mouse, so `drag` raises `ValueError` there.
+
 ### Frames
 
 Selectors only look inside the document they run in, so an element in an
@@ -399,8 +418,8 @@ for frame in await page.frames():
 finds the first with that `name`, a `url` matching a glob or compiled
 regex, or both, and gives `None` if there isn't one. A frame has the
 methods a page uses to read and act: `content`, `parse`, `title`,
-`evaluate`, `click`, `fill`, `hover`, `scroll`, `select_option`, `check`,
-`uncheck`, `set_input_files` and `wait_for`. Keys go wherever focus is,
+`evaluate`, `click`, `fill`, `hover`, `drag`, `scroll`, `select_option`,
+`check`, `uncheck`, `set_input_files` and `wait_for`. Keys go wherever focus is,
 so after `frame.fill(...)`, `page.press("Enter")` presses Enter in the
 frame. Frames from other sites, which Chrome runs in processes of their
 own, work the same way.
@@ -502,7 +521,7 @@ Listeners don't carry over: add them to the popup. Closing a page from
 
 A new tab opens in front, and Chrome counts the tab it was opened from
 as hidden, as in a window you're looking at. When you act on the opener
-again (`click`, `fill`, `press`, `hover`, `scroll`, `check`,
+again (`click`, `fill`, `press`, `hover`, `drag`, `scroll`, `check`,
 `select_option`, `set_input_files`), or wait on it (`wait_for`,
 `wait_for_navigation`, `wait_for_load`), Netweir brings its tab back to
 the front first, and pauses a moment, as you would.

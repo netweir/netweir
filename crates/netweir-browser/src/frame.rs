@@ -550,6 +550,34 @@ impl Frame {
         Ok(())
     }
 
+    /// Drags the element `source` onto `target` with the mouse: the mouse
+    /// comes over the source's centre once it's visible, still and not
+    /// covered, the button goes down, and the mouse moves to the centre
+    /// of the target, which must be visible and still, and lets go there.
+    /// That drags anything that follows the mouse (a slider's handle, a
+    /// sortable list's row) and, from a draggable element, makes an
+    /// HTML5 drag and drop, dataTransfer and all.
+    pub async fn drag(&self, source: &str, target: &str, timeout: Option<Duration>) -> Result<()> {
+        if self.page.touches() {
+            return Err(Error::Invalid(format!(
+                "drag {source}: the page is a phone's, which has no mouse to drag with"
+            )));
+        }
+        let deadline = self.page.deadline(timeout);
+        self.page.to_front().await?;
+        // Nothing need be under the mouse at the target but the target.
+        let landing = ["attached", "visible", "stable"];
+        self.actionable("drag", target, &landing, true, left(deadline))
+            .await?;
+        let checks = ["attached", "visible", "stable", "receives events"];
+        let from = self.over("drag", source, &checks, deadline).await?;
+        // Again, where bringing the source into view left it.
+        let to = self
+            .actionable("drag", target, &landing, false, left(deadline))
+            .await?;
+        self.page.mouse_drag(from, to).await
+    }
+
     /// Moves the mouse to the element's centre once it passes `checks`,
     /// and returns that point once the page has sent mouseover for it,
     /// heard from netweir's world. A move to where the mouse already is
