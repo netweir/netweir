@@ -94,6 +94,17 @@ a loopback address, which blocks DNS rebinding. Request bodies stop at
 address and in total. The metrics endpoint has no password and also
 defaults to `127.0.0.1`.
 
+## `netweir mcp`
+
+The MCP server talks only over stdin and stdout, to the client that
+started it; it opens no port. It fetches what the agent asks for, from
+the user's machine, with the user's network access, so an agent that
+reads a hostile page can be steered into asking for an address on the
+local network. Netweir doesn't try to tell a good URL from a bad one
+there: the client decides which tools an agent may call, and can ask
+the user before each one. Pages come back as Markdown, data or text,
+never run; `browser=true` runs them in Chrome, under its sandbox.
+
 ## Files Netweir writes
 
 The files and images pipelines name each file by a SHA-1 of its URL under
