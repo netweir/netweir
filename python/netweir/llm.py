@@ -64,15 +64,22 @@ def _schema(schema: Any) -> tuple[dict, Any]:
             "schema is a pydantic model, a JSON schema, or a dict of field names "
             f"and descriptions, not {schema!r}"
         )
-    if "type" in schema or "properties" in schema:
-        return anthropic.transform_schema(schema), None
-    for name, description in schema.items():
-        if not isinstance(name, str) or not isinstance(description, str):
-            raise TypeError(
-                f"a field is a name and a description, both strings, not {name!r}: {description!r}"
-            )
+    # Field descriptions are all strings; a JSON schema has a dict in it
+    # (its properties), even if it has a field called "type".
+    if not all(isinstance(v, str) for v in schema.values()):
+        schema = dict(schema)
+        if isinstance(schema.get("properties"), dict):
+            # Every field asked for is answered, null if it must be.
+            schema.setdefault("required", list(schema["properties"]))
+        try:
+            return anthropic.transform_schema(schema), None
+        except (AssertionError, ValueError, TypeError, KeyError) as e:
+            raise TypeError(f"schema isn't a JSON schema the API can take: {e}") from None
+    for name in schema:
+        if not isinstance(name, str):
+            raise TypeError(f"a field's name is a string, not {name!r}")
     fields = {
-        name: {"type": ["string", "null"], "description": description}
+        name: {"anyOf": [{"type": "string"}, {"type": "null"}], "description": description}
         for name, description in schema.items()
     }
     return (
@@ -94,20 +101,22 @@ def _page_text(page: Any, main_only: bool, max_chars: int | None) -> str:
         markdown = markdown[:max_chars]
     title = page.css("title::text").get()
     head = f"URL: {page.url}\n" + (f"Title: {title.strip()}\n" if title else "")
+    # The page can't end its own delimiter early.
+    markdown = markdown.replace("</page>", "<\\/page>")
     return f"{head}\n<page>\n{markdown}\n</page>"
 
 
 def _request(page, schema, instructions, model, effort, main_only, max_chars, client):
     sent, model_cls = _schema(schema)
-    text = _page_text(page, main_only, max_chars)
+    content = [{"type": "text", "text": _page_text(page, main_only, max_chars)}]
     if instructions:
-        text += f"\n\n{instructions}"
+        content.append({"type": "text", "text": instructions})
     request = {
         "model": model,
         "max_tokens": 16000,
         "system": _SYSTEM,
         "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": sent}},
-        "messages": [{"role": "user", "content": text}],
+        "messages": [{"role": "user", "content": content}],
     }
     # A declined request is run again on another model where the API can do
     # that for us: the Claude API itself. Cloud platforms' clients can't.
@@ -122,13 +131,26 @@ def _answer(response: Any, model_cls: Any) -> Any:
     if response.stop_reason == "refusal":
         details = getattr(response, "stop_details", None)
         raise Refused(getattr(details, "category", None), getattr(details, "explanation", None))
-    if response.stop_reason == "max_tokens":
+    if response.stop_reason in ("max_tokens", "model_context_window_exceeded"):
         raise Error("the model's answer was cut off before it finished")
-    text = next((b.text for b in response.content if b.type == "text"), None)
-    if text is None:
+    # After a fallback block, the next model's answer: what came before it
+    # is the declining model's, and may stop halfway.
+    texts: list[str] = []
+    for block in response.content:
+        if block.type == "fallback":
+            texts = []
+        elif block.type == "text":
+            texts.append(block.text)
+    text = "".join(texts)
+    if not text:
         raise Error("the model gave no answer")
     if model_cls is not None:
-        return model_cls.model_validate_json(text)
+        import pydantic
+
+        try:
+            return model_cls.model_validate_json(text)
+        except pydantic.ValidationError as e:
+            raise Error(f"the model's answer doesn't fit the model: {e}") from None
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
@@ -159,7 +181,8 @@ def extract(
     whole page goes. ``instructions`` adds to the request, ``effort`` is the
     model's (``"low"`` to ``"max"``), and ``client`` is an Anthropic client
     to use (``anthropic.Anthropic()`` by default, which reads
-    ``ANTHROPIC_API_KEY``; a Bedrock, Vertex or Foundry client works too).
+    ``ANTHROPIC_API_KEY``; a Bedrock, Vertex or Foundry client works too,
+    with ``model=`` set to that platform's name for the model).
 
     Raises ``netweir.llm.Refused`` when the model declines, and
     ``netweir.llm.Error`` when its answer is cut off or unusable."""

@@ -99,9 +99,11 @@ defaults to `127.0.0.1`.
 Nothing calls a model unless the user calls `netweir.llm.extract`, with
 their own key. The page's Markdown, URL and title go to the model as data,
 and the system prompt says that text on the page addressing the model is
-part of the page. The answer is constrained to the user's schema by the
-API, and a pydantic model's answer is validated, so a hostile page can
-mislead the values but not their shape.
+part of the page. The API holds the answer to the schema's fields and types,
+and a pydantic model's answer is validated, so a hostile page can mislead
+the values but not which fields come back. The page's Markdown can't close
+its own `<page>` delimiter, and the user's instructions go in a block of
+their own after it.
 
 ## Files Netweir writes
 

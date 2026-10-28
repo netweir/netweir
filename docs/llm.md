@@ -6,6 +6,7 @@ fits no type, such as a recipe, a council's bin collection days or a
 festival's line-up, describe the fields you want and let Claude read them:
 
 ```python
+import netweir
 from netweir import llm
 
 page = netweir.get("https://bakery.example/sourdough")
@@ -34,9 +35,12 @@ recipe = llm.extract(page, Recipe)
 recipe.ingredients  # ['500 g strong white flour', '350 g water', '10 g salt']
 ```
 
-A JSON schema works too, and gives a dict. Whichever you use, the answer is
-in that shape: the API constrains the model's output to the schema, so
-there's no free text to parse.
+A JSON schema works too, and gives a dict; a field it doesn't list as
+required is asked for anyway, null when the page doesn't say. Whichever you
+use, the API holds the model to the schema's fields and types, so there's
+no free text to parse. Limits such as `minimum`, `pattern` or `maxLength`
+are passed on as advice rather than enforced, and a pydantic model's own
+checks run on the answer.
 
 ## Setting it up
 
@@ -68,18 +72,23 @@ characters.
 | `effort=` | `"medium"` | how hard it thinks: `"low"` to `"max"`. A simple page may read as well at `"low"`, for less |
 | `main_only=` | `True` | the main content only, or the whole page |
 | `max_chars=` | none | cut the Markdown to this many characters |
-| `client=` | `anthropic.Anthropic()` | the client to call with: one with its own key or settings, or a Bedrock, Vertex AI or Foundry client |
+| `client=` | `anthropic.Anthropic()` | the client to call with: one with its own key or settings, or a Bedrock, Vertex AI or Foundry client, with `model=` set to that platform's name for the model |
 
 With the Claude API's own client, a request the model declines is run again
 on another model in the same call. When every model declines,
-`netweir.llm.Refused` says why. An answer cut off or not in the shape asked
-for raises `netweir.llm.Error`.
+`netweir.llm.Refused` says why. An answer cut off, or one a pydantic model
+won't accept, raises `netweir.llm.Error`.
 
 ## In a spider
 
 `extract_async` takes the same arguments, for callbacks:
 
 ```python
+class Loaf(BaseModel):
+    name: str
+    weight: str | None
+
+
 class Bakeries(netweir.Spider):
     start_urls = ["https://bakery.example/breads"]
 
