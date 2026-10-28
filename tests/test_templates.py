@@ -104,6 +104,12 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/docs":
+            self.send_response(301)
+            self.send_header("Location", "/docs/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         found = body(self.path)
         data = (found or "missing").encode()
         self.send_response(200 if found else 404)
@@ -334,3 +340,26 @@ def test_crawl_command_runs_the_docs_template(base, tmp_path):
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert sorted(r["title"] for r in rows) == ["API - Lumo docs", "Get - Lumo docs"]
     assert all(r["chunks"] for r in rows)
+
+
+def test_docs_reads_a_start_url_without_its_slash_as_the_directory(base):
+    pages = run(netweir.templates.Docs, f"{base}/docs")
+    assert names(pages, "title") == [
+        f"{t} - Lumo docs" for t in ("API", "Get", "Install", "Overview")
+    ]
+    upper = base.replace("http://127.0.0.1", "http://LOCALHOST")
+    assert len(run(netweir.templates.Docs, f"{upper}/docs/api/")) == 2, "the host in any case"
+
+
+def test_each_docs_row_says_which_page_it_came_from(base):
+    pages = run(netweir.templates.Docs, f"{base}/docs/api/")
+    assert sorted(p["url"] for p in pages) == [f"{base}/docs/api/", f"{base}/docs/api/get"]
+
+
+def test_page_url_is_a_field_of_its_own(base):
+    class Seen(netweir.Item):
+        url = netweir.page_url()
+        heading = netweir.css("h1::text")
+
+    found = run(netweir.templates.Docs, f"{base}/docs/install", "direct_item", item=Seen)
+    assert found == [{"url": f"{base}/docs/install", "heading": "Install"}]

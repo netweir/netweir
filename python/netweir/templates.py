@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 from netweir import auto
 from netweir._crawl import Spider
-from netweir._rules import Extract, Follow, Item, chunks, css
+from netweir._rules import Extract, Follow, Item, chunks, css, page_url
 
 STRATEGIES = ("automatic", "full", "navigation", "pagination_only", "direct_item")
 
@@ -112,9 +112,10 @@ class Job(_Template):
 
 
 class DocsPage(Item):
-    """A page's title, and its main content in chunks for retrieval (see
-    ``netweir.chunks``)."""
+    """A page's URL and title, and its main content in chunks for
+    retrieval (see ``netweir.chunks``)."""
 
+    url = page_url()
     title = css("title::text", strip=True)
     chunks = chunks()
 
@@ -124,9 +125,10 @@ class Docs(_Template):
     retrieval: a ``DocsPage`` item per page, holding its title and its
     main content's chunks.
 
-    It stays under each start URL's directory (its path up to the last
-    ``/``), so ``https://example.com/docs/`` crawls the docs and not the
-    blog. With
+    It stays under each start URL's path, so ``https://example.com/docs``
+    or ``/docs/`` crawls the docs and not the blog. A start URL naming a
+    file (a last part with a dot, ``/docs/index.html``) stays under its
+    directory. With
     ``"full"``, it goes anywhere on the site, and with ``"direct_item"``,
     only to the start URLs. A subclass can set ``item`` to a ``DocsPage``
     subclass with other chunk sizes."""
@@ -146,14 +148,25 @@ class Docs(_Template):
         strategy = self.chosen_strategy()
         if strategy == "direct_item":
             return [Extract(self.item)]
-        allow = []
-        if strategy == "automatic":
-            # Each start URL's directory, the part up to its last /.
-            for url in self.start_urls:
-                parts = urlsplit(url)
-                directory = parts.path[: parts.path.rfind("/") + 1] or "/"
-                allow.append("^https?://" + re.escape(parts.netloc + directory))
+        allow = [_under(url) for url in self.start_urls] if strategy == "automatic" else []
         return [Follow("a[href]", allow=allow), Extract(self.item)]
+
+
+def _under(url: str) -> str:
+    """A pattern for the URLs under ``url``'s path: its directory when it
+    names a file (``/docs/index.html``), the path itself otherwise
+    (``/docs`` or ``/docs/``), on its host as links are written once
+    resolved (in lower case, without a default port)."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.port is not None and (parts.scheme, parts.port) not in (("http", 80), ("https", 443)):
+        host += f":{parts.port}"
+    path = parts.path or "/"
+    last = path[path.rfind("/") + 1 :]
+    if "." in last:
+        path = path[: path.rfind("/") + 1]
+    path = path.rstrip("/")
+    return "^https?://" + re.escape(host + path) + "(?:[/?#]|$)"
 
 
 #: The templates by the name ``netweir crawl`` takes.
