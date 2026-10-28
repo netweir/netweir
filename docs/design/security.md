@@ -61,11 +61,17 @@ a queue URL's password is hidden in messages, and a login in a URL is
 dropped when a redirect leaves that URL. Tests check the proxy and queue
 masking.
 
-**Checkpoints keep proxy logins.** A checkpoint stores each pending
-request's proxy, credentials included, so a resumed crawl sends it the same
-way. The checkpoint file is created readable by its owner only (`0600`),
-and a test checks that. Dropping the stored password is tracked in
-[#179](https://github.com/netweir/netweir/issues/179).
+**Proxy logins stay out of checkpoints.** A checkpoint or shared queue
+keeps a pending request's proxy without its login, and a resumed crawl
+takes the login from its own proxy settings
+([proxies](proxies.md#one-request-one-proxy)). Opening an older
+checkpoint hides the logins already in it, and SQLite's `secure_delete`
+overwrites the old values in the file. Tests read the checkpoint's files
+for the password. The SHA-256 kept beside each proxy is unkeyed: it
+hides a long random password, not one a guess would find. A request's
+own Basic-auth login is still saved whole, in a file readable by its
+owner only (`0600`); dropping its password is tracked in
+[#183](https://github.com/netweir/netweir/issues/183).
 
 ## Chrome
 
@@ -121,4 +127,5 @@ one-second delay, and backs off as a site slows down, up to a minute.
 - The HTML tree has no depth limit. Deep trees are handled without
   recursion, and the time budget bounds the rest.
 - `unsafe` remains in the DOM, Python binding, HTML and browser crates.
-- Checkpoints keep proxy credentials, protected by file permissions only.
+- Checkpoints and shared queues keep a request's Basic-auth password,
+  protected by file permissions only (#183).
