@@ -30,3 +30,9 @@ problem. Please open an ordinary issue for that.
 
 Fixes go into the newest release. Until Netweir reaches 1.0, older releases
 don't get backports.
+
+## How Netweir defends itself
+
+[docs/design/security.md](docs/design/security.md) says what Netweir trusts,
+what stands between a hostile page and your machine, and the limits it
+still has.

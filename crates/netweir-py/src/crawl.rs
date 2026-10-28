@@ -2000,6 +2000,7 @@ impl QueueHandle {
                     referer: None,
                     retry_post: false,
                     proxy: None,
+                    proxy_sha256: None,
                     policy: Default::default(),
                 },
             ));

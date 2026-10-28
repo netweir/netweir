@@ -93,7 +93,14 @@ used dropped): the pool's own plus 256 for the crawl's jar, 16 per host
 session.
 It counts toward that proxy's health if the proxy is in the pool, and
 shows in `proxy_stats` either way. The request's proxy is saved in the
-checkpoint (format 3 adds the column). A proxy the client can't use
+checkpoint (format 3 adds the column) and in a shared queue's members,
+without its login: as `masked` writes it, with the SHA-256 of the whole
+URL beside it (format 6). A resumed crawl takes the login from its own
+proxies (the pool, `proxy` and Chrome's): the one whose URL hashes the
+same, or else the only one at the same scheme, host and port, whose
+password changed. With neither, the request goes as the crawl's other
+requests do, and one warning names the proxy. Opening an older
+checkpoint hides the logins already in it. A proxy the client can't use
 skips the request with a warning, as an unusable URL does.
 
 ## Chrome

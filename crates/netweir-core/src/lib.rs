@@ -4,6 +4,8 @@
 //! [`Profile`]'s browser sends: the same TLS ClientHello, HTTP/2 settings
 //! and header order.
 
+#![forbid(unsafe_code)]
+
 mod archive;
 mod cache;
 pub mod canonical;

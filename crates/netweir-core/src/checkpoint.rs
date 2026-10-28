@@ -21,7 +21,7 @@ use crate::canonical::Fingerprint;
 
 /// The layout this build writes. Older files are upgraded on open; newer
 /// ones are refused.
-pub const FORMAT: i64 = 5;
+pub const FORMAT: i64 = 6;
 
 /// A request that was saved and not finished. A shared queue keeps the
 /// same fields, as JSON, without the row.
@@ -45,7 +45,13 @@ pub struct Pending {
     pub referer: Option<String>,
     pub retry_post: bool,
     /// The proxy the request asked for, if any. Formats 1 and 2 had none.
+    /// One with a login is kept as `masked` writes it, with the SHA-256
+    /// of its whole URL beside it, which a resume finds the login by
+    /// among the crawl's proxies. Format 5, and queue members written
+    /// before, kept the login in it, and no hash.
     pub proxy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_sha256: Option<String>,
     /// Its timeout, redirect limit and login. Formats 1 to 3, and queue
     /// members written before, had none: the fetcher's own.
     #[serde(default)]
@@ -224,7 +230,8 @@ const SCHEMA: &str = "
         referer TEXT,
         retry_post INTEGER NOT NULL DEFAULT 0,
         proxy TEXT,
-        policy TEXT
+        policy TEXT,
+        proxy_sha256 TEXT
     );
     CREATE INDEX IF NOT EXISTS pending ON requests (row) WHERE done = 0;
     CREATE TABLE IF NOT EXISTS seen (fingerprint BLOB PRIMARY KEY) WITHOUT ROWID;
@@ -274,7 +281,8 @@ impl Checkpoint {
                      ALTER TABLE requests ADD COLUMN retry_post INTEGER NOT NULL DEFAULT 0;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
                      ALTER TABLE requests ADD COLUMN policy TEXT;
-                     UPDATE meta SET value = '5' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN proxy_sha256 TEXT;
+                     UPDATE meta SET value = '6' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -284,7 +292,8 @@ impl Checkpoint {
                     "BEGIN;
                      ALTER TABLE requests ADD COLUMN proxy TEXT;
                      ALTER TABLE requests ADD COLUMN policy TEXT;
-                     UPDATE meta SET value = '5' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN proxy_sha256 TEXT;
+                     UPDATE meta SET value = '6' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
@@ -295,16 +304,22 @@ impl Checkpoint {
                 conn.execute_batch(
                     "BEGIN;
                      ALTER TABLE requests ADD COLUMN policy TEXT;
-                     UPDATE meta SET value = '5' WHERE key = 'format';
+                     ALTER TABLE requests ADD COLUMN proxy_sha256 TEXT;
+                     UPDATE meta SET value = '6' WHERE key = 'format';
                      COMMIT;",
                 )
                 .map_err(sql)?;
             }
-            Some(Ok(4)) => {
+            Some(Ok(4 | 5)) => {
                 // Format 4 kept no cookies: its `jars` table, made with the
                 // others, is empty, so a resume starts as a new visitor.
-                conn.execute("UPDATE meta SET value = '5' WHERE key = 'format'", [])
-                    .map_err(sql)?;
+                conn.execute_batch(
+                    "BEGIN;
+                     ALTER TABLE requests ADD COLUMN proxy_sha256 TEXT;
+                     UPDATE meta SET value = '6' WHERE key = 'format';
+                     COMMIT;",
+                )
+                .map_err(sql)?;
             }
             Some(Ok(v)) if v <= FORMAT => {}
             Some(Ok(v)) => {
@@ -319,6 +334,9 @@ impl Checkpoint {
                     path.display()
                 )));
             }
+        }
+        if matches!(format.as_deref().map(str::parse::<i64>), Some(Ok(v)) if v < FORMAT) {
+            hide_proxy_logins(&conn).map_err(sql)?;
         }
         let saved = read(&conn).map_err(sql)?;
         let (ops, inbox) = channel();
@@ -497,6 +515,48 @@ pub(crate) fn owners_only(path: &Path) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The SHA-256 of a proxy's URL, login and all, in hex. Unkeyed: a key
+/// would have to be kept in the same file, so it would hide nothing from
+/// whoever can read the checkpoint.
+pub(crate) fn proxy_sha256(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(url.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// `proxy` as a checkpoint or a shared queue keeps it: without its
+/// login, and the hash a resume finds the login by. One with no login
+/// is kept as it is.
+pub fn saved_proxy(proxy: Option<&str>) -> (Option<String>, Option<String>) {
+    match proxy {
+        Some(p) if crate::fetch::masked(p) != p => {
+            (Some(crate::fetch::masked(p)), Some(proxy_sha256(p)))
+        }
+        p => (p.map(str::to_string), None),
+    }
+}
+
+/// Formats 3 to 5 kept each request's proxy, login and all: from now
+/// on, as `saved_proxy` keeps it.
+fn hide_proxy_logins(conn: &Connection) -> rusqlite::Result<()> {
+    let rows = conn
+        .prepare("SELECT row, proxy FROM requests WHERE proxy IS NOT NULL")?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tx = conn.unchecked_transaction()?;
+    for (row, proxy) in rows {
+        if let (proxy, Some(sha)) = saved_proxy(Some(&proxy)) {
+            tx.execute(
+                "UPDATE requests SET proxy = ?1, proxy_sha256 = ?2 WHERE row = ?3",
+                params![proxy, sha, row],
+            )?;
+        }
+    }
+    tx.commit()
+}
+
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
     #[cfg(unix)]
     owners_only(path)?;
@@ -505,6 +565,9 @@ fn connect(path: &Path) -> rusqlite::Result<Connection> {
     // WAL with NORMAL is crash-safe for the process dying; a power cut may
     // lose the last commits, which resuming fetches again.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // What's deleted or replaced is overwritten too, so a proxy login
+    // hidden on upgrade is gone from the file, not just unlisted.
+    conn.pragma_update(None, "secure_delete", "ON")?;
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
 }
@@ -513,7 +576,8 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
     let mut saved = Saved::default();
     let mut stmt = conn.prepare(
         "SELECT row, url, priority, headers, dont_filter, depth, payload,
-                method, kind, body, content_type, referer, retry_post, proxy, policy
+                method, kind, body, content_type, referer, retry_post, proxy, policy,
+                proxy_sha256
          FROM requests WHERE done = 0 ORDER BY row",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -534,6 +598,7 @@ fn read(conn: &Connection) -> rusqlite::Result<Saved> {
             referer: r.get(11)?,
             retry_post: r.get(12)?,
             proxy: r.get(13)?,
+            proxy_sha256: r.get(15)?,
             // Unreadable, the request would go out without its login or
             // limits: the resume stops and says which.
             policy: match policy {
@@ -688,8 +753,9 @@ fn commit<'a>(
     {
         let mut request = tx.prepare_cached(
             "INSERT OR REPLACE INTO requests (row, url, priority, headers, dont_filter, depth, payload,
-                 method, kind, body, content_type, referer, retry_post, proxy, policy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 method, kind, body, content_type, referer, retry_post, proxy, policy,
+                 proxy_sha256)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         )?;
         let mut seen = tx.prepare_cached("INSERT OR IGNORE INTO seen (fingerprint) VALUES (?1)")?;
         let mut done = tx.prepare_cached("UPDATE requests SET done = 1 WHERE row = ?1")?;
@@ -726,7 +792,8 @@ fn commit<'a>(
                         p.referer,
                         p.retry_post,
                         p.proxy,
-                        policy
+                        policy,
+                        p.proxy_sha256
                     ])?;
                 }
                 Op::Seen(fp) => {
@@ -797,7 +864,8 @@ mod tests {
             content_type: None,
             referer: Some("https://e.com/".into()),
             retry_post: false,
-            proxy: Some("http://ann:secret@10.0.0.1:8080".into()),
+            proxy: Some("http://***@10.0.0.1:8080".into()),
+            proxy_sha256: Some(proxy_sha256("http://ann:secret@10.0.0.1:8080")),
             policy: crate::Policy {
                 timeout: Some(Duration::from_millis(2500)),
                 max_redirects: Some(4),
@@ -1197,6 +1265,57 @@ mod tests {
         let (_cp, saved) = Checkpoint::open(&path).unwrap();
         assert_eq!(saved.pending[1], post);
         drop(_cp);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_checkpoint_that_kept_proxy_logins_is_upgraded_without_them() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-v5-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The fifth format's requests table, as 0.5.0 wrote it.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('format', '5');
+                 CREATE TABLE requests (row INTEGER PRIMARY KEY, url TEXT NOT NULL,
+                     priority INTEGER NOT NULL, headers TEXT NOT NULL,
+                     dont_filter INTEGER NOT NULL, depth INTEGER NOT NULL,
+                     payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+                     method TEXT NOT NULL DEFAULT 'GET',
+                     kind TEXT NOT NULL DEFAULT 'navigate', body BLOB,
+                     content_type TEXT, referer TEXT,
+                     retry_post INTEGER NOT NULL DEFAULT 0, proxy TEXT, policy TEXT);
+                 INSERT INTO requests (row, url, priority, headers, dont_filter, depth, payload,
+                     proxy)
+                     VALUES (4, 'https://e.com/a', 0, '[]', 0, 1, '{}',
+                         'http://ann:secret@10.0.0.1:8080'),
+                     (5, 'https://e.com/b', 0, '[]', 0, 1, '{}', 'http://10.0.0.2:8080');",
+            )
+            .unwrap();
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        let proxies: Vec<_> = saved
+            .pending
+            .iter()
+            .map(|p| (p.proxy.as_deref(), p.proxy_sha256.clone()))
+            .collect();
+        assert_eq!(
+            proxies,
+            [
+                (
+                    Some("http://***@10.0.0.1:8080"),
+                    Some(proxy_sha256("http://ann:secret@10.0.0.1:8080"))
+                ),
+                (Some("http://10.0.0.2:8080"), None),
+            ]
+        );
+        drop(cp);
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(file.unwrap().path()).unwrap();
+            assert!(!bytes.windows(6).any(|w| w == b"secret"));
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

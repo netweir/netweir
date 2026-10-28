@@ -16,7 +16,7 @@ use url::Url;
 use crate::archive::Archive;
 use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with, in_jar, with_steps};
-use crate::checkpoint::{Checkpoint, Pending, Saved};
+use crate::checkpoint::{Checkpoint, Pending, Saved, proxy_sha256, saved_proxy};
 use crate::classify::{BlockKind, Outcome, classify};
 use crate::cookies::Jar;
 use crate::deltafetch::{self, DeltaKey, Record};
@@ -922,20 +922,10 @@ struct SavedProxy {
 }
 
 impl SavedProxy {
-    /// Unkeyed: a key would have to be kept in the same file, so it would
-    /// hide nothing from whoever can read the checkpoint.
-    fn hash(url: &str) -> String {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(url.as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    }
-
     fn of(url: &str) -> SavedProxy {
         SavedProxy {
             masked: masked(url),
-            sha256: SavedProxy::hash(url),
+            sha256: proxy_sha256(url),
         }
     }
 }
@@ -978,7 +968,7 @@ fn restore_session(
                 .iter()
                 .chain(&shared.options.proxy)
                 .chain(&shared.settings.browser_launch.proxy)
-                .find(|p| SavedProxy::hash(p) == saved.sha256)
+                .find(|p| proxy_sha256(p) == saved.sha256)
                 .cloned()
                 .ok_or_else(|| {
                     format!("its proxy {} is no longer one the crawl uses", saved.masked)
@@ -1065,6 +1055,9 @@ struct State {
     chrome_proxy: Option<String>,
     /// Whether the crawl was told no proxy of the pool suits Chrome.
     warned_chrome_proxy: bool,
+    /// Proxies saved requests asked for whose login the crawl was told
+    /// it couldn't find (see `unmask_proxy`).
+    lost_proxies: HashSet<String>,
     /// Requests leased from the shared queue and not yet released, by
     /// row, with the member that releases them.
     held: HashMap<i64, Vec<u8>>,
@@ -1543,6 +1536,20 @@ impl Crawler {
             let mut state = shared.lock();
             shared.push_event(&mut state, Event::Warning { message });
         }
+        // Saved requests get their proxies' logins back.
+        let lost: Vec<String> = shared
+            .saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .flat_map(|s| s.pending.iter_mut())
+            .filter_map(|p| unmask_proxy(&shared, p))
+            .collect();
+        let mut state = shared.lock();
+        if let Some(warning) = lost_proxies(&mut state, lost) {
+            shared.push_event(&mut state, warning);
+        }
+        drop(state);
         tokio::spawn(schedule_loop(shared.clone()));
         if let Some(inbox) = inbox {
             spawn_queue(shared.clone(), inbox);
@@ -2286,6 +2293,7 @@ enum Persist<'a> {
 
 /// `request` as the checkpoint and the shared queue keep it.
 fn pending_of(request: &CrawlRequest, payload: &str, row: i64) -> Pending {
+    let (proxy, proxy_sha256) = saved_proxy(request.proxy.as_deref());
     Pending {
         row,
         url: request.url.clone(),
@@ -2300,9 +2308,59 @@ fn pending_of(request: &CrawlRequest, payload: &str, row: i64) -> Pending {
         content_type: request.outgoing.content_type.clone(),
         referer: request.outgoing.referer.clone(),
         retry_post: request.retry_post,
-        proxy: request.proxy.clone(),
+        proxy,
+        proxy_sha256,
         policy: request.outgoing.policy.clone(),
     }
+}
+
+/// Gives a saved request its proxy's login back, as the crawl has it
+/// now: the proxy among its pool, its own and Chrome's whose URL hashes
+/// the same, or failing that the only one at the same scheme, host and
+/// port, whose login changed. With neither, the request goes as the
+/// crawl's others do, and the proxy is returned to warn about. A proxy
+/// saved with no login, or with its login before logins were hidden,
+/// is used as it was saved.
+fn unmask_proxy(shared: &Shared, p: &mut Pending) -> Option<String> {
+    let sha = p.proxy_sha256.take()?;
+    let saved = p.proxy.take()?;
+    let mut ours: Vec<&String> = shared
+        .settings
+        .proxies
+        .iter()
+        .chain(&shared.options.proxy)
+        .chain(&shared.settings.browser_launch.proxy)
+        .collect();
+    ours.sort();
+    ours.dedup();
+    p.proxy = match ours.iter().find(|c| proxy_sha256(c) == sha) {
+        Some(c) => Some(c.to_string()),
+        None => match ours
+            .iter()
+            .filter(|c| masked(c) == saved)
+            .collect::<Vec<_>>()[..]
+        {
+            [only] => Some(only.to_string()),
+            _ => None,
+        },
+    };
+    p.proxy.is_none().then_some(saved)
+}
+
+/// The warning for saved requests whose proxy `unmask_proxy` couldn't
+/// find, each proxy named once in the crawl.
+fn lost_proxies(state: &mut State, lost: Vec<String>) -> Option<Event> {
+    let new: Vec<String> = lost
+        .into_iter()
+        .filter(|p| state.lost_proxies.insert(p.clone()))
+        .collect();
+    (!new.is_empty()).then(|| Event::Warning {
+        message: format!(
+            "saved requests through {} go as the crawl's others do: their proxy's login \
+             isn't among the crawl's proxies now",
+            new.join(", ")
+        ),
+    })
 }
 
 /// How often the queue's task looks for work when it found none.
@@ -2401,7 +2459,9 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
                 // Not over after all: the end waits for a whole grace of
                 // quiet after this work too.
                 state.queue_over = false;
-                for (member, request) in leased {
+                let mut lost = Vec::new();
+                for (member, mut request) in leased {
+                    lost.extend(unmask_proxy(&s, &mut request));
                     let row = state.next_row;
                     state.next_row += 1;
                     state.held.insert(row, member);
@@ -2414,6 +2474,9 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
                             request: Box::new(request),
                         },
                     );
+                }
+                if let Some(warning) = lost_proxies(&mut state, lost) {
+                    s.push_event(&mut state, warning);
                 }
             }
             let idle = {

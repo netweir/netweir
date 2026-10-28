@@ -158,7 +158,7 @@ class _Exporter:
         self._target = self.path
         if self.batch is not None:
             while True:
-                started = datetime.datetime.now(datetime.timezone.utc)
+                started = datetime.datetime.now(datetime.UTC)
                 self._target = self.path.format(
                     batch=self._number, time=started.strftime("%Y-%m-%dT%H-%M-%SZ")
                 )
