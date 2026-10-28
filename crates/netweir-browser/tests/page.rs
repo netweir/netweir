@@ -633,3 +633,145 @@ async fn a_failed_navigation_carries_what_chrome_said_without_changing_its_kind(
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn back_and_forward_return_each_documents_response_and_none_at_the_ends() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/one", html("<title>one</title>"))]);
+    let (one, two) = (format!("{}/one", server.url), format!("{}/two", server.url));
+    let page = browser.new_page().await.unwrap();
+    page.goto(&one, WaitUntil::Load, None).await.unwrap();
+    page.goto(&two, WaitUntil::Load, None).await.unwrap();
+
+    let r = page.go_back(WaitUntil::Load, None).await.unwrap().unwrap();
+    assert_eq!((r.url.as_str(), r.status), (one.as_str(), 200));
+    assert_eq!(page.url(), one);
+    assert_eq!(page.title().await.unwrap(), "one");
+    // A new page's history starts at the blank page it opened on.
+    let r = page.go_back(WaitUntil::Load, None).await.unwrap().unwrap();
+    assert_eq!((r.url.as_str(), r.status), ("about:blank", 0));
+    assert!(
+        page.go_back(WaitUntil::Load, None).await.unwrap().is_none(),
+        "the blank page has nothing before it"
+    );
+    assert_eq!(page.url(), "about:blank");
+    page.go_forward(WaitUntil::Load, None).await.unwrap();
+    assert_eq!(page.url(), one);
+
+    let r = page
+        .go_forward(WaitUntil::DomContentLoaded, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((r.url.as_str(), r.status), (two.as_str(), 404));
+    assert_eq!(page.url(), two);
+    assert!(
+        page.go_forward(WaitUntil::Load, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn back_over_a_pushed_entry_stays_in_the_document() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html("<script>window.mark = 'kept'</script>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.evaluate("history.pushState({}, '', '/pushed')")
+        .await
+        .unwrap();
+    page.evaluate("location.hash = 'part'").await.unwrap();
+
+    let r = page.go_back(WaitUntil::Load, SHORT).await.unwrap().unwrap();
+    let pushed = format!("{}/pushed", server.url);
+    assert_eq!((r.url.as_str(), r.status), (pushed.as_str(), 0));
+    assert_eq!(page.url(), pushed);
+    let r = page.go_back(WaitUntil::Load, SHORT).await.unwrap().unwrap();
+    let home = format!("{}/", server.url);
+    assert_eq!((r.url.as_str(), r.status), (home.as_str(), 0));
+    assert_eq!(page.url(), home);
+    assert_eq!(
+        page.evaluate("window.mark").await.unwrap(),
+        json!("kept"),
+        "no new document was loaded"
+    );
+    let r = page
+        .go_forward(WaitUntil::Load, SHORT)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.url, pushed);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn back_to_a_page_chrome_kept_whole_returns_without_loading_it() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<script>
+                  window.restored = false;
+                  addEventListener('pageshow', e => { if (e.persisted) restored = true });
+                </script>",
+            ),
+        ),
+        ("/next", html("<p>next</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.goto(&format!("{}/next", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    // A page restored from the back-forward cache fires no load event:
+    // waiting for one would run out the time.
+    let r = page
+        .go_back(WaitUntil::NetworkIdle, Some(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.url, format!("{}/", server.url));
+    assert_eq!(
+        page.evaluate("restored").await.unwrap(),
+        json!(true),
+        "the page came back from the back-forward cache"
+    );
+    assert_eq!(
+        server.paths().iter().filter(|p| *p == "/").count(),
+        1,
+        "{:?}",
+        server.paths()
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reload_loads_the_document_again_and_returns_its_response() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html("<title>again</title>"))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.evaluate("window.mark = 1").await.unwrap();
+    let r = page.reload(WaitUntil::Load, None).await.unwrap();
+    assert_eq!((r.url, r.status), (format!("{}/", server.url), 200));
+    assert_eq!(page.evaluate("window.mark").await.unwrap(), json!(null));
+    assert_eq!(
+        server.paths().iter().filter(|p| *p == "/").count(),
+        2,
+        "{:?}",
+        server.paths()
+    );
+    browser.close().await.unwrap();
+}

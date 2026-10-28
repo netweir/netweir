@@ -208,6 +208,18 @@ await page.click("a.next")
 response = await moved
 ```
 
+`await page.go_back()` and `await page.go_forward()` move through the
+page's history as the browser's buttons do, taking the same `wait=` and
+`timeout=` as `goto()`. Each returns the response of the document it
+lands on, or `None` when there's nowhere to go; a new page's history
+starts at the blank page it opened on. Chrome keeps a page you left whole
+for a while (its back-forward cache), and going back to it shows it again
+without loading it: you get the response it first had, and its scripts
+carry on where they were. An entry a script made with `history.pushState`,
+or a `#fragment`, loads nothing either, so its response has that entry's
+`url` and a `status` of 0. `await page.reload()` loads the page again and
+returns its new response.
+
 ## Acting on the page
 
 | Method | Does |

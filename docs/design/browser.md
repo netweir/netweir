@@ -259,6 +259,21 @@ headers of the main document. A network error (DNS, refused, TLS) raises
 `netweir.FetchError` with Chrome's error text. An HTTP error status
 doesn't raise; the status is in the response, as with `netweir.get()`.
 
+`go_back()` and `go_forward()` read `Page.getNavigationHistory` and go to
+the entry before or after the current one with
+`Page.navigateToHistoryEntry`; at either end they return None without
+sending anything. `reload()` sends `Page.reload`. None of those commands
+says which navigation it started, so the page counts every main-frame
+commit (`Page.frameNavigated`) and move within a document
+(`Page.navigatedWithinDocument`), and the wait is for the count to pass
+what it was before the command. What came then decides the rest: a move
+within the document returns at once, with a response of status 0 at its
+URL; a document restored from the back-forward cache (`frameNavigated`
+with type `BackForwardCacheRestore`) comes back with its old loader id,
+has loaded already and fires no load events again, so it returns at once
+with the response it had; anything else waits for `wait` by its loader
+id, as `goto` does.
+
 `content()` returns the HTML as Chrome now has it, doctype included, and
 `parse()` returns it as a Netweir `Node`, so every selector, `find_all`
 and tracked selector works on a rendered page as on a fetched one.

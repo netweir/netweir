@@ -273,6 +273,19 @@ async def test_actions_wait_and_evaluate_returns_python_values(browser, base):
     assert page.closed
 
 
+async def test_going_back_forward_and_reloading_return_responses(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.goto(base + "/missing")
+        back = await page.go_back()
+        assert (back.status, back.url) == (200, base + "/")
+        forward = await page.go_forward(wait="domcontentloaded", timeout=10)
+        assert (forward.status, forward.url) == (404, base + "/missing")
+        assert await page.go_forward() is None
+        again = await page.reload()
+        assert (again.status, again.url) == (404, base + "/missing")
+
+
 async def test_failures_raise_what_they_are(browser, base):
     page = await browser.new_page()
     await page.goto(base + "/")

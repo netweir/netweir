@@ -498,6 +498,29 @@ impl BrowserPage {
         }
     }
 
+    /// `go_back` (`by` -1) or `go_forward` (1).
+    fn go_by<'py>(
+        &self,
+        py: Python<'py>,
+        by: i8,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wait: WaitUntil = wait.parse().map_err(raise)?;
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let went = if by < 0 {
+                page.go_back(wait, timeout).await
+            } else {
+                page.go_forward(wait, timeout).await
+            };
+            Ok(went
+                .map_err(raise)?
+                .map(|inner| BrowserResponse::new(inner, &page)))
+        })
+    }
+
     fn network<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let parent = match (&self.opener, &self.context) {
             (Some(opener), _) => Some(opener.get().network(py)?),
@@ -767,6 +790,48 @@ impl BrowserPage {
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move {
             let inner = page.wait_for_load(wait, timeout).await.map_err(raise)?;
+            Ok(BrowserResponse::new(inner, &page))
+        })
+    }
+
+    /// Goes back one entry in the history and waits for `wait`. Resolves
+    /// to the BrowserResponse of the document showing then, or None when
+    /// there's nothing to go back to.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn go_back<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.go_by(py, -1, wait, timeout)
+    }
+
+    /// Goes forward one entry in the history, as `go_back` goes back.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn go_forward<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.go_by(py, 1, wait, timeout)
+    }
+
+    /// Loads the document again and waits for `wait`. Resolves to its
+    /// BrowserResponse.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn reload<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wait: WaitUntil = wait.parse().map_err(raise)?;
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let inner = page.reload(wait, timeout).await.map_err(raise)?;
             Ok(BrowserResponse::new(inner, &page))
         })
     }

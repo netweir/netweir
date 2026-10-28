@@ -78,6 +78,22 @@ pub struct Response {
     pub resource_type: String,
 }
 
+impl Response {
+    /// A document's response when there was no HTTP one.
+    fn bare(url: String, loader: String) -> Response {
+        Response {
+            url,
+            status: 0,
+            headers: Vec::new(),
+            loader,
+            request_id: String::new(),
+            session: String::new(),
+            method: "GET".into(),
+            resource_type: "document".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cookie {
     pub name: String,
@@ -289,6 +305,16 @@ pub(crate) struct State {
     pub(crate) loader: String,
     /// Loaders in the order their documents were committed.
     committed: Vec<String>,
+    /// How many times the main frame has committed a document or moved
+    /// within one, so a wait can tell a navigation that says nothing of
+    /// itself (back, forward, reload) has happened.
+    navigations: u64,
+    /// Whether the last of those stayed within the document (pushState,
+    /// a #fragment).
+    within: bool,
+    /// Whether the last document committed came back whole from the
+    /// back-forward cache: loaded already, it fires no load events again.
+    restored: bool,
     /// Lifecycle events seen, by loader.
     events: HashMap<String, Vec<String>>,
     responses: HashMap<String, Response>,
@@ -349,6 +375,12 @@ impl State {
                 self.frame = str_of(frame, "id");
                 self.url = str_of(frame, "url");
                 self.loader = str_of(frame, "loaderId");
+                self.navigations += 1;
+                self.within = false;
+                self.restored = p["type"] == "BackForwardCacheRestore";
+                // A document back from the cache comes with its old loader:
+                // it's the newest again, not a second copy.
+                self.committed.retain(|l| *l != self.loader);
                 self.committed.push(self.loader.clone());
                 if self.committed.len() > KEPT {
                     let old = self.committed.remove(0);
@@ -369,6 +401,8 @@ impl State {
             }
             "Page.navigatedWithinDocument" if p["frameId"] == self.frame.as_str() => {
                 self.url = str_of(p, "url");
+                self.navigations += 1;
+                self.within = true;
             }
             "Network.requestWillBeSent" => {
                 let id = str_of(p, "requestId");
@@ -982,18 +1016,119 @@ impl Page {
                 said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
             });
         };
-        let Some(loader) = r["loaderId"].as_str().map(str::to_string) else {
+        let Some(loader) = r["loaderId"].as_str() else {
             // Within the same document (a #fragment): nothing to wait for.
             return Ok(self.response_for(None));
         };
+        self.loaded(loader, wait, deadline, url).await
+    }
+
+    /// Waits until `loader`'s navigation to `url`, or one that replaced
+    /// it, reaches `wait`, and returns its response.
+    async fn loaded(
+        &self,
+        loader: &str,
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
         let event = wait.event();
         self.until(
             || format!("{event} of {url}"),
             deadline.saturating_duration_since(Instant::now()),
-            |s| s.reached(&loader, event),
+            |s| s.reached(loader, event),
         )
         .await?;
-        Ok(self.response_for(Some(&loader)))
+        Ok(self.response_for(Some(loader)))
+    }
+
+    /// Goes back one entry in the page's history, as the back button
+    /// does, and waits for `wait`. None when there's nothing to go back
+    /// to. See [`Page::go_forward`] for what it returns.
+    pub async fn go_back(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        self.go_by(-1, wait, timeout).await
+    }
+
+    /// Goes forward one entry in the page's history and waits for `wait`.
+    /// None when there's nothing to go forward to. A document Chrome kept
+    /// whole in its back-forward cache comes back without loading again
+    /// or firing its lifecycle events, so it's returned once it shows,
+    /// with the response it first had. An entry within the same document
+    /// (pushState, a #fragment) loads nothing: its response has the
+    /// entry's URL and status 0.
+    pub async fn go_forward(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        self.go_by(1, wait, timeout).await
+    }
+
+    async fn go_by(
+        &self,
+        by: i64,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        let deadline = self.deadline(timeout);
+        let history = self.call("Page.getNavigationHistory", json!({})).await?;
+        let at = history["currentIndex"].as_i64().unwrap_or(0) + by;
+        let Some(entry) = usize::try_from(at)
+            .ok()
+            .and_then(|at| history["entries"].get(at))
+        else {
+            return Ok(None);
+        };
+        let go = self.call(
+            "Page.navigateToHistoryEntry",
+            json!({"entryId": entry["id"]}),
+        );
+        let url = str_of(entry, "url");
+        self.navigated(go, wait, deadline, &url).await.map(Some)
+    }
+
+    /// Loads the document again, as the reload button does, and waits
+    /// for `wait`.
+    pub async fn reload(&self, wait: WaitUntil, timeout: Option<Duration>) -> Result<Response> {
+        let deadline = self.deadline(timeout);
+        let url = self.url();
+        let go = self.call("Page.reload", json!({}));
+        self.navigated(go, wait, deadline, &url).await
+    }
+
+    /// Sends `go`, a command that starts a navigation but, unlike
+    /// Page.navigate, doesn't say which, then waits for the next one the
+    /// page makes and returns as [`Page::go_forward`] says.
+    async fn navigated(
+        &self,
+        go: impl Future<Output = Result<Value>>,
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
+        let before = self.state().navigations;
+        go.await?;
+        self.until(
+            || format!("a navigation to {url}"),
+            deadline.saturating_duration_since(Instant::now()),
+            |s| s.navigations > before,
+        )
+        .await?;
+        let (loader, within, restored, now) = {
+            let s = self.state();
+            (s.loader.clone(), s.within, s.restored, s.url.clone())
+        };
+        if within {
+            return Ok(Response::bare(now, loader));
+        }
+        if restored {
+            return Ok(self.response_for(Some(&loader)));
+        }
+        self.loaded(&loader, wait, deadline, url).await
     }
 
     /// The response of the document the page shows now.
@@ -1083,16 +1218,7 @@ impl Page {
             .responses
             .get(loader)
             .cloned()
-            .unwrap_or_else(|| Response {
-                url: state.url.clone(),
-                status: 0,
-                headers: Vec::new(),
-                loader: loader.to_string(),
-                request_id: String::new(),
-                session: String::new(),
-                method: "GET".into(),
-                resource_type: "document".into(),
-            })
+            .unwrap_or_else(|| Response::bare(state.url.clone(), loader.to_string()))
     }
 
     /// Hears about every request the page makes and every response it
