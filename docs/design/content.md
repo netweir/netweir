@@ -314,6 +314,75 @@ The choices worth knowing:
 rows on lines of their own, cells separated by tabs, links as their text,
 images left out.
 
+## Chunks
+
+`chunk.rs` cuts the Markdown the writer made, not the tree: the writer
+has already decided what's a heading, a code block or a table, and its
+escaping means text never looks like one by accident. The Markdown is
+read as blocks separated by blank lines, or by a quotation's blank
+lines (`>` alone), except that a fence's blank lines stay inside it. A
+fence opens on a line starting with three or more backticks, after any
+indent or `>`s, with no backtick after them (CommonMark forbids one in
+an info string, so a paragraph opening with a code span is never taken
+for a fence), and closes on a line of at least as many backticks and
+nothing else. A block is a heading when it's one line of one to six
+`#`s and a space, a fence when its first line opens one, and a table
+when it starts with `|` and its second line is a delimiter row
+(`| --- |`): the writer doesn't escape a pipe at the start of a
+paragraph.
+
+Packing walks the blocks once:
+
+- A heading pops the headings of its level and deeper off the stack and
+  pushes itself, and starts a new chunk, unless the chunk so far holds
+  only headings, this one is deeper, and it fits beside them. `# A` then `## B` with nothing
+  between them is one chunk under both. That way no chunk is a lone
+  heading, except a section with nothing in it at all.
+- Other blocks join the chunk, with a blank line between, while it stays
+  within `max_chars`. Counting is in Unicode scalar values (`chars()`),
+  so CJK text isn't cut three times too soon.
+- A block bigger than a chunk is cut. A fence is cut into runs of lines,
+  each wrapped in the block's own opening and closing lines (language
+  included). One indented in a list item is unindented first, so a
+  piece read on its own is still code rather than a list's
+  continuation; one in a quotation keeps its `>`s. A table is cut into runs of rows under its header and
+  delimiter rows. Other text is cut at line breaks, then after `.`, `!` or
+  `?` and a space (or `。`, `！`, `？`), then at spaces, and only then every
+  `max_chars` characters. A piece too big at one level is cut at the
+  next, and its last piece goes on packing with what follows, so a cut
+  never makes a paragraph break that wasn't there, and the space or line
+break before it stays between the words. Pieces are trimmed only once
+cut, and a piece of nothing but whitespace is dropped. When the fence or
+  header alone leaves no room, the block is cut as text.
+- With `overlap`, a chunk written because the next block didn't fit
+  keeps up to `overlap` characters of its end, starting after a space,
+  and the next chunk starts with them, if they fit beside its first
+  block. Only text gives an overlap: the end of a code block or table
+  would carry a closing fence or half a table into prose. A heading drops
+  it, and so does a fence or table piece, which must start with its fence
+  or header.
+
+The id is SHA-256 over the URL, the headings joined by U+001F and the
+text, NUL between the three, cut to 128 bits (32 hex digits). Leaving the
+index out is deliberate: inserting a section would otherwise renumber
+every chunk after it, and a store keyed by id would re-embed the whole
+page. A chunk repeated under the same headings gets `-2`, `-3` in page
+order, so ids stay unique; adding or removing one of those repeats
+renumbers the ones after it.
+The page's URL is the one links are resolved against (after `<base
+href>`), the same for `page.chunks()` and `netweir.chunks()`.
+
+Chunking adds little to writing the Markdown. On the 1 MB article in
+`bench/content.py`, `chunks(2000)` took 3.9 ms against 3.6 ms for
+`markdown(main_only=True)` in the same run. The listing takes 13.6 ms, since it has no
+main content: it looks for one, then writes the whole page. The cutting
+is linear in the Markdown, and a test cuts 20,000 sections and 400,000
+words of one paragraph within a time limit. The `chunk` fuzz target
+checks that every chunk is within the limit and that together they hold
+at least as many non-space characters as the Markdown, and that every
+word in a chunk is part of a word in the Markdown, so no cut glues two
+together.
+
 ## Speed
 
 Measured on Apple silicon, after parsing (`uv run python bench/content.py`):
@@ -378,3 +447,8 @@ in full. The fuzz target `markdown` feeds any HTML through all four.
 - Markdown has no merged cells, so a spanning cell's text appears once,
   in its first row and column. `data:` images are left out, and so is
   MathML.
+- Chunk sizes are in characters. A token limit needs your tokenizer:
+  pick `max_chars` from its usual characters per token (about four for
+  English with most models).
+- The overlap joins the next chunk with a blank line, even when it came
+  from the middle of a paragraph.

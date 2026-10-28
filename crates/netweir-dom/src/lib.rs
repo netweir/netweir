@@ -7,6 +7,7 @@
 
 pub mod auto;
 mod cache;
+pub mod chunk;
 pub mod content;
 pub mod css_path;
 pub mod date;

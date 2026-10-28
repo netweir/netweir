@@ -121,6 +121,26 @@ def clean_text(
     return Field("css", query or ":root", None, None, all, False, default, None, convert)
 
 
+def chunks(
+    query: str | None = None,
+    *,
+    max_chars: int = 2000,
+    overlap: int = 0,
+    main_only: bool = True,
+    default: Any = None,
+) -> Field:
+    """A field holding an element's Markdown in chunks for retrieval, as
+    ``page.chunks`` cuts it: a list of dicts as ``Chunk.to_dict`` gives
+    them. The first element the CSS ``query`` finds, or the whole page
+    without one; ``main_only`` takes its main content, or all of it when
+    it has none."""
+    from netweir._helpers import _chunk_sizes
+
+    _chunk_sizes(max_chars, overlap)
+    convert = f"chunks:{int(main_only)}:{max_chars}:{overlap}"
+    return Field("css", query or ":root", None, None, False, False, default, None, convert)
+
+
 class Item:
     """Subclass this and give it fields::
 
