@@ -330,11 +330,12 @@ fn quick(html: &str) {
         Schema::ForumThread,
     ] {
         // Each reader on its own, so adding readers doesn't eat the
-        // others' time.
+        // others' time. A debug build takes over a second on a busy
+        // runner; one that went quadratic on 100,000 items would take far longer.
         let start = std::time::Instant::now();
         extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
         let took = start.elapsed();
-        assert!(took.as_secs_f64() < 1.5, "{schema:?}: {took:?}");
+        assert!(took.as_secs_f64() < 5.0, "{schema:?}: {took:?}");
     }
 }
 

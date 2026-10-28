@@ -914,3 +914,91 @@ async fn a_site_whose_session_holds_no_cookies_saves_none() {
     assert_eq!(saved, 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The Proxy-Authorization `site` was sent for `path`, in order.
+fn logins(site: &Site, path: &str) -> Vec<String> {
+    site.requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == path)
+        .map(|(_, h)| {
+            h.iter()
+                .find(|(k, _)| k == "proxy-authorization")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Starts a crawl on the checkpoint at `path` with `proxies`, sends again
+/// each request it saved, as it was saved, and returns its events.
+async fn resumed(path: &std::path::Path, proxies: Vec<String>) -> Vec<Event> {
+    let crawl = crawler(CrawlSettings {
+        checkpoint: Some(path.to_path_buf()),
+        proxies,
+        ..settings(ProxyRotation::PerRequest, &[])
+    });
+    for p in crawl.saved().unwrap().pending {
+        crawl.resubmit(
+            CrawlRequest {
+                proxy: p.proxy.clone(),
+                ..request(p.row as u64, &p.url)
+            },
+            p.row,
+        );
+    }
+    let events = drain(&crawl).await;
+    crawl.close().unwrap();
+    events
+}
+
+#[tokio::test]
+async fn a_saved_request_keeps_its_proxy_but_not_the_password() {
+    let pages = || vec![("http://shop.test/a", Page::html("a"))];
+    let (own, pool) = (Site::start(pages()).await, Site::start(pages()).await);
+    let dir = std::env::temp_dir().join(format!("netweir-request-proxy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("crawl.sqlite3");
+    let login = |password: &str| format!("http://ann:{password}@127.0.0.1:{}", own.port);
+    // Never acked, so it's still to do each time the crawl stops.
+    let crawl = crawler(CrawlSettings {
+        checkpoint: Some(path.clone()),
+        ..settings(ProxyRotation::OnBlock, &[])
+    });
+    crawl.submit(CrawlRequest {
+        proxy: Some(login("secret")),
+        ..request(1, "http://shop.test/a")
+    });
+    drain(&crawl).await;
+    crawl.close().unwrap();
+    drop(crawl);
+    for file in std::fs::read_dir(&dir).unwrap() {
+        let bytes = std::fs::read(file.unwrap().path()).unwrap();
+        assert!(!bytes.windows(6).any(|w| w == b"secret"));
+    }
+    // With the proxy in the settings, it goes through it logged in, and
+    // with its password changed there, with the new one.
+    resumed(&path, vec![proxy(&pool), login("secret")]).await;
+    resumed(&path, vec![login("new")]).await;
+    assert_eq!(
+        logins(&own, "http://shop.test/a"),
+        [
+            "Basic YW5uOnNlY3JldA==",
+            "Basic YW5uOnNlY3JldA==",
+            "Basic YW5uOm5ldw=="
+        ]
+    );
+    // Without it, through the pool, and the crawl is told once.
+    let events = resumed(&path, vec![proxy(&pool)]).await;
+    assert_eq!(own.paths().len(), 3);
+    assert_eq!(pool.paths(), ["http://shop.test/a"]);
+    let warned = warnings(&events);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(
+        warned[0].contains(&format!("http://***@127.0.0.1:{}", own.port)),
+        "{}",
+        warned[0]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
