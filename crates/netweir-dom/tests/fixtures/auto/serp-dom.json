@@ -1,0 +1,54 @@
+{
+ "type": "serp",
+ "url": "https://search.example/search?q=rust+html+parser",
+ "item": {
+  "url": "https://search.example/search?q=rust+html+parser",
+  "organic_results": [
+   {
+    "name": "netweir-html - Rust",
+    "url": "https://docs.rs/netweir-html",
+    "description": "An HTML5 parser written from the WHATWG standard, with linear memory on hostile input.",
+    "rank": 1,
+    "displayed_url_text": "docs.rs › netweir-html",
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "html5ever: a high-performance browser-grade HTML5 parser",
+    "url": "https://github.com/servo/html5ever",
+    "description": "High-performance browser-grade HTML5 parser, used by Servo.",
+    "rank": 2,
+    "displayed_url_text": "github.com › servo › html5ever",
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Writing an HTML parser in Rust, part 1",
+    "url": "https://blog.example.org/html-parser-rust",
+    "description": "How the tokenizer's states map onto a Rust enum, and why the tree builder is the hard part.",
+    "rank": 3,
+    "displayed_url_text": "blog.example.org › html-parser-rust",
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "lol_html - Rust",
+    "url": "https://docs.rs/lol_html",
+    "description": "Low output latency streaming HTML parser/rewriter with CSS selector-based API.",
+    "rank": 4,
+    "displayed_url_text": "docs.rs › lol_html",
+    "guessed_origin": null,
+    "guessed_url": null
+   }
+  ]
+ },
+ "sources": {
+  "organic_results": "dom:#results"
+ },
+ "probability": [
+  0.8,
+  0.9
+ ],
+ "validation": [],
+ "page_type": "serp"
+}

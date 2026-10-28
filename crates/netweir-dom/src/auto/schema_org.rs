@@ -28,6 +28,9 @@ pub struct Thing {
     pub element: Option<NodeId>,
     /// Microdata: the first element of each property, by name.
     pub prop_elements: Vec<(String, NodeId)>,
+    /// The value of another thing's property (an event's location, a
+    /// listing's home), not a thing the page states on its own.
+    pub nested: bool,
 }
 
 impl Thing {
@@ -118,6 +121,40 @@ const SUBTYPES: &[(&str, &[&str])] = &[
         "Organization",
         &["Corporation", "LocalBusiness", "OnlineStore", "Store"],
     ),
+    // Places a business place is read from: a LocalBusiness and the
+    // kinds of one people look up most.
+    (
+        "Place",
+        &[
+            "LocalBusiness",
+            "Restaurant",
+            "FoodEstablishment",
+            "CafeOrCoffeeShop",
+            "BarOrPub",
+            "Bakery",
+            "FastFoodRestaurant",
+            "Hotel",
+            "LodgingBusiness",
+            "BedAndBreakfast",
+            "Store",
+            "AutoRepair",
+            "AutomotiveBusiness",
+            "Dentist",
+            "MedicalBusiness",
+            "Pharmacy",
+            "HealthAndBeautyBusiness",
+            "HairSalon",
+            "ProfessionalService",
+            "LegalService",
+            "FinancialService",
+            "RealEstateAgent",
+            "SportsActivityLocation",
+            "ExerciseGym",
+            "EntertainmentBusiness",
+            "Museum",
+            "TouristAttraction",
+        ],
+    ),
 ];
 
 pub(crate) fn is_a(ty: &str, wanted: &str) -> bool {
@@ -170,7 +207,7 @@ fn json_ld_things(top: Vec<Value>, out: &mut Vec<Thing>) {
         .collect();
     let mut seen = std::collections::HashSet::new();
     for v in &resolved {
-        collect(v, out, &mut seen, 0);
+        collect(v, out, &mut seen, 0, false);
     }
 }
 
@@ -271,6 +308,7 @@ fn collect(
     out: &mut Vec<Thing>,
     seen: &mut std::collections::HashSet<String>,
     depth: usize,
+    nested: bool,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -284,7 +322,8 @@ fn collect(
                 return;
             }
             let types = types_of(o.get("@type"));
-            if !types.is_empty() {
+            let typed = !types.is_empty();
+            if typed {
                 let props = o
                     .iter()
                     .filter(|(k, _)| !k.starts_with('@'))
@@ -296,13 +335,18 @@ fn collect(
                     source: Source::JsonLd,
                     element: None,
                     prop_elements: Vec::new(),
+                    nested,
                 });
             }
+            // What a typed object holds is its; an untyped wrapper
+            // (`{"@graph": [...]}`) holds things of the page's own.
             for child in o.values() {
-                collect(child, out, seen, depth + 1);
+                collect(child, out, seen, depth + 1, nested || typed);
             }
         }
-        Value::Array(list) => list.iter().for_each(|c| collect(c, out, seen, depth + 1)),
+        Value::Array(list) => list
+            .iter()
+            .for_each(|c| collect(c, out, seen, depth + 1, nested)),
         _ => {}
     }
 }
@@ -348,6 +392,8 @@ fn microdata_item<'a>(
         source: Source::Microdata,
         element: Some(node.id()),
         prop_elements: Vec::new(),
+        // An item that is another item's property.
+        nested: node.attr("itemprop").is_some(),
     });
     let mut props = Map::new();
     let mut prop_elements = Vec::new();

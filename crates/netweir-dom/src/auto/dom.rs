@@ -216,7 +216,7 @@ fn prices(root: Node<'_>) -> Vec<Shown<'_>> {
 
 /// The text at and below `n`, or None once it passes `cap` bytes: read
 /// no further than that, so asking costs little on a big element.
-fn short_text(n: Node<'_>, cap: usize) -> Option<String> {
+pub(crate) fn short_text(n: Node<'_>, cap: usize) -> Option<String> {
     let mut out = String::new();
     for (visited, d) in std::iter::once(n).chain(n.descendants()).enumerate() {
         if visited > 4 * cap + 16 {
@@ -258,7 +258,7 @@ fn wordy(text: &str) -> bool {
         .any(|w| crate::price::currency_code(w).is_none())
 }
 
-const PRICE_WORDS: [&str; 5] = ["price", "prices", "pricing", "amount", "cost"];
+pub(crate) const PRICE_WORDS: [&str; 5] = ["price", "prices", "pricing", "amount", "cost"];
 
 const STRUCK_WORDS: [&str; 10] = [
     "was",
@@ -279,7 +279,7 @@ const WEAK_WORDS: [&str; 2] = ["list", "regular"];
 
 /// Whether `n` or one of the two elements above it has a class or id
 /// word from `list` (or, for prices, `itemprop=price`).
-fn marked(n: Node<'_>, list: &[&str]) -> bool {
+pub(crate) fn marked(n: Node<'_>, list: &[&str]) -> bool {
     std::iter::successors(Some(n), |a| a.parent())
         .take(3)
         .any(|a| {
@@ -983,7 +983,7 @@ fn card(c: Node<'_>, layout: &Layout<'_>, base: Option<&Url>) -> Map<String, Val
 
 /// A page's pagination widget: an element labelled or classed as one,
 /// with links in it.
-fn pagers(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
+pub(crate) fn pagers(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     root.descendants().filter(|n| {
         n.kind() == NodeKind::Element
             && (n
@@ -1181,8 +1181,12 @@ pub(crate) fn job(page: &Page<'_, '_>, item: &mut Builder) -> Option<f64> {
                 let headline = std::iter::successors(n.parent(), |a| a.parent())
                     .take(3)
                     .any(|a| matches!(a.tag(), Some("h1" | "h2" | "h3" | "h4" | "h5" | "h6")));
-                // No words, no rate: `£9.99` isn't a salary.
-                if !starts || headline || !t.chars().any(char::is_alphabetic) {
+                // No words, no rate: `£9.99` isn't a salary. And `pcm`
+                // (per calendar month) is how lettings write a rent.
+                let rent = lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "pcm");
+                if !starts || headline || rent || !t.chars().any(char::is_alphabetic) {
                     return None;
                 }
                 let s = f::salary(&Value::String(t.to_string()))?;

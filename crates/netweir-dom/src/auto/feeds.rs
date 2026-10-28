@@ -206,10 +206,10 @@ fn label(source: Source) -> String {
 }
 
 /// A card in a listing: the element, its heading and the heading's link.
-struct Card<'a> {
-    node: Node<'a>,
-    heading: Node<'a>,
-    link: Node<'a>,
+pub(crate) struct Card<'a> {
+    pub node: Node<'a>,
+    pub heading: Node<'a>,
+    pub link: Node<'a>,
 }
 
 /// The page's largest group of cards, each led by a heading that links
@@ -217,7 +217,7 @@ struct Card<'a> {
 /// of results. Three cards at least. Each level of heading is tried on
 /// its own, so a card's kicker (`<h4><a>Opinion</a></h4>` above its
 /// `<h2>`) doesn't split it.
-fn cards(root: Node<'_>) -> Option<(Node<'_>, Vec<Card<'_>>)> {
+pub(crate) fn cards(root: Node<'_>) -> Option<(Node<'_>, Vec<Card<'_>>)> {
     let mut by_level: [Vec<(Node<'_>, Node<'_>)>; 3] = Default::default();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
@@ -893,7 +893,10 @@ pub(crate) fn read_thread(page: &Page<'_, '_>, item: &mut Builder) {
         if !posts.is_empty() {
             item.offer("posts", Some(Value::Array(posts)), label(t.source));
         }
-        item.probability = 0.9;
+        // A social post nobody has answered is a post, not a thread.
+        let lone =
+            t.types.iter().all(|ty| ty == "SocialMediaPosting") && !super::post::has_comments(t);
+        item.probability = if lone { 0.25 } else { 0.9 };
         return;
     }
     if !threads.is_empty() {

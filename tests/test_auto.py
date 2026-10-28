@@ -59,6 +59,62 @@ class Lamps(netweir.auto.Product):
     price = netweir.css("span.sale")
 
 
+def test_business_place_from_json_ld():
+    p = page(fixture("place-jsonld"), url="https://lumo.example/")
+    assert p.page_type() == "business-place"
+    item = p.extract(netweir.auto.BusinessPlace)
+    assert item["name"] == "Trattoria Lumo"
+    assert item["address"]["postal_code"] == "M1 1AA"
+    assert item["opening_hours"][0]["day_of_week"] == "Monday"
+    assert item["telephone"] == "+44 161 496 0000"
+
+
+def test_real_estate_to_rent_from_the_page():
+    p = page(fixture("estate-rent-dom"), url="https://citylets.example/flat/5521")
+    assert p.page_type() == "real-estate"
+    item = p.extract(netweir.auto.RealEstate)
+    assert (item["price"], item["rental_period"], item["trade_type"]) == ("1250", "monthly", "rent")
+    assert item["area"]["unit_code"] == "SQMT"
+    assert item["number_of_bedrooms"] == 2
+
+
+def test_a_social_post_and_its_hashtags():
+    p = page(fixture("post-jsonld"), url="https://social.example/ada/posts/77812")
+    assert p.page_type() == "social-media-post"
+    item = p.extract(netweir.auto.SocialMediaPost)
+    assert item["hashtags"] == ["rust", "Netweir"]
+    assert item["reactions"]["likes"] == 12
+    assert netweir.export._camel(item)["reactions"]["likes"] == 12
+    assert "mediaUrls" in netweir.export._camel(item)
+
+
+def test_serp_metadata_has_the_query():
+    p = page(fixture("serp-dom"), url="https://search.example/search?q=rust+html+parser")
+    assert p.page_type() == "serp"
+    item = p.extract(netweir.auto.Serp)
+    assert item["metadata"]["searched_query"] == "rust html parser"
+    assert item["metadata"]["total_organic_results"] == 1230
+    assert item["organic_results"][1]["url"] == "https://github.com/servo/html5ever"
+
+
+def test_page_content_keeps_menus_apart_from_the_text():
+    p = page(fixture("content-page"), url="https://kitchen.example/notes/cast-iron")
+    item = p.extract(netweir.auto.PageContent)
+    assert item["item_main"].startswith("Caring for cast iron")
+    assert "Privacy" not in item["item_main"]
+    assert [link["name"] for link in item["navigation_footer"]] == ["Privacy", "Contact"]
+    assert len(p.xpath(item["item_main_xpath"])) == 1
+
+
+def test_a_pinned_address_is_read_as_an_address():
+    class Kettle(netweir.auto.BusinessPlace):
+        address = netweir.css("address")
+
+    item = Kettle.extract(page(fixture("place-dom"), url="https://kettle.example/visit"))
+    assert item["address"]["address_raw"] == "14 Canal Walk, Hebden Bridge, HX7 8AD"
+    assert item["metadata"]["sources"]["address"] == "css:address"
+
+
 def test_override_one_field_keeps_the_rest():
     item = Lamps.extract(page(SALE))
     assert item["price"] == "9.50"

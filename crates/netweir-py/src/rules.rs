@@ -222,12 +222,16 @@ impl ItemInner {
                 list.push(serde_json::Value::String(message));
             }
         }
-        out.push(Value::Json(serde_json::json!({
+        let mut metadata = serde_json::json!({
             "probability": found.probability,
             "date_downloaded": date::iso_utc(now),
             "sources": sources.into_iter().map(|(f, s)| (f.to_string(), serde_json::Value::String(s))).collect::<serde_json::Map<_, _>>(),
             "validation_messages": messages,
-        })));
+        });
+        for (key, value) in &found.extra_metadata {
+            metadata[*key] = value.clone();
+        }
+        out.push(Value::Json(metadata));
         out
     }
 

@@ -88,14 +88,56 @@ class ForumThread(Item):
     _schema = "forum-thread"
 
 
+class BusinessPlace(Item):
+    """A shop's, restaurant's or other business's page: name, address,
+    phone, opening hours, rating, categories and more."""
+
+    _schema = "business-place"
+
+
+class RealEstate(Item):
+    """A house, flat or plot for sale or to rent: price, rooms, floor
+    area, address and more."""
+
+    _schema = "real-estate"
+
+
+class SocialMediaPost(Item):
+    """A single social media post: its text, date, hashtags, media,
+    reactions and what the page says about its author."""
+
+    _schema = "social-media-post"
+
+
+class Serp(Item):
+    """A search engine's results page: each organic result's title, link,
+    excerpt and rank. ``metadata`` adds the query and the count of
+    results the page states."""
+
+    _schema = "serp"
+
+
+class PageContent(Item):
+    """Any page's content: its main text and the XPath of the element
+    holding it, its headline and title, breadcrumbs, menus, pager and
+    next page."""
+
+    _schema = "page-content"
+
+
 __all__ = [
     "Article",
     "ArticleList",
     "ArticleNavigation",
+    "BusinessPlace",
     "ForumThread",
+    "PageContent",
     "JobPosting",
     "JobPostingNavigation",
     "Product",
     "ProductList",
     "ProductNavigation",
+    "RealEstate",
+    "Serp",
+    "SocialMediaPost",
 ]

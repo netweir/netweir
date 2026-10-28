@@ -1,0 +1,14 @@
+{
+ "type": "serp",
+ "url": "https://shop.example/search?q=lamp",
+ "item": {
+  "url": "https://shop.example/search?q=lamp"
+ },
+ "sources": {},
+ "probability": [
+  0.0,
+  0.1
+ ],
+ "validation": [],
+ "page_type": "product-list"
+}
