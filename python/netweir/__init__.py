@@ -19,7 +19,7 @@ from netweir._feeds import CSVFeedSpider, XMLFeedSpider
 from netweir._fetch import Client, Page, get, post, request, submit
 from netweir._files import files, images
 from netweir._form import File, Form
-from netweir._helpers import Article, Price, Records, parse_date, parse_price
+from netweir._helpers import Article, Chunk, Price, Records, parse_date, parse_price
 from netweir._jmespath import jmespath
 from netweir._monitor import Checks, validate
 from netweir._native import (
@@ -48,7 +48,7 @@ from netweir._native import (
     parse_salary,
 )
 from netweir._request import Request
-from netweir._rules import Extract, Follow, Item, clean_text, css, markdown, xpath
+from netweir._rules import Extract, Follow, Item, chunks, clean_text, css, markdown, xpath
 from netweir._stats import Stats
 
 __all__ = [
@@ -66,6 +66,7 @@ __all__ = [
     "BrowserTimeout",
     "CSVFeedSpider",
     "Checks",
+    "Chunk",
     "Client",
     "CloseSpider",
     "DontCloseSpider",
@@ -98,6 +99,7 @@ __all__ = [
     "__version__",
     "auto",
     "browser",
+    "chunks",
     "clean_text",
     "css",
     "devices",

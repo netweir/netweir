@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from netweir._native import _currency_code, _parse_date, _parse_price
 
@@ -121,6 +122,67 @@ class Records:
     selector: str
     columns: list[dict[str, str]]
     rows: list[dict[str, str | None]]
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """A piece of a page's Markdown, sized for retrieval, from
+    ``page.chunks()``.
+
+    ``id`` is the same for the same chunk of the same page from crawl to
+    crawl, so a store can skip what it already holds; a change to one
+    section leaves the other sections' ids alone. ``headings`` are the
+    headings the chunk sits under, outermost first. ``index`` is its place
+    among the page's chunks, from 0."""
+
+    id: str
+    text: str
+    headings: tuple[str, ...]
+    index: int
+    url: str | None
+
+    def to_dict(self) -> dict:
+        """The chunk as a dict, for JSON: ``id``, ``text``, ``headings``
+        (a list), ``index`` and ``url``."""
+        return {
+            "id": self.id,
+            "text": self.text,
+            "headings": list(self.headings),
+            "index": self.index,
+            "url": self.url,
+        }
+
+    def _metadata(self) -> dict:
+        return {"url": self.url, "headings": list(self.headings), "index": self.index}
+
+    def to_langchain(self) -> Any:
+        """The chunk as a LangChain ``Document``, with its id, and its
+        URL, headings and index as metadata. Needs ``langchain-core``."""
+        try:
+            from langchain_core.documents import Document
+        except ImportError:
+            raise ImportError("to_langchain needs LangChain: pip install langchain-core") from None
+        return Document(page_content=self.text, metadata=self._metadata(), id=self.id)
+
+    def to_llamaindex(self) -> Any:
+        """The chunk as a LlamaIndex ``TextNode``, with its id, and its
+        URL, headings and index as metadata. Needs ``llama-index-core``."""
+        try:
+            from llama_index.core.schema import TextNode
+        except ImportError:
+            raise ImportError(
+                "to_llamaindex needs LlamaIndex: pip install llama-index-core"
+            ) from None
+        return TextNode(text=self.text, id_=self.id, metadata=self._metadata())
+
+
+def _chunk_sizes(max_chars: int, overlap: int) -> None:
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
+        raise ValueError(
+            f"max_chars is a whole number of characters, at least 1, not {max_chars!r}"
+        )
+    if isinstance(overlap, bool) or not isinstance(overlap, int) or not 0 <= overlap < max_chars:
+        raise ValueError(f"overlap is from 0 to less than max_chars ({max_chars}), not {overlap!r}")
 
 
 def _records(selector: str, columns: list[tuple[str, str]], rows: list) -> Records:

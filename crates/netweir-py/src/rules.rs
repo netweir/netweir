@@ -32,6 +32,26 @@ pub(crate) fn selector(kind: &str, query: &str) -> PyResult<Selector> {
     }
 }
 
+/// A chunks field's conversion from `main:max_chars:overlap` (`main` 1
+/// or 0), as `netweir.chunks` writes it.
+fn chunks_convert(field: &str, spec: &str) -> PyResult<Convert> {
+    let bad = || PyValueError::new_err(format!("{field}: chunks needs main:max_chars:overlap"));
+    let mut parts = spec.split(':');
+    let (Some(main), Some(max), Some(overlap), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad());
+    };
+    let (max_chars, overlap): (usize, usize) = (
+        max.parse().map_err(|_| bad())?,
+        overlap.parse().map_err(|_| bad())?,
+    );
+    Ok(Convert::Chunks {
+        main_only: main == "1",
+        options: netweir_dom::chunk::Options { max_chars, overlap },
+    })
+}
+
 /// Whether a CSS query ends in `::text` or `::attr()`, so finds strings
 /// rather than elements. XPath can only tell when it runs.
 fn ends_in_strings(kind: &str, query: &str) -> bool {
@@ -382,6 +402,7 @@ impl ItemSpec {
                         )));
                     }
                 },
+                c if c.starts_with("chunks:") => chunks_convert(&field, &c[7..])?,
                 "text" => Convert::Text,
                 "int" => Convert::Int,
                 "float" => Convert::Float,
@@ -399,7 +420,7 @@ impl ItemSpec {
             };
             if convert.takes_element() && ends_in_strings(&kind, &query) {
                 return Err(PyValueError::new_err(format!(
-                    "{field}: Markdown and clean text are made from an element, and {query:?} \
+                    "{field}: Markdown, clean text and chunks are made from an element, and {query:?} \
                      gives strings"
                 )));
             }

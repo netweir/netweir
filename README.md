@@ -88,6 +88,12 @@ Working today:
   content as Markdown, tables and code blocks included. All in Rust, in a
   few milliseconds on a 1 MB page. See
   [docs/selecting.md](docs/selecting.md#reading-an-article-and-markdown).
+- Chunks for RAG: `page.chunks()` cuts the content's Markdown at its
+  headings into pieces sized for an embedding model, keeps code blocks
+  and tables whole where they fit, and gives each chunk its heading path
+  and an id that stays the same from crawl to crawl. `to_langchain()` and
+  `to_llamaindex()` hand them on. See
+  [docs/selecting.md](docs/selecting.md#chunks-for-retrieval).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
   a category page's listing, a job posting, an article, a forum thread,
   a business's page, a property, a social post or a search engine's

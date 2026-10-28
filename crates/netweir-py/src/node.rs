@@ -848,6 +848,35 @@ impl Node {
         })
     }
 
+    /// The node's Markdown cut into chunks for retrieval (see
+    /// netweir_dom::chunk): (id, text, headings) each, links absolute
+    /// against `base_url` and ids made from it. With main_only=True, the
+    /// main content's, or the whole node's when there's no main content.
+    #[pyo3(signature = (base_url, main_only, max_chars, overlap))]
+    fn chunks(
+        &self,
+        py: Python<'_>,
+        base_url: Option<&str>,
+        main_only: bool,
+        max_chars: usize,
+        overlap: usize,
+    ) -> Vec<(String, String, Vec<String>)> {
+        let (doc, id) = (self.doc.clone(), self.id);
+        let base = base_url.and_then(|b| url::Url::parse(b).ok());
+        // The ids are made from the URL as given, even one that won't parse.
+        let url = base_url.unwrap_or("").to_string();
+        py.detach(move || {
+            let _reading = doc.read();
+            // SAFETY: `id` belongs to `doc`.
+            let node = unsafe { doc.node(id) };
+            let options = netweir_dom::chunk::Options { max_chars, overlap };
+            netweir_dom::chunk::node_chunks(node, base.as_ref(), &url, main_only, options)
+                .into_iter()
+                .map(|c| (c.id, c.text, c.headings))
+                .collect()
+        })
+    }
+
     /// What the page holds: "product", "product-list", "job-posting",
     /// "job-posting-navigation", "article", "article-list",
     /// "forum-thread", or "other" when it looks like none of them. `url` is
