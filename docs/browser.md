@@ -220,6 +220,13 @@ or a `#fragment`, loads nothing either, so its response has that entry's
 `url` and a `status` of 0. `await page.reload()` loads the page again and
 returns its new response.
 
+A page that can't be loaded again raises `netweir.FetchError`, as
+`goto()` does: its server has gone, say, or it was the answer to a form
+you sent, which Chrome won't send twice without asking
+(`net::ERR_CACHE_MISS`). If the page you're leaving asks first whether
+you really want to go, or the entry's answer is a download, nothing
+loads, and you get `netweir.BrowserTimeout` once the time runs out.
+
 ## Acting on the page
 
 | Method | Does |

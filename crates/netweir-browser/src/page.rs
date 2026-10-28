@@ -312,9 +312,26 @@ pub(crate) struct State {
     /// Whether the last of those stayed within the document (pushState,
     /// a #fragment).
     within: bool,
-    /// Whether the last document committed came back whole from the
-    /// back-forward cache: loaded already, it fires no load events again.
-    restored: bool,
+    /// The last document that came back whole from the back-forward
+    /// cache, with its old loader, and the count of navigations then.
+    /// Loaded already, it fires no load events again.
+    restored: (u64, String),
+    /// The count of navigations when the main frame last moved within
+    /// its document.
+    moved_within: u64,
+    /// The navigations the main frame has started, newest last, as
+    /// a recent Chrome tells of them (Page.frameStartedNavigating): each
+    /// tells which kind it is, which a navigation started by
+    /// a command that doesn't say (back, forward, reload) is known by.
+    starts: Vec<Start>,
+    /// How many of those there have been.
+    started: u64,
+    /// The URLs of documents that couldn't be loaded, whose loader
+    /// committed Chrome's error page instead, by loader.
+    unreachable: HashMap<String, String>,
+    /// Why documents failed to load, by request id, which for a
+    /// document is its loader's.
+    failures: HashMap<String, String>,
     /// What an HTML5 drag the page began carries, once Chrome has handed
     /// the drag over (`Input.setInterceptDrags`).
     dragging: Option<Value>,
@@ -342,6 +359,18 @@ pub(crate) struct State {
     /// those whose localStorage a storage state reads. Shared by a
     /// context's pages.
     pub(crate) origins: Origins,
+}
+
+/// A navigation Chrome started in the main frame.
+#[derive(Clone)]
+struct Start {
+    /// Its number among them, from 1.
+    number: u64,
+    /// "differentDocument", "historySameDocument", "reload" and so on.
+    kind: String,
+    loader: String,
+    /// The count of navigations when it started.
+    navigations: u64,
 }
 
 /// How far one notch of a mouse wheel scrolls, in pixels: 100 on Windows
@@ -380,7 +409,13 @@ impl State {
                 self.loader = str_of(frame, "loaderId");
                 self.navigations += 1;
                 self.within = false;
-                self.restored = p["type"] == "BackForwardCacheRestore";
+                if p["type"] == "BackForwardCacheRestore" {
+                    self.restored = (self.navigations, self.loader.clone());
+                }
+                if let Some(url) = frame["unreachableUrl"].as_str() {
+                    self.unreachable
+                        .insert(self.loader.clone(), url.to_string());
+                }
                 // A document back from the cache comes with its old loader:
                 // it's the newest again, not a second copy.
                 self.committed.retain(|l| *l != self.loader);
@@ -389,6 +424,21 @@ impl State {
                     let old = self.committed.remove(0);
                     self.events.remove(&old);
                     self.responses.remove(&old);
+                    self.unreachable.remove(&old);
+                }
+            }
+            "Page.frameStartedNavigating"
+                if self.frame.is_empty() || p["frameId"] == self.frame.as_str() =>
+            {
+                self.started += 1;
+                self.starts.push(Start {
+                    number: self.started,
+                    kind: str_of(p, "navigationType"),
+                    loader: str_of(p, "loaderId"),
+                    navigations: self.navigations,
+                });
+                if self.starts.len() > KEPT {
+                    self.starts.remove(0);
                 }
             }
             // A frame committing here is in the page's process now: any
@@ -406,6 +456,7 @@ impl State {
                 self.url = str_of(p, "url");
                 self.navigations += 1;
                 self.within = true;
+                self.moved_within = self.navigations;
             }
             "Network.requestWillBeSent" => {
                 let id = str_of(p, "requestId");
@@ -416,6 +467,15 @@ impl State {
                 self.loading
                     .insert((session.to_string(), id), request.method.clone());
                 self.tell(PageEvent::Request(request));
+            }
+            "Network.loadingFailed" if p["type"] == "Document" => {
+                if self.failures.len() >= KEPT {
+                    self.failures.clear();
+                }
+                self.failures
+                    .insert(str_of(p, "requestId"), str_of(p, "errorText"));
+                self.loading
+                    .remove(&(session.to_string(), str_of(p, "requestId")));
             }
             "Network.loadingFinished" | "Network.loadingFailed" => {
                 self.loading
@@ -1012,13 +1072,7 @@ impl Page {
                 .await;
                 continue;
             }
-            return Err(Error::Navigation {
-                url: url.to_string(),
-                error: e.to_string(),
-                // Chrome doesn't say why it gave up on a navigation; its
-                // stderr sometimes does.
-                said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
-            });
+            return Err(self.navigation_error(url, e));
         };
         let Some(loader) = r["loaderId"].as_str() else {
             // Within the same document (a #fragment): nothing to wait for.
@@ -1092,7 +1146,10 @@ impl Page {
             json!({"entryId": entry["id"]}),
         );
         let url = str_of(entry, "url");
-        self.navigated(go, wait, deadline, &url).await.map(Some)
+        let kinds = ["historyDifferentDocument", "historySameDocument"];
+        self.navigated(go, &kinds, wait, deadline, &url)
+            .await
+            .map(Some)
     }
 
     /// Loads the document again, as the reload button does, and waits
@@ -1101,38 +1158,112 @@ impl Page {
         let deadline = self.deadline(timeout);
         let url = self.url();
         let go = self.call("Page.reload", json!({}));
-        self.navigated(go, wait, deadline, &url).await
+        self.navigated(go, &["reload"], wait, deadline, &url).await
     }
 
     /// Sends `go`, a command that starts a navigation but, unlike
-    /// Page.navigate, doesn't say which, then waits for the next one the
-    /// page makes and returns as [`Page::go_forward`] says.
+    /// Page.navigate, doesn't say which, then waits for the one Chrome
+    /// starts of one of `kinds` and returns as [`Page::go_forward`] says.
+    /// A navigation the page's own script started is no match. A
+    /// document Chrome couldn't load is [`Error::Navigation`], as with
+    /// [`Page::goto`].
     async fn navigated(
         &self,
         go: impl Future<Output = Result<Value>>,
+        kinds: &[&str],
         wait: WaitUntil,
         deadline: Instant,
         url: &str,
     ) -> Result<Response> {
-        let before = self.state().navigations;
-        go.await?;
-        self.until(
-            || format!("a navigation to {url}"),
-            deadline.saturating_duration_since(Instant::now()),
-            |s| s.navigations > before,
-        )
-        .await?;
-        let (loader, within, restored, now) = {
+        let (before, started) = {
             let s = self.state();
-            (s.loader.clone(), s.within, s.restored, s.url.clone())
+            (s.navigations, s.started)
         };
-        if within {
-            return Ok(Response::bare(now, loader));
+        go.await?;
+        let what = || {
+            format!(
+                "a navigation to {url} (Chrome may not have committed one: the answer was a \
+                 204 or a download, or the page asked before being left)"
+            )
+        };
+        let ours = |s: &State| {
+            s.starts
+                .iter()
+                .find(|st| st.number > started && kinds.contains(&st.kind.as_str()))
+                .cloned()
+        };
+        // An older Chrome, which tells of no navigation starting, has the
+        // next one taken for this.
+        let told = started > 0;
+        let left = || deadline.saturating_duration_since(Instant::now());
+        self.until(what, left(), |s| {
+            ours(s).is_some() || (!told && s.navigations > before)
+        })
+        .await?;
+        let Some(start) = ours(&self.state()) else {
+            let (loader, within, now) = {
+                let s = self.state();
+                (s.loader.clone(), s.within, s.url.clone())
+            };
+            if within {
+                return Ok(Response::bare(now, loader));
+            }
+            return self.landed(&loader, wait, deadline, url).await;
+        };
+        if start.kind == "historySameDocument" {
+            self.until(what, left(), |s| s.moved_within > start.navigations)
+                .await?;
+            let s = self.state();
+            return Ok(Response::bare(s.url.clone(), s.loader.clone()));
         }
-        if restored {
-            return Ok(self.response_for(Some(&loader)));
+        self.until(what, left(), |s| {
+            s.committed.contains(&start.loader) || s.restored.0 > start.navigations
+        })
+        .await?;
+        let restored = {
+            let s = self.state();
+            (!s.committed.contains(&start.loader)).then(|| s.restored.1.clone())
+        };
+        match restored {
+            Some(loader) => Ok(self.response_for(Some(&loader))),
+            None => self.landed(&start.loader, wait, deadline, url).await,
         }
-        self.loaded(&loader, wait, deadline, url).await
+    }
+
+    /// Waits for the document `loader` committed as [`Page::loaded`]
+    /// does, unless it was Chrome's error page for one it couldn't load.
+    async fn landed(
+        &self,
+        loader: &str,
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
+        let failed = {
+            let s = self.state();
+            s.unreachable.get(loader).map(|url| {
+                let error = s.failures.get(loader).cloned();
+                (
+                    url.clone(),
+                    error.unwrap_or_else(|| "net::ERR_FAILED".into()),
+                )
+            })
+        };
+        if let Some((url, error)) = failed {
+            return Err(self.navigation_error(&url, &error));
+        }
+        self.loaded(loader, wait, deadline, url).await
+    }
+
+    /// A navigation to `url` that failed with Chrome's `error`.
+    fn navigation_error(&self, url: &str, error: &str) -> Error {
+        Error::Navigation {
+            url: url.to_string(),
+            error: error.to_string(),
+            // Chrome doesn't say why it gave up on a navigation; its
+            // stderr sometimes does.
+            said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
+        }
     }
 
     /// The response of the document the page shows now.

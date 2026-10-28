@@ -265,16 +265,26 @@ doesn't raise; the status is in the response, as with `netweir.get()`.
 the entry before or after the current one with
 `Page.navigateToHistoryEntry`; at either end they return None without
 sending anything. `reload()` sends `Page.reload`. None of those commands
-says which navigation it started, so the page counts every main-frame
-commit (`Page.frameNavigated`) and move within a document
-(`Page.navigatedWithinDocument`), and the wait is for the count to pass
-what it was before the command. What came then decides the rest: a move
-within the document returns at once, with a response of status 0 at its
-URL; a document restored from the back-forward cache (`frameNavigated`
-with type `BackForwardCacheRestore`) comes back with its old loader id,
-has loaded already and fires no load events again, so it returns at once
-with the response it had; anything else waits for `wait` by its loader
-id, as `goto` does.
+says which navigation it started, so the wait is for the first
+`Page.frameStartedNavigating` in the main frame after the command whose
+`navigationType` is a history one (`historyDifferentDocument`,
+`historySameDocument`) or `reload`: a navigation the page's own script
+began, even one committing meanwhile, is never taken for it. A history
+step within the document returns at the next
+`Page.navigatedWithinDocument`, with a response of status 0 at its URL.
+A step to another document commits under the started loader id, or,
+restored from the back-forward cache (`frameNavigated` with type
+`BackForwardCacheRestore`), under the old document's own loader id; a
+restored document has loaded already and fires no load events again, so
+it returns at once with the response it had. Anything else waits for
+`wait` by its loader id, as `goto` does. A commit carrying an
+`unreachableUrl` is Chrome's error page: that's `Error::Navigation`,
+with the text of the document's `Network.loadingFailed`, whose request
+id is the loader id (`net::ERR_FAILED` if none came). A Chrome too old
+to send `frameStartedNavigating` has the next main-frame commit or move
+within the document taken instead. A step that never commits (the page
+asked before being left, or the answer was a download or a 204) times
+out, and the message says Chrome may not have committed one.
 
 `content()` returns the HTML as Chrome now has it, doctype included, and
 `parse()` returns it as a Netweir `Node`, so every selector, `find_all`

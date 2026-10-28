@@ -775,3 +775,134 @@ async fn reload_loads_the_document_again_and_returns_its_response() {
     );
     browser.close().await.unwrap();
 }
+
+/// A page Chrome won't keep in its back-forward cache, nor its HTTP
+/// cache: going back to it loads it again.
+fn uncached(body: &str) -> Reply {
+    let mut r = html(body);
+    r.headers.push(("Cache-Control", "no-store".into()));
+    r
+}
+
+#[tokio::test]
+async fn back_to_a_page_that_cant_be_reached_is_a_navigation_error() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    // An unload handler keeps it out of the back-forward cache too.
+    let gone = serve(vec![(
+        "/a",
+        uncached("<script>addEventListener('unload', () => {})</script>"),
+    )]);
+    let stays = serve(vec![("/b", html("<p>b</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    let a = format!("{}/a", gone.url);
+    page.goto(&a, WaitUntil::Load, None).await.unwrap();
+    page.goto(&format!("{}/b", stays.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    drop(gone);
+    let err = page.go_back(WaitUntil::Load, None).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Navigation { url, error, .. }
+            if *url == a && error.contains("ERR_CONNECTION_REFUSED")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn back_to_a_posted_form_chrome_wont_send_again_is_a_navigation_error() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                "<form method=post action=/sent><input name=q value=x><button id=go>go</button></form>",
+            ),
+        ),
+        ("/sent", uncached("<p>sent</p>")),
+        ("/next", html("<p>next</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let before = page.response();
+    page.click("#go", None).await.unwrap();
+    page.wait_for_navigation(&before, WaitUntil::Load, None)
+        .await
+        .unwrap();
+    page.goto(&format!("{}/next", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let err = page.go_back(WaitUntil::Load, None).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Navigation { error, .. } if error.contains("ERR_CACHE_MISS")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn back_waits_for_its_own_navigation_not_one_the_page_made_meanwhile() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let mut slow = uncached("<script>addEventListener('unload', () => {})</script>");
+    slow.headers.push(("X-Delay-Ms", "600".into()));
+    let server = serve(vec![
+        ("/a", slow),
+        (
+            "/b",
+            html(
+                "<script>setTimeout(() => history.replaceState({}, '', '/b?moved'), 150)</script>",
+            ),
+        ),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    let a = format!("{}/a", server.url);
+    page.goto(&a, WaitUntil::Load, None).await.unwrap();
+    page.goto(&format!("{}/b", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    // The page moves within itself while the way back is still loading.
+    let r = page.go_back(WaitUntil::Load, None).await.unwrap().unwrap();
+    assert_eq!((r.url.as_str(), r.status), (a.as_str(), 200));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_history_step_that_never_commits_says_so_when_time_runs_out() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/a",
+            uncached("<script>addEventListener('unload', () => {})</script>"),
+        ),
+        ("/b", html("<p>b</p>")),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&format!("{}/a", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    page.goto(&format!("{}/b", server.url), WaitUntil::Load, None)
+        .await
+        .unwrap();
+    // A page that asks before it's left, which needs a person to have
+    // touched it first, and nobody answers yes.
+    page.evaluate(
+        "addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = '' })",
+    )
+    .await
+    .unwrap();
+    page.click("body", None).await.unwrap();
+    let err = page.go_back(WaitUntil::Load, SHORT).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Timeout(m) if m.contains("may not have committed")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
