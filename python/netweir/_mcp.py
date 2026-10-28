@@ -9,18 +9,18 @@ import sys
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-#: The auto-extracted types, by the name ``page_type()`` gives them.
-_TYPES = (
-    "product",
-    "product-list",
-    "product-navigation",
-    "job-posting",
-    "job-posting-navigation",
-    "article",
-    "article-list",
-    "article-navigation",
-    "forum-thread",
-)
+
+def _auto_types() -> dict[str, Any]:
+    """The auto-extracted item types, by the name ``page_type()`` gives
+    them (``product``, ``job-posting``, ...)."""
+    from netweir import auto
+
+    return {
+        cls._schema: cls
+        for cls in vars(auto).values()
+        if isinstance(cls, type) and getattr(cls, "_schema", None)
+    }
+
 
 INSTRUCTIONS = """\
 Netweir fetches web pages the way Chrome does and reads them. Start with
@@ -61,7 +61,7 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
     from ``profile``, ``proxy`` and ``timeout``, and with one Chrome,
     started the first time a tool asks for it."""
     import netweir
-    from netweir import Blocked, BrowserError, FetchError, auto
+    from netweir import Blocked, BrowserError, FetchError
     from netweir._cli import _utf8
     from netweir._native import _response
 
@@ -159,10 +159,13 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
         """A web page read as structured data, without selectors: a
         product (name, price, currency, availability, brand, ...), a
         product-list, a job-posting, an article, an article-list, a
-        forum-thread or a navigation page (its items and next page).
-        type="auto" reads it as whatever it looks like."""
-        if type != "auto" and type not in _TYPES:
-            raise ToolError(f"type is auto or one of {', '.join(_TYPES)}, not {type!r}")
+        forum-thread, a business-place (address, phone, opening hours), a
+        real-estate listing, a social-media-post, a serp (search
+        results), page-content, or a navigation page (its items and next
+        page). type="auto" reads it as whatever it looks like."""
+        types = _auto_types()
+        if type != "auto" and type not in types:
+            raise ToolError(f"type is auto or one of {', '.join(types)}, not {type!r}")
         page = await fetch(url, browser)
         if type == "auto":
             type = await off_loop(page.page_type)
@@ -171,8 +174,7 @@ def server(profile: str = "chrome", proxy: str | None = None, timeout: float = 3
                     f"{url} doesn't look like a product, listing, job, article or thread; "
                     "give type to read it as one, or use read_page"
                 )
-        item = {name.lower(): cls for name, cls in vars(auto).items()}
-        cls = item[type.replace("-", "")]
+        cls = types[type]
         found = await off_loop(lambda: cls.extract(page))
         if all(v in (None, [], {}, "") for k, v in found.items() if k not in ("url", "metadata")):
             raise ToolError(f"{url} has nothing that reads as a {type}")

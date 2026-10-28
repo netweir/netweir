@@ -44,7 +44,7 @@ long each one may take, in seconds (30 by default).
 |---|---|
 | `read_page(url, main_only=true, max_chars=20000)` | the page as Markdown: its main content, or the whole page when it has none or `main_only` is false; its final URL, title and page type; cut at `max_chars`, with `truncated` saying so |
 | `chunks(url, max_chars=2000, overlap=0)` | the main content cut at its headings, as [`page.chunks()`](selecting.md#chunks-for-retrieval) cuts it |
-| `extract(url, type="auto")` | a product, product list, job posting, article, article list, forum thread or navigation page as data, with [auto-extraction](extraction.md); `auto` reads the page as whatever it looks like |
+| `extract(url, type="auto")` | a product, product list, job posting, article, article list, forum thread, business, property, social post, search results page, page content or navigation page as data, with [auto-extraction](extraction.md); `auto` reads the page as whatever it looks like |
 | `select(url, css, max_results=50)` | what a CSS selector finds: each element's text, or the strings `::text` and `::attr()` give |
 | `links(url, max_results=200)` | the page's links, absolute, with their text, without repeats |
 
