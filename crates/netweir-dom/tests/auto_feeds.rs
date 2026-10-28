@@ -566,7 +566,9 @@ fn a_thousand_profile_links_are_quick() {
         None,
         Civil::date(2026, 10, 25),
     );
-    assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
+    // A debug build on a busy runner takes over a second; what this
+    // guards against takes far longer.
+    assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
 }
 
 fn xenforo_post(n: u32, mention: bool) -> String {
@@ -810,7 +812,9 @@ fn deep_posts_are_quick() {
         None,
         Civil::date(2026, 10, 25),
     );
-    assert!(start.elapsed().as_secs_f64() < 1.5, "{:?}", start.elapsed());
+    // A debug build on a busy runner takes over a second; what this
+    // guards against takes far longer.
+    assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
 }
 
 fn three(post: impl Fn(u32) -> String) -> String {
