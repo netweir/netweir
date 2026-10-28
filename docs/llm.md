@@ -42,6 +42,9 @@ no free text to parse. Limits such as `minimum`, `pattern` or `maxLength`
 are passed on as advice rather than enforced, and a pydantic model's own
 checks run on the answer.
 
+`netweir.llm` is new. If a call fails with an error from the API, please
+[open an issue](https://github.com/netweir/netweir/issues) with the error.
+
 ## Setting it up
 
 `netweir.llm` needs the Anthropic SDK and a Claude API key:
