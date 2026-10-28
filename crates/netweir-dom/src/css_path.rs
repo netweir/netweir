@@ -184,6 +184,33 @@ pub(crate) fn escape(name: &str) -> String {
     out
 }
 
+/// An absolute XPath to `node`, by tag and position among siblings of
+/// the same tag: `/html/body/div[2]/main`. The position is left out when
+/// the tag is its parent's only one.
+pub fn xpath_path(node: Node<'_>) -> Option<String> {
+    if node.kind() != NodeKind::Element {
+        return None;
+    }
+    let mut steps: Vec<String> = Vec::new();
+    for n in std::iter::successors(Some(node), |n| n.parent())
+        .take_while(|n| n.kind() == NodeKind::Element)
+    {
+        let tag = n.tag()?;
+        let same: Vec<Node<'_>> = match n.parent() {
+            Some(p) => p.children().filter(|c| c.tag() == Some(tag)).collect(),
+            None => vec![n],
+        };
+        if same.len() > 1 {
+            let at = same.iter().position(|c| c.id() == n.id())? + 1;
+            steps.push(format!("{tag}[{at}]"));
+        } else {
+            steps.push(tag.to_string());
+        }
+    }
+    steps.reverse();
+    Some(format!("/{}", steps.join("/")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

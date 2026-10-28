@@ -263,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     _fetch_options(fetch, browser=True)
     extract = commands.add_parser(
-        "extract", help="read a page's product, job or article without selectors, as JSON"
+        "extract",
+        help="read a page's product, job, article or other item without selectors, as JSON",
     )
     extract.add_argument("url")
     extract.add_argument(
@@ -279,6 +280,11 @@ def main(argv: list[str] | None = None) -> int:
             "article-list",
             "article-navigation",
             "forum-thread",
+            "business-place",
+            "real-estate",
+            "social-media-post",
+            "serp",
+            "page-content",
         ],
         help="what to read (default: what the page looks like)",
     )
@@ -742,6 +748,11 @@ def _extract(page, kind: str | None, field_names: str) -> None:
         "article-navigation": auto.ArticleNavigation,
         "job-posting-navigation": auto.JobPostingNavigation,
         "forum-thread": auto.ForumThread,
+        "business-place": auto.BusinessPlace,
+        "real-estate": auto.RealEstate,
+        "social-media-post": auto.SocialMediaPost,
+        "serp": auto.Serp,
+        "page-content": auto.PageContent,
     }[kind].extract(page)
     if field_names == "zyte":
         item = _camel(item)

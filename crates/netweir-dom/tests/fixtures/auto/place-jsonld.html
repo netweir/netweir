@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head>
+<title>Trattoria Lumo · Manchester</title>
+<meta property="og:title" content="Trattoria Lumo">
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "Restaurant",
+ "@id": "https://lumo.example/#restaurant",
+ "name": "Trattoria Lumo",
+ "url": "https://lumo.example/",
+ "description": "Fresh pasta, made every morning.",
+ "image": ["https://lumo.example/img/room.jpg", "/img/pasta.jpg"],
+ "telephone": "+44 161 496 0000",
+ "priceRange": "££",
+ "servesCuisine": ["Italian", "Pizza"],
+ "hasMap": "https://maps.google.com/?cid=123",
+ "address": {"@type": "PostalAddress", "streetAddress": "1 Iron St",
+   "addressLocality": "Manchester", "postalCode": "M1 1AA", "addressCountry": "GB"},
+ "geo": {"@type": "GeoCoordinates", "latitude": 53.4794, "longitude": -2.2453},
+ "openingHoursSpecification": [
+   {"@type": "OpeningHoursSpecification",
+    "dayOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+    "opens": "12:00", "closes": "22:00"},
+   {"@type": "OpeningHoursSpecification", "dayOfWeek": "https://schema.org/Saturday",
+    "opens": "10:00:00", "closes": "23:00:00"}],
+ "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.6", "bestRating": "5", "reviewCount": "212"},
+ "amenityFeature": [{"@type": "LocationFeatureSpecification", "name": "Wheelchair access", "value": true},
+                    {"@type": "LocationFeatureSpecification", "name": "Parking", "value": false}],
+ "potentialAction": {"@type": "ReserveAction", "name": "Book a table",
+   "target": {"@type": "EntryPoint", "urlTemplate": "https://lumo.example/book"}}}
+</script>
+</head><body>
+<header><a href="/">Lumo</a></header>
+<main><h1>Trattoria Lumo</h1><p>Fresh pasta, made every morning.</p></main>
+</body></html>

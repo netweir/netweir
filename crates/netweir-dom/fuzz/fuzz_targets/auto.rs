@@ -11,7 +11,7 @@ use netweir_dom::auto::{Schema, extract};
 use netweir_dom::date::Civil;
 use netweir_dom::{Document, NodeKind, css_path};
 
-const KINDS: [FieldKind; 24] = [
+const KINDS: [FieldKind; 26] = [
     FieldKind::Text,
     FieldKind::Html,
     FieldKind::Url,
@@ -36,6 +36,8 @@ const KINDS: [FieldKind; 24] = [
     FieldKind::Request,
     FieldKind::Int,
     FieldKind::Media,
+    FieldKind::Address,
+    FieldKind::Area,
 ];
 
 fuzz_target!(|data: &[u8]| {
@@ -43,17 +45,7 @@ fuzz_target!(|data: &[u8]| {
     let doc = Document::parse(&html);
     let url = url::Url::parse("https://example.com/a/b").unwrap();
     let now = Civil::date(2026, 10, 25);
-    for schema in [
-        Schema::Product,
-        Schema::ProductList,
-        Schema::ProductNavigation,
-        Schema::JobPosting,
-        Schema::Article,
-        Schema::ArticleList,
-        Schema::ArticleNavigation,
-        Schema::JobPostingNavigation,
-        Schema::ForumThread,
-    ] {
+    for schema in Schema::ALL {
         let item = extract(schema, doc.root(), Some(&url), None, now);
         assert_eq!(item, extract(schema, doc.root(), Some(&url), None, now));
         assert!((0.0..=1.0).contains(&item.probability));

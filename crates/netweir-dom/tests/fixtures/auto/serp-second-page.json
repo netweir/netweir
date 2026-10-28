@@ -1,0 +1,107 @@
+{
+ "type": "serp",
+ "url": "https://search.example/search?q=widgets&start=10",
+ "item": {
+  "url": "https://search.example/search?q=widgets&start=10",
+  "organic_results": [
+   {
+    "name": "Result 11 about widgets",
+    "url": "https://site0.example/page",
+    "description": "Widgets, gadgets and gizmos, number 11 in a long list of them.",
+    "rank": 1,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 12 about widgets",
+    "url": "https://site1.example/page",
+    "description": "Widgets, gadgets and gizmos, number 12 in a long list of them.",
+    "rank": 2,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 13 about widgets",
+    "url": "https://site2.example/page",
+    "description": "Widgets, gadgets and gizmos, number 13 in a long list of them.",
+    "rank": 3,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 14 about widgets",
+    "url": "https://site3.example/page",
+    "description": "Widgets, gadgets and gizmos, number 14 in a long list of them.",
+    "rank": 4,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 15 about widgets",
+    "url": "https://site4.example/page",
+    "description": "Widgets, gadgets and gizmos, number 15 in a long list of them.",
+    "rank": 5,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 16 about widgets",
+    "url": "https://site5.example/page",
+    "description": "Widgets, gadgets and gizmos, number 16 in a long list of them.",
+    "rank": 6,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 17 about widgets",
+    "url": "https://site6.example/page",
+    "description": "Widgets, gadgets and gizmos, number 17 in a long list of them.",
+    "rank": 7,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 18 about widgets",
+    "url": "https://site7.example/page",
+    "description": "Widgets, gadgets and gizmos, number 18 in a long list of them.",
+    "rank": 8,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 19 about widgets",
+    "url": "https://site8.example/page",
+    "description": "Widgets, gadgets and gizmos, number 19 in a long list of them.",
+    "rank": 9,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   },
+   {
+    "name": "Result 20 about widgets",
+    "url": "https://site9.example/page",
+    "description": "Widgets, gadgets and gizmos, number 20 in a long list of them.",
+    "rank": 10,
+    "displayed_url_text": null,
+    "guessed_origin": null,
+    "guessed_url": null
+   }
+  ],
+  "page_number": 2
+ },
+ "sources": {},
+ "probability": [
+  0.8,
+  0.9
+ ],
+ "validation": [],
+ "page_type": "serp"
+}

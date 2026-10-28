@@ -1,0 +1,5 @@
+{"type": "real-estate", "url": "https://homes.example/sale/didsbury",
+ "item": {"url": "https://homes.example/sale/didsbury", "name": "House on 1 Oak Lane",
+  "number_of_bedrooms": 3, "price": "250000", "currency": "GBP", "currency_raw": "GBP",
+  "property_type": "house"},
+ "sources": {}, "probability": [0.25, 0.35], "validation": ["item"], "page_type": "other"}

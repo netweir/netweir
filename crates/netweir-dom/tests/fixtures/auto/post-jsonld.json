@@ -1,0 +1,9 @@
+{"type": "social-media-post", "url": "https://social.example/ada/posts/77812",
+ "item": {"url": "https://social.example/ada/posts/77812", "post_id": "77812",
+  "text": "Parsed 50 real pages with the new parser this morning. Every one faster. #rust #Netweir https://netweir.example/#bench",
+  "date_published": "2026-10-26T18:04:00Z",
+  "hashtags": ["rust", "Netweir"],
+  "media_urls": [{"url": "https://social.example/media/a.png"}, {"url": "https://social.example/media/b.png"}],
+  "author": {"number_of_followers": 1200, "number_of_following": 310, "date_account_created": null, "location": "Leeds", "is_verified": null},
+  "reactions": {"replies": 4, "reposts": 3, "likes": 12, "dislikes": null}},
+ "sources": {"text": "json-ld"}, "probability": [0.85, 0.95], "validation": [], "page_type": "social-media-post"}

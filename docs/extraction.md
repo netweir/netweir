@@ -33,6 +33,11 @@ From the command line, `netweir extract URL` prints the same item as JSON
 | `netweir.auto.ArticleNavigation` | the same page as where it leads: article links and the next page |
 | `netweir.auto.JobPostingNavigation` | a jobs board or a job search: advert links and the next page |
 | `netweir.auto.ForumThread` | a forum thread: its topic and each post's text, date, likes and replies |
+| `netweir.auto.BusinessPlace` | a shop's, restaurant's or other business's page: name, address, phone, opening hours, rating, categories, map, website |
+| `netweir.auto.RealEstate` | a property for sale or to rent: price and rent period, rooms, floor area, address, year built, property type |
+| `netweir.auto.SocialMediaPost` | a single post: its text, date, hashtags, media, reactions and what the page says about its author |
+| `netweir.auto.Serp` | a search engine's results page: each organic result's title, link, excerpt, displayed address and rank |
+| `netweir.auto.PageContent` | any page: its main text and where it sits, headline, title, breadcrumbs, menus, pager and next page |
 
 Field names are the common item schema's, the one Zyte's API and
 zyte-common-items use, in snake_case: `regular_price`, `main_image`,
@@ -64,8 +69,9 @@ alone could be any of a dozen dollars.
 A crawl that wanders reaches product pages, category pages, the blog
 and the careers page in one run. `page.page_type()` says which is
 which: `"product"`, `"product-list"`, `"job-posting"`,
-`"job-posting-navigation"`, `"forum-thread"`, `"article-list"`,
-`"article"`, or `"other"`. It runs each type's reader and keeps the one with the
+`"job-posting-navigation"`, `"forum-thread"`, `"social-media-post"`,
+`"serp"`, `"article-list"`, `"article"`, `"business-place"`,
+`"real-estate"`, or `"other"`. It runs each type's reader and keeps the one with the
 strongest evidence, so a product page with a long description is still
 a product, and a category page whose cards are marked up as products is
 a listing. A page that's only prose (an About page, terms and
@@ -331,6 +337,62 @@ included) and question-and-answer pages is read this way,
 along with hand-written forums that mark their posters. Reviews under a
 product and comments under an article stay that page's, not a thread.
 Disqus, whose comments arrive by script, isn't.
+
+## Places, property, posts and search results
+
+**A business place** comes from a LocalBusiness in JSON-LD or
+microdata, or any kind of one (Restaurant, Hotel, Dentist, Store and
+the rest), and from Facebook's `business:contact_data` tags. Opening
+hours come one entry a day, from OpeningHoursSpecification or from
+text such as `Mo-Fr 09:00-17:30`, with closed days left out. A page
+with none of that is still read when it shows a `tel:` link, an
+`<address>`, and opening hours or a map link, at a probability of 0.5.
+Many sites print the same LocalBusiness on every page, home page and
+products included, so structured data types a page as
+`"business-place"` only when the page reads as nothing else;
+`extract()` still reads it anywhere. A place inside something else (an
+event's venue, a hotel's suites) isn't the page's. `place_id`, `timezone`, `review_sites` and `is_verified` stay
+None: no page states them reliably.
+
+**A property** comes from a RealEstateListing (with the home it's
+`about`) or an Accommodation such as a House or an Apartment. Without
+structured data, a page counts when it shows a price and two of
+bedrooms, bathrooms and floor area. Areas carry their unit, `SQMT`,
+`SQFT` or `ACRE`, and `area_type` `FLOOR` or `LOT` when structured data
+says which; either decimal separator reads (`85,5 m²`, `1,250 sq ft`). A rent written `£1,250 pcm` gives `trade_type` `"rent"` and
+`rental_period` `"monthly"`; `trade_type` is `"sale"` or `"rent"`.
+
+**A social media post** comes from a SocialMediaPosting, or from the
+Open Graph tags of a post's page whose address names a numbered post
+(`/@ada/113456789`, `/status/123`). Hashtags are read from the text,
+leaving out a `#` in a link. A SocialMediaPosting with comments is a
+forum thread instead.
+
+**A search results page** is read from its layout: the biggest group
+of results led by a linked heading, most of them leading to other
+sites, so a shop's or a blog's own search stays what it was. The page
+has to show the query from its address back, in its search box or its
+title, so `?p=123` on a blog isn't a search; a page of off-site links
+without one is a SERP only to `extract()`. An
+engine's redirect links (`/url?q=...`) give the address they lead to.
+`metadata` adds `searched_query` (from the address),
+`displayed_query` (from the search box) and `total_organic_results`
+(from text such as `About 1,230 results`). `ai_overview` stays None.
+
+## Any page's content
+
+`netweir.auto.PageContent` reads every page, so `page_type()` never
+names it. `item_main` is the main content's text, as `page.article()`
+reads it, and `item_main_xpath` is an XPath to the element that holds
+it:
+
+```python
+content = page.extract(netweir.auto.PageContent)
+page.xpath(content["item_main_xpath"])  # the main content's element
+```
+
+The links of the page's header, footer, sidebars and pager come in
+their own lists, `{name, url}` each, so they stay out of the text.
 
 ## Pages built in the browser
 

@@ -1,0 +1,16 @@
+{"type": "business-place", "url": "https://ferrous.example/",
+ "item": {"url": "https://ferrous.example/", "name": "Ferrous Bike Repairs",
+  "address": {"address_raw": "22 Spoke Lane, Leeds, LS1 4AB", "street_address": "22 Spoke Lane",
+   "address_city": null, "address_locality": "Leeds", "address_region": null,
+   "address_country": null, "postal_code": "LS1 4AB", "postal_code_aux": null,
+   "latitude": null, "longitude": null},
+  "description": "Wheels trued while you wait.",
+  "opening_hours": [
+   {"day_of_week": "Monday", "opens": "09:00:00", "closes": "17:30:00", "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"},
+   {"day_of_week": "Tuesday", "opens": "09:00:00", "closes": "17:30:00", "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"},
+   {"day_of_week": "Wednesday", "opens": "09:00:00", "closes": "17:30:00", "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"},
+   {"day_of_week": "Thursday", "opens": "09:00:00", "closes": "17:30:00", "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"},
+   {"day_of_week": "Friday", "opens": "09:00:00", "closes": "17:30:00", "raw_day_of_week": "Mo-Fr", "raw_opens": "09:00", "raw_closes": "17:30"},
+   {"day_of_week": "Saturday", "opens": "10:00:00", "closes": "14:00:00", "raw_day_of_week": "Sa", "raw_opens": "10:00", "raw_closes": "14:00"}],
+  "telephone": "0113 496 0123"},
+ "sources": {"name": "microdata:h1"}, "probability": [0.9, 1.0], "validation": [], "page_type": "business-place"}

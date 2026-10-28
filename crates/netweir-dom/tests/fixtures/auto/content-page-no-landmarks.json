@@ -1,0 +1,17 @@
+{
+ "type": "page-content",
+ "url": "https://hall.example/times",
+ "item": {
+  "url": "https://hall.example/times",
+  "title": "Opening times",
+  "item_main": "@body",
+  "item_main_xpath": "/html/body/div/div[2]/div"
+ },
+ "sources": {},
+ "probability": [
+  1.0,
+  1.0
+ ],
+ "validation": [],
+ "page_type": "other"
+}
