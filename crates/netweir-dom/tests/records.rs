@@ -7,6 +7,11 @@ use serde_json::{Value, json};
 
 const BASE: &str = "https://records.example/search?q=x";
 
+/// Seconds the pages built to be slow may take. Work that grows with the
+/// square of the page takes minutes on them; a busy Windows runner took
+/// 2.4 s on one in a debug build, so the bound leaves room for that.
+const BOUND: f64 = 5.0;
+
 fn read(html: &str) -> Option<Records> {
     let doc = Document::parse(html);
     let base = url::Url::parse(BASE).unwrap();
@@ -235,7 +240,8 @@ fn many_rows_read_in_time() {
     let html = format!("<main>{rows}</main>");
     let start = std::time::Instant::now();
     let r = read(&html).unwrap();
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
     assert_eq!(r.rows.len(), 5000);
 }
 
@@ -248,7 +254,8 @@ fn deep_nesting_reads_in_time() {
     );
     let start = std::time::Instant::now();
     let _ = read(&html);
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
 }
 
 #[test]
@@ -267,7 +274,8 @@ fn rows_unlike_each_other_read_in_time() {
     let html = format!("<main>{rows}</main>");
     let start = std::time::Instant::now();
     let r = read(&html).unwrap();
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
     assert_eq!(names(&r), ["k", "v"]);
 }
 
@@ -283,7 +291,8 @@ fn nested_tables_read_in_time() {
     let html = format!("<table><tr>{html}</tr></table>");
     let start = std::time::Instant::now();
     let _ = read(&html);
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
 }
 
 #[test]
@@ -293,7 +302,8 @@ fn many_small_groups_read_in_time() {
         .collect();
     let start = std::time::Instant::now();
     let r = read(&format!("<main>{groups}</main>"));
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
     assert!(r.is_some());
 }
 
@@ -426,7 +436,8 @@ fn rows_with_their_own_classes_read_in_time() {
     let html = format!("<main>{rows}</main>");
     let start = std::time::Instant::now();
     let r = read(&html).unwrap();
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
     assert_eq!(&names(&r)[..2], ["k", "v"]);
 }
 
@@ -442,7 +453,8 @@ fn deep_rows_read_in_time() {
     }
     let start = std::time::Instant::now();
     let r = read(&html);
-    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let took = start.elapsed();
+    assert!(took.as_secs_f64() < BOUND, "{took:?}");
     assert!(r.is_none_or(|r| r.columns.len() < 50));
 }
 
@@ -478,5 +490,58 @@ fn odd_tags_are_escaped_in_the_row_selector() {
         .collect();
     let html = format!("<div>{rows}</div>");
     let r = read(&html).unwrap();
+    selectors_hold(&html, &r);
+}
+
+#[test]
+fn small_record_selector_has_no_nth_child() {
+    let rows: String = (0..3)
+        .map(|i| {
+            format!(
+                r#"<div class="row"><b class="name">Item {i}</b><i class="value">Value {i}</i></div>"#
+            )
+        })
+        .collect();
+    let html = format!("<main>{rows}</main>");
+    let r = read(&html).unwrap();
+    assert!(!r.selector.contains(":nth-child"), "{}", r.selector);
+    selectors_hold(&html, &r);
+}
+
+#[test]
+fn table_selector_stops_at_max_rows() {
+    let rows: String = (0..5001)
+        .map(|i| {
+            let separator = if i % 1000 == 0 {
+                "<tr><th>Heading</th><th>Not a data row</th></tr>"
+            } else {
+                ""
+            };
+            format!("{separator}<tr><td>Item {i}</td><td>Value {i}</td></tr>")
+        })
+        .collect();
+    let html = format!("<table><tbody>{rows}</tbody></table>");
+    let r = read(&html).unwrap();
+    assert_eq!(r.rows.len(), 5000);
+    selectors_hold(&html, &r);
+}
+
+#[test]
+fn repeat_selector_stops_at_max_rows_with_other_siblings() {
+    let rows: String = (0..5001)
+        .map(|i| {
+            let separator = if i % 1000 == 0 {
+                "<div class=\"ad\"><b>Advertisement</b><i>Skip</i></div>"
+            } else {
+                ""
+            };
+            format!(
+                "{separator}<div class=\"row\"><b class=\"name\">Item {i}</b><i class=\"value\">Value {i}</i></div>"
+            )
+        })
+        .collect();
+    let html = format!("<main>{rows}</main>");
+    let r = read(&html).unwrap();
+    assert_eq!(r.rows.len(), 5000);
     selectors_hold(&html, &r);
 }

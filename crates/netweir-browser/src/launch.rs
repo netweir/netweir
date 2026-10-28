@@ -1498,14 +1498,14 @@ mod tests {
         use std::io::Read;
         use std::os::fd::AsRawFd;
 
-        // Processes lasting a second, past each check below, started for
-        // two seconds.
+        // Processes lasting ten seconds, past each check below, started
+        // for two.
         let starter = std::thread::spawn(|| {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
             std::iter::from_fn(|| (std::time::Instant::now() < until).then_some(()))
                 .map(|_| {
                     Command::new("sleep")
-                        .arg("1")
+                        .arg("10")
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -1531,12 +1531,19 @@ mod tests {
                             unsafe {
                                 libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK)
                             };
-                            // A process still starting holds it for a
-                            // moment, whatever it's marked; one that came
-                            // by it holds it for good.
-                            if !ended(&mut reader) {
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                                held += usize::from(!ended(&mut reader));
+                            // A process still starting holds it until it
+                            // runs, whatever it's marked, and with eight
+                            // threads making pipes a forked one can wait
+                            // well past 100 ms for a core; one that came by
+                            // it holds it for good.
+                            let until =
+                                std::time::Instant::now() + std::time::Duration::from_secs(2);
+                            while !ended(&mut reader) {
+                                if std::time::Instant::now() > until {
+                                    held += 1;
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(10));
                             }
                         }
                         held

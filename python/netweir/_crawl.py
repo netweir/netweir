@@ -1784,7 +1784,7 @@ class _Run:
         except asyncio.CancelledError:
             call.fail("the crawl stopped")
             raise
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             # Before 3.11, asyncio's isn't the built-in one.
             call.fail(f"it took more than {call.timeout:g}s")
         except Exception as e:  # noqa: BLE001 - the step's on_error decides

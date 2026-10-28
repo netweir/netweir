@@ -507,6 +507,12 @@ def _write_stats(path: str, stats, reason: str | None, tries: int = 1) -> None:
 def _queue(args) -> int:
     from netweir import Queue, QueueError
 
+    if args.action == "push" and not args.urls:
+        print(
+            "netweir: queue push needs URLs, or - to read them from stdin",
+            file=sys.stderr,
+        )
+        return 2
     if args.action != "push" and args.urls:
         print(f"netweir: queue {args.action} takes no URLs", file=sys.stderr)
         return 2

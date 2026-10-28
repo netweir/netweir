@@ -56,7 +56,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.14", "3.14t"]
+        python: ["3.11", "3.14", "3.14t"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:

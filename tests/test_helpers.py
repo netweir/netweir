@@ -16,7 +16,7 @@ import netweir
 from netweir import export
 from netweir._native import _response
 
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 NOW = datetime.datetime(2026, 10, 12, 15, 45, 30)
 
 

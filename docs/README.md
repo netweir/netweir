@@ -23,6 +23,7 @@
 The designs behind it, for anyone working on Netweir:
 
 - [design/v0.1.md](design/v0.1.md): the engine, the parser and the first release.
+- [design/security.md](design/security.md): what Netweir trusts, the defences against hostile pages, and their limits.
 - [design/browser.md](design/browser.md): the Chrome driver.
 - [design/network.md](design/network.md): reading what a Chrome page fetches, and blocking or changing its requests.
 - [design/dialogs.md](design/dialogs.md): a Chrome page's dialogs, popups and downloads.

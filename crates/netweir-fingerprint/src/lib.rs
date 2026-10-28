@@ -4,6 +4,8 @@
 //! with a fingerprint captured from the real browser by the `capture`
 //! binary.
 
+#![forbid(unsafe_code)]
+
 mod client_hello;
 mod compare;
 mod h2;
