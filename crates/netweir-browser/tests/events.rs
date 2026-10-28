@@ -860,13 +860,15 @@ async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
     };
     let browser = common::launch(netweir_browser::LaunchOptions {
         executable: Some(executable),
-        timeout: Duration::from_secs(2),
+        // Launching keeps to it too, and a loaded macOS runner's Chrome
+        // has taken over 2 s to start three times running.
+        timeout: Duration::from_secs(5),
         ..Default::default()
     })
     .await;
     let Stalling { url, done, .. } = stalling_server();
     let page = browser.new_page().await.unwrap();
-    // The browser's 2 s is for the wait under test: getting there has a
+    // The browser's 5 s is for the wait under test: getting there has a
     // limit of its own, as a cold Chrome on a loaded Windows runner has
     // taken longer than 2 s to load the page.
     let setup = Some(Duration::from_secs(30));
@@ -877,11 +879,11 @@ async fn waiting_on_a_stalled_download_gives_up_at_the_timeout() {
 
     // The browser's timeout, as for any other wait.
     let started = Instant::now();
-    let waited = tokio::time::timeout(Duration::from_secs(10), d.path(None))
+    let waited = tokio::time::timeout(Duration::from_secs(15), d.path(None))
         .await
         .expect("waited on a stalled download past the browser's timeout");
     assert!(matches!(waited, Err(Error::Timeout(_))), "{waited:?}");
-    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(started.elapsed() >= Duration::from_secs(5));
     // Or one of its own.
     let started = Instant::now();
     let failure = d.failure(Some(Duration::from_millis(300))).await;
