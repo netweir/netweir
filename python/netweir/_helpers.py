@@ -72,7 +72,7 @@ def parse_date(
     fields, offset, from_now, elapsed = found
     if offset is not None:
         tz = (
-            datetime.timezone.utc
+            datetime.UTC
             if offset == 0
             else datetime.timezone(datetime.timedelta(seconds=offset))
         )
@@ -90,7 +90,7 @@ def parse_date(
     if found.utcoffset() is None:
         return found + step
     # Aware datetimes add on the clock face; elapsed time is added in UTC.
-    return (found.astimezone(datetime.timezone.utc) + step).astimezone(found.tzinfo)
+    return (found.astimezone(datetime.UTC) + step).astimezone(found.tzinfo)
 
 
 @dataclass(frozen=True)

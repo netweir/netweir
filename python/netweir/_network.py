@@ -101,7 +101,7 @@ class Network:
     async def _result(self, future: asyncio.Future, kind: str, pattern: Any, timeout: float) -> Any:
         try:
             return await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise BrowserTimeout(f"timed out: waiting for a {_what(kind, pattern)}") from None
         finally:
             self._waiters = [w for w in self._waiters if w[2] is not future]
