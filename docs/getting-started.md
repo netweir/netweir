@@ -5,7 +5,7 @@ items. It takes about ten minutes. Each step builds on the one before.
 
 ## Install
 
-Netweir needs Python 3.10 or later, on Linux, macOS or Windows.
+Netweir needs Python 3.11 or later, on Linux, macOS or Windows.
 
 ```
 pip install netweir

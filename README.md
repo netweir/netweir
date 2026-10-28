@@ -197,7 +197,7 @@ announce it's automated. The designs are in [docs/design/](docs/design/).
 pip install netweir
 ```
 
-There are wheels for Linux, macOS and Windows, on Python 3.10 and up,
+There are wheels for Linux, macOS and Windows, on Python 3.11 and up,
 free-threaded 3.14 included, so there's nothing to compile. Pages that
 need a real browser want Chrome too: `netweir install chrome` fetches the
 version Netweir is tuned for.

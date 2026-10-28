@@ -39,8 +39,8 @@ out over it looking exactly like the browser it claims to be.
 
 ## Support
 
-Python 3.10 reached the end of its life in October 2026, and the release
-after 0.5.0 will need Python 3.11 or later.
+Python 3.10 reached the end of its life in October 2026. 0.5 is the last
+release for it: the next needs Python 3.11 or later.
 
 ## How the order is set
 
