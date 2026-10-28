@@ -473,6 +473,13 @@ def test_the_queue_command_pushes_shows_and_clears(redis, capsys):
     assert _cli.main(["queue", "status", redis, "books", "https://e.com/"]) == 2
 
 
+def test_queue_push_without_urls_is_a_usage_mistake(capsys):
+    assert _cli.main(["queue", "push", "redis://localhost:6379/0", "books"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("netweir: ") and len(err.splitlines()) == 1, err
+    assert "-" in err and "stdin" in err, err
+
+
 def test_queue_mistakes_are_value_errors_and_a_lost_server_a_queue_error(capsys):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

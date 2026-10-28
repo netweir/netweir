@@ -197,7 +197,7 @@ announce it's automated. The designs are in [docs/design/](docs/design/).
 pip install netweir
 ```
 
-There are wheels for Linux, macOS and Windows, on Python 3.10 and up,
+There are wheels for Linux, macOS and Windows, on Python 3.11 and up,
 free-threaded 3.14 included, so there's nothing to compile. Pages that
 need a real browser want Chrome too: `netweir install chrome` fetches the
 version Netweir is tuned for.
@@ -649,7 +649,8 @@ Issues, fixes and new browser profiles are all welcome.
 [CONTRIBUTING.md](CONTRIBUTING.md) covers building, testing and the one
 hard rule (write it yourself), and before your first pull request is merged
 you'll be asked to agree to the [CLA](CLA.md), once. Questions go in
-[Discussions](https://github.com/netweir/netweir/discussions).
+[Discussions](https://github.com/netweir/netweir/discussions), and
+[ROADMAP.md](ROADMAP.md) says what's coming next.
 
 ## Licence
 

@@ -1246,6 +1246,7 @@ pub(crate) mod tests {
             referer: Some("https://e.com/".into()),
             retry_post: true,
             proxy: Some("http://10.0.1:8080".into()),
+            proxy_sha256: None,
             policy: crate::Policy {
                 timeout: Some(Duration::from_secs(5)),
                 max_redirects: Some(0),

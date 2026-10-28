@@ -199,8 +199,8 @@ class _Store:
         except (NotImplementedError, KeyError, OSError):
             return None
         if modified.tzinfo is None:
-            modified = modified.replace(tzinfo=datetime.timezone.utc)
-        return (datetime.datetime.now(datetime.timezone.utc) - modified).total_seconds()
+            modified = modified.replace(tzinfo=datetime.UTC)
+        return (datetime.datetime.now(datetime.UTC) - modified).total_seconds()
 
     def checksum(self, relative: str) -> str | None:
         """The MD5 of a stored file. A local one is read for it; a remote
