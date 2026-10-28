@@ -301,7 +301,9 @@ fn quick(html: &str) {
         let start = std::time::Instant::now();
         extract(schema, doc.root(), None, None, Civil::date(2026, 10, 25));
         let took = start.elapsed();
-        assert!(took.as_secs_f64() < 1.5, "{schema:?}: {took:?}");
+        // A debug build on a busy runner takes over a second; what this
+        // guards against takes far longer.
+        assert!(took.as_secs_f64() < 5.0, "{schema:?}: {took:?}");
     }
 }
 
