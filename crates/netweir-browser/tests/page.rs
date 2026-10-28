@@ -892,7 +892,8 @@ async fn a_history_step_that_never_commits_says_so_when_time_runs_out() {
         .await
         .unwrap();
     // A page that asks before it's left, which needs a person to have
-    // touched it first, and nobody answers yes.
+    // touched it first, and a listener that never answers.
+    let _unanswered = page.dialogs();
     page.evaluate(
         "addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = '' })",
     )
