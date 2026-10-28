@@ -523,7 +523,9 @@ gives a LangChain `Document` and `chunk.to_llamaindex()` a LlamaIndex
 metadata. Install `langchain-core` or `llama-index-core` yourself to use
 them. Netweir doesn't embed chunks or store them: that's your vector
 store's job. In an item, `netweir.chunks()` holds the same list of dicts
-(see [declarative spiders](declarative.md)).
+(see [declarative spiders](declarative.md)), and `netweir crawl docs
+--url https://example.com/docs/ -o docs.jsonl` writes a whole docs site
+that way (see [templates](extraction.md#a-whole-site-from-one-url)).
 
 ## Prices, dates and data in scripts
 

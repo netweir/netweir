@@ -66,7 +66,26 @@ PAGES = {
 }
 
 
+DOC = """<html><head><title>{title} - Lumo docs</title></head><body>
+<nav><a href="/docs/">Docs</a> <a href="/docs/install">Install</a>
+<a href="/docs/api/">API</a> <a href="/blog">Blog</a></nav>
+<main><h1>{title}</h1><p>{text}</p><h2>Details</h2><p>{text}</p></main></body></html>"""
+
+DOCS = {
+    "/docs/": "Overview",
+    "/docs/install": "Install",
+    "/docs/api/": "API",
+    "/docs/api/get": "Get",
+}
+
+
 def body(path):
+    if path in DOCS:
+        title = DOCS[path]
+        page = DOC.format(title=title, text=f"How {title.lower()} works, step by step. " * 8)
+        if path == "/docs/api/":
+            page = page.replace("</main>", '<a href="/docs/api/get">get()</a></main>')
+        return page
     if path in PAGES:
         return PAGES[path]
     if path.startswith("/p/"):
@@ -275,3 +294,43 @@ def test_a_page_a_middleware_answers_gives_its_item(base):
 
     items = run(netweir.templates.Ecommerce, f"{base}/p/arc", "direct_item", middlewares=[Cache()])
     assert names(items) == ["arc"]
+
+
+def test_docs_crawls_the_docs_into_chunks(base):
+    pages = run(netweir.templates.Docs, f"{base}/docs/")
+    assert names(pages, "title") == [
+        f"{t} - Lumo docs" for t in ("API", "Get", "Install", "Overview")
+    ]
+    install = next(p for p in pages if p["title"].startswith("Install"))
+    assert [c["headings"] for c in install["chunks"]] == [["Install"], ["Install", "Details"]]
+    assert install["chunks"][0]["url"] == f"{base}/docs/install"
+    assert "Blog" not in json.dumps(install["chunks"]), "the main content only"
+
+
+def test_docs_stays_under_the_start_directory_unless_full(base):
+    api = run(netweir.templates.Docs, f"{base}/docs/api/")
+    assert names(api, "title") == ["API - Lumo docs", "Get - Lumo docs"]
+    one = run(netweir.templates.Docs, f"{base}/docs/install", "direct_item")
+    assert names(one, "title") == ["Install - Lumo docs"]
+    everything = run(netweir.templates.Docs, f"{base}/docs/api/", "full")
+    assert "Overview - Lumo docs" in [p["title"] for p in everything]
+    assert len(everything) > 4, "the blog too"
+
+
+def test_docs_takes_only_its_own_strategies():
+    class Crawl(netweir.templates.Docs):
+        start_urls = ["https://docs.example/"]
+        strategy = "navigation"
+
+    with pytest.raises(ValueError, match="automatic, full or direct_item"):
+        Crawl().run()
+
+
+def test_crawl_command_runs_the_docs_template(base, tmp_path):
+    out = tmp_path / "docs.jsonl"
+    args = ["crawl", "docs", "--url", f"{base}/docs/api/", "-o", str(out)]
+    code = main([*args, "-s", "obey_robots=false", "-s", "throttle=false", "-q"])
+    assert code == 0
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert sorted(r["title"] for r in rows) == ["API - Lumo docs", "Get - Lumo docs"]
+    assert all(r["chunks"] for r in rows)

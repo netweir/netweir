@@ -1,5 +1,6 @@
-"""Ready-made crawls: a shop's products, a site's articles or a board's
-jobs from a URL, without selectors. They're declarative spiders, so
+"""Ready-made crawls: a shop's products, a site's articles, a board's
+jobs, or a docs site's pages in chunks for retrieval, from a URL, without
+selectors. They're declarative spiders, so
 Netweir runs them in Rust, and you can subclass them like any Spider.
 
 ``strategy`` decides how far the crawl goes:
@@ -18,12 +19,13 @@ Crawls stay on the start URLs' sites. Limit them with the usual settings
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from netweir import auto
 from netweir._crawl import Spider
-from netweir._rules import Extract, Follow, Item
+from netweir._rules import Extract, Follow, Item, chunks, css
 
 STRATEGIES = ("automatic", "full", "navigation", "pagination_only", "direct_item")
 
@@ -109,5 +111,55 @@ class Job(_Template):
     item_type = "job-posting"
 
 
+class DocsPage(Item):
+    """A page's title, and its main content in chunks for retrieval (see
+    ``netweir.chunks``)."""
+
+    title = css("title::text", strip=True)
+    chunks = chunks()
+
+
+class Docs(_Template):
+    """A docs site, or any site you want to search, in chunks for
+    retrieval: a ``DocsPage`` item per page, holding its title and its
+    main content's chunks.
+
+    It stays under each start URL's directory (its path up to the last
+    ``/``), so ``https://example.com/docs/`` crawls the docs and not the
+    blog. With
+    ``"full"``, it goes anywhere on the site, and with ``"direct_item"``,
+    only to the start URLs. A subclass can set ``item`` to a ``DocsPage``
+    subclass with other chunk sizes."""
+
+    item = DocsPage
+
+    def chosen_strategy(self) -> str:
+        if self.strategy not in ("automatic", "full", "direct_item"):
+            raise ValueError(
+                f"the docs template's strategy is automatic, full or direct_item, "
+                f"not {self.strategy!r}"
+            )
+        return self.strategy
+
+    @property  # type: ignore[override]
+    def rules(self) -> list[Any]:
+        strategy = self.chosen_strategy()
+        if strategy == "direct_item":
+            return [Extract(self.item)]
+        allow = []
+        if strategy == "automatic":
+            # Each start URL's directory, the part up to its last /.
+            for url in self.start_urls:
+                parts = urlsplit(url)
+                directory = parts.path[: parts.path.rfind("/") + 1] or "/"
+                allow.append("^https?://" + re.escape(parts.netloc + directory))
+        return [Follow("a[href]", allow=allow), Extract(self.item)]
+
+
 #: The templates by the name ``netweir crawl`` takes.
-TEMPLATES: dict[str, type[_Template]] = {"ecommerce": Ecommerce, "article": Article, "job": Job}
+TEMPLATES: dict[str, type[_Template]] = {
+    "ecommerce": Ecommerce,
+    "article": Article,
+    "job": Job,
+    "docs": Docs,
+}
