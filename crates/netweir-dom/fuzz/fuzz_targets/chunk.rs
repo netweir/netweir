@@ -1,5 +1,6 @@
 //! Any HTML's Markdown, and any text read as Markdown, in chunks: nothing
-//! panics, no chunk is empty or over the limit, and no text is lost.
+//! panics, no chunk is empty or over the limit, no text is lost, and no
+//! two words are glued together.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -13,9 +14,24 @@ fn check(md: &str, options: Options) {
         assert!(!c.text.is_empty());
         assert!(c.text.chars().count() <= options.max_chars, "{options:?}: {:?}", c.text);
     }
-    // Pieces repeat fences, table headers and overlaps, but never drop text.
+    // Pieces repeat fences, table headers and overlaps, but never drop
+    // text. A line of nothing but `>`s is a quotation's blank line, which
+    // separates blocks as a blank line does.
     let kept: usize = got.iter().map(|c| solid(&c.text)).sum();
-    assert!(kept >= solid(md), "{options:?}: {md:?}");
+    let text: usize = md
+        .lines()
+        .filter(|l| !l.trim_start_matches([' ', '>']).trim().is_empty())
+        .map(solid)
+        .sum();
+    assert!(kept >= text, "{options:?}: {md:?}");
+    // Nor glue two words into one: every word in a chunk is part of one
+    // in the Markdown.
+    let words: Vec<&str> = md.split_whitespace().collect();
+    for c in &got {
+        for w in c.text.split_whitespace() {
+            assert!(words.iter().any(|m| m.contains(w)), "{options:?}: {w:?} in {md:?}");
+        }
+    }
 }
 
 fuzz_target!(|data: &[u8]| {

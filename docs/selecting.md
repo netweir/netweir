@@ -514,8 +514,8 @@ for chunk in page.chunks(1000):
 - `id` is a hash of the page's URL, the headings and the text. The same
   chunk of the same page gets the same id on the next crawl, so your
   store can skip what it already holds, and an edit to one section
-  doesn't change the ids of the others. A chunk that appears twice on one
-  page gets `-2` after its id the second time.
+  doesn't change the ids of the others. A chunk that appears twice under
+  the same headings gets `-2` after its id the second time.
 
 `chunk.to_dict()` gives a dict ready for JSON. `chunk.to_langchain()`
 gives a LangChain `Document` and `chunk.to_llamaindex()` a LlamaIndex

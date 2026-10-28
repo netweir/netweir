@@ -28,9 +28,10 @@ pub struct Options {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     /// The SHA-256 of the page's URL, the headings and the text, as 32
-    /// hex digits, with `-2`, `-3` after a repeat on the same page: the
-    /// same chunk of the same page has the same id from crawl to crawl,
-    /// and a change to one section leaves the others' ids alone.
+    /// hex digits: the same chunk of the same page has the same id from
+    /// crawl to crawl, and a change to one section leaves the others' ids
+    /// alone. A chunk repeated under the same headings gets `-2`, `-3`
+    /// after it, in page order.
     pub id: String,
     pub text: String,
     /// The headings the chunk sits under, outermost first, as written
@@ -48,12 +49,13 @@ enum Kind {
     Text,
 }
 
-/// `node`'s Markdown in chunks, links absolute against `base`, which
-/// the ids are made from too. With `main_only`, its main content's, or
-/// the whole node's when it has none.
+/// `node`'s Markdown in chunks, links absolute against `base`, ids made
+/// from `url`. With `main_only`, its main content's, or the whole node's
+/// when it has none.
 pub fn node_chunks(
     node: Node<'_>,
     base: Option<&Url>,
+    url: &str,
     main_only: bool,
     options: Options,
 ) -> Vec<Chunk> {
@@ -62,7 +64,7 @@ pub fn node_chunks(
         .flatten()
         .map(|m| m.markdown(base))
         .unwrap_or_else(|| crate::markdown::markdown(node, base));
-    chunks(&markdown, base.map_or("", Url::as_str), options)
+    chunks(&markdown, url, options)
 }
 
 impl Chunk {
@@ -92,6 +94,7 @@ pub fn chunks(markdown: &str, url: &str, options: Options) -> Vec<Chunk> {
         headings: Vec::new(),
         only_headings: false,
         last_level: 0,
+        last_text: false,
         carry: None,
     };
     let mut stack: Vec<(usize, String)> = Vec::new();
@@ -99,8 +102,11 @@ pub fn chunks(markdown: &str, url: &str, options: Options) -> Vec<Chunk> {
         match kind {
             Kind::Heading(level) => {
                 // A heading under one with nothing below it joins it, so
-                // "# A" then "## B" is one chunk under both.
-                if !(packer.only_headings && level > packer.last_level) {
+                // "# A" then "## B" is one chunk under both, if both fit.
+                let joins = packer.only_headings
+                    && level > packer.last_level
+                    && packer.len + 2 + chars(block) <= max;
+                if !joins {
                     packer.flush(false);
                 }
                 packer.carry = None;
@@ -161,12 +167,18 @@ struct Packer {
     /// Whether `parts` holds only headings.
     only_headings: bool,
     last_level: usize,
+    /// Whether the last piece added was text, which an overlap may come
+    /// from; a fence's or a table's end would open or break what follows.
+    last_text: bool,
     /// The end of the chunk just written, to start the next with.
     carry: Option<String>,
 }
 
 impl Packer {
     fn add(&mut self, piece: String, text: bool) {
+        if piece.trim().is_empty() {
+            return;
+        }
         let n = chars(&piece);
         if !self.parts.is_empty() && self.len + 2 + n > self.max {
             self.flush(true);
@@ -185,6 +197,7 @@ impl Packer {
         }
         self.len += if self.parts.is_empty() { n } else { 2 + n };
         self.parts.push(piece);
+        self.last_text = text;
     }
 
     /// Writes the chunk being gathered; with `carry`, keeps its end to
@@ -194,7 +207,7 @@ impl Packer {
             return;
         }
         let text = self.parts.join("\n\n");
-        self.carry = (carry && self.overlap > 0)
+        self.carry = (carry && self.overlap > 0 && self.last_text)
             .then(|| tail(&text, self.overlap))
             .filter(|t| !t.is_empty());
         self.out.push((text, self.headings.clone()));
@@ -242,13 +255,14 @@ fn blocks(markdown: &str) -> Vec<(Kind, &str)> {
                 }
                 end = at + content.len();
             }
-            None if content.trim().is_empty() => {
+            // A blank line, or one inside a quotation (`>`), ends a block.
+            None if bare.trim().is_empty() => {
                 if let Some(s) = start.take() {
                     out.push(&markdown[s..end]);
                 }
             }
             None => {
-                if ticks >= 3 {
+                if opens_fence(bare) {
                     fence = Some(ticks);
                 }
                 start.get_or_insert(at);
@@ -263,32 +277,69 @@ fn blocks(markdown: &str) -> Vec<(Kind, &str)> {
     out.into_iter().map(|b| (kind(b), b)).collect()
 }
 
+/// Whether a line, past any indent and `>`s, opens a code fence: three
+/// or more backticks and no backtick after them, which CommonMark
+/// forbids in a fence's info string. A paragraph starting with a code
+/// span (`` ```a``b``` ``) has one, so it isn't taken for a fence.
+fn opens_fence(bare: &str) -> bool {
+    let ticks = bare.bytes().take_while(|b| *b == b'`').count();
+    ticks >= 3 && !bare[ticks..].contains('`')
+}
+
+/// Whether a line is a table's delimiter row: `| --- | :-: |`.
+fn delimiter_row(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with('|')
+        && line.contains('-')
+        && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
 fn kind(block: &str) -> Kind {
     let hashes = block.bytes().take_while(|b| *b == b'#').count();
     if (1..=6).contains(&hashes) && !block.contains('\n') && block[hashes..].starts_with(' ') {
         return Kind::Heading(hashes);
     }
-    if block.starts_with("```") {
+    let first = block.lines().next().unwrap_or("");
+    if opens_fence(first.trim_start_matches([' ', '>'])) {
         return Kind::Fence;
     }
-    if block.starts_with('|') {
+    // A paragraph can start with a pipe; a table has its delimiter row.
+    if block.starts_with('|') && block.lines().nth(1).is_some_and(delimiter_row) {
         return Kind::Table;
     }
     Kind::Text
 }
 
 /// A code block too big for one chunk, a run of its lines at a time, each
-/// fenced as the block was.
+/// fenced as the block was. One indented in a list item comes out
+/// unindented, so it still reads as code on its own; one in a quotation
+/// keeps its `>`s.
 fn split_fence(block: &str, max: usize) -> Vec<String> {
-    let lines: Vec<&str> = block.lines().collect();
+    let first = block.lines().next().unwrap_or("");
+    let bare = first.trim_start_matches([' ', '>']);
+    let prefix = &first[..first.len() - bare.len()];
+    let indent = !prefix.contains('>');
+    let lines: Vec<&str> = block
+        .lines()
+        .map(|l| match indent {
+            true => l.strip_prefix(prefix).unwrap_or(l.trim_start_matches(' ')),
+            false => l,
+        })
+        .collect();
+    let prefix = if indent { "" } else { prefix };
     let open = lines[0];
-    let ticks = open.bytes().take_while(|b| *b == b'`').count();
-    let closed = lines.len() > 1
-        && lines[lines.len() - 1].trim().len() >= ticks
-        && lines[lines.len() - 1].trim().bytes().all(|b| b == b'`');
-    let close = &open[..ticks];
+    let ticks = bare.bytes().take_while(|b| *b == b'`').count();
+    let last = lines[lines.len() - 1]
+        .trim_start_matches([' ', '>'])
+        .trim_end();
+    let closed = lines.len() > 1 && last.len() >= ticks && last.bytes().all(|b| b == b'`');
+    // Its own closing line, or one as long as the opening fence.
+    let close = match closed {
+        true => lines[lines.len() - 1].to_string(),
+        false => format!("{prefix}{}", &bare[..ticks]),
+    };
     let body = &lines[1..lines.len() - usize::from(closed)];
-    let room = max.saturating_sub(chars(open) + chars(close) + 2);
+    let room = max.saturating_sub(chars(open) + chars(&close) + 2);
     if room == 0 {
         return split_text(block, max);
     }
@@ -341,12 +392,18 @@ fn rows(lines: &[&str], room: usize) -> Vec<Vec<String>> {
 /// sentence ends, then at spaces, and only then within a word.
 fn split_text(text: &str, max: usize) -> Vec<String> {
     let mut out = Vec::new();
-    split_at(text, max, 0, &mut out);
-    out
+    split_at(text.trim(), max, 0, &mut out);
+    // Trimmed only now: a piece carried on keeps the space or line break
+    // that separates it from the next.
+    out.into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
+/// `text` cut into pieces of at most `max` characters that, joined, are
+/// `text` again.
 fn split_at(text: &str, max: usize, level: usize, out: &mut Vec<String>) {
-    let text = text.trim();
     if text.is_empty() {
         return;
     }
@@ -378,8 +435,8 @@ fn split_at(text: &str, max: usize, level: usize, out: &mut Vec<String>) {
             len += n;
             continue;
         }
-        if !current.trim().is_empty() {
-            out.push(current.trim().to_string());
+        if !current.is_empty() {
+            out.push(current);
         }
         current = String::new();
         len = 0;
@@ -395,8 +452,8 @@ fn split_at(text: &str, max: usize, level: usize, out: &mut Vec<String>) {
             }
         }
     }
-    if !current.trim().is_empty() {
-        out.push(current.trim().to_string());
+    if !current.is_empty() {
+        out.push(current);
     }
 }
 
@@ -628,6 +685,113 @@ mod tests {
             },
         );
         assert_ne!(a[0].id, other[0].id, "and the page");
+    }
+
+    fn from_html(html: &str, max: usize, overlap: usize) -> Vec<Chunk> {
+        let doc = crate::Document::parse(html);
+        cut(&crate::markdown::markdown(doc.root(), None), max, overlap)
+    }
+
+    #[test]
+    fn a_cut_keeps_the_space_or_break_between_words() {
+        assert_eq!(
+            texts(&cut("aaaa bbbb cccc\nxy", 10, 0)),
+            ["aaaa bbbb", "cccc\nxy"]
+        );
+        assert_eq!(
+            texts(&cut("abcdefghijkl mn", 5, 0)),
+            ["abcde", "fghij", "kl mn"]
+        );
+    }
+
+    #[test]
+    fn a_code_block_in_a_list_item_is_cut_as_code() {
+        let got = from_html(
+            "<ol><li>Run:<pre>line one\nline two\nline three\nline four</pre></li></ol>",
+            25,
+            0,
+        );
+        assert_eq!(
+            texts(&got),
+            [
+                "1. Run:",
+                "```\nline one\nline two\n```",
+                "```\nline three\n```",
+                "```\nline four\n```"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_code_block_in_a_quotation_is_cut_as_code() {
+        let got = from_html(
+            "<blockquote><p>Said:</p><pre>aaaa\nbbbb\ncccc</pre></blockquote>",
+            25,
+            0,
+        );
+        assert_eq!(
+            texts(&got),
+            [
+                "> Said:",
+                "> ```\n> aaaa\n> bbbb\n> ```",
+                "> ```\n> cccc\n> ```"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_paragraph_starting_with_a_code_span_is_not_a_fence() {
+        let got = from_html(
+            "<p><code>a``b</code> starts</p><h1>Later</h1><p>body</p>",
+            1000,
+            0,
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[1].headings, ["Later"]);
+    }
+
+    #[test]
+    fn the_overlap_never_comes_from_a_fence_or_table() {
+        let got = cut(
+            "```\ncode code code\n```\n\nword word word word word",
+            40,
+            12,
+        );
+        assert!(got.iter().all(|c| !c.text.starts_with("code")), "{got:?}");
+        assert_eq!(texts(&got)[1], "word word word word word");
+    }
+
+    #[test]
+    fn a_paragraph_starting_with_a_pipe_is_not_a_table() {
+        let got = from_html(
+            "<p>| one<br>| two<br>| three<br>| four four four</p>",
+            20,
+            0,
+        );
+        assert!(
+            !got.iter()
+                .any(|c| c.text.matches("| one").count() > 0 && c.index > 0)
+        );
+        assert_eq!(
+            got.iter().filter(|c| c.text.contains("one")).count(),
+            1,
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_heading_that_doesnt_fit_beside_the_one_above_starts_its_own_chunk() {
+        let got = cut("# Alpha heading\n\n## Beta heading\n\ntext", 21, 0);
+        assert_eq!(texts(&got), ["# Alpha heading", "## Beta heading\n\ntext"]);
+        assert_eq!(got[0].headings, ["Alpha heading"]);
+        assert_eq!(got[1].headings, ["Alpha heading", "Beta heading"]);
+    }
+
+    #[test]
+    fn no_chunk_is_only_whitespace() {
+        for c in cut("aaaa\t\t\t\t\t\tbbbb", 4, 0) {
+            assert!(!c.text.trim().is_empty(), "{:?}", c.text);
+        }
     }
 
     #[test]

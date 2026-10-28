@@ -282,7 +282,8 @@ impl Field {
             other => return Value::Invalid(other.to_string_value()),
         };
         if let Convert::Chunks { main_only, options } = self.convert {
-            let chunks = crate::chunk::node_chunks(node, base, main_only, options);
+            let url = base.map_or("", Url::as_str);
+            let chunks = crate::chunk::node_chunks(node, base, url, main_only, options);
             return Value::Json(chunks.iter().map(|c| c.to_json(base)).collect());
         }
         let text = match self.convert {

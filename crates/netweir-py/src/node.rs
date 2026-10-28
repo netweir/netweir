@@ -863,12 +863,14 @@ impl Node {
     ) -> Vec<(String, String, Vec<String>)> {
         let (doc, id) = (self.doc.clone(), self.id);
         let base = base_url.and_then(|b| url::Url::parse(b).ok());
+        // The ids are made from the URL as given, even one that won't parse.
+        let url = base_url.unwrap_or("").to_string();
         py.detach(move || {
             let _reading = doc.read();
             // SAFETY: `id` belongs to `doc`.
             let node = unsafe { doc.node(id) };
             let options = netweir_dom::chunk::Options { max_chars, overlap };
-            netweir_dom::chunk::node_chunks(node, base.as_ref(), main_only, options)
+            netweir_dom::chunk::node_chunks(node, base.as_ref(), &url, main_only, options)
                 .into_iter()
                 .map(|c| (c.id, c.text, c.headings))
                 .collect()
