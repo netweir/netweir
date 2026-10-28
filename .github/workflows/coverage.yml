@@ -1,0 +1,86 @@
+name: coverage
+
+# How much of the code the tests run: the Rust crates, measured across
+# both suites (cargo's tests and the Python tests driving the extension),
+# and the Python package. On each push to main, and on a pull request
+# that changes this file, so a change to it is tried before it lands.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: [.github/workflows/coverage.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NETWEIR_REQUIRE_CHROME: "1"
+      NETWEIR_REQUIRE_REDIS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.14"
+      - run: uv sync --group dev
+      # As in ci.yml's test job.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends redis-server
+      - name: Run both suites on instrumented builds
+        run: |
+          # Every build below, the extension's included, writes profiles
+          # that cargo llvm-cov reads back.
+          eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo llvm-cov clean --workspace
+          uv run maturin develop --uv
+          uv run netweir install chrome
+          # A fresh runner's first Chrome start is the slow one (ci.yml).
+          uv run python -c 'import asyncio, netweir
+          async def start():
+              await (await netweir.browser(timeout=120)).close()
+          asyncio.run(start())'
+          cargo test --workspace --exclude netweir-py
+          uv run coverage run --source=netweir -m pytest -q
+          cargo llvm-cov report --summary-only | tee rust.txt
+          cargo llvm-cov report --lcov --output-path rust.lcov
+          uv run coverage report | tee python.txt
+          uv run coverage xml -o python.xml
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Rust"
+            echo '```'
+            tail -n 1 rust.txt
+            echo '```'
+            echo "## Python"
+            echo '```'
+            tail -n 1 python.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage
+          path: |
+            rust.txt
+            rust.lcov
+            python.txt
+            python.xml
