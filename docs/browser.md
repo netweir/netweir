@@ -269,15 +269,21 @@ await page.press("Backspace")
 Each modifier goes down in the order you name it, a moment apart, then
 the key, then they come up in reverse, so the page sees the same
 `keydown` and `keyup` events, `ctrlKey`, `shiftKey` and all, that a
-keyboard sends. `"+"` on its own is the plus key, and so is the last `+`
-of `"Shift++"`. A modifier or key Netweir doesn't know raises
-`ValueError` before anything is pressed.
+keyboard sends. They come up even if pressing the key fails. Shift with a
+digit or symbol types what's above it on a US keyboard, so
+`"Shift+1"` is `!`. Modifiers on their own, such as `"Shift"` or
+`"Control+Shift"`, are pressed and let go. `"+"` on its own is the plus
+key, and so is the last `+` of `"Shift++"`. Names are case-sensitive,
+and a modifier or key Netweir doesn't know raises `ValueError` before
+anything is pressed.
 
 In a text field, the editing shortcuts act as they do on the system the
 page says it's on: select all, deleting and moving a word at a time
 (`Control` off a Mac, `Alt` on one), to the start or end of the line or
 field (`Meta` and the arrows on a Mac, `Control+Home` and `Control+End`
-elsewhere), and with `Shift` held a move selects as it goes. Copy, cut
+elsewhere), and with `Shift` held a move selects as it goes. Undo is
+`ControlOrMeta+Z`, and redo is that with `Shift`, or `Control+Y` off a
+Mac. Copy, cut
 and paste don't work in headless Chrome.
 
 ## Scrolling, forms and frames

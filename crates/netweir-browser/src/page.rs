@@ -1689,13 +1689,36 @@ impl Page {
     /// Modifiers go before it, joined by "+": "Control+A", "Shift+Tab",
     /// "Meta+Shift+ArrowLeft". They're "Shift", "Control", "Alt", "Meta"
     /// and "ControlOrMeta", which is Meta on a page that says it's on a
-    /// Mac and Control elsewhere. Each goes down in turn, a moment apart,
-    /// and comes up in reverse after the key. "+" alone is the plus key,
-    /// as is the last "+" of "Shift++".
+    /// Mac and Control elsewhere, spelt just so. Each goes down in turn, a
+    /// moment apart, and comes up in reverse after the key, whatever
+    /// happened to it. Modifiers alone ("Shift", "Control+Shift") are
+    /// pressed and let go. "+" alone is the plus key, as is the last "+"
+    /// of "Shift++".
     pub async fn press(&self, keys: &str) -> Result<()> {
-        let (names, name) = split_keys(keys);
-        let mut k = Key::of(name)?;
-        if !names.is_empty() && k.code.is_empty() {
+        let (mut names, name) = split_keys(keys);
+        // A modifier on its own is pressed with the others, and no key.
+        let alone = modifier(name, false).is_some();
+        if alone {
+            names.push(name);
+        }
+        let mut k = if alone { None } else { Some(Key::of(name)?) };
+        for n in &names {
+            if n.is_empty() {
+                return Err(Error::Invalid(format!(
+                    "a modifier's name is missing in {keys:?}"
+                )));
+            }
+            if modifier(n, false).is_none() {
+                return Err(Error::Invalid(format!(
+                    "unknown modifier {n:?} in {keys:?} (names are case-sensitive: Shift, \
+                     Control, Alt, Meta, ControlOrMeta)"
+                )));
+            }
+        }
+        if let Some(k) = &k
+            && !names.is_empty()
+            && k.code.is_empty()
+        {
             return Err(Error::Invalid(format!(
                 "{keys:?}: {name} isn't on the keyboard, so nothing can be held with it"
             )));
@@ -1706,100 +1729,127 @@ impl Page {
             self.mac().await?
         };
         let mut held: Vec<Modifier> = Vec::new();
-        for n in names {
-            let m = modifier(n, mac)
-                .ok_or_else(|| Error::Invalid(format!("unknown modifier {n:?} in {keys:?}")))?;
+        for m in names.iter().filter_map(|n| modifier(n, mac)) {
             if !held.contains(&m) {
                 held.push(m);
             }
         }
         self.to_front().await?;
-        if held.is_empty()
-            && let (true, Some(text)) = (self.touches(), &k.text)
-            && k.key != "Enter"
+        if let Some(k) = &k
+            && held.is_empty()
         {
-            // A phone's on-screen keyboard tells the page nothing of the
-            // key: keydown and keyup are "Unidentified" with keyCode 229,
-            // there's no keypress, and the text comes as input.
-            let unknown = |kind: &str| json!({"type": kind, "key": "Unidentified", "code": "", "windowsVirtualKeyCode": 229});
-            self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
-                .await?;
-            self.call("Input.insertText", json!({"text": text})).await?;
-            tokio::time::sleep(crate::events::key_hold()).await;
-            self.call("Input.dispatchKeyEvent", unknown("keyUp"))
-                .await?;
-            return Ok(());
+            if let (true, Some(text)) = (self.touches(), &k.text)
+                && k.key != "Enter"
+            {
+                // A phone's on-screen keyboard tells the page nothing of
+                // the key: keydown and keyup are "Unidentified" with
+                // keyCode 229, there's no keypress, and the text comes as
+                // input.
+                let unknown = |kind: &str| json!({"type": kind, "key": "Unidentified", "code": "", "windowsVirtualKeyCode": 229});
+                self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
+                    .await?;
+                self.call("Input.insertText", json!({"text": text})).await?;
+                tokio::time::sleep(crate::events::key_hold()).await;
+                self.call("Input.dispatchKeyEvent", unknown("keyUp"))
+                    .await?;
+                return Ok(());
+            }
+            if k.code.is_empty()
+                && let Some(text) = &k.text
+            {
+                // Not on the keyboard (an é on a US layout): it comes the
+                // way an OS's character picker sends it, as text with no
+                // key.
+                self.call("Input.insertText", json!({"text": text})).await?;
+                return Ok(());
+            }
         }
-        if k.code.is_empty()
-            && let Some(text) = &k.text
+        let shift = held.contains(&SHIFT_KEY);
+        if let Some(k) = &mut k
+            && !held.is_empty()
         {
-            // Not on the keyboard (an é on a US layout): it comes the way
-            // an OS's character picker sends it, as text with no key.
-            self.call("Input.insertText", json!({"text": text})).await?;
-            return Ok(());
-        }
-        if !held.is_empty() && k.code.starts_with("Key") {
-            // A letter held with others is its key, a capital only with
-            // Shift: Control-A is "a", as a keyboard sends it.
-            let shift = held.contains(&SHIFT_KEY);
-            k.key = if shift {
-                k.key.to_ascii_uppercase()
-            } else {
-                k.key.to_ascii_lowercase()
-            };
-            k.text = Some(k.key.clone());
-            k.shift = false;
+            if k.code.starts_with("Key") {
+                // A letter held with others is its key, a capital only
+                // with Shift: Control-A is "a", as a keyboard sends it.
+                k.key = if shift {
+                    k.key.to_ascii_uppercase()
+                } else {
+                    k.key.to_ascii_lowercase()
+                };
+                k.text = Some(k.key.clone());
+                k.shift = false;
+            } else if shift
+                && !k.shift
+                && let Some(above) = shifted(&k.code)
+            {
+                // Shift-1 is "!", as on a US keyboard.
+                k.key = above.to_string();
+                k.text = Some(k.key.clone());
+            }
         }
         // A symbol typed with Shift on a US keyboard ("!", "+") gets it.
-        if k.shift && !held.contains(&SHIFT_KEY) {
+        if k.as_ref().is_some_and(|k| k.shift) && !shift {
             held.push(SHIFT_KEY);
         }
-        let mut modifiers = 0;
-        for m in &held {
-            modifiers |= m.3;
+        let mut down = 0;
+        let pressed = async {
+            let mut modifiers = 0;
+            for m in &held {
+                modifiers |= m.3;
+                self.call(
+                    "Input.dispatchKeyEvent",
+                    modifier_event(m, "rawKeyDown", modifiers),
+                )
+                .await?;
+                down += 1;
+                tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+            }
+            let Some(mut k) = k else {
+                tokio::time::sleep(crate::events::key_hold()).await;
+                return Ok(());
+            };
+            // Held with Control, Alt or Meta, a key types nothing.
+            if modifiers & !SHIFT != 0 {
+                k.text = None;
+            }
+            let mut key_down = json!({
+                "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
+                "key": k.key,
+                "code": k.code,
+                "windowsVirtualKeyCode": k.key_code,
+                "modifiers": modifiers,
+            });
+            if let Some(text) = &k.text {
+                key_down["text"] = Value::from(text.as_str());
+                key_down["unmodifiedText"] = Value::from(text.as_str());
+            }
+            if let Some(command) = edit_command(mac, modifiers, &k.key) {
+                key_down["commands"] = json!([command]);
+            }
+            self.call("Input.dispatchKeyEvent", key_down).await?;
+            // Held as a person holds a key, not let go in the same instant.
+            tokio::time::sleep(crate::events::key_hold()).await;
             self.call(
                 "Input.dispatchKeyEvent",
-                modifier_event(m, "rawKeyDown", modifiers),
+                json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
             )
             .await?;
+            Ok(())
+        }
+        .await;
+        // Let go of what went down, even after a failure: a modifier left
+        // held would change every key and click after.
+        for i in (0..down).rev() {
             tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+            let modifiers = held[..i].iter().fold(0, |flags, m| flags | m.3);
+            let _ = self
+                .call(
+                    "Input.dispatchKeyEvent",
+                    modifier_event(&held[i], "keyUp", modifiers),
+                )
+                .await;
         }
-        // Held with Control, Alt or Meta, a key types nothing.
-        if modifiers & !SHIFT != 0 {
-            k.text = None;
-        }
-        let mut down = json!({
-            "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
-            "key": k.key,
-            "code": k.code,
-            "windowsVirtualKeyCode": k.key_code,
-            "modifiers": modifiers,
-        });
-        if let Some(text) = &k.text {
-            down["text"] = Value::from(text.as_str());
-            down["unmodifiedText"] = Value::from(text.as_str());
-        }
-        if let Some(command) = edit_command(mac, modifiers, &k.key) {
-            down["commands"] = json!([command]);
-        }
-        self.call("Input.dispatchKeyEvent", down).await?;
-        // Held as a person holds a key, not let go in the same instant.
-        tokio::time::sleep(crate::events::key_hold()).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
-        )
-        .await?;
-        for m in held.iter().rev() {
-            tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-            modifiers &= !m.3;
-            self.call(
-                "Input.dispatchKeyEvent",
-                modifier_event(m, "keyUp", modifiers),
-            )
-            .await?;
-        }
-        Ok(())
+        pressed
     }
 
     /// Whether the page says it's on a Mac (or an iPhone), where Command
@@ -3203,6 +3253,11 @@ fn modifier_event(m: &Modifier, kind: &str, modifiers: u32) -> Value {
     json!({"type": kind, "key": m.0, "code": m.1, "windowsVirtualKeyCode": m.2, "modifiers": modifiers})
 }
 
+/// The character Shift types on the key `code` of a US keyboard.
+fn shifted(code: &str) -> Option<char> {
+    (' '..='~').find(|&c| us_layout(c).is_some_and(|(at, _, shift)| shift && at == code))
+}
+
 /// "Control+Shift+a" as its modifiers' names and its key's. A "+" at
 /// the end is the plus key, alone or after another "+".
 fn split_keys(keys: &str) -> (Vec<&str>, &str) {
@@ -3226,6 +3281,15 @@ fn split_keys(keys: &str) -> (Vec<&str>, &str) {
 /// cancels the keydown cancels the command too. Shift alone and plain
 /// keys Chrome handles itself; copy, cut and paste never work headless.
 fn edit_command(mac: bool, modifiers: u32, key: &str) -> Option<String> {
+    // Undo is Control-Z, or Command-Z on a Mac; redo is that with Shift,
+    // or Control-Y off a Mac.
+    let primary = if mac { META } else { CONTROL };
+    match key {
+        "z" if modifiers == primary => return Some("undo".into()),
+        "Z" if modifiers == primary | SHIFT => return Some("redo".into()),
+        "y" if !mac && modifiers == CONTROL => return Some("redo".into()),
+        _ => {}
+    }
     let shift = modifiers & SHIFT != 0;
     let (command, selects) = match (mac, modifiers & !SHIFT, key) {
         (true, META, "a") | (false, CONTROL, "a") => ("selectAll", false),

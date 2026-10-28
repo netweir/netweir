@@ -1415,6 +1415,8 @@ async fn an_unknown_modifier_or_key_is_refused_before_anything_is_pressed() {
         ("Control+Nope", "unknown key \"Nope\""),
         ("Control+", "unknown key \"\""),
         ("Shift+é", "isn't on the keyboard"),
+        ("++", "a modifier's name is missing"),
+        ("shift+a", "names are case-sensitive"),
     ] {
         let err = page.press(keys).await.unwrap_err();
         assert!(
@@ -1535,5 +1537,88 @@ async fn drag_moves_a_handle_that_follows_the_mouse() {
         json!([0, true, 1]),
         "the handle's centre is on the mark's"
     );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn shift_with_a_digit_or_symbol_presses_the_character_above_it() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    for keys in ["Shift+1", "Shift+/", "Shift+="] {
+        page.press(keys).await.unwrap();
+    }
+    assert_eq!(
+        page.evaluate("document.querySelector('#a').value")
+            .await
+            .unwrap(),
+        json!("!?+")
+    );
+    assert_eq!(
+        page.evaluate("heard[1]").await.unwrap(),
+        json!("keydown ! S")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn modifiers_alone_are_pressed_and_released() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Shift").await.unwrap();
+    page.press("Control+Shift").await.unwrap();
+    assert_eq!(
+        page.evaluate("heard").await.unwrap(),
+        json!([
+            "keydown Shift S",
+            "keyup Shift ",
+            "keydown Control C",
+            "keydown Shift CS",
+            "keyup Shift C",
+            "keyup Control ",
+        ])
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn undo_and_redo_take_back_typing_on_each_system() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let value = "document.querySelector('#a').value";
+    for (system, redo) in [
+        ("Windows", "Control+Y"),
+        ("Windows", "Control+Shift+Z"),
+        ("Mac", "Meta+Shift+Z"),
+    ] {
+        let page = page_on(&browser, system).await;
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        page.type_text(
+            "#a",
+            "abc",
+            (Duration::from_millis(5), Duration::from_millis(10)),
+            None,
+        )
+        .await
+        .unwrap();
+        page.press("ControlOrMeta+Z").await.unwrap();
+        assert_eq!(page.evaluate(value).await.unwrap(), json!(""), "{system}");
+        page.press(redo).await.unwrap();
+        assert_eq!(page.evaluate(value).await.unwrap(), json!("abc"), "{redo}");
+        page.close().await.unwrap();
+    }
     browser.close().await.unwrap();
 }
