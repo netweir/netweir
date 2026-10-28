@@ -994,7 +994,14 @@ fn many_classless_posts_are_quick() {
         None,
         Civil::date(2026, 10, 25),
     );
-    assert!(start.elapsed().as_secs_f64() < 6.0, "{:?}", start.elapsed());
+    // Linear: 2.5 s in a debug build on a laptop, half that for half the
+    // posts, and three times that on a busy CI runner. Quadratic work on
+    // 20,000 posts would take minutes.
+    assert!(
+        start.elapsed().as_secs_f64() < 15.0,
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
