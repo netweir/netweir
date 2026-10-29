@@ -1657,11 +1657,12 @@ async fn a_drag_cut_short_is_cancelled_not_left_hanging() {
     let Some(executable) = common::chrome() else {
         return;
     };
-    // Chrome's answers wait a second at most, so a page that stops
-    // answering fails the drag partway.
+    // Chrome's answers wait 5 s at most, so a page that stops answering
+    // for longer fails the drag partway. A launch keeps to the same limit,
+    // and a loaded macOS runner's Chrome has missed a 1 s one three times.
     let browser = common::launch(LaunchOptions {
         executable: Some(executable),
-        timeout: Duration::from_secs(1),
+        timeout: Duration::from_secs(5),
         ..Default::default()
     })
     .await;
@@ -1679,7 +1680,7 @@ async fn a_drag_cut_short_is_cancelled_not_left_hanging() {
   let busy = true;
   bin.ondragenter = e => {
     e.preventDefault();
-    if (busy) { busy = false; const end = Date.now() + 2500; while (Date.now() < end); }
+    if (busy) { busy = false; const end = Date.now() + 8000; while (Date.now() < end); }
   };
   bin.ondragover = e => e.preventDefault();
   bin.ondrop = e => { e.preventDefault(); seen.push('drop'); };
@@ -1689,12 +1690,12 @@ async fn a_drag_cut_short_is_cancelled_not_left_hanging() {
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
     let err = page
-        .drag("#item", "#bin", Some(Duration::from_secs(10)))
+        .drag("#item", "#bin", Some(Duration::from_secs(30)))
         .await
         .unwrap_err();
     assert!(matches!(&err, Error::Timeout(_)), "{err}");
     // Once the page answers again, the drag is called off: no drop.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         let seen = page.evaluate("seen").await;
         if let Ok(seen) = &seen

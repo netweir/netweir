@@ -55,6 +55,19 @@ A bug fix comes with the test that would have caught it. A new feature
 comes with tests and, if you can use it from Python, a line in
 [docs/](docs/README.md).
 
+## Reproducing a release
+
+Two builds of the same commit give the same wheel, byte for byte, once
+their timestamps are pinned to the commit's, as the release workflow
+does:
+
+```
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) uv run maturin build --release
+```
+
+Build on the same platform and Rust toolchain as the release you're
+checking.
+
 ## The one hard rule: write it yourself
 
 Netweir is clean-room. Please don't copy code, or translate it line by line,
