@@ -56,6 +56,8 @@ class Post(netweir.Item):
     body = netweir.markdown(main_only=True)
 ```
 
+`netweir.page_url()` holds the URL of the page the item was read from.
+
 `netweir.chunks(query)` holds the element's Markdown cut into chunks for
 retrieval, as `page.chunks()` cuts it, a dict per chunk; it takes the
 same `max_chars`, `overlap` and `main_only` (on by default).

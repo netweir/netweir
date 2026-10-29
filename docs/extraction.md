@@ -248,6 +248,14 @@ extracts the items it lists. No selectors, and no Python per page.
 Every strategy stays on the start URLs' sites. The usual settings stop
 it sooner: `-s max_pages=500`, `-s max_items=1000`, `-s max_depth=4`.
 
+`netweir crawl docs --url https://example.com/docs/ -o docs.jsonl` is the
+one for retrieval: a line per page with its URL, its title and its main
+content in chunks (see [chunks](selecting.md#chunks-for-retrieval)). It
+follows every link under the start URL's path, `/docs` or `/docs/`, so it
+reads the docs and not the blog beside them. A start URL naming a file,
+such as `/docs/index.html`, stays under its directory. `--strategy full` takes the whole site, and
+`direct_item` only the start URLs.
+
 They're Spiders, so you can subclass one, for instance to pin a field
 the site gets wrong:
 
