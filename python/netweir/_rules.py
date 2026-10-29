@@ -121,6 +121,11 @@ def clean_text(
     return Field("css", query or ":root", None, None, all, False, default, None, convert)
 
 
+def page_url() -> Field:
+    """A field holding the URL of the page the item was read from."""
+    return Field("css", ":root", None, None, False, False, None, None, "page_url")
+
+
 def chunks(
     query: str | None = None,
     *,

@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     crawl.add_argument(
         "file",
         help="a Python file defining a Spider subclass, a spider's name in a project, "
-        "or a template: ecommerce, article or job",
+        "or a template: ecommerce, article, job or docs",
     )
     crawl.add_argument(
         "--url",
@@ -617,7 +617,7 @@ def _prepare(args):
     if template is not None and not args.url:
         raise _Usage(f"the {args.file} template needs --url: where to start")
     if template is None and (args.url or args.strategy):
-        raise _Usage("--url and --strategy go with a template: ecommerce, article or job")
+        raise _Usage("--url and --strategy go with a template: ecommerce, article, job or docs")
     fields = {f.name: f for f in dataclasses.fields(Settings)}
     overrides = dict(_parse_setting(s, fields) for s in args.set)
     _login_from_environment(spider_cls.settings, overrides, fields)
