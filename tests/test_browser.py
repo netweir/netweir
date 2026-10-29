@@ -273,6 +273,44 @@ async def test_actions_wait_and_evaluate_returns_python_values(browser, base):
     assert page.closed
 
 
+async def test_going_back_forward_and_reloading_return_responses(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.goto(base + "/missing")
+        back = await page.go_back()
+        assert (back.status, back.url) == (200, base + "/")
+        forward = await page.go_forward(wait="domcontentloaded", timeout=10)
+        assert (forward.status, forward.url) == (404, base + "/missing")
+        assert await page.go_forward() is None
+        again = await page.reload()
+        assert (again.status, again.url) == (404, base + "/missing")
+
+
+async def test_press_holds_the_modifiers_named_before_the_key(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.fill("#q", "scones")
+        await page.press("ControlOrMeta+A")
+        await page.press("Backspace")
+        assert await page.evaluate("document.querySelector('#q').value") == ""
+        with pytest.raises(ValueError, match="unknown modifier"):
+            await page.press("Hyper+a")
+
+
+async def test_drag_drops_one_element_onto_another(browser, base):
+    async with await browser.new_page() as page:
+        await page.goto(base + "/")
+        await page.evaluate("""() => {
+            document.body.insertAdjacentHTML('beforeend',
+                '<div id=item draggable=true>item</div><div id=bin style="height: 50px">bin</div>');
+            item.ondragstart = e => e.dataTransfer.setData('text/plain', 'item');
+            bin.ondragover = e => e.preventDefault();
+            bin.ondrop = e => { e.preventDefault(); window.dropped = e.dataTransfer.getData('text/plain'); };
+        }""")
+        await page.drag("#item", "#bin")
+        assert await page.evaluate("window.dropped") == "item"
+
+
 async def test_failures_raise_what_they_are(browser, base):
     page = await browser.new_page()
     await page.goto(base + "/")

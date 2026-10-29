@@ -28,6 +28,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+      # The commit's time, for the wheel's timestamps and SBOM: two builds
+      # of one commit then give the same wheel, byte for byte.
+      - name: Pin build timestamps to the commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - name: One wheel for Python 3.11 and later, one for free-threaded 3.14
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
@@ -35,6 +40,7 @@ jobs:
           manylinux: "2_28"
           # BoringSSL builds with CMake.
           before-script-linux: dnf install -y cmake perl-IPC-Cmd clang
+          docker-options: -e SOURCE_DATE_EPOCH
           args: --release --out dist -i python3.11 -i python3.14t
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -51,6 +57,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+      # The commit's time, for the wheel's timestamps and SBOM: two builds
+      # of one commit then give the same wheel, byte for byte.
+      - name: Pin build timestamps to the commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: |
@@ -71,6 +82,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+      # The commit's time, for the wheel's timestamps and SBOM: two builds
+      # of one commit then give the same wheel, byte for byte.
+      - name: Pin build timestamps to the commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: |
@@ -91,6 +107,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+      # The commit's time, for the wheel's timestamps and SBOM: two builds
+      # of one commit then give the same wheel, byte for byte.
+      - name: Pin build timestamps to the commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist

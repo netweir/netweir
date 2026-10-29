@@ -5,6 +5,7 @@
 - [Selecting](selecting.md): CSS, XPath and Beautiful Soup style queries; changing the page; elements like one you found; JMESPath over JSON; structured data, articles, Markdown and chunks for retrieval, prices, dates and the data in scripts.
 - [XML, feeds and CSV](xml.md): XML responses, namespaces, the limits on hostile XML, XMLFeedSpider and CSVFeedSpider.
 - [Auto-extraction](extraction.md): products, listings, job postings and articles read without selectors, in the common item schema, with one wrong field pinned by a selector.
+- [Fields a language model reads](llm.md): `netweir.llm.extract`, for pages no auto-extraction type covers: describe the fields, and Claude reads them.
 - [Item loaders](loaders.md): filling items as Scrapy's loaders do, with input and output processors.
 - [Trying a page](shell.md): the page Netweir gets, on stdout, in your browser or at a Python prompt.
 - [Projects](project.md): `startproject`, `genspider`, `list`, `parse`, `check` (Scrapy's contracts) and `version`.

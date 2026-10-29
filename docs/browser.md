@@ -208,6 +208,26 @@ await page.click("a.next")
 response = await moved
 ```
 
+`await page.go_back()` and `await page.go_forward()` move through the
+page's history as the browser's buttons do, taking the same `wait=` and
+`timeout=` as `goto()`. Each returns the response of the document it
+lands on, or `None` when there's nowhere to go; a new page's history
+starts at the blank page it opened on. Chrome keeps a page you left whole
+for a while (its back-forward cache), and going back to it shows it again
+without loading it: you get the response it first had, and its scripts
+carry on where they were. An entry a script made with `history.pushState`,
+or a `#fragment`, loads nothing either, so its response has that entry's
+`url` and a `status` of 0. `await page.reload()` loads the page again and
+returns its new response.
+
+A page that can't be loaded again raises `netweir.FetchError`, as
+`goto()` does: its server has gone, say, or it was the answer to a form
+you sent, which Chrome won't send twice without asking
+(`net::ERR_CACHE_MISS`). If the entry's answer is a download, or the
+page you're leaving asks whether you really want to go and your dialog
+listener says to stay or doesn't answer, nothing loads, and you get
+`netweir.BrowserTimeout` once the time runs out.
+
 ## Acting on the page
 
 | Method | Does |
@@ -216,9 +236,10 @@ response = await moved
 | `dblclick(selector)` | double-clicks it the same way |
 | `fill(selector, text)` | replaces what's in a field with `text` in one go, as pasting would |
 | `type(selector, text, delay=None)` | clicks the field and replaces what's in it by typing `text` a key at a time, each held for a person's time, Shift and all; between keys a pause within `delay` (seconds, or a `(least, most)` pair; 0.08 to 0.25 by default). See [Typing](steps.md#typing) |
-| `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` |
+| `press(key)` | presses a key: a character, or `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`, the arrows, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`. Hold modifiers with it by naming them first, joined with `+`: `"Shift+Tab"`, `"Control+A"`, `"Meta+Shift+ArrowLeft"`. See [Keyboard shortcuts](#keyboard-shortcuts) |
 | `wait_for(selector, state="visible")` | waits until the element is `"attached"`, `"visible"`, `"hidden"` or `"detached"` |
 | `hover(selector)` | moves the mouse over the element |
+| `drag(source, target)` | drags one element onto another with the mouse. See [Dragging](#dragging) |
 | `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
 
 Selectors are CSS, or XPath after `xpath=` (`page.click("xpath=//button[2]")`).
@@ -231,6 +252,39 @@ visible, enabled field that isn't read-only.
 If the time runs out, `netweir.BrowserTimeout` (a `TimeoutError`) says
 which of those never happened, such as "something else was always at its
 centre, covering it". Each method takes `timeout=` in seconds.
+
+### Keyboard shortcuts
+
+The modifiers are `Shift`, `Control`, `Alt` and `Meta` (Command on a
+Mac), and `ControlOrMeta`, which is Meta when the page says it's on a Mac
+and Control anywhere else. That's the one to use for the shortcuts that
+differ, so your script works whatever system your pages say they're on:
+
+```python
+await page.click("#notes")
+await page.press("ControlOrMeta+A")
+await page.press("Backspace")
+```
+
+Each modifier goes down in the order you name it, a moment apart, then
+the key, then they come up in reverse, so the page sees the same
+`keydown` and `keyup` events, `ctrlKey`, `shiftKey` and all, that a
+keyboard sends. They come up even if pressing the key fails. Shift with a
+digit or symbol types what's above it on a US keyboard, so
+`"Shift+1"` is `!`. Modifiers on their own, such as `"Shift"` or
+`"Control+Shift"`, are pressed and let go. `"+"` on its own is the plus
+key, and so is the last `+` of `"Shift++"`. Names are case-sensitive,
+and a modifier or key Netweir doesn't know raises `ValueError` before
+anything is pressed.
+
+In a text field, the editing shortcuts act as they do on the system the
+page says it's on: select all, deleting and moving a word at a time
+(`Control` off a Mac, `Alt` on one), to the start or end of the line or
+field (`Meta` and the arrows on a Mac, `Control+Home` and `Control+End`
+elsewhere), and with `Shift` held a move selects as it goes. Undo is
+`ControlOrMeta+Z`, and redo is that with `Shift`, or `Control+Y` off a
+Mac. Copy, cut
+and paste don't work in headless Chrome.
 
 ## Scrolling, forms and frames
 
@@ -342,6 +396,29 @@ input. With `connect`, the paths are read on the machine Chrome runs on.
 `hover(selector)` moves the mouse over the element, for menus and
 tooltips that only appear on `:hover` or `mouseover`.
 
+### Dragging
+
+`drag(source, target)` presses the mouse on the middle of `source`, moves
+it a step at a time to the middle of `target` and lets go:
+
+```python
+await page.drag("#card-7", "#column-done")
+```
+
+That works for both kinds of drag a page can have. Sliders, sortable
+lists and map panning follow the mouse itself, and see `mousedown`, a
+run of `mousemove` and `mouseup`. An element with `draggable=true` makes
+an HTML5 drag and drop instead, and the page sees `dragstart`,
+`dragenter`, `dragover`, `drop` and `dragend`, with whatever the page put
+in `dataTransfer` there to read on the drop. `source` must be visible,
+still and not covered, as for a click; `target` must be visible and
+still. Both have to show in the window at once, since a held mouse can't
+scroll the page: if they don't, `drag` raises `ValueError` before
+pressing anything, and you can scroll or make the window bigger. If a
+drag fails partway, it's called off and the button let go, so the page
+isn't left mid-drag. A phone's page has no mouse, so `drag` raises
+`ValueError` there too.
+
 ### Frames
 
 Selectors only look inside the document they run in, so an element in an
@@ -360,8 +437,8 @@ for frame in await page.frames():
 finds the first with that `name`, a `url` matching a glob or compiled
 regex, or both, and gives `None` if there isn't one. A frame has the
 methods a page uses to read and act: `content`, `parse`, `title`,
-`evaluate`, `click`, `fill`, `hover`, `scroll`, `select_option`, `check`,
-`uncheck`, `set_input_files` and `wait_for`. Keys go wherever focus is,
+`evaluate`, `click`, `fill`, `hover`, `drag`, `scroll`, `select_option`,
+`check`, `uncheck`, `set_input_files` and `wait_for`. Keys go wherever focus is,
 so after `frame.fill(...)`, `page.press("Enter")` presses Enter in the
 frame. Frames from other sites, which Chrome runs in processes of their
 own, work the same way.
@@ -463,7 +540,7 @@ Listeners don't carry over: add them to the popup. Closing a page from
 
 A new tab opens in front, and Chrome counts the tab it was opened from
 as hidden, as in a window you're looking at. When you act on the opener
-again (`click`, `fill`, `press`, `hover`, `scroll`, `check`,
+again (`click`, `fill`, `press`, `hover`, `drag`, `scroll`, `check`,
 `select_option`, `set_input_files`), or wait on it (`wait_for`,
 `wait_for_navigation`, `wait_for_load`), Netweir brings its tab back to
 the front first, and pauses a moment, as you would.
