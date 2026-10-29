@@ -78,6 +78,22 @@ pub struct Response {
     pub resource_type: String,
 }
 
+impl Response {
+    /// A document's response when there was no HTTP one.
+    fn bare(url: String, loader: String) -> Response {
+        Response {
+            url,
+            status: 0,
+            headers: Vec::new(),
+            loader,
+            request_id: String::new(),
+            session: String::new(),
+            method: "GET".into(),
+            resource_type: "document".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cookie {
     pub name: String,
@@ -289,6 +305,36 @@ pub(crate) struct State {
     pub(crate) loader: String,
     /// Loaders in the order their documents were committed.
     committed: Vec<String>,
+    /// How many times the main frame has committed a document or moved
+    /// within one, so a wait can tell a navigation that says nothing of
+    /// itself (back, forward, reload) has happened.
+    navigations: u64,
+    /// Whether the last of those stayed within the document (pushState,
+    /// a #fragment).
+    within: bool,
+    /// The last document that came back whole from the back-forward
+    /// cache, with its old loader, and the count of navigations then.
+    /// Loaded already, it fires no load events again.
+    restored: (u64, String),
+    /// The count of navigations when the main frame last moved within
+    /// its document.
+    moved_within: u64,
+    /// The navigations the main frame has started, newest last, as
+    /// a recent Chrome tells of them (Page.frameStartedNavigating): each
+    /// tells which kind it is, which a navigation started by
+    /// a command that doesn't say (back, forward, reload) is known by.
+    starts: Vec<Start>,
+    /// How many of those there have been.
+    started: u64,
+    /// The URLs of documents that couldn't be loaded, whose loader
+    /// committed Chrome's error page instead, by loader.
+    unreachable: HashMap<String, String>,
+    /// Why documents failed to load, by request id, which for a
+    /// document is its loader's.
+    failures: HashMap<String, String>,
+    /// What an HTML5 drag the page began carries, once Chrome has handed
+    /// the drag over (`Input.setInterceptDrags`).
+    dragging: Option<Value>,
     /// Lifecycle events seen, by loader.
     events: HashMap<String, Vec<String>>,
     responses: HashMap<String, Response>,
@@ -313,6 +359,18 @@ pub(crate) struct State {
     /// those whose localStorage a storage state reads. Shared by a
     /// context's pages.
     pub(crate) origins: Origins,
+}
+
+/// A navigation Chrome started in the main frame.
+#[derive(Clone)]
+struct Start {
+    /// Its number among them, from 1.
+    number: u64,
+    /// "differentDocument", "historySameDocument", "reload" and so on.
+    kind: String,
+    loader: String,
+    /// The count of navigations when it started.
+    navigations: u64,
 }
 
 /// How far one notch of a mouse wheel scrolls, in pixels: 100 on Windows
@@ -349,11 +407,38 @@ impl State {
                 self.frame = str_of(frame, "id");
                 self.url = str_of(frame, "url");
                 self.loader = str_of(frame, "loaderId");
+                self.navigations += 1;
+                self.within = false;
+                if p["type"] == "BackForwardCacheRestore" {
+                    self.restored = (self.navigations, self.loader.clone());
+                }
+                if let Some(url) = frame["unreachableUrl"].as_str() {
+                    self.unreachable
+                        .insert(self.loader.clone(), url.to_string());
+                }
+                // A document back from the cache comes with its old loader:
+                // it's the newest again, not a second copy.
+                self.committed.retain(|l| *l != self.loader);
                 self.committed.push(self.loader.clone());
                 if self.committed.len() > KEPT {
                     let old = self.committed.remove(0);
                     self.events.remove(&old);
                     self.responses.remove(&old);
+                    self.unreachable.remove(&old);
+                }
+            }
+            "Page.frameStartedNavigating"
+                if self.frame.is_empty() || p["frameId"] == self.frame.as_str() =>
+            {
+                self.started += 1;
+                self.starts.push(Start {
+                    number: self.started,
+                    kind: str_of(p, "navigationType"),
+                    loader: str_of(p, "loaderId"),
+                    navigations: self.navigations,
+                });
+                if self.starts.len() > KEPT {
+                    self.starts.remove(0);
                 }
             }
             // A frame committing here is in the page's process now: any
@@ -369,6 +454,9 @@ impl State {
             }
             "Page.navigatedWithinDocument" if p["frameId"] == self.frame.as_str() => {
                 self.url = str_of(p, "url");
+                self.navigations += 1;
+                self.within = true;
+                self.moved_within = self.navigations;
             }
             "Network.requestWillBeSent" => {
                 let id = str_of(p, "requestId");
@@ -379,6 +467,15 @@ impl State {
                 self.loading
                     .insert((session.to_string(), id), request.method.clone());
                 self.tell(PageEvent::Request(request));
+            }
+            "Network.loadingFailed" if p["type"] == "Document" => {
+                if self.failures.len() >= KEPT {
+                    self.failures.clear();
+                }
+                self.failures
+                    .insert(str_of(p, "requestId"), str_of(p, "errorText"));
+                self.loading
+                    .remove(&(session.to_string(), str_of(p, "requestId")));
             }
             "Network.loadingFinished" | "Network.loadingFailed" => {
                 self.loading
@@ -414,6 +511,7 @@ impl State {
                 }
                 self.tell(PageEvent::Response(response));
             }
+            "Input.dragIntercepted" => self.dragging = Some(p["data"].clone()),
             "Inspector.targetCrashed" | GONE => {
                 self.gone = true;
                 // Listeners hear there's nothing more: their receivers end.
@@ -974,26 +1072,198 @@ impl Page {
                 .await;
                 continue;
             }
-            return Err(Error::Navigation {
-                url: url.to_string(),
-                error: e.to_string(),
-                // Chrome doesn't say why it gave up on a navigation; its
-                // stderr sometimes does.
-                said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
-            });
+            return Err(self.navigation_error(url, e));
         };
-        let Some(loader) = r["loaderId"].as_str().map(str::to_string) else {
+        let Some(loader) = r["loaderId"].as_str() else {
             // Within the same document (a #fragment): nothing to wait for.
             return Ok(self.response_for(None));
         };
+        self.loaded(loader, wait, deadline, url).await
+    }
+
+    /// Waits until `loader`'s navigation to `url`, or one that replaced
+    /// it, reaches `wait`, and returns its response.
+    async fn loaded(
+        &self,
+        loader: &str,
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
         let event = wait.event();
         self.until(
             || format!("{event} of {url}"),
             deadline.saturating_duration_since(Instant::now()),
-            |s| s.reached(&loader, event),
+            |s| s.reached(loader, event),
         )
         .await?;
-        Ok(self.response_for(Some(&loader)))
+        Ok(self.response_for(Some(loader)))
+    }
+
+    /// Goes back one entry in the page's history, as the back button
+    /// does, and waits for `wait`. None when there's nothing to go back
+    /// to. See [`Page::go_forward`] for what it returns.
+    pub async fn go_back(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        self.go_by(-1, wait, timeout).await
+    }
+
+    /// Goes forward one entry in the page's history and waits for `wait`.
+    /// None when there's nothing to go forward to. A document Chrome kept
+    /// whole in its back-forward cache comes back without loading again
+    /// or firing its lifecycle events, so it's returned once it shows,
+    /// with the response it first had. An entry within the same document
+    /// (pushState, a #fragment) loads nothing: its response has the
+    /// entry's URL and status 0.
+    pub async fn go_forward(
+        &self,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        self.go_by(1, wait, timeout).await
+    }
+
+    async fn go_by(
+        &self,
+        by: i64,
+        wait: WaitUntil,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Response>> {
+        let deadline = self.deadline(timeout);
+        let history = self.call("Page.getNavigationHistory", json!({})).await?;
+        let at = history["currentIndex"].as_i64().unwrap_or(0) + by;
+        let Some(entry) = usize::try_from(at)
+            .ok()
+            .and_then(|at| history["entries"].get(at))
+        else {
+            return Ok(None);
+        };
+        let go = self.call(
+            "Page.navigateToHistoryEntry",
+            json!({"entryId": entry["id"]}),
+        );
+        let url = str_of(entry, "url");
+        let kinds = ["historyDifferentDocument", "historySameDocument"];
+        self.navigated(go, &kinds, wait, deadline, &url)
+            .await
+            .map(Some)
+    }
+
+    /// Loads the document again, as the reload button does, and waits
+    /// for `wait`.
+    pub async fn reload(&self, wait: WaitUntil, timeout: Option<Duration>) -> Result<Response> {
+        let deadline = self.deadline(timeout);
+        let url = self.url();
+        let go = self.call("Page.reload", json!({}));
+        self.navigated(go, &["reload"], wait, deadline, &url).await
+    }
+
+    /// Sends `go`, a command that starts a navigation but, unlike
+    /// Page.navigate, doesn't say which, then waits for the one Chrome
+    /// starts of one of `kinds` and returns as [`Page::go_forward`] says.
+    /// A navigation the page's own script started is no match. A
+    /// document Chrome couldn't load is [`Error::Navigation`], as with
+    /// [`Page::goto`].
+    async fn navigated(
+        &self,
+        go: impl Future<Output = Result<Value>>,
+        kinds: &[&str],
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
+        let (before, started) = {
+            let s = self.state();
+            (s.navigations, s.started)
+        };
+        go.await?;
+        let what = || {
+            format!(
+                "a navigation to {url} (Chrome may not have committed one: the answer was a \
+                 204 or a download, or the page asked before being left)"
+            )
+        };
+        let ours = |s: &State| {
+            s.starts
+                .iter()
+                .find(|st| st.number > started && kinds.contains(&st.kind.as_str()))
+                .cloned()
+        };
+        // An older Chrome, which tells of no navigation starting, has the
+        // next one taken for this.
+        let told = started > 0;
+        let left = || deadline.saturating_duration_since(Instant::now());
+        self.until(what, left(), |s| {
+            ours(s).is_some() || (!told && s.navigations > before)
+        })
+        .await?;
+        let Some(start) = ours(&self.state()) else {
+            let (loader, within, now) = {
+                let s = self.state();
+                (s.loader.clone(), s.within, s.url.clone())
+            };
+            if within {
+                return Ok(Response::bare(now, loader));
+            }
+            return self.landed(&loader, wait, deadline, url).await;
+        };
+        if start.kind == "historySameDocument" {
+            self.until(what, left(), |s| s.moved_within > start.navigations)
+                .await?;
+            let s = self.state();
+            return Ok(Response::bare(s.url.clone(), s.loader.clone()));
+        }
+        self.until(what, left(), |s| {
+            s.committed.contains(&start.loader) || s.restored.0 > start.navigations
+        })
+        .await?;
+        let restored = {
+            let s = self.state();
+            (!s.committed.contains(&start.loader)).then(|| s.restored.1.clone())
+        };
+        match restored {
+            Some(loader) => Ok(self.response_for(Some(&loader))),
+            None => self.landed(&start.loader, wait, deadline, url).await,
+        }
+    }
+
+    /// Waits for the document `loader` committed as [`Page::loaded`]
+    /// does, unless it was Chrome's error page for one it couldn't load.
+    async fn landed(
+        &self,
+        loader: &str,
+        wait: WaitUntil,
+        deadline: Instant,
+        url: &str,
+    ) -> Result<Response> {
+        let failed = {
+            let s = self.state();
+            s.unreachable.get(loader).map(|url| {
+                let error = s.failures.get(loader).cloned();
+                (
+                    url.clone(),
+                    error.unwrap_or_else(|| "net::ERR_FAILED".into()),
+                )
+            })
+        };
+        if let Some((url, error)) = failed {
+            return Err(self.navigation_error(&url, &error));
+        }
+        self.loaded(loader, wait, deadline, url).await
+    }
+
+    /// A navigation to `url` that failed with Chrome's `error`.
+    fn navigation_error(&self, url: &str, error: &str) -> Error {
+        Error::Navigation {
+            url: url.to_string(),
+            error: error.to_string(),
+            // Chrome doesn't say why it gave up on a navigation; its
+            // stderr sometimes does.
+            said: self.inner.browser.said.as_ref().and_then(|s| s.recent()),
+        }
     }
 
     /// The response of the document the page shows now.
@@ -1083,16 +1353,7 @@ impl Page {
             .responses
             .get(loader)
             .cloned()
-            .unwrap_or_else(|| Response {
-                url: state.url.clone(),
-                status: 0,
-                headers: Vec::new(),
-                loader: loader.to_string(),
-                request_id: String::new(),
-                session: String::new(),
-                method: "GET".into(),
-                resource_type: "document".into(),
-            })
+            .unwrap_or_else(|| Response::bare(state.url.clone(), loader.to_string()))
     }
 
     /// Hears about every request the page makes and every response it
@@ -1358,6 +1619,11 @@ impl Page {
         self.main_frame().hover(selector, timeout).await
     }
 
+    /// See [`Frame::drag`].
+    pub async fn drag(&self, source: &str, target: &str, timeout: Option<Duration>) -> Result<()> {
+        self.main_frame().drag(source, target, timeout).await
+    }
+
     /// See [`Frame::scroll`].
     pub async fn scroll(
         &self,
@@ -1420,97 +1686,186 @@ impl Page {
 
     /// Presses and releases a key in whatever has focus: a character, or
     /// a name such as "Enter", "Tab", "Escape", "Backspace" or "ArrowDown".
-    pub async fn press(&self, key: &str) -> Result<()> {
-        let k = Key::of(key)?;
+    /// Modifiers go before it, joined by "+": "Control+A", "Shift+Tab",
+    /// "Meta+Shift+ArrowLeft". They're "Shift", "Control", "Alt", "Meta"
+    /// and "ControlOrMeta", which is Meta on a page that says it's on a
+    /// Mac and Control elsewhere, spelt just so. Each goes down in turn, a
+    /// moment apart, and comes up in reverse after the key, whatever
+    /// happened to it. Modifiers alone ("Shift", "Control+Shift") are
+    /// pressed and let go. "+" alone is the plus key, as is the last "+"
+    /// of "Shift++".
+    pub async fn press(&self, keys: &str) -> Result<()> {
+        let (mut names, name) = split_keys(keys);
+        // A modifier on its own is pressed with the others, and no key.
+        let alone = modifier(name, false).is_some();
+        if alone {
+            names.push(name);
+        }
+        let mut k = if alone { None } else { Some(Key::of(name)?) };
+        for n in &names {
+            if n.is_empty() {
+                return Err(Error::Invalid(format!(
+                    "a modifier's name is missing in {keys:?}"
+                )));
+            }
+            if modifier(n, false).is_none() {
+                return Err(Error::Invalid(format!(
+                    "unknown modifier {n:?} in {keys:?} (names are case-sensitive: Shift, \
+                     Control, Alt, Meta, ControlOrMeta)"
+                )));
+            }
+        }
+        if let Some(k) = &k
+            && !names.is_empty()
+            && k.code.is_empty()
+        {
+            return Err(Error::Invalid(format!(
+                "{keys:?}: {name} isn't on the keyboard, so nothing can be held with it"
+            )));
+        }
+        let mac = if names.is_empty() {
+            false
+        } else {
+            self.mac().await?
+        };
+        let mut held: Vec<Modifier> = Vec::new();
+        for m in names.iter().filter_map(|n| modifier(n, mac)) {
+            if !held.contains(&m) {
+                held.push(m);
+            }
+        }
         self.to_front().await?;
-        if let (true, Some(text)) = (self.touches(), &k.text)
-            && k.key != "Enter"
+        if let Some(k) = &k
+            && held.is_empty()
         {
-            // A phone's on-screen keyboard tells the page nothing of the
-            // key: keydown and keyup are "Unidentified" with keyCode 229,
-            // there's no keypress, and the text comes as input.
-            let unknown = |kind: &str| json!({"type": kind, "key": "Unidentified", "code": "", "windowsVirtualKeyCode": 229});
-            self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
+            if let (true, Some(text)) = (self.touches(), &k.text)
+                && k.key != "Enter"
+            {
+                // A phone's on-screen keyboard tells the page nothing of
+                // the key: keydown and keyup are "Unidentified" with
+                // keyCode 229, there's no keypress, and the text comes as
+                // input.
+                let unknown = |kind: &str| json!({"type": kind, "key": "Unidentified", "code": "", "windowsVirtualKeyCode": 229});
+                self.call("Input.dispatchKeyEvent", unknown("rawKeyDown"))
+                    .await?;
+                self.call("Input.insertText", json!({"text": text})).await?;
+                tokio::time::sleep(crate::events::key_hold()).await;
+                self.call("Input.dispatchKeyEvent", unknown("keyUp"))
+                    .await?;
+                return Ok(());
+            }
+            if k.code.is_empty()
+                && let Some(text) = &k.text
+            {
+                // Not on the keyboard (an é on a US layout): it comes the
+                // way an OS's character picker sends it, as text with no
+                // key.
+                self.call("Input.insertText", json!({"text": text})).await?;
+                return Ok(());
+            }
+        }
+        let shift = held.contains(&SHIFT_KEY);
+        if let Some(k) = &mut k
+            && !held.is_empty()
+        {
+            if k.code.starts_with("Key") {
+                // A letter held with others is its key, a capital only
+                // with Shift: Control-A is "a", as a keyboard sends it.
+                k.key = if shift {
+                    k.key.to_ascii_uppercase()
+                } else {
+                    k.key.to_ascii_lowercase()
+                };
+                k.text = Some(k.key.clone());
+                k.shift = false;
+            } else if shift
+                && !k.shift
+                && let Some(above) = shifted(&k.code)
+            {
+                // Shift-1 is "!", as on a US keyboard.
+                k.key = above.to_string();
+                k.text = Some(k.key.clone());
+            }
+        }
+        // A symbol typed with Shift on a US keyboard ("!", "+") gets it.
+        if k.as_ref().is_some_and(|k| k.shift) && !shift {
+            held.push(SHIFT_KEY);
+        }
+        let mut down = 0;
+        let pressed = async {
+            let mut modifiers = 0;
+            for m in &held {
+                modifiers |= m.3;
+                self.call(
+                    "Input.dispatchKeyEvent",
+                    modifier_event(m, "rawKeyDown", modifiers),
+                )
                 .await?;
-            self.call("Input.insertText", json!({"text": text})).await?;
+                down += 1;
+                tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+            }
+            let Some(mut k) = k else {
+                tokio::time::sleep(crate::events::key_hold()).await;
+                return Ok(());
+            };
+            // Held with Control, Alt or Meta, a key types nothing.
+            if modifiers & !SHIFT != 0 {
+                k.text = None;
+            }
+            let mut key_down = json!({
+                "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
+                "key": k.key,
+                "code": k.code,
+                "windowsVirtualKeyCode": k.key_code,
+                "modifiers": modifiers,
+            });
+            if let Some(text) = &k.text {
+                key_down["text"] = Value::from(text.as_str());
+                key_down["unmodifiedText"] = Value::from(text.as_str());
+            }
+            if let Some(command) = edit_command(mac, modifiers, &k.key) {
+                key_down["commands"] = json!([command]);
+            }
+            self.call("Input.dispatchKeyEvent", key_down).await?;
+            // Held as a person holds a key, not let go in the same instant.
             tokio::time::sleep(crate::events::key_hold()).await;
-            self.call("Input.dispatchKeyEvent", unknown("keyUp"))
-                .await?;
-            return Ok(());
+            self.call(
+                "Input.dispatchKeyEvent",
+                json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
+            )
+            .await?;
+            Ok(())
         }
-        if k.code.is_empty()
-            && let Some(text) = &k.text
-        {
-            // Not on the keyboard (an é on a US layout): it comes the way
-            // an OS's character picker sends it, as text with no key.
-            self.call("Input.insertText", json!({"text": text})).await?;
-            return Ok(());
-        }
-        let modifiers = if k.shift { SHIFT } else { 0 };
-        if k.shift {
-            self.call("Input.dispatchKeyEvent", shift_key("rawKeyDown", SHIFT))
-                .await?;
+        .await;
+        // Let go of what went down, even after a failure: a modifier left
+        // held would change every key and click after.
+        for i in (0..down).rev() {
             tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
+            let modifiers = held[..i].iter().fold(0, |flags, m| flags | m.3);
+            let _ = self
+                .call(
+                    "Input.dispatchKeyEvent",
+                    modifier_event(&held[i], "keyUp", modifiers),
+                )
+                .await;
         }
-        let mut down = json!({
-            "type": if k.text.is_some() { "keyDown" } else { "rawKeyDown" },
-            "key": k.key,
-            "code": k.code,
-            "windowsVirtualKeyCode": k.key_code,
-            "modifiers": modifiers,
-        });
-        if let Some(text) = &k.text {
-            down["text"] = Value::from(text.as_str());
-            down["unmodifiedText"] = Value::from(text.as_str());
-        }
-        self.call("Input.dispatchKeyEvent", down).await?;
-        // Held as a person holds a key, not let go in the same instant.
-        tokio::time::sleep(crate::events::key_hold()).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "keyUp", "key": k.key, "code": k.code, "windowsVirtualKeyCode": k.key_code, "modifiers": modifiers}),
-        )
-        .await?;
-        if k.shift {
-            tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-            self.call("Input.dispatchKeyEvent", shift_key("keyUp", 0))
-                .await?;
-        }
-        Ok(())
+        pressed
+    }
+
+    /// Whether the page says it's on a Mac (or an iPhone), where Command
+    /// does what Control does elsewhere.
+    async fn mac(&self) -> Result<bool> {
+        Ok(self
+            .main_frame()
+            .helper("/Mac|iPhone|iPad/.test(navigator.platform)")
+            .await?
+            == true)
     }
 
     /// Selects everything in the field that has focus, with the keys a
     /// person uses: Control-A, or Command-A on a Mac.
     pub(crate) async fn select_all(&self) -> Result<()> {
-        let mac = self
-            .main_frame()
-            .helper("/Mac|iPhone|iPad/.test(navigator.platform)")
-            .await?
-            == true;
-        let (key, code, key_code, flag) = if mac {
-            ("Meta", "MetaLeft", 91, META)
-        } else {
-            ("Control", "ControlLeft", 17, CONTROL)
-        };
-        let modifier = |kind: &str, modifiers: u32| json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "modifiers": modifiers});
-        self.call("Input.dispatchKeyEvent", modifier("rawKeyDown", flag))
-            .await?;
-        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "rawKeyDown", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag, "commands": ["selectAll"]}),
-        )
-        .await?;
-        tokio::time::sleep(crate::events::key_hold()).await;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({"type": "keyUp", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": flag}),
-        )
-        .await?;
-        tokio::time::sleep(crate::events::pause(SHIFT_LEAD)).await;
-        self.call("Input.dispatchKeyEvent", modifier("keyUp", 0))
-            .await?;
-        Ok(())
+        self.press("ControlOrMeta+a").await
     }
 
     /// Moves the mouse to (x, y) in the viewport.
@@ -1519,6 +1874,106 @@ impl Page {
             "Input.dispatchMouseEvent",
             json!({"type": "mouseMoved", "x": x, "y": y}),
         )
+        .await?;
+        Ok(())
+    }
+
+    /// Drags with the left button from `from`, where the mouse already
+    /// is, to `to`: down, a moment, a move every 16 ms along the way, and
+    /// up. An HTML5 drag the page begins on the way (from a draggable
+    /// element) is one Chrome hands over rather than starting the OS's,
+    /// which headless has none of: from then on the moves go as drag
+    /// events, carrying what the page put in its dataTransfer, and the
+    /// button comes up as a drop, after which Chrome ends the drag
+    /// (dragend) as it would. The page sees no mouseup then, as with a
+    /// real drag.
+    pub(crate) async fn mouse_drag(&self, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+        self.call("Input.setInterceptDrags", json!({"enabled": true}))
+            .await?;
+        self.state().dragging = None;
+        let (mut data, mut at) = (None, from);
+        let dragged = self.drag_by_steps(from, to, &mut data, &mut at).await;
+        if dragged.is_err() {
+            // Not left holding the button, or a drag nobody ends: called
+            // off where the mouse got to, as Escape would.
+            let data = data.or_else(|| self.state().dragging.take());
+            let _ = match &data {
+                Some(d) => {
+                    let cancel = json!({"type": "dragCancel", "x": at.0, "y": at.1, "data": d, "modifiers": 0});
+                    self.call("Input.dispatchDragEvent", cancel).await
+                }
+                None => {
+                    let up = json!({"type": "mouseReleased", "x": at.0, "y": at.1, "button": "left", "buttons": 0, "clickCount": 1});
+                    self.call("Input.dispatchMouseEvent", up).await
+                }
+            };
+        }
+        // Handed-over drags nobody carries on would hang the page's next.
+        let _ = self
+            .call("Input.setInterceptDrags", json!({"enabled": false}))
+            .await;
+        dragged
+    }
+
+    /// [`Page::mouse_drag`]'s steps, keeping what the drag carries, once
+    /// the page has begun one, in `data`, and where the mouse is in `at`,
+    /// for calling it off if a step fails.
+    async fn drag_by_steps(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        data: &mut Option<Value>,
+        at: &mut (f64, f64),
+    ) -> Result<()> {
+        let mouse = |kind: &str, (x, y): (f64, f64), buttons: u32| json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1});
+        let drag = |kind: &str, (x, y): (f64, f64), data: &Value| json!({"type": kind, "x": x, "y": y, "data": data, "modifiers": 0});
+        self.call("Input.dispatchMouseEvent", mouse("mousePressed", from, 1))
+            .await?;
+        tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
+        // A step about every 20 pixels, as a hand moves at a fair pace.
+        let distance = (to.0 - from.0).hypot(to.1 - from.1);
+        let steps = (distance / 20.0).ceil().clamp(5.0, 40.0) as u32;
+        for i in 1..=steps {
+            let t = f64::from(i) / f64::from(steps);
+            // Eased: slow to start and to arrive.
+            let t = 0.5 - 0.5 * (std::f64::consts::PI * t).cos();
+            *at = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            match &*data {
+                Some(d) => {
+                    self.call("Input.dispatchDragEvent", drag("dragOver", *at, d))
+                        .await?
+                }
+                None => {
+                    self.call("Input.dispatchMouseEvent", mouse("mouseMoved", *at, 1))
+                        .await?
+                }
+            };
+            if data.is_none() {
+                *data = self.state().dragging.take();
+                if let Some(d) = &*data {
+                    self.call("Input.dispatchDragEvent", drag("dragEnter", *at, d))
+                        .await?;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        if data.is_none() {
+            // A drag begun by the last move is told of a moment later:
+            // once the page has answered, Chrome has said.
+            self.main_frame().helper("0").await?;
+            *data = self.state().dragging.take();
+            if let Some(d) = &*data {
+                self.call("Input.dispatchDragEvent", drag("dragEnter", to, d))
+                    .await?;
+                self.call("Input.dispatchDragEvent", drag("dragOver", to, d))
+                    .await?;
+            }
+        }
+        tokio::time::sleep(crate::events::pause(BUTTON_HOLD)).await;
+        match &*data {
+            Some(d) => self.call("Input.dispatchDragEvent", drag("drop", to, d)),
+            None => self.call("Input.dispatchMouseEvent", mouse("mouseReleased", to, 0)),
+        }
         .await?;
         Ok(())
     }
@@ -1619,7 +2074,7 @@ impl Page {
         let frame = self.main_frame();
         let at = |v: &Value, i: usize| v[i].as_f64().unwrap_or(0.0);
         let start = frame.helper(&mark(false)).await.unwrap_or(Value::Null);
-        self.drag(x, y, dx, dy).await?;
+        self.finger_drag(x, y, dx, dy).await?;
         if !start.is_array() {
             // Nothing to measure by: the page went while it was asked.
             return Ok(());
@@ -1667,13 +2122,13 @@ impl Page {
                 });
             }
             last = now;
-            self.drag(x, y, left_x, left_y).await?;
+            self.finger_drag(x, y, left_x, left_y).await?;
         }
         Ok(())
     }
 
     /// One swipe's drags (see [`Page::swipe`]).
-    async fn drag(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+    async fn finger_drag(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
         if dx == 0.0 && dy == 0.0 {
             return Ok(());
         }
@@ -2786,17 +3241,100 @@ const BUTTON_HOLD: (Duration, Duration) = (Duration::from_millis(50), Duration::
 const DOUBLE_GAP: (Duration, Duration) = (Duration::from_millis(70), Duration::from_millis(160));
 
 /// CDP's modifier flags.
-const SHIFT: u32 = 8;
+const ALT: u32 = 1;
 const CONTROL: u32 = 2;
 const META: u32 = 4;
+const SHIFT: u32 = 8;
 
-/// How long Shift (or Control) goes down before the key it changes, and
-/// up after it.
+/// How long a modifier goes down before the key it changes, and each
+/// comes up after it.
 const SHIFT_LEAD: (Duration, Duration) = (Duration::from_millis(30), Duration::from_millis(90));
 
-/// The left Shift key, going `kind` ("rawKeyDown" or "keyUp").
-fn shift_key(kind: &str, modifiers: u32) -> Value {
-    json!({"type": kind, "key": "Shift", "code": "ShiftLeft", "windowsVirtualKeyCode": 16, "modifiers": modifiers})
+/// A modifier key, on the left: its key, code, Windows key code and
+/// CDP flag.
+type Modifier = (&'static str, &'static str, u32, u32);
+
+const SHIFT_KEY: Modifier = ("Shift", "ShiftLeft", 16, SHIFT);
+
+/// The modifier `name` stands for; "ControlOrMeta" is Meta on a Mac.
+fn modifier(name: &str, mac: bool) -> Option<Modifier> {
+    const CONTROL_KEY: Modifier = ("Control", "ControlLeft", 17, CONTROL);
+    const META_KEY: Modifier = ("Meta", "MetaLeft", 91, META);
+    Some(match name {
+        "Shift" => SHIFT_KEY,
+        "Control" => CONTROL_KEY,
+        "Alt" => ("Alt", "AltLeft", 18, ALT),
+        "Meta" => META_KEY,
+        "ControlOrMeta" if mac => META_KEY,
+        "ControlOrMeta" => CONTROL_KEY,
+        _ => return None,
+    })
+}
+
+/// The modifier `m` going `kind` ("rawKeyDown" or "keyUp"), with
+/// `modifiers` held after it.
+fn modifier_event(m: &Modifier, kind: &str, modifiers: u32) -> Value {
+    json!({"type": kind, "key": m.0, "code": m.1, "windowsVirtualKeyCode": m.2, "modifiers": modifiers})
+}
+
+/// The character Shift types on the key `code` of a US keyboard.
+fn shifted(code: &str) -> Option<char> {
+    (' '..='~').find(|&c| us_layout(c).is_some_and(|(at, _, shift)| shift && at == code))
+}
+
+/// "Control+Shift+a" as its modifiers' names and its key's. A "+" at
+/// the end is the plus key, alone or after another "+".
+fn split_keys(keys: &str) -> (Vec<&str>, &str) {
+    if keys == "+" {
+        return (Vec::new(), "+");
+    }
+    if let Some(names) = keys.strip_suffix("++") {
+        return (names.split('+').collect(), "+");
+    }
+    match keys.rsplit_once('+') {
+        Some((names, key)) => (names.split('+').collect(), key),
+        None => (Vec::new(), keys),
+    }
+}
+
+/// The editing command a shortcut stands for in a text field. A real
+/// keyboard's shortcuts reach Chrome as commands the OS's key bindings
+/// made of them (on a Mac, all of them), and keys sent over CDP never
+/// pass through the OS, so they're named here: for the system the page
+/// says it's on, which needn't be the one Chrome runs on. A page that
+/// cancels the keydown cancels the command too. Shift alone and plain
+/// keys Chrome handles itself; copy, cut and paste never work headless.
+fn edit_command(mac: bool, modifiers: u32, key: &str) -> Option<String> {
+    // Undo is Control-Z, or Command-Z on a Mac; redo is that with Shift,
+    // or Control-Y off a Mac.
+    let primary = if mac { META } else { CONTROL };
+    match key {
+        "z" if modifiers == primary => return Some("undo".into()),
+        "Z" if modifiers == primary | SHIFT => return Some("redo".into()),
+        "y" if !mac && modifiers == CONTROL => return Some("redo".into()),
+        _ => {}
+    }
+    let shift = modifiers & SHIFT != 0;
+    let (command, selects) = match (mac, modifiers & !SHIFT, key) {
+        (true, META, "a") | (false, CONTROL, "a") => ("selectAll", false),
+        (true, ALT, "Backspace") | (false, CONTROL, "Backspace") => ("deleteWordBackward", false),
+        (true, ALT, "Delete") | (false, CONTROL, "Delete") => ("deleteWordForward", false),
+        (true, META, "Backspace") => ("deleteToBeginningOfLine", false),
+        (true, META, "Delete") => ("deleteToEndOfLine", false),
+        (true, ALT, "ArrowLeft") | (false, CONTROL, "ArrowLeft") => ("moveWordLeft", true),
+        (true, ALT, "ArrowRight") | (false, CONTROL, "ArrowRight") => ("moveWordRight", true),
+        (true, META, "ArrowLeft") => ("moveToBeginningOfLine", true),
+        (true, META, "ArrowRight") => ("moveToEndOfLine", true),
+        (true, META, "ArrowUp") | (false, CONTROL, "Home") => ("moveToBeginningOfDocument", true),
+        (true, META, "ArrowDown") | (false, CONTROL, "End") => ("moveToEndOfDocument", true),
+        _ => return None,
+    };
+    match (shift, selects) {
+        (false, _) => Some(command.to_string()),
+        // With Shift, a move selects as it goes.
+        (true, true) => Some(format!("{command}AndModifySelection")),
+        (true, false) => None,
+    }
 }
 
 /// Where a printable ASCII character is on a US keyboard: its key's
