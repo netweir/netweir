@@ -29,9 +29,8 @@ through Netweir.
 
 ## After that
 
-**More of the browser.** Modifier keys, dragging, and going back and
-forward; finding elements by their text or role; saving a page as a PDF;
-tracing; and replaying a HAR file through routes.
+**More of the browser.** Finding elements by their text or role; saving a
+page as a PDF; tracing; and replaying a HAR file through routes.
 
 **More engines.** Firefox and WebKit, but only once they can be driven
 without announcing it, as Chrome is today. And HTTP/3, when a request can go

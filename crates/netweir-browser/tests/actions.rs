@@ -1223,3 +1223,536 @@ async fn hover_sends_mouseover_even_with_the_mouse_already_on_the_spot() {
     }
     browser.close().await.unwrap();
 }
+
+/// A page that says it runs on `system` ("Windows" or "Mac"), in the
+/// Chrome running.
+async fn page_on(browser: &netweir_browser::Browser, system: &str) -> netweir_browser::Page {
+    let major = browser
+        .version()
+        .split('/')
+        .nth(1)
+        .and_then(|v| v.split('.').next())
+        .unwrap()
+        .to_string();
+    let os = match system {
+        "Windows" => "Windows NT 10.0; Win64; x64",
+        _ => "Macintosh; Intel Mac OS X 10_15_7",
+    };
+    browser
+        .new_page_with(netweir_browser::Environment {
+            user_agent: Some(format!(
+                "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/{major}.0.0.0 Safari/537.36"
+            )),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+}
+
+/// A field, and every key event the page hears as "type key modifiers",
+/// the modifiers as C, S, A and M for Control, Shift, Alt and Meta.
+const KEYS: &str = r#"<!DOCTYPE html>
+<input id=a><input id=b><input id=c value="one two three">
+<script>
+  window.heard = [];
+  for (const type of ['keydown', 'keyup']) {
+    addEventListener(type, e => heard.push(`${type} ${e.key} ` +
+      (e.ctrlKey ? 'C' : '') + (e.shiftKey ? 'S' : '') + (e.altKey ? 'A' : '') + (e.metaKey ? 'M' : '')));
+  }
+</script>"#;
+
+#[tokio::test]
+async fn control_or_meta_a_selects_the_field_on_each_system_and_backspace_empties_it() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    for (system, held) in [("Windows", "C"), ("Mac", "M")] {
+        let page = page_on(&browser, system).await;
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        page.click("#c", None).await.unwrap();
+        page.evaluate("heard.length = 0").await.unwrap();
+        page.press("ControlOrMeta+A").await.unwrap();
+        let down = page.evaluate("heard[1]").await.unwrap();
+        assert_eq!(down, json!(format!("keydown a {held}")), "{system}");
+        page.press("Backspace").await.unwrap();
+        assert_eq!(
+            page.evaluate("document.querySelector('#c').value")
+                .await
+                .unwrap(),
+            json!(""),
+            "{system}"
+        );
+        page.close().await.unwrap();
+    }
+    // Control-A is select-all off a Mac, as it is on Windows.
+    let page = page_on(&browser, "Windows").await;
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#c", None).await.unwrap();
+    page.press("Control+A").await.unwrap();
+    page.press("Delete").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.querySelector('#c').value")
+            .await
+            .unwrap(),
+        json!("")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn word_and_line_shortcuts_edit_the_field_as_each_system_does() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let value = "document.querySelector('#c').value";
+    let windows = page_on(&browser, "Windows").await;
+    windows
+        .goto(&server.url, WaitUntil::Load, None)
+        .await
+        .unwrap();
+    windows.click("#c", None).await.unwrap();
+    windows.press("End").await.unwrap();
+    windows.press("Control+Backspace").await.unwrap();
+    assert_eq!(windows.evaluate(value).await.unwrap(), json!("one two "));
+    windows.press("Control+Shift+ArrowLeft").await.unwrap();
+    windows.press("Delete").await.unwrap();
+    assert_eq!(windows.evaluate(value).await.unwrap(), json!("one "));
+
+    let mac = page_on(&browser, "Mac").await;
+    mac.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    mac.click("#c", None).await.unwrap();
+    mac.press("End").await.unwrap();
+    mac.press("Alt+Backspace").await.unwrap();
+    assert_eq!(mac.evaluate(value).await.unwrap(), json!("one two "));
+    mac.press("Meta+Shift+ArrowLeft").await.unwrap();
+    mac.press("Backspace").await.unwrap();
+    assert_eq!(mac.evaluate(value).await.unwrap(), json!(""));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn modifiers_go_down_in_order_and_up_in_reverse_and_the_page_sees_them() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Meta+Shift+ArrowLeft").await.unwrap();
+    page.press("Control+Alt+x").await.unwrap();
+    assert_eq!(
+        page.evaluate("heard").await.unwrap(),
+        json!([
+            "keydown Meta M",
+            "keydown Shift SM",
+            "keydown ArrowLeft SM",
+            "keyup ArrowLeft SM",
+            "keyup Shift M",
+            "keyup Meta ",
+            "keydown Control C",
+            "keydown Alt CA",
+            "keydown x CA",
+            "keyup x CA",
+            "keyup Alt C",
+            "keyup Control ",
+        ])
+    );
+    // Shift with a letter types its capital; "+" is a key of its own.
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Shift+a").await.unwrap();
+    page.press("+").await.unwrap();
+    page.press("Shift++").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.querySelector('#a').value")
+            .await
+            .unwrap(),
+        json!("A++")
+    );
+    assert_eq!(
+        page.evaluate("heard[1]").await.unwrap(),
+        json!("keydown A S")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn shift_tab_moves_focus_backwards() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#c", None).await.unwrap();
+    page.press("Shift+Tab").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.activeElement.id").await.unwrap(),
+        json!("b")
+    );
+    page.press("Tab").await.unwrap();
+    assert_eq!(
+        page.evaluate("document.activeElement.id").await.unwrap(),
+        json!("c")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unknown_modifier_or_key_is_refused_before_anything_is_pressed() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    for (keys, says) in [
+        ("Hyper+a", "unknown modifier \"Hyper\""),
+        ("Control+Nope", "unknown key \"Nope\""),
+        ("Control+", "unknown key \"\""),
+        ("Shift+é", "isn't on the keyboard"),
+        ("++", "a modifier's name is missing"),
+        ("shift+a", "names are case-sensitive"),
+    ] {
+        let err = page.press(keys).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::Invalid(m) if m.contains(says)),
+            "{keys}: {err}"
+        );
+    }
+    assert_eq!(page.evaluate("heard").await.unwrap(), json!([]));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn drag_drops_an_item_by_html5_drag_and_drop() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>
+  #item { width: 60px; height: 30px; background: #ccc; }
+  #bin { width: 200px; height: 100px; margin-top: 150px; background: #eee; }
+</style>
+<div id=item draggable=true>item</div>
+<div id=bin></div>
+<button id=after onclick="seen.push('click')">after</button>
+<script>
+  window.seen = [];
+  item.addEventListener('dragstart', e => {
+    seen.push('dragstart');
+    e.dataTransfer.setData('text/plain', 'item-1');
+  });
+  bin.addEventListener('dragenter', e => { e.preventDefault(); seen.push('dragenter'); });
+  bin.addEventListener('dragover', e => {
+    e.preventDefault();
+    if (seen.at(-1) !== 'dragover') seen.push('dragover');
+  });
+  bin.addEventListener('drop', e => {
+    e.preventDefault();
+    seen.push('drop ' + e.dataTransfer.getData('text/plain'));
+    bin.appendChild(item);
+  });
+  item.addEventListener('dragend', () => seen.push('dragend'));
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.drag("#item", "#bin", None).await.unwrap();
+    assert_eq!(
+        page.evaluate("item.parentElement.id").await.unwrap(),
+        json!("bin")
+    );
+    // The mouse is free again after the drop.
+    page.click("#after", None).await.unwrap();
+    assert_eq!(
+        page.evaluate("seen").await.unwrap(),
+        json!([
+            "dragstart",
+            "dragenter",
+            "dragover",
+            "drop item-1",
+            "dragend",
+            "click"
+        ])
+    );
+    let err = page.drag("#item", "#nowhere", SHORT).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Timeout(m) if m.contains("drag #nowhere")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn drag_moves_a_handle_that_follows_the_mouse() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<style>
+  #track { position: relative; width: 300px; height: 20px; margin: 50px; background: #eee; }
+  #handle { position: absolute; left: 0; top: 0; width: 20px; height: 20px; background: #333; }
+  #mark { position: absolute; left: 290px; top: 100px; width: 20px; height: 20px; }
+</style>
+<div id=track><div id=handle></div></div>
+<div id=mark></div>
+<script>
+  let grab = null;
+  window.moves = 0;
+  window.ups = 0;
+  handle.addEventListener('mousedown', e => { grab = e.clientX - handle.offsetLeft; });
+  addEventListener('mousemove', e => {
+    if (grab === null) return;
+    moves++;
+    handle.style.left = Math.max(0, Math.min(280, e.clientX - grab)) + 'px';
+  });
+  addEventListener('mouseup', () => { grab = null; ups++; });
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.drag("#handle", "#mark", None).await.unwrap();
+    let r = page
+        .evaluate(
+            "() => { const h = handle.getBoundingClientRect(), m = mark.getBoundingClientRect(); \
+             return [Math.round(h.x + h.width / 2 - (m.x + m.width / 2)), moves > 3, ups]; }",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r,
+        json!([0, true, 1]),
+        "the handle's centre is on the mark's"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn shift_with_a_digit_or_symbol_presses_the_character_above_it() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    for keys in ["Shift+1", "Shift+/", "Shift+="] {
+        page.press(keys).await.unwrap();
+    }
+    assert_eq!(
+        page.evaluate("document.querySelector('#a').value")
+            .await
+            .unwrap(),
+        json!("!?+")
+    );
+    assert_eq!(
+        page.evaluate("heard[1]").await.unwrap(),
+        json!("keydown ! S")
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn modifiers_alone_are_pressed_and_released() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    page.click("#a", None).await.unwrap();
+    page.evaluate("heard.length = 0").await.unwrap();
+    page.press("Shift").await.unwrap();
+    page.press("Control+Shift").await.unwrap();
+    assert_eq!(
+        page.evaluate("heard").await.unwrap(),
+        json!([
+            "keydown Shift S",
+            "keyup Shift ",
+            "keydown Control C",
+            "keydown Shift CS",
+            "keyup Shift C",
+            "keyup Control ",
+        ])
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn undo_and_redo_take_back_typing_on_each_system() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html(KEYS))]);
+    let value = "document.querySelector('#a').value";
+    for (system, redo) in [
+        ("Windows", "Control+Y"),
+        ("Windows", "Control+Shift+Z"),
+        ("Mac", "Meta+Shift+Z"),
+    ] {
+        let page = page_on(&browser, system).await;
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        page.type_text(
+            "#a",
+            "abc",
+            (Duration::from_millis(5), Duration::from_millis(10)),
+            None,
+        )
+        .await
+        .unwrap();
+        page.press("ControlOrMeta+Z").await.unwrap();
+        assert_eq!(page.evaluate(value).await.unwrap(), json!(""), "{system}");
+        page.press(redo).await.unwrap();
+        assert_eq!(page.evaluate(value).await.unwrap(), json!("abc"), "{redo}");
+        page.close().await.unwrap();
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn drag_to_a_target_out_of_view_with_the_source_says_so_and_presses_nothing() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div style="height: 3000px"></div>
+<div id=bin style="width: 200px; height: 100px">bin</div>
+<script>
+  window.seen = [];
+  for (const type of ['mousedown', 'dragstart', 'drop']) addEventListener(type, () => seen.push(type));
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let err = page.drag("#item", "#bin", None).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Invalid(m) if m.contains("drag #item to #bin") && m.contains("in view")),
+        "{err}"
+    );
+    assert_eq!(page.evaluate("seen").await.unwrap(), json!([]));
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_drag_cut_short_is_cancelled_not_left_hanging() {
+    let Some(executable) = common::chrome() else {
+        return;
+    };
+    // Chrome's answers wait a second at most, so a page that stops
+    // answering fails the drag partway.
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        timeout: Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let server = serve(vec![(
+        "/",
+        html(
+            r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div id=bin style="width: 200px; height: 100px; margin-top: 150px">bin</div>
+<script>
+  window.seen = [];
+  item.ondragstart = e => { seen.push('dragstart'); e.dataTransfer.setData('text/plain', 'x'); };
+  item.ondragend = () => seen.push('dragend');
+  // Busy for longer than Chrome's answers wait, the first time.
+  let busy = true;
+  bin.ondragenter = e => {
+    e.preventDefault();
+    if (busy) { busy = false; const end = Date.now() + 2500; while (Date.now() < end); }
+  };
+  bin.ondragover = e => e.preventDefault();
+  bin.ondrop = e => { e.preventDefault(); seen.push('drop'); };
+</script>"#,
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let err = page
+        .drag("#item", "#bin", Some(Duration::from_secs(10)))
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::Timeout(_)), "{err}");
+    // Once the page answers again, the drag is called off: no drop.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = page.evaluate("seen").await;
+        if let Ok(seen) = &seen
+            && seen.as_array().is_some_and(|s| s.len() >= 2)
+        {
+            assert_eq!(*seen, json!(["dragstart", "dragend"]));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the drag was never ended: {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_frame_drags_within_itself_wherever_it_sits_in_the_page() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![
+        (
+            "/",
+            html(
+                r#"<!DOCTYPE html>
+<iframe name=inner src="/inner" style="position: absolute; left: 200px; top: 150px; width: 400px; height: 300px; border: 0"></iframe>"#,
+            ),
+        ),
+        (
+            "/inner",
+            html(
+                r#"<!DOCTYPE html>
+<div id=item draggable=true style="width: 60px; height: 30px">item</div>
+<div id=bin style="width: 200px; height: 80px; margin-top: 100px">bin</div>
+<script>
+  item.ondragstart = e => e.dataTransfer.setData('text/plain', 'in a frame');
+  bin.ondragover = e => e.preventDefault();
+  bin.ondrop = e => { e.preventDefault(); window.dropped = e.dataTransfer.getData('text/plain'); };
+</script>"#,
+            ),
+        ),
+    ]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    frame_reaches(&page, "inner", |u| u.ends_with("/inner")).await;
+    let frame = page
+        .frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name() == "inner")
+        .unwrap();
+    frame.drag("#item", "#bin", None).await.unwrap();
+    assert_eq!(
+        frame.evaluate("window.dropped").await.unwrap(),
+        json!("in a frame")
+    );
+    browser.close().await.unwrap();
+}

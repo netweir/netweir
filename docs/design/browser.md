@@ -37,7 +37,9 @@ In this design:
   running (milestone 10)
 - The rest of the actions Playwright users reach for: hovering,
   scrolling (endless feeds included), dropdowns, checkboxes, file
-  uploads, frames, and a profile kept between runs (milestone 33)
+  uploads, frames, and a profile kept between runs (milestone 33);
+  then going back, forward and reloading, keyboard shortcuts with
+  modifiers, and dragging
 
 Not in this design: tracing, PDF, Safari (no BiDi), Camoufox (a third
 protocol), and Firefox for now (see below). Reading what a page fetches,
@@ -259,6 +261,31 @@ headers of the main document. A network error (DNS, refused, TLS) raises
 `netweir.FetchError` with Chrome's error text. An HTTP error status
 doesn't raise; the status is in the response, as with `netweir.get()`.
 
+`go_back()` and `go_forward()` read `Page.getNavigationHistory` and go to
+the entry before or after the current one with
+`Page.navigateToHistoryEntry`; at either end they return None without
+sending anything. `reload()` sends `Page.reload`. None of those commands
+says which navigation it started, so the wait is for the first
+`Page.frameStartedNavigating` in the main frame after the command whose
+`navigationType` is a history one (`historyDifferentDocument`,
+`historySameDocument`) or `reload`: a navigation the page's own script
+began, even one committing meanwhile, is never taken for it. A history
+step within the document returns at the next
+`Page.navigatedWithinDocument`, with a response of status 0 at its URL.
+A step to another document commits under the started loader id, or,
+restored from the back-forward cache (`frameNavigated` with type
+`BackForwardCacheRestore`), under the old document's own loader id; a
+restored document has loaded already and fires no load events again, so
+it returns at once with the response it had. Anything else waits for
+`wait` by its loader id, as `goto` does. A commit carrying an
+`unreachableUrl` is Chrome's error page: that's `Error::Navigation`,
+with the text of the document's `Network.loadingFailed`, whose request
+id is the loader id (`net::ERR_FAILED` if none came). A Chrome too old
+to send `frameStartedNavigating` has the next main-frame commit or move
+within the document taken instead. A step that never commits (the page
+asked before being left, or the answer was a download or a 204) times
+out, and the message says Chrome may not have committed one.
+
 `content()` returns the HTML as Chrome now has it, doctype included, and
 `parse()` returns it as a Netweir `Node`, so every selector, `find_all`
 and tracked selector works on a rendered page as on a fetched one.
@@ -293,7 +320,19 @@ that one is unexplained, and the test now says what the link, the guard
 and the server saw.) `fill` focuses the element, selects
 what's in it and inserts the text with `Input.insertText`, which fires the
 same input events typing does. `press` sends a key down and up, with the
-key's code and text for the common keys.
+key's code and text for the common keys. Modifiers named before the key
+("Control+Shift+a") each go down with the flags held so far, then the key
+with all of them, then come up in reverse, even when sending the key
+failed; modifiers named alone go down and up with no key. A letter held
+with modifiers is its lower case unless Shift is among them, Shift with
+a digit or symbol is the character above it on a US keyboard ("Shift+1"
+is "!"), and with Control, Alt or Meta a key carries no text. A real keyboard's editing shortcuts reach
+Chrome as commands the OS made of them (all of them, on macOS), and
+keys sent over CDP never pass through the OS, so the keydown names the
+command (`selectAll`, `undo`, `deleteWordBackward`, `moveToEndOfLine`...) by a
+small table for the system the page claims, Mac or not, which needn't be
+the one Chrome runs on. Chrome runs the command in place of its own
+binding, and not at all if the page cancels the keydown.
 
 ### Other page methods
 
@@ -479,6 +518,33 @@ no `mouseover` within a few frames is made again from just outside the
 element, as a person moves off and back on, until the timeout. The page
 sees at least one `mouseover`; Chrome may send one of its own when a
 scroll puts the element under a still mouse.
+
+**Dragging.** `drag(source, target)` checks the target is attached,
+visible and stable (scrolling it into view), brings the mouse over the
+source as `hover` does, then reads the target's centre again, where
+bringing the source into view left it. If that centre is outside the
+window, the drag is refused before the button goes down: Netweir doesn't
+scroll the page while the button is held, and a point off the window
+would let go over nothing. With `Input.setInterceptDrags`
+on, it presses the left button, moves in eased steps of about 20 pixels
+every 16 ms, and lets go at the target. A page that only follows the
+mouse gets mouse events throughout. When the source is draggable,
+Chrome starts an HTML5 drag on the first move past its threshold and,
+intercepting, hands it over as `Input.dragIntercepted` with the
+`dataTransfer` items the page set in `dragstart`, instead of starting
+the OS's drag loop. From then on each step is `Input.dispatchDragEvent`
+(`dragEnter` once, then `dragOver`) carrying those items, and the
+release is a `drop`, after which Chrome fires `dragend` itself; the page
+sees no `mouseup`, as with a real drag. A drag that starts on the last
+step is caught by a round trip to the page before letting go. Headless
+Chrome on macOS also completes a plain mouse drag without the intercept,
+but with a window it would enter the OS's modal drag loop, and the
+intercept makes the events the same everywhere. A step that fails (the
+page stopped answering, say) leaves the drag called off: a
+`dragCancel` where the mouse got to if Chrome had handed a drag over,
+otherwise `mouseReleased`, so neither the button nor a drag is left
+held. Intercepting is turned off again afterwards, so a page's own later
+drags aren't left waiting.
 
 **Scrolling.** `scroll(selector=None, *, x=0, y=None, times=None,
 idle=2.0, timeout=None)` turns the mouse wheel: a `mouseMoved` to where
