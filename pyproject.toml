@@ -9,7 +9,7 @@ readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
-authors = [{ name = "James Conway" }]
+authors = [{ name = "James Conway", email = "hello@netweir.com" }]
 keywords = ["scraping", "crawler", "spider", "xpath", "css", "beautifulsoup", "scrapy"]
 classifiers = [
     "Development Status :: 3 - Alpha",
