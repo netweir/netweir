@@ -32,7 +32,7 @@ project.
 ## Reporting
 
 If something here happens to you, or you see it happen, email
-**jconway@sentrello.com**. Reports are read by the maintainer, kept
+**conduct@netweir.com**. Reports are read by the maintainer, kept
 confidential, and answered within a week. Netweir has one maintainer for
 now, so if your report is about the maintainer, you can take it to
 [GitHub](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam)
