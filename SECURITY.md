@@ -3,9 +3,9 @@
 ## Reporting a problem
 
 Please don't open a public issue. Report it privately through
-[GitHub's form](https://github.com/netweir/netweir/security/advisories/new)
-instead, and include what you found, how to reproduce it, and what an
-attacker could do with it.
+[GitHub's form](https://github.com/netweir/netweir/security/advisories/new),
+or by email to **security@netweir.com**, and include what you found, how to
+reproduce it, and what an attacker could do with it.
 
 You'll hear back within a week. Once there's a fix, it ships in a release
 with an advisory crediting you, unless you'd rather not be named.
