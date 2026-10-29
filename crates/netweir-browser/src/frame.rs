@@ -550,6 +550,50 @@ impl Frame {
         Ok(())
     }
 
+    /// Drags the element `source` onto `target` with the mouse: the mouse
+    /// comes over the source's centre once it's visible, still and not
+    /// covered, the button goes down, and the mouse moves to the centre
+    /// of the target, which must be visible and still and show in the
+    /// window with the source, and lets go there. A drag that fails
+    /// partway is called off, the button let go.
+    /// That drags anything that follows the mouse (a slider's handle, a
+    /// sortable list's row) and, from a draggable element, makes an
+    /// HTML5 drag and drop, dataTransfer and all.
+    pub async fn drag(&self, source: &str, target: &str, timeout: Option<Duration>) -> Result<()> {
+        if self.page.touches() {
+            return Err(Error::Invalid(format!(
+                "drag {source}: the page is a phone's, which has no mouse to drag with"
+            )));
+        }
+        let deadline = self.page.deadline(timeout);
+        self.page.to_front().await?;
+        // Nothing need be under the mouse at the target but the target.
+        let landing = ["attached", "visible", "stable"];
+        self.actionable("drag", target, &landing, true, left(deadline))
+            .await?;
+        let checks = ["attached", "visible", "stable", "receives events"];
+        let from = self.over("drag", source, &checks, deadline).await?;
+        // Again, where bringing the source into view left it.
+        let to = self
+            .actionable("drag", target, &landing, false, left(deadline))
+            .await?;
+        // A mouse can't go past the window's edge, and nothing scrolls the
+        // page while it's held, so both must show at once.
+        let size = self
+            .page
+            .main_frame()
+            .helper("[innerWidth, innerHeight]")
+            .await?;
+        let inside = |at: f64, i: usize| at >= 0.0 && at < size[i].as_f64().unwrap_or(0.0);
+        if !inside(to.0, 0) || !inside(to.1, 1) {
+            return Err(Error::Invalid(format!(
+                "drag {source} to {target}: the target isn't in view with the source; \
+                 scroll so both show, or make the window bigger"
+            )));
+        }
+        self.page.mouse_drag(from, to).await
+    }
+
     /// Moves the mouse to the element's centre once it passes `checks`,
     /// and returns that point once the page has sent mouseover for it,
     /// heard from netweir's world. A move to where the mouse already is

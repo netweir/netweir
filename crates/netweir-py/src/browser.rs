@@ -498,6 +498,29 @@ impl BrowserPage {
         }
     }
 
+    /// `go_back` (`by` -1) or `go_forward` (1).
+    fn go_by<'py>(
+        &self,
+        py: Python<'py>,
+        by: i8,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wait: WaitUntil = wait.parse().map_err(raise)?;
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let went = if by < 0 {
+                page.go_back(wait, timeout).await
+            } else {
+                page.go_forward(wait, timeout).await
+            };
+            Ok(went
+                .map_err(raise)?
+                .map(|inner| BrowserResponse::new(inner, &page)))
+        })
+    }
+
     fn network<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let parent = match (&self.opener, &self.context) {
             (Some(opener), _) => Some(opener.get().network(py)?),
@@ -771,6 +794,48 @@ impl BrowserPage {
         })
     }
 
+    /// Goes back one entry in the history and waits for `wait`. Resolves
+    /// to the BrowserResponse of the document showing then, or None when
+    /// there's nothing to go back to.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn go_back<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.go_by(py, -1, wait, timeout)
+    }
+
+    /// Goes forward one entry in the history, as `go_back` goes back.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn go_forward<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.go_by(py, 1, wait, timeout)
+    }
+
+    /// Loads the document again and waits for `wait`. Resolves to its
+    /// BrowserResponse.
+    #[pyo3(signature = (wait="load", timeout=None))]
+    fn reload<'py>(
+        &self,
+        py: Python<'py>,
+        wait: &str,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wait: WaitUntil = wait.parse().map_err(raise)?;
+        let timeout = seconds("timeout", timeout)?;
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let inner = page.reload(wait, timeout).await.map_err(raise)?;
+            Ok(BrowserResponse::new(inner, &page))
+        })
+    }
+
     /// The HTML as Chrome now has it.
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
@@ -868,6 +933,10 @@ impl BrowserPage {
         })
     }
 
+    /// Presses a key in whatever has focus: a character, or a name such
+    /// as "Enter", "Tab" or "ArrowDown", after any of the modifiers
+    /// "Shift", "Control", "Alt", "Meta" and "ControlOrMeta" (Meta on a
+    /// Mac), joined by "+": "ControlOrMeta+A", "Shift+Tab".
     fn press<'py>(&self, py: Python<'py>, key: String) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
         crate::aio::future_into_py(py, async move { page.press(&key).await.map_err(raise) })
@@ -898,6 +967,19 @@ impl BrowserPage {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         act::hover(py, self.inner.main_frame(), selector, timeout)
+    }
+
+    /// Drags the element `source` onto `target` with the mouse: anything
+    /// that follows the mouse, or an HTML5 drag and drop.
+    #[pyo3(signature = (source, target, timeout=None))]
+    fn drag<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::drag(py, self.inner.main_frame(), source, target, timeout)
     }
 
     /// Scrolls with the mouse wheel. Resolves to how many times more of
@@ -1505,6 +1587,17 @@ impl BrowserFrame {
         act::hover(py, self.inner.clone(), selector, timeout)
     }
 
+    #[pyo3(signature = (source, target, timeout=None))]
+    fn drag<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        act::drag(py, self.inner.clone(), source, target, timeout)
+    }
+
     #[pyo3(signature = (selector=None, *, x=0.0, y=None, times=None, idle=2.0, timeout=None))]
     #[allow(clippy::too_many_arguments)]
     fn scroll<'py>(
@@ -1666,6 +1759,19 @@ mod act {
         let timeout = seconds("timeout", timeout)?;
         crate::aio::future_into_py(py, async move {
             frame.hover(&selector, timeout).await.map_err(raise)
+        })
+    }
+
+    pub(super) fn drag<'py>(
+        py: Python<'py>,
+        frame: CoreFrame,
+        source: String,
+        target: String,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = seconds("timeout", timeout)?;
+        crate::aio::future_into_py(py, async move {
+            frame.drag(&source, &target, timeout).await.map_err(raise)
         })
     }
 
