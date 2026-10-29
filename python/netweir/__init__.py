@@ -1,6 +1,6 @@
 """Fast web scraping with a Rust engine."""
 
-from netweir import auto, export, loader, repair, signals, steps, templates
+from netweir import auto, export, llm, loader, repair, signals, steps, templates
 from netweir._browser import browser, devices
 from netweir._crawl import Settings, Spider
 from netweir._errors import (
@@ -98,6 +98,7 @@ __all__ = [
     "XPathError",
     "__version__",
     "auto",
+    "llm",
     "browser",
     "chunks",
     "clean_text",
