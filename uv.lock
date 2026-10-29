@@ -1786,6 +1786,7 @@ wheels = [
 [[package]]
 name = "netweir"
 source = { virtual = "." }
+default-groups = ["dev", "mcp"]
 
 [package.optional-dependencies]
 images = [
@@ -1818,7 +1819,6 @@ dev = [
     { name = "jmespath" },
     { name = "jsonschema" },
     { name = "maturin" },
-    { name = "mcp" },
     { name = "pillow" },
     { name = "pip" },
     { name = "pyarrow" },
@@ -1827,6 +1827,9 @@ dev = [
     { name = "ruff" },
     { name = "scrapy" },
     { name = "warcio" },
+]
+mcp = [
+    { name = "mcp" },
 ]
 
 [package.metadata]
@@ -1855,7 +1858,6 @@ dev = [
     { name = "jmespath", specifier = ">=1.0" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "maturin", specifier = ">=1.15,<2" },
-    { name = "mcp", specifier = ">=2.3" },
     { name = "pillow", specifier = ">=11" },
     { name = "pip", specifier = ">=25" },
     { name = "pyarrow", specifier = ">=21" },
@@ -1865,6 +1867,7 @@ dev = [
     { name = "scrapy", specifier = ">=2.15" },
     { name = "warcio", specifier = ">=1.7" },
 ]
+mcp = [{ name = "mcp", specifier = ">=2.3" }]
 
 [[package]]
 name = "opentelemetry-api"

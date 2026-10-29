@@ -150,6 +150,10 @@ jobs:
           uv pip install --no-index --find-links dist netweir
           # Everything the tests import, from the same list CI uses.
           uv pip install --group dev
+          # The MCP SDK can't install on free-threaded Windows (ci.yml).
+          if [[ "${{ runner.os }}-${{ matrix.python }}" != Windows-3.14t ]]; then
+            uv pip install --group mcp
+          fi
           rm -rf python
           uv run --no-project pytest -q tests
         shell: bash
