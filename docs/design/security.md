@@ -94,6 +94,17 @@ a loopback address, which blocks DNS rebinding. Request bodies stop at
 address and in total. The metrics endpoint has no password and also
 defaults to `127.0.0.1`.
 
+## `netweir.llm`
+
+Nothing calls a model unless the user calls `netweir.llm.extract`, with
+their own key. The page's Markdown, URL and title go to the model as data,
+and the system prompt says that text on the page addressing the model is
+part of the page. The API holds the answer to the schema's fields and types,
+and a pydantic model's answer is validated, so a hostile page can mislead
+the values but not which fields come back. The page's Markdown can't close
+its own `<page>` delimiter, and the user's instructions go in a block of
+their own after it.
+
 ## Files Netweir writes
 
 The files and images pipelines name each file by a SHA-1 of its URL under
