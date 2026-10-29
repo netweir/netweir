@@ -210,11 +210,13 @@ one with the service or with other jobs. So:
   the job.
 - Workers ignore Ctrl-Break, and the job stops them as after Ctrl-C.
 - Chrome is a GUI program and has no console. chrome-headless-shell is
-  a console program (its PE header's subsystem is 3, console), so it
-  shares the job's console and gets the Ctrl-Break too. It carries on
-  regardless, and the crawl closes it as usual: a test has a crawl
-  ignore the cancel and go on fetching through the same headless shell
-  (CI installs it on Windows for that).
+  a console program (its PE header's subsystem is 3, console), and
+  would share the job's console and get the Ctrl-Break too, it and its
+  helpers. Mostly it carried on, but a helper could end and fail the
+  crawl's next fetch. So netweir starts Chrome with `CREATE_NO_WINDOW`,
+  a console of its own, and the crawl closes it as usual: a test has a
+  crawl ignore the cancel and go on fetching through the same headless
+  shell (CI installs it on Windows for that).
 - Each job is put in a job object (`AssignProcessToJobObject`, just
   after it starts), without `KILL_ON_JOB_CLOSE`, since a job outlives
   the service. The kill is `TerminateJobObject`, which ends everything
