@@ -98,7 +98,12 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --group dev
+      # pywin32, which the MCP SDK needs on Windows, has no free-threaded
+      # build, so there the MCP tests skip (docs/mcp.md says so too).
+      - run: >-
+          uv sync --group dev
+          ${{ matrix.os == 'windows-latest' && matrix.python == '3.14t'
+          && '--no-install-package mcp --no-install-package pywin32' || '' }}
       - run: uv run maturin develop --uv
       # The Chrome for Testing build netweir's profiles are tuned for, as a
       # user gets it, rather than whatever Chrome the runner image carries:

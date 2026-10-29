@@ -14,6 +14,9 @@ The server needs the MCP SDK, which comes with the `mcp` extra:
 pip install 'netweir[mcp]'
 ```
 
+On Windows, the SDK needs pywin32, which has no build for free-threaded
+Python (3.14t) yet. Install it on the regular Python build there.
+
 Then tell your client to start `netweir mcp`. In Claude Code:
 
 ```
