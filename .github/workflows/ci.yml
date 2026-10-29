@@ -82,6 +82,9 @@ jobs:
       # .cargo/config.toml's flags less the leak: a Python object dropped
       # off Python's threads aborts the tests instead of leaking quietly.
       RUSTFLAGS: --cfg pyo3_disable_reference_pool
+      # uv run would sync again and put back what the sync step below
+      # leaves out on purpose.
+      UV_NO_SYNC: "1"
     steps:
       # Spotlight indexes every file the build and the tests write, and on
       # a 3-core macOS runner that, with Chrome, left a launch or a new
