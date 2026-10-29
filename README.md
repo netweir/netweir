@@ -669,7 +669,13 @@ you'll be asked to agree to the [CLA](CLA.md), once. Questions go in
 ## Licence
 
 AGPL-3.0. If that doesn't work for your company, a commercial licence is
-available. See NOTICE for the licences of what Netweir bundles.
+available: see [netweir.com/licence](https://netweir.com/licence/) or email
+legal@netweir.com. See NOTICE for the licences of what Netweir bundles.
+
+The Netweir name and logo are trademarks of James Conway; the
+[trademark policy](https://netweir.com/trademark/) says how you can use them.
+To sponsor Netweir, see [GitHub Sponsors](https://github.com/sponsors/jamesconwaydev)
+or email sponsors@netweir.com. Anything else: hello@netweir.com.
 
 Please use it the way you'd want your own site scraped. Crawls obey
 robots.txt and TDMRep unless you switch that off, and Netweir tells you when

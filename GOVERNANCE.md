@@ -31,4 +31,5 @@ author.
 
 The list of maintainers lives in this file:
 
-- James Conway ([@jamesconwaydev](https://github.com/jamesconwaydev))
+- James Conway ([@jamesconwaydev](https://github.com/jamesconwaydev),
+  james@netweir.com)
