@@ -92,7 +92,8 @@ Working today:
   headings into pieces sized for an embedding model, keeps code blocks
   and tables whole where they fit, and gives each chunk its heading path
   and an id that stays the same from crawl to crawl. `to_langchain()` and
-  `to_llamaindex()` hand them on. See
+  `to_llamaindex()` hand them on, and `netweir crawl docs --url URL -o
+  docs.jsonl` chunks a whole docs site. See
   [docs/selecting.md](docs/selecting.md#chunks-for-retrieval).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
   a category page's listing, a job posting, an article, a forum thread,

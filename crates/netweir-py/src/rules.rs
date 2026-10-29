@@ -131,6 +131,8 @@ pub(crate) struct ItemInner {
     /// Each output's value when nothing is found.
     defaults: Vec<Py<PyAny>>,
     auto: Option<Auto>,
+    /// The fields that hold the page's URL (`netweir.page_url`).
+    page_urls: Vec<usize>,
 }
 
 /// An auto item: its type, and each compiled field's source label.
@@ -158,7 +160,15 @@ impl ItemInner {
         base: Option<&Url>,
     ) -> Vec<Value> {
         let values = self.spec.extract(root, base);
+        let values = self.with_page_url(values, page);
         self.assemble(root, page, base, values)
+    }
+
+    fn with_page_url(&self, mut values: Vec<Value>, page: Option<&Url>) -> Vec<Value> {
+        for &i in &self.page_urls {
+            values[i] = page.map_or(Value::Missing, |u| Value::Text(u.to_string()));
+        }
+        values
     }
 
     /// An auto item's values: its type's fields as auto-extraction found
@@ -264,6 +274,7 @@ impl ItemInner {
         ctx: &TrackContext<'_>,
     ) -> (Vec<Value>, Notes) {
         let (values, notes) = self.spec.extract_with(root, base, ctx);
+        let values = self.with_page_url(values, page);
         let values = self.assemble(root, page, base, values);
         let notes = notes
             .into_iter()
@@ -387,6 +398,7 @@ impl ItemSpec {
         let mut names = Vec::new();
         let mut defaults = Vec::new();
         let mut sources = Vec::new();
+        let mut page_urls = Vec::new();
         for (field, kind, query, pattern, all, strip, convert, default, track) in fields {
             let convert = match convert.as_str() {
                 c if c.starts_with("auto:") => match schema {
@@ -403,6 +415,11 @@ impl ItemSpec {
                     }
                 },
                 c if c.starts_with("chunks:") => chunks_convert(&field, &c[7..])?,
+                // Read from the page, not from what the query finds.
+                "page_url" => {
+                    page_urls.push(names.len());
+                    Convert::Text
+                }
                 "text" => Convert::Text,
                 "int" => Convert::Int,
                 "float" => Convert::Float,
@@ -470,6 +487,7 @@ impl ItemSpec {
                 output,
                 defaults,
                 auto,
+                page_urls,
             }),
         })
     }

@@ -48,7 +48,17 @@ from netweir._native import (
     parse_salary,
 )
 from netweir._request import Request
-from netweir._rules import Extract, Follow, Item, chunks, clean_text, css, markdown, xpath
+from netweir._rules import (
+    Extract,
+    Follow,
+    Item,
+    chunks,
+    clean_text,
+    css,
+    markdown,
+    page_url,
+    xpath,
+)
 from netweir._stats import Stats
 
 __all__ = [
@@ -111,6 +121,7 @@ __all__ = [
     "jmespath",
     "loader",
     "markdown",
+    "page_url",
     "js_data",
     "parse",
     "parse_availability",
