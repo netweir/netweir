@@ -107,6 +107,11 @@ Working today:
   the command line. `netweir crawl ecommerce --url URL` (or `article`,
   `job`) crawls a whole site with it, finding the categories and pages
   itself. See [docs/extraction.md](docs/extraction.md).
+- Language-model extraction, if you want it: `netweir.llm.extract(page,
+  {"name": "the loaf's name", "weight": "its weight"})` has Claude read the
+  fields you describe from a page no type covers, in exactly the shape you
+  asked for. Your key, and nothing calls a model unless you ask. See
+  [docs/llm.md](docs/llm.md).
 - Crawling: spiders, sitemaps, robots.txt, per-site throttling, and items
   written to JSON Lines, JSON, XML, CSV or Parquet, on disk or in cloud
   storage, in one file or in batches. Downloader and spider
