@@ -5009,13 +5009,13 @@ mod tests {
 
     #[test]
     fn a_saved_login_keeps_its_user_and_domain_and_finds_its_password() {
-        let password = |kind: &str| format!("{kind}-{}", std::process::id());
+        let password = |n: u32| format!("pw-{}-{n}", std::process::id());
         let mut asked = request("http://shop.test/a");
-        asked.outgoing.policy.auth = Some(crate::Auth::new("ann", password("old"), None));
+        asked.outgoing.policy.auth = Some(crate::Auth::new("ann", password(1), None));
         let mut saved = pending_of(&asked, "{}", 0);
         // What a queue member and a checkpoint's row are made of.
         let json = serde_json::to_string(&saved).unwrap();
-        assert!(!json.contains(&password("old")), "{json}");
+        assert!(!json.contains(&password(1)), "{json}");
         assert!(json.contains("ann"), "{json}");
 
         let mut lost = saved.clone();
@@ -5028,15 +5028,15 @@ mod tests {
 
         let settings = CrawlSettings {
             saved_logins: vec![
-                crate::Auth::new("ann", password("domain"), Some("shop.test".into())),
-                crate::Auth::new("ann", password("new"), None),
+                crate::Auth::new("ann", password(2), Some("shop.test".into())),
+                crate::Auth::new("ann", password(3), None),
             ],
             ..CrawlSettings::default()
         };
         assert_eq!(unmask_login(&settings, &mut saved), None);
         assert_eq!(
             saved.policy.auth,
-            Some(crate::Auth::new("ann", password("new"), None))
+            Some(crate::Auth::new("ann", password(3), None))
         );
     }
 
