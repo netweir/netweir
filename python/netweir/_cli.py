@@ -345,6 +345,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow --bind to a non-loopback address without a username and password",
     )
+    mcp = commands.add_parser(
+        "mcp", help="serve Netweir's reading to an AI agent over MCP, on stdin and stdout"
+    )
+    mcp.add_argument("--profile", help="the browser to look like (default chrome)")
+    mcp.add_argument("--proxy", help="send requests, and Chrome, through this proxy")
+    mcp.add_argument("--timeout", type=float, default=30.0, help="seconds (default 30)")
     _project_commands(commands)
     args = parser.parse_args(argv)
     if args.command in ("startproject", "genspider", "list", "check", "parse", "version"):
@@ -357,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
         return _serve.main(args)
     if args.command == "install":
         return _install(args)
+    if args.command == "mcp":
+        from netweir import _mcp
+
+        return _mcp.main(args)
     if args.command in ("fetch", "view", "shell", "extract"):
         return _page_command(args)
     if args.command == "queue":
@@ -859,7 +869,16 @@ class _Session:
             tab = await browser.new_page()
             response = await tab.goto(url)
             content = (await tab.content()).encode()
-            return _response(tab.url, response.status, "browser", response.headers, content)
+            headers = _utf8(response.headers)
+            return _response(tab.url, response.status, "browser", headers, content)
+
+
+def _utf8(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Chrome's response headers for the HTML it gives back, which is a
+    str whatever the page's charset was: Content-Type says UTF-8, which
+    the HTML is encoded in."""
+    kept = [(k, v) for k, v in headers if k.lower() != "content-type"]
+    return [*kept, ("content-type", "text/html; charset=utf-8")]
 
 
 def _say_if_blocked(page):

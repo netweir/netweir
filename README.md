@@ -95,6 +95,10 @@ Working today:
   `to_llamaindex()` hand them on, and `netweir crawl docs --url URL -o
   docs.jsonl` chunks a whole docs site. See
   [docs/selecting.md](docs/selecting.md#chunks-for-retrieval).
+- For AI agents: `netweir mcp` is an MCP server. Add it to Claude Code,
+  Claude Desktop or Cursor and the agent can fetch pages as Chrome would
+  and read them as Markdown, chunks, or products, jobs and articles as
+  data. See [docs/mcp.md](docs/mcp.md).
 - Auto-extraction: `page.extract(netweir.auto.Product)` reads a product,
   a category page's listing, a job posting, an article, a forum thread,
   a business's page, a property, a social post or a search engine's

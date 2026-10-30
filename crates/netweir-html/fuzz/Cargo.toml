@@ -3,6 +3,7 @@ name = "netweir-html-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+license = "AGPL-3.0-only"
 
 [package.metadata]
 cargo-fuzz = true
@@ -17,3 +18,6 @@ path = "fuzz_targets/parse.rs"
 test = false
 doc = false
 bench = false
+
+# Built with cargo-fuzz on nightly, outside the workspace.
+[workspace]
