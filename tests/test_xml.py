@@ -716,12 +716,40 @@ def test_the_document_node_is_no_xpath_result_in_xml():
     assert netweir.parse("<p>x</p>").xpath("/html/..").getall() != []
 
 
-def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds):
+def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds, monkeypatch):
     """Sitemaps and iternodes are read on threads of their own: the event
-    loop goes on answering while they're read."""
+    loop goes on answering while they're read. The test looks at which
+    thread reads them, not at how long the loop waited. A busy macOS runner
+    stalled the loop for 0.44 s with the reading on threads, and on a fast
+    machine the sitemap read on the loop stalled it for less than the
+    0.25 s that was allowed."""
     import asyncio
     import gzip
-    import time
+    import threading
+
+    from netweir import _crawl, _feeds
+
+    readers = []
+    parse_sitemap = _crawl._parse_sitemap
+    xml_nodes = _feeds._xml_nodes
+
+    def sitemap(*args):
+        readers.append(("sitemap", threading.get_ident()))
+        return parse_sitemap(*args)
+
+    def nodes_of(*args, **kwargs):
+        readers.append(("feed", threading.get_ident()))
+        nodes = xml_nodes(*args, **kwargs)
+
+        def each():
+            for node in nodes:
+                readers.append(("node", threading.get_ident()))
+                yield node
+
+        return each()
+
+    monkeypatch.setattr(_crawl, "_parse_sitemap", sitemap)
+    monkeypatch.setattr(_feeds, "_xml_nodes", nodes_of)
 
     items = "".join(f"<item><t>{'< ' * 3000}{i}</t></item>" for i in range(300))
     Feeds.pages["/bigfeed"] = (
@@ -748,29 +776,13 @@ def test_reading_a_big_feed_or_sitemap_leaves_the_crawl_running(feeds):
             nodes.append(1)
 
     async def main():
-        gaps = []
-        done = asyncio.Event()
-
-        async def tick():
-            last = time.perf_counter()
-            while not done.is_set():
-                await asyncio.sleep(0.005)
-                now = time.perf_counter()
-                gaps.append(now - last)
-                last = now
-
-        ticker = asyncio.create_task(tick())
-        started = time.perf_counter()
         await Big().crawl()
-        took = time.perf_counter() - started
-        done.set()
-        await ticker
-        return took, max(gaps)
+        return threading.get_ident()
 
-    took, worst = asyncio.run(main())
+    loop_thread = asyncio.run(main())
     assert len(nodes) == 300
-    # The reading took a while, and the loop was never held for long.
-    assert worst < max(0.25, took / 4), (took, worst)
+    assert {kind for kind, _ in readers} == {"sitemap", "feed", "node"}
+    assert [kind for kind, thread in readers if thread == loop_thread] == []
 
 
 def test_a_logging_filter_may_read_the_page_whose_repairs_it_logs():
