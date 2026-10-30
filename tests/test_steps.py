@@ -659,9 +659,15 @@ def test_typing_clicks_holds_keys_and_shifts_as_a_person_does(base):
     assert (key["@"]["code"], key["@"]["keyCode"], key["@"]["shift"]) == ("Digit2", 50, True)
     assert "é" not in key and any(e["data"] == "é" for e in log if e["t"] == "input")
     typed = [e for e in downs if len(e["key"]) == 1]
+    holds = []
     for down in typed:
         up = next(u for u in ups if u["code"] == down["code"] and u["at"] >= down["at"])
-        assert 40 <= up["at"] - down["at"] <= 400, (down["key"], up["at"] - down["at"])
+        holds.append(up["at"] - down["at"])
+        assert holds[-1] >= 40, (down["key"], holds[-1])
+    # Keys are held 45 to 180 ms. A busy runner can only lengthen one, and
+    # a macOS runner's "." came up after 427.5 ms, so the ceiling is on the
+    # middle hold rather than on every key.
+    assert sorted(holds)[len(holds) // 2] <= 400, holds
     gaps = [b["at"] - a["at"] for a, b in zip(typed, typed[1:], strict=False)]
     mean = sum(gaps) / len(gaps)
     spread = (sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5
