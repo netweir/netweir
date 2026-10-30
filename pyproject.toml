@@ -38,6 +38,8 @@ images = ["pillow>=11"]
 jmespath = ["jmespath>=1.0"]
 # netweir.llm: fields a language model reads from a page (docs/llm.md).
 llm = ["anthropic>=2.3"]
+# netweir mcp, an MCP server for AI agents (docs/mcp.md).
+mcp = ["mcp>=2.3"]
 
 [project.scripts]
 netweir = "netweir._cli:main"
@@ -53,7 +55,10 @@ Changelog = "https://github.com/netweir/netweir/releases"
 # pip only so editors that list packages with `python -m pip list` (VS
 # Code's Python extension) can; uv itself doesn't need it.
 dev = ["pytest>=8", "pytest-asyncio>=1.2", "maturin>=1.15,<2", "ruff>=0.14", "pyarrow>=21", "pip>=25", "fsspec>=2025", "jsonschema>=4.23", "scrapy>=2.15", "warcio>=1.7", "pillow>=11", "jmespath>=1.0", "coverage>=7.10", "anthropic>=2.3"]
-bench = ["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10", "trafilatura>=2.3.1", "markdownify>=1.2.3"]
+# Apart from dev because the SDK needs pywin32 on Windows, which has no
+# free-threaded build, and `maturin develop` installs dev every time.
+mcp = ["mcp>=2.3"]
+bench =["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10", "trafilatura>=2.3.1", "markdownify>=1.2.3"]
 
 [tool.maturin]
 manifest-path = "crates/netweir-py/Cargo.toml"
@@ -73,6 +78,7 @@ include = [
 # netweir itself. If uv built it too, each `uv run` could swap the
 # extension maturin just built for an older one of its own.
 package = false
+default-groups = ["dev", "mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -105,6 +105,20 @@ the values but not which fields come back. The page's Markdown can't close
 its own `<page>` delimiter, and the user's instructions go in a block of
 their own after it.
 
+## `netweir mcp`
+
+The MCP server talks only over stdin and stdout, to the client that
+started it; it opens no port. It fetches only `http` and `https` URLs,
+in Chrome too, which would otherwise open `file:` URLs and hand an agent
+the user's files; a test asks for `file:///etc/hosts` both ways. It
+fetches what the agent asks for, from the user's machine, with the
+user's network access, so an agent that reads a hostile page can be
+steered into asking for an address on the local network. Netweir
+doesn't try to tell a good URL from a bad one there: the client decides
+which tools an agent may call, and can ask the user before each one.
+Pages come back as Markdown, data or text, never run; `browser=true`
+runs them in Chrome, under its sandbox.
+
 ## Files Netweir writes
 
 The files and images pipelines name each file by a SHA-1 of its URL under

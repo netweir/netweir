@@ -58,6 +58,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/script-head":
             body = b"<p>x</p><script>document.write('<head>')</script>"
             self.send(200, body, [("Content-Type", "text/html")])
+        elif self.path == "/latin-heading":
+            body = "<h1>Café crème</h1><p>Un café.</p>".encode("latin-1")
+            self.send(200, body, [("Content-Type", "text/html; charset=ISO-8859-1")])
         elif self.path == "/latin":
             body = "<p>café</p>".encode("latin-1")
             self.send(200, body, [("Content-Type", "text/html; charset=ISO-8859-1")])
@@ -197,12 +200,23 @@ def test_fetch_browser_gives_the_html_after_scripts(base, capsysbinary):
     assert "<li>café</li>" in out.out.decode()
 
 
+def test_a_latin1_page_read_in_chrome_isnt_garbled(base, capsys):
+    # Chrome gives its HTML as text; the page's own charset no longer
+    # applies to it.
+    argv = ["extract", "--browser", "--type", "article", f"{base}/latin-heading"]
+    status, out = in_chrome(argv, capsys)
+    assert status == 0
+    assert "Café crème" in out.out
+
+
 def test_fetch_browser_headers(base, capsys):
     status, out = in_chrome(["fetch", "--browser", "--headers", f"{base}/page"], capsys)
     assert status == 0
     lines = out.out.splitlines()
     assert lines[0] == "browser 200"
-    assert "content-type: text/html" in [line.lower() for line in lines]
+    # What's written is Chrome's HTML, in UTF-8 whatever the page's own
+    # charset was, and the header says so.
+    assert "content-type: text/html; charset=utf-8" in [line.lower() for line in lines]
 
 
 def test_view_browser_says_its_html_is_utf8(base, opened, capsys):

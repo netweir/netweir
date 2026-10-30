@@ -807,11 +807,15 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     // Started suspended, so it's in its job before it can start a helper.
+    // chrome-headless-shell is a console program: with a console of its
+    // own, hidden, a Ctrl+C or Ctrl-Break meant for the program can't end
+    // it or its helpers before the program closes it. Chrome has no
+    // console, and the flag doesn't apply to it.
     #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(
-        &mut command,
-        windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
-    );
+    std::os::windows::process::CommandExt::creation_flags(&mut command, {
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+        CREATE_NO_WINDOW | CREATE_SUSPENDED
+    });
     // On Windows, Chrome's ends are inheritable from hand_over until they're
     // dropped, and any child started meanwhile would get them too; then a
     // browser's reader would never see its Chrome exit. Launches here take

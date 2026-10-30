@@ -16,6 +16,7 @@
 - [Self-healing](self-healing.md): blocks, checkpoints, tracked selectors and repair proposals.
 - [One crawl, many machines](distributed.md): processes on several machines sharing one queue in Redis.
 - [Browser](browser.md): drive Chrome for pages that need JavaScript.
+- [Netweir for AI agents](mcp.md): `netweir mcp`, an MCP server that lets Claude, Cursor and other agents fetch pages and read them as Markdown, chunks or data.
 - [Steps](steps.md): clicks, typing, scrolling and waits a request does in Chrome before its callback, as data; coming from Zyte API, scrapy-playwright, Scrapling or Crawlee.
 - [A page's environment](environment.md): viewport, screen, phones, language, time zone, location, permissions and the rest, the same everywhere a site looks.
 - [Running spiders as a service](serve.md): `netweir serve`, jobs scheduled, watched and cancelled over HTTP, as with scrapyd.
