@@ -1353,7 +1353,7 @@ mod tests {
     #[test]
     fn an_empty_password_is_kept_as_it_is() {
         let policy = crate::Policy {
-            auth: Some(crate::Auth::new("ann", "", None)),
+            auth: Some(crate::Auth::new("ann", String::new(), None)),
             ..Default::default()
         };
         assert_eq!(saved_policy(&policy), policy);
