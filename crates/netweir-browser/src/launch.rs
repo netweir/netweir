@@ -1503,18 +1503,22 @@ mod tests {
         use std::os::fd::AsRawFd;
 
         // Processes lasting ten seconds, past each check below, started
-        // for two.
+        // for two, one every 5 ms. Started as fast as they would go, they
+        // reached a macOS runner's limit on processes, and Chrome, in the
+        // tests running alongside, couldn't start its own.
         let starter = std::thread::spawn(|| {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
             std::iter::from_fn(|| (std::time::Instant::now() < until).then_some(()))
                 .map(|_| {
-                    Command::new("sleep")
+                    let child = Command::new("sleep")
                         .arg("10")
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()
-                        .unwrap()
+                        .unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    child
                 })
                 .collect::<Vec<_>>()
         });
