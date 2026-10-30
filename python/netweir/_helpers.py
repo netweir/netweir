@@ -127,7 +127,7 @@ class Records:
 @dataclass(frozen=True)
 class Chunk:
     """A piece of a page's Markdown, sized for retrieval, from
-    ``page.chunks()``.
+    ``page.chunks()`` or a node's ``chunks()``.
 
     ``id`` is the same for the same chunk of the same page from crawl to
     crawl, so a store can skip what it already holds; a change to one

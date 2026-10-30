@@ -517,6 +517,15 @@ for chunk in page.chunks(1000):
   doesn't change the ids of the others. A chunk that appears twice under
   the same headings gets `-2` after its id the second time.
 
+A parsed document or a single element chunks the same way. Pass the
+page's URL first, since only a page knows its own; without it, links stay
+as written and each chunk's `url` is None:
+
+```python
+netweir.parse(html).chunks("https://docs.example/guide", 1000)
+page.css("article")[0].chunks(main_only=False)
+```
+
 `chunk.to_dict()` gives a dict ready for JSON. `chunk.to_langchain()`
 gives a LangChain `Document` and `chunk.to_llamaindex()` a LlamaIndex
 `TextNode`, each with the chunk's id, and its URL, headings and index as

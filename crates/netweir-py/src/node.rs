@@ -849,32 +849,50 @@ impl Node {
     }
 
     /// The node's Markdown cut into chunks for retrieval (see
-    /// netweir_dom::chunk): (id, text, headings) each, links absolute
-    /// against `base_url` and ids made from it. With main_only=True, the
-    /// main content's, or the whole node's when there's no main content.
-    #[pyo3(signature = (base_url, main_only, max_chars, overlap))]
-    fn chunks(
+    /// netweir_dom::chunk), as `netweir.Chunk`s: links absolute against
+    /// `base_url`, and ids and each chunk's `url` made from it. With
+    /// main_only=True, the main content's, or the whole node's when there's
+    /// no main content.
+    #[pyo3(signature = (base_url=None, max_chars=None, *, overlap=None, main_only=true))]
+    fn chunks<'py>(
         &self,
-        py: Python<'_>,
+        py: Python<'py>,
         base_url: Option<&str>,
+        max_chars: Option<Bound<'py, PyAny>>,
+        overlap: Option<Bound<'py, PyAny>>,
         main_only: bool,
-        max_chars: usize,
-        overlap: usize,
-    ) -> Vec<(String, String, Vec<String>)> {
+    ) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let helpers = py.import("netweir._helpers")?;
+        // Checked as page.chunks() and the chunks() field check them.
+        let max_chars =
+            max_chars.map_or_else(|| 2000.into_pyobject(py).map(Bound::into_any), Ok)?;
+        let overlap = overlap.map_or_else(|| 0.into_pyobject(py).map(Bound::into_any), Ok)?;
+        helpers
+            .getattr("_chunk_sizes")?
+            .call1((&max_chars, &overlap))?;
+        let options = netweir_dom::chunk::Options {
+            max_chars: max_chars.extract()?,
+            overlap: overlap.extract()?,
+        };
         let (doc, id) = (self.doc.clone(), self.id);
         let base = base_url.and_then(|b| url::Url::parse(b).ok());
         // The ids are made from the URL as given, even one that won't parse.
         let url = base_url.unwrap_or("").to_string();
-        py.detach(move || {
+        let found = py.detach(move || {
             let _reading = doc.read();
             // SAFETY: `id` belongs to `doc`.
             let node = unsafe { doc.node(id) };
-            let options = netweir_dom::chunk::Options { max_chars, overlap };
             netweir_dom::chunk::node_chunks(node, base.as_ref(), &url, main_only, options)
-                .into_iter()
-                .map(|c| (c.id, c.text, c.headings))
-                .collect()
-        })
+        });
+        let chunk = helpers.getattr("Chunk")?;
+        found
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let headings = pyo3::types::PyTuple::new(py, c.headings)?;
+                chunk.call1((c.id, c.text, headings, i, base_url))
+            })
+            .collect()
     }
 
     /// What the page holds: "product", "product-list", "job-posting",

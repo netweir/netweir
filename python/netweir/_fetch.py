@@ -13,7 +13,7 @@ from netweir import _jmespath, _track
 from netweir._cookies import Cookies
 from netweir._errors import Blocked
 from netweir._form import Files, Form, read_form
-from netweir._helpers import Article, Chunk, Records, _chunk_sizes
+from netweir._helpers import Article, Chunk, Records
 from netweir._native import BrowserPage, Fetcher, Node, Response, Selection, _encode, _response
 from netweir._request import Request
 
@@ -484,14 +484,7 @@ class Page:
         with up to that many characters from the end of the one before.
         With ``main_only`` (the default), only the main content's, or the
         whole page's when it has none. See ``Chunk``."""
-        _chunk_sizes(max_chars, overlap)
-        base = self.urljoin("")
-        return [
-            Chunk(id, text, tuple(headings), i, base)
-            for i, (id, text, headings) in enumerate(
-                self.root.chunks(base, main_only, max_chars, overlap)
-            )
-        ]
+        return self.root.chunks(self.urljoin(""), max_chars, overlap=overlap, main_only=main_only)
 
     def article(self) -> Article:
         """The article on the page: its title, byline, publication date,

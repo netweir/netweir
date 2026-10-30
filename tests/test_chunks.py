@@ -132,3 +132,20 @@ def test_a_missing_framework_says_what_to_install(monkeypatch):
         chunk.to_langchain()
     with pytest.raises(ImportError, match="pip install llama-index-core"):
         chunk.to_llamaindex()
+
+
+def test_a_parsed_document_or_one_element_is_chunked_as_a_page_is():
+    """`netweir.parse()` and `page.css()` give nodes, and their chunks()
+    wanted every argument and gave tuples back."""
+    doc = netweir.parse(DOCS)
+    assert doc.chunks("https://docs.example/guide") == page().chunks()
+    unplaced = doc.chunks()
+    assert [c.headings for c in unplaced] == [c.headings for c in page().chunks()]
+    assert {c.url for c in unplaced} == {None}
+    (install,) = page().css("pre")
+    (chunk,) = install.chunks(main_only=False)
+    assert chunk.text == "```sh\npip install netweir\nnetweir version\n```"
+    assert chunk.index == 0
+    for bad in ({"max_chars": 0}, {"max_chars": True}, {"max_chars": 10, "overlap": 10}):
+        with pytest.raises(ValueError):
+            doc.chunks(**bad)
