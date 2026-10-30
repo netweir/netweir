@@ -16,7 +16,7 @@ use url::Url;
 use crate::archive::Archive;
 use crate::cache::{Cache, Policy, Redirect};
 use crate::canonical::{Fingerprint, fingerprint, fingerprint_with, in_jar, with_steps};
-use crate::checkpoint::{Checkpoint, Pending, Saved, proxy_sha256, saved_proxy};
+use crate::checkpoint::{Checkpoint, Pending, Saved, proxy_sha256, saved_policy, saved_proxy};
 use crate::classify::{BlockKind, Outcome, classify};
 use crate::cookies::Jar;
 use crate::deltafetch::{self, DeltaKey, Record};
@@ -64,6 +64,9 @@ pub struct CrawlSettings {
     /// A login for every request to its domain (and subdomains), on every
     /// redirect hop there, robots.txt included; a request's own wins.
     pub http_auth: Option<crate::Auth>,
+    /// Where a resumed crawl finds the passwords of saved requests' own
+    /// logins, by user and domain. Sent to nothing by being here.
+    pub saved_logins: Vec<crate::Auth>,
     /// Retry n waits a random time up to backoff_base * 2^n, capped at
     /// backoff_max ("full jitter").
     pub backoff_base: Duration,
@@ -254,6 +257,7 @@ impl Default for CrawlSettings {
             retries: 3,
             retry_statuses: RETRY_STATUSES.to_vec(),
             http_auth: None,
+            saved_logins: Vec::new(),
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             proxies: Vec::new(),
@@ -1058,6 +1062,8 @@ struct State {
     /// Proxies saved requests asked for whose login the crawl was told
     /// it couldn't find (see `unmask_proxy`).
     lost_proxies: HashSet<String>,
+    /// Saved requests' logins already warned about, the same way.
+    lost_logins: HashSet<String>,
     /// Requests leased from the shared queue and not yet released, by
     /// row, with the member that releases them.
     held: HashMap<i64, Vec<u8>>,
@@ -1547,6 +1553,20 @@ impl Crawler {
             .collect();
         let mut state = shared.lock();
         if let Some(warning) = lost_proxies(&mut state, lost) {
+            shared.push_event(&mut state, warning);
+        }
+        drop(state);
+        // And their own logins' passwords.
+        let lost: Vec<String> = shared
+            .saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .flat_map(|s| s.pending.iter_mut())
+            .filter_map(|p| unmask_login(&shared.settings, p))
+            .collect();
+        let mut state = shared.lock();
+        if let Some(warning) = lost_logins(&mut state, lost) {
             shared.push_event(&mut state, warning);
         }
         drop(state);
@@ -2310,8 +2330,48 @@ fn pending_of(request: &CrawlRequest, payload: &str, row: i64) -> Pending {
         retry_post: request.retry_post,
         proxy,
         proxy_sha256,
-        policy: request.outgoing.policy.clone(),
+        policy: saved_policy(&request.outgoing.policy),
     }
+}
+
+/// Gives a saved request's login its password back: from `saved_logins`
+/// or `http_auth`, whichever has the same user and domain. With neither,
+/// the request goes as the crawl's others do, and the login is returned
+/// to warn about. A login saved before passwords were hidden is used as
+/// it was saved.
+fn unmask_login(settings: &CrawlSettings, p: &mut Pending) -> Option<String> {
+    let auth = p.policy.auth.as_mut().filter(|a| a.hidden)?;
+    let found = settings
+        .saved_logins
+        .iter()
+        .chain(&settings.http_auth)
+        .find(|c| c.user == auth.user && c.domain == auth.domain);
+    if let Some(found) = found {
+        *auth = found.clone();
+        return None;
+    }
+    let lost = match &auth.domain {
+        Some(domain) => format!("{} at {domain}", auth.user),
+        None => format!("{} at {}", auth.user, p.url),
+    };
+    p.policy.auth = None;
+    Some(lost)
+}
+
+/// The warning for saved requests whose login `unmask_login` couldn't
+/// find, each login named once in the crawl.
+fn lost_logins(state: &mut State, lost: Vec<String>) -> Option<Event> {
+    let new: Vec<String> = lost
+        .into_iter()
+        .filter(|l| state.lost_logins.insert(l.clone()))
+        .collect();
+    (!new.is_empty()).then(|| Event::Warning {
+        message: format!(
+            "saved requests logging in as {} go without that login: its password isn't in \
+             saved_logins or http_auth",
+            new.join(", ")
+        ),
+    })
 }
 
 /// Gives a saved request its proxy's login back, as the crawl has it
@@ -2460,8 +2520,10 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
                 // quiet after this work too.
                 state.queue_over = false;
                 let mut lost = Vec::new();
+                let mut logins = Vec::new();
                 for (member, mut request) in leased {
                     lost.extend(unmask_proxy(&s, &mut request));
+                    logins.extend(unmask_login(&s.settings, &mut request));
                     let row = state.next_row;
                     state.next_row += 1;
                     state.held.insert(row, member);
@@ -2476,6 +2538,9 @@ async fn queue_loop(s: Arc<Shared>, mut inbox: tokio::sync::mpsc::UnboundedRecei
                     );
                 }
                 if let Some(warning) = lost_proxies(&mut state, lost) {
+                    s.push_event(&mut state, warning);
+                }
+                if let Some(warning) = lost_logins(&mut state, logins) {
                     s.push_event(&mut state, warning);
                 }
             }
@@ -4940,6 +5005,38 @@ mod tests {
         let ended = tokio::time::timeout(Duration::from_secs(10), crawler.next(10)).await;
         assert!(ended.unwrap().is_empty());
         assert!(started.elapsed() >= grace / 2, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_saved_login_keeps_its_user_and_domain_and_finds_its_password() {
+        let mut asked = request("http://shop.test/a");
+        asked.outgoing.policy.auth = Some(crate::Auth::new("ann", "hunter2", None));
+        let mut saved = pending_of(&asked, "{}", 0);
+        // What a queue member and a checkpoint's row are made of.
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains("hunter2"), "{json}");
+        assert!(json.contains("ann"), "{json}");
+
+        let mut lost = saved.clone();
+        let settings = CrawlSettings::default();
+        assert_eq!(
+            unmask_login(&settings, &mut lost).as_deref(),
+            Some("ann at http://shop.test/a")
+        );
+        assert_eq!(lost.policy.auth, None);
+
+        let settings = CrawlSettings {
+            saved_logins: vec![
+                crate::Auth::new("ann", "for-a-domain", Some("shop.test".into())),
+                crate::Auth::new("ann", "new", None),
+            ],
+            ..CrawlSettings::default()
+        };
+        assert_eq!(unmask_login(&settings, &mut saved), None);
+        assert_eq!(
+            saved.policy.auth,
+            Some(crate::Auth::new("ann", "new", None))
+        );
     }
 
     fn request(url: &str) -> CrawlRequest {

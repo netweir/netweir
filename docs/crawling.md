@@ -88,10 +88,12 @@ A login written into the URL (`https://ada:secret@intranet/`) becomes
 `download_timeout`, `dont_redirect`, `redirect_ttl` and `http_user`,
 `http_pass` and `http_auth_domain`.
 
-A request's login is saved with it in a [checkpoint](self-healing.md#checkpoints)
-and in a [shared queue](distributed.md). On Linux and macOS the
-checkpoint's files are readable by you alone; Redis is as safe as you
-keep it.
+A [checkpoint](self-healing.md#checkpoints) and a [shared queue](distributed.md)
+keep a request's user and domain, never its password, so a crawl that
+resumes or leases that request needs the password again: put it in the
+`saved_logins` [setting](settings.md#fetching), read from wherever you keep
+secrets. Without it the request goes without its login, and the crawl warns
+you once.
 
 The highest priority a page gets is one below the largest 32-bit
 integer, which is kept for file downloads, so priorities from there up

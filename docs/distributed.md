@@ -259,9 +259,11 @@ body to send, and which spider method to call with the page. And the
 traffic between Netweir and Redis is plain TCP, readable by anyone on
 the path, password included.
 
-Requests given a login (`auth=`, or `http_user` in meta) carry it in the
-queue, readable by anyone who can read Redis. The crawl's own
-`http_auth` setting never goes there.
+Requests given a login (`auth=`, or `http_user` in meta) carry its user
+and domain in the queue, readable by anyone who can read Redis, but not its
+password: each process finds that in its `saved_logins`
+[setting](settings.md#fetching). The crawl's own `http_auth` setting never
+goes there.
 
 A request's [steps](steps.md) travel in the queue too, and they act in
 Chrome with the crawl's sessions:

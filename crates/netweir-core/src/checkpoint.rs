@@ -21,7 +21,7 @@ use crate::canonical::Fingerprint;
 
 /// The layout this build writes. Older files are upgraded on open; newer
 /// ones are refused.
-pub const FORMAT: i64 = 6;
+pub const FORMAT: i64 = 7;
 
 /// A request that was saved and not finished. A shared queue keeps the
 /// same fields, as JSON, without the row.
@@ -52,8 +52,10 @@ pub struct Pending {
     pub proxy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_sha256: Option<String>,
-    /// Its timeout, redirect limit and login. Formats 1 to 3, and queue
-    /// members written before, had none: the fetcher's own.
+    /// Its timeout, redirect limit and login, as `saved_policy` keeps
+    /// them. Formats 1 to 3, and queue members written before, had none:
+    /// the fetcher's own. Formats 4 to 6, and queue members written
+    /// before, kept the login's password.
     #[serde(default)]
     pub policy: crate::Policy,
 }
@@ -337,6 +339,12 @@ impl Checkpoint {
         }
         if matches!(format.as_deref().map(str::parse::<i64>), Some(Ok(v)) if v < FORMAT) {
             hide_proxy_logins(&conn).map_err(sql)?;
+            hide_request_logins(&conn).map_err(sql)?;
+            conn.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'format'",
+                params![FORMAT.to_string()],
+            )
+            .map_err(sql)?;
         }
         let saved = read(&conn).map_err(sql)?;
         let (ops, inbox) = channel();
@@ -551,6 +559,44 @@ fn hide_proxy_logins(conn: &Connection) -> rusqlite::Result<()> {
             tx.execute(
                 "UPDATE requests SET proxy = ?1, proxy_sha256 = ?2 WHERE row = ?3",
                 params![proxy, sha, row],
+            )?;
+        }
+    }
+    tx.commit()
+}
+
+/// `policy` as a checkpoint or a shared queue keeps it: a login without
+/// its password. An empty password has nothing to hide, and needs no
+/// finding on resume.
+pub(crate) fn saved_policy(policy: &crate::Policy) -> crate::Policy {
+    let mut policy = policy.clone();
+    if let Some(auth) = policy.auth.as_mut().filter(|a| !a.password.is_empty()) {
+        auth.password.clear();
+        auth.hidden = true;
+    }
+    policy
+}
+
+/// Formats 4 to 6 kept each request's login, password and all: from now
+/// on, as `saved_policy` keeps it. A policy that can't be read is left
+/// for `read` to report.
+fn hide_request_logins(conn: &Connection) -> rusqlite::Result<()> {
+    let rows = conn
+        .prepare("SELECT row, policy FROM requests WHERE policy IS NOT NULL")?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tx = conn.unchecked_transaction()?;
+    for (row, json) in rows {
+        let Ok(policy) = serde_json::from_str::<crate::Policy>(&json) else {
+            continue;
+        };
+        let saved = saved_policy(&policy);
+        if saved != policy {
+            let json = serde_json::to_string(&saved)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+            tx.execute(
+                "UPDATE requests SET policy = ?1 WHERE row = ?2",
+                params![json, row],
             )?;
         }
     }
@@ -1266,6 +1312,51 @@ mod tests {
         assert_eq!(saved.pending[1], post);
         drop(_cp);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_checkpoint_that_kept_passwords_is_upgraded_without_them() {
+        let dir = std::env::temp_dir().join(format!("netweir-cp-v6-{}", std::process::id()));
+        let path = dir.join("crawl.sqlite3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cp, _) = Checkpoint::open(&path).unwrap();
+        cp.request([6; 16], pending(6, "https://e.com/a"));
+        drop(cp);
+        let conn = Connection::open(&path).unwrap();
+        let login = r#"{"auth":{"user":"ann","password":"hunter2","domain":null}}"#;
+        conn.execute("UPDATE requests SET policy = ?1", params![login])
+            .unwrap();
+        conn.execute("UPDATE meta SET value = '6' WHERE key = 'format'", [])
+            .unwrap();
+        drop(conn);
+        let (cp, saved) = Checkpoint::open(&path).unwrap();
+        let auth = saved.pending[0].policy.auth.as_ref().unwrap();
+        assert_eq!(
+            (auth.user.as_str(), auth.password.as_str(), auth.hidden),
+            ("ann", "", true)
+        );
+        drop(cp);
+        let conn = Connection::open(&path).unwrap();
+        let (kept, format): (String, String) = conn
+            .query_row(
+                "SELECT policy, (SELECT value FROM meta WHERE key = 'format') FROM requests",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!kept.contains("hunter2"), "{kept}");
+        assert_eq!(format, FORMAT.to_string());
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_password_is_kept_as_it_is() {
+        let policy = crate::Policy {
+            auth: Some(crate::Auth::new("ann", "", None)),
+            ..Default::default()
+        };
+        assert_eq!(saved_policy(&policy), policy);
     }
 
     #[test]

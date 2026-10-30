@@ -1054,7 +1054,7 @@ impl Crawler {
         cache=None, cache_expiry=None, deltafetch=None, deltafetch_reset=false,
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
-        http_auth=None,
+        http_auth=None, saved_logins=Vec::new(),
         xml_recover=false, parse_timeout=Some(10.0),
         browser_environment=None, browser_worker_header_order=false, browser_steps=None,
         browser_steps_max=Some(120.0),
@@ -1108,6 +1108,7 @@ impl Crawler {
         max_redirects: u32,
         retry_http_codes: Option<Vec<u16>>,
         http_auth: Option<AuthPy>,
+        saved_logins: Vec<AuthPy>,
         xml_recover: bool,
         parse_timeout: Option<f64>,
         browser_environment: Option<Bound<'_, pyo3::types::PyDict>>,
@@ -1196,6 +1197,13 @@ impl Crawler {
             retry_statuses: retry_http_codes
                 .unwrap_or_else(|| netweir_core::RETRY_STATUSES.to_vec()),
             http_auth: policy(None, None, false, http_auth)?.auth,
+            saved_logins: saved_logins
+                .into_iter()
+                .map(|login| Ok(policy(None, None, false, Some(login))?.auth))
+                .collect::<PyResult<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
             backoff_base: seconds("backoff_base", backoff_base)?,
             backoff_max: seconds("backoff_max", backoff_max)?,
             proxies: proxies.unwrap_or_default(),

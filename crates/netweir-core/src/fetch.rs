@@ -624,6 +624,10 @@ pub struct Auth {
     /// nowhere else. None sends it to the request's first origin only, as
     /// a browser drops a page's Authorization when a redirect leaves it.
     pub domain: Option<String>,
+    /// Read back from a checkpoint or a shared queue, which keep no
+    /// password: a resume looks for it among the crawl's logins.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl fmt::Debug for Auth {
@@ -646,6 +650,7 @@ impl Auth {
             user: user.into(),
             password: password.into(),
             domain,
+            hidden: false,
         }
     }
 

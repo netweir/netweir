@@ -50,6 +50,26 @@ from netweir._rules import Follow, _warn_invalid
 log = logging.getLogger("netweir")
 
 
+def _checked_saved_logins(logins: Any) -> tuple[tuple[str, str, str | None], ...]:
+    """``saved_logins`` as (user, password, domain) tuples, or why it can't be.
+    Two passwords for one user and domain leave nothing to choose between."""
+    checked: dict[tuple[str, str | None], str] = {}
+    for login in logins:
+        if (
+            not isinstance(login, (tuple, list))
+            or len(login) not in (2, 3)
+            or not all(isinstance(part, str) for part in login)
+        ):
+            raise ValueError(
+                "each of saved_logins is (user, password) or (user, password, domain), in strings"
+            )
+        domain = _auth_domain(login[2]) if len(login) == 3 else None
+        if (login[0], domain) in checked:
+            raise ValueError(f"saved_logins has {login[0]!r} twice for the same domain")
+        checked[login[0], domain] = login[1]
+    return tuple((user, password, domain) for (user, domain), password in checked.items())
+
+
 @dataclasses.dataclass(frozen=True)
 class Settings:
     """How a crawl behaves. Every field has a polite default."""
@@ -121,6 +141,11 @@ class Settings:
     #: HTTPAUTH_PASS and HTTPAUTH_DOMAIN). Each needs the other.
     http_auth: tuple[str, str] | None = dataclasses.field(default=None, repr=False)
     http_auth_domain: str | None = None
+    #: Where a resumed crawl finds the passwords of saved requests' own
+    #: logins, which checkpoints and shared queues don't keep: each a
+    #: (user, password) for auth=, or (user, password, domain) for meta's
+    #: http_auth_domain. Sends nothing by itself.
+    saved_logins: tuple = dataclasses.field(default=(), repr=False)
     #: Proxies to send requests through, as proxy_rotation says:
     #: "on_block" (a site moves to the next each time it blocks a session,
     #: which also starts with an empty cookie jar), "per_request" (every
@@ -317,6 +342,7 @@ class Settings:
             # public suffix would send the login to every site under it.
             domain = _auth_domain(self.http_auth_domain)
             object.__setattr__(self, "http_auth_domain", domain)
+        object.__setattr__(self, "saved_logins", _checked_saved_logins(self.saved_logins))
         if not 0 < self.backoff_base <= self.backoff_max or self.breaker_pause < 0:
             raise ValueError("backoffs must be positive, with backoff_base <= backoff_max")
         if not 0 <= self.breaker_ratio <= 1:
@@ -446,6 +472,7 @@ class Settings:
             max_redirects=self.max_redirects,
             retry_http_codes=list(self.retry_http_codes),
             http_auth=None if self.http_auth is None else (*self.http_auth, self.http_auth_domain),
+            saved_logins=list(self.saved_logins),
             max_response_size=self.max_response_size,
             concurrency=self.concurrency,
             per_domain=self.per_domain,

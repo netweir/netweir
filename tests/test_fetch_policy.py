@@ -544,11 +544,50 @@ def test_a_requests_policy_survives_a_checkpoint(base, tmp_path):
         def failed(self, request, error):
             errors.append((request.timeout, request.max_redirects, request.auth, error.kind))
 
+    for file in tmp_path.rglob("*"):
+        if file.is_file():
+            assert b"secret" not in file.read_bytes(), file
+
     spider = Resumed()
-    spider.settings = settings(checkpoint=checkpoint)
+    spider.settings = settings(checkpoint=checkpoint, saved_logins=[("ada", "secret")])
     spider.run()
     assert Handler.seen[-1][2] == ADA, "sent with its login"
     assert errors == [(4.5, 0, ("ada", "secret"), "too_many_redirects")]
+
+
+def test_a_resumed_request_without_its_password_goes_without_and_says_so(base, tmp_path, caplog):
+    checkpoint = str(tmp_path / "state")
+    requests = [
+        netweir.Request(f"{base}/whoami?first"),
+        netweir.Request(f"{base}/whoami?second", auth=("ada", "secret")),
+    ]
+    crawl(requests, max_pages=1, concurrency=1, checkpoint=checkpoint)
+
+    class Resumed(netweir.Spider):
+        async def start(self):
+            return
+            yield
+
+        def parse(self, page):
+            pass
+
+    spider = Resumed()
+    spider.settings = settings(checkpoint=checkpoint, saved_logins=[("bob", "other")])
+    with caplog.at_level("WARNING"):
+        spider.run()
+    assert Handler.seen[-1][2] is None
+    assert "logging in as ada at " in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_saved_logins_are_checked():
+    assert netweir.Settings(saved_logins=[("ada", "pw")]).saved_logins == (("ada", "pw", None),)
+    assert "pw" not in repr(netweir.Settings(saved_logins=[("ada", "pw")]))
+    for bad in ([("ada",)], ["ada:pw"], [("ada", 1)], [("ada", "a"), ("ada", "b")]):
+        with pytest.raises(ValueError):
+            netweir.Settings(saved_logins=bad)
+    with pytest.raises(ValueError):
+        netweir.Settings(saved_logins=[("ada", "pw", "com")])
 
 
 def test_a_requests_policy_travels_through_the_shared_queue(base):
@@ -575,6 +614,7 @@ def test_a_requests_policy_travels_through_the_shared_queue(base):
             queue=fake.url,
             queue_key="policy",
             queue_idle=1.0,
+            saved_logins=[("ada", "secret")],
         )
         assert [p[0] for p in pages] == [302]
         assert Handler.seen[0][2] == ADA

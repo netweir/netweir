@@ -473,6 +473,7 @@ class Crawler:
         max_redirects: int = 20,
         retry_http_codes: list[int] | None = None,
         http_auth: tuple[str, str, str] | None = None,
+        saved_logins: list[tuple[str, str, str | None]] = ...,
         browser_environment: Environment | None = None,
         browser_worker_header_order: bool = False,
         browser_steps: str | None = None,
