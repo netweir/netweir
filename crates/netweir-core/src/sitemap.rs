@@ -246,6 +246,7 @@ mod tests {
             .collect();
         let xml = format!("<urlset>{rows}</urlset>");
         let stop = AtomicBool::new(false);
+        let started = std::time::Instant::now();
         assert_eq!(
             parse_until(xml.as_bytes(), 1 << 30, &stop)
                 .unwrap()
@@ -253,14 +254,17 @@ mod tests {
                 .len(),
             200_000
         );
-        // Once it is set, reading stops within a few lines.
+        let whole = started.elapsed();
+        // Once it is set, reading stops within a few lines. Measured
+        // against the whole read on the same machine, since a busy macOS
+        // runner took 123 ms over what a fixed 100 ms bound allowed.
         stop.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
         let err = parse_until(xml.as_bytes(), 1 << 30, &stop).unwrap_err();
         assert_eq!(err, "the sitemap was given up on");
         assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "{:?}",
+            started.elapsed() * 10 < whole,
+            "{:?} against {whole:?} for the whole sitemap",
             started.elapsed()
         );
     }
