@@ -63,7 +63,7 @@ TASKS = {
     "markdown()": lambda doc: doc.markdown("https://example.com/"),
     "clean_text(main_only=True)": lambda doc: doc.clean_text(main_only=True),
     "article()": lambda doc: doc.article("https://example.com/"),
-    "chunks(2000)": lambda doc: doc.chunks("https://example.com/", True, 2000, 0),
+    "chunks(2000)": lambda doc: doc.chunks("https://example.com/", 2000),
     "parse (for scale)": None,
 }
 
