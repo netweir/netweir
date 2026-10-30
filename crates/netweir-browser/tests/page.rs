@@ -784,6 +784,25 @@ fn uncached(body: &str) -> Reply {
     r
 }
 
+#[test]
+fn a_dropped_server_doesnt_answer_on_a_connection_already_open() {
+    use std::io::{Read, Write};
+    let server = serve(vec![("/a", html("<p>a</p>"))]);
+    let addr = server.url.trim_start_matches("http://").to_string();
+    let mut idle = std::net::TcpStream::connect(&addr).unwrap();
+    // Accepted before the drop, as a connection Chrome opened ahead of need.
+    let mut probe = std::net::TcpStream::connect(&addr).unwrap();
+    probe.write_all(b"GET /a HTTP/1.1\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    probe.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    drop(server);
+    let _ = idle.write_all(b"GET /a HTTP/1.1\r\n\r\n");
+    let mut late = Vec::new();
+    let _ = idle.read_to_end(&mut late);
+    assert!(late.is_empty(), "{}", String::from_utf8_lossy(&late));
+}
+
 #[tokio::test]
 async fn back_to_a_page_that_cant_be_reached_is_a_navigation_error() {
     let Some(browser) = browser().await else {

@@ -16,6 +16,7 @@ pub fn chrome() -> Option<PathBuf> {
     }
 }
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,23 +140,45 @@ fn listen(handle: impl Fn(TcpStream) + Send + Sync + 'static) -> Listening {
     let v6 = TcpListener::bind(("::1", port)).ok();
     let handle = Arc::new(handle);
     let stop = Arc::new(AtomicBool::new(false));
+    let open = Arc::new(Mutex::new(HashMap::new()));
     let mut addrs = Vec::new();
+    let mut accepting = Vec::new();
     for listener in std::iter::once(v4).chain(v6) {
         addrs.push(listener.local_addr().unwrap());
         let handle = handle.clone();
         let stop = stop.clone();
-        std::thread::spawn(move || {
+        let open = open.clone();
+        accepting.push(std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
+                let peer = stream.peer_addr().ok();
+                if let (Some(peer), Ok(clone)) = (peer, stream.try_clone()) {
+                    open.lock().unwrap().insert(peer, clone);
+                }
                 let handle = handle.clone();
-                std::thread::spawn(move || handle(stream));
+                let open = open.clone();
+                std::thread::spawn(move || {
+                    handle(stream);
+                    // Held here too, this would keep the connection open
+                    // after its answer, and a client reading to the end
+                    // would wait for ever.
+                    if let Some(peer) = peer {
+                        open.lock().unwrap().remove(&peer);
+                    }
+                });
             }
-        });
+        }));
     }
-    Listening { port, stop, addrs }
+    Listening {
+        port,
+        stop,
+        addrs,
+        accepting,
+        open,
+    }
 }
 
 /// A test server's listeners. Without this they'd stay open, each with a
@@ -164,6 +187,10 @@ struct Listening {
     port: u16,
     stop: Arc<AtomicBool>,
     addrs: Vec<std::net::SocketAddr>,
+    accepting: Vec<std::thread::JoinHandle<()>>,
+    /// Each connection being handled. Chrome opens some ahead of need, and
+    /// a handler waiting on one would answer after the server was dropped.
+    open: Arc<Mutex<HashMap<std::net::SocketAddr, TcpStream>>>,
 }
 
 impl Drop for Listening {
@@ -173,6 +200,12 @@ impl Drop for Listening {
         // closing the listener.
         for addr in &self.addrs {
             let _ = TcpStream::connect(addr);
+        }
+        for thread in self.accepting.drain(..) {
+            let _ = thread.join();
+        }
+        for (_, stream) in self.open.lock().unwrap().drain() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
         }
     }
 }
