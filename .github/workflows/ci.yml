@@ -92,9 +92,11 @@ jobs:
       # Spotlight indexes every file the build and the tests write, and on
       # a 3-core macOS runner that, with Chrome, left a launch or a new
       # page waiting past its 30 s now and then. Off, a probe running four
-      # Chromes at a time for 25 minutes saw none over 20 s.
+      # Chromes at a time for 25 minutes saw none over 20 s. Named volumes,
+      # not -a: some images have a Preboot volume without an index, and
+      # mdutil fails on it.
       - if: runner.os == 'macOS'
-        run: sudo mdutil -a -i off
+        run: sudo mdutil -i off / /System/Volumes/Data
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
@@ -186,7 +188,7 @@ jobs:
     steps:
       # As in the test job above.
       - if: runner.os == 'macOS'
-        run: sudo mdutil -a -i off
+        run: sudo mdutil -i off / /System/Volumes/Data
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
