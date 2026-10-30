@@ -6,6 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request ends the run on its old commit, which
+# otherwise held the few macOS runners for an hour. Runs on main all
+# finish: each one tests a commit that landed.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
