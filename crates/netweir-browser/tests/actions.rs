@@ -1782,7 +1782,6 @@ async fn text_and_role_selectors_find_an_element_by_what_it_says() {
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    let quick = Some(Duration::from_secs(1));
     for selector in [
         "text=sign IN",     // the visible one, across its tags
         "text=\"Sign in\"", // not "Sign in now"
@@ -1796,7 +1795,7 @@ async fn text_and_role_selectors_find_an_element_by_what_it_says() {
         "role=button[name=Odd]", // the attribute beats the tag
         "role=heading[name=Sign in]",
     ] {
-        page.click(selector, quick).await.unwrap();
+        page.click(selector, None).await.unwrap();
     }
     assert_eq!(
         page.evaluate("said").await.unwrap(),
@@ -1814,7 +1813,7 @@ async fn text_and_role_selectors_find_an_element_by_what_it_says() {
             "heading"
         ])
     );
-    page.fill("role=textbox[name=Email]", "ada", quick)
+    page.fill("role=textbox[name=Email]", "ada", None)
         .await
         .unwrap();
     assert_eq!(
@@ -1829,11 +1828,11 @@ async fn text_and_role_selectors_find_an_element_by_what_it_says() {
         "role=button[name=Unheard]",
         "role=link[name=Odd]",
     ] {
-        let err = page.click(selector, quick).await.unwrap_err();
+        let err = page.click(selector, SHORT).await.unwrap_err();
         assert!(matches!(err, Error::Timeout(_)), "{selector}: {err}");
     }
     // The text inside a disabled button isn't something to click.
-    let err = page.click("text=Off", quick).await.unwrap_err();
+    let err = page.click("text=Off", SHORT).await.unwrap_err();
     assert!(err.to_string().contains("enabled"), "{err}");
     // A selector that can't mean anything says so at once.
     for selector in ["text=", "role=button[name=]", "role=but ton"] {
