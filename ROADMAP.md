@@ -7,7 +7,7 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**More of the browser.** Tracing, and replaying a HAR file through routes.
+**More of the browser.** Tracing.
 
 ## After that
 

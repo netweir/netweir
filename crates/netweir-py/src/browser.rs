@@ -281,6 +281,25 @@ impl BrowserContext {
         network(slf.py(), &slf.get().network, None)?.call_method1("route", (slf, pattern, handler))
     }
 
+    /// Answers requests from the HAR file at `path`, with nothing sent to
+    /// the network. A request it doesn't hold fails, or with
+    /// `not_found="fallback"` goes on as usual.
+    #[pyo3(signature = (path, *, url=None, not_found="abort"))]
+    fn route_from_har<'py>(
+        slf: &Bound<'py, Self>,
+        path: PathBuf,
+        url: Option<Bound<'py, PyAny>>,
+        not_found: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let url = match url {
+            Some(url) => url,
+            None => "**/*".into_pyobject(py)?.into_any(),
+        };
+        network(py, &slf.get().network, None)?
+            .call_method1("route_from_har", (slf, path, url, not_found))
+    }
+
     /// Removes the routes with `pattern` (only the one with `handler`, if
     /// given).
     #[pyo3(signature = (pattern, handler=None))]
@@ -1294,6 +1313,24 @@ impl BrowserPage {
         handler: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         delegate(slf, "route", (slf, pattern, handler))
+    }
+
+    /// Answers requests from the HAR file at `path`, with nothing sent to
+    /// the network. A request it doesn't hold fails, or with
+    /// `not_found="fallback"` goes on as usual.
+    #[pyo3(signature = (path, *, url=None, not_found="abort"))]
+    fn route_from_har<'py>(
+        slf: &Bound<'py, Self>,
+        path: PathBuf,
+        url: Option<Bound<'py, PyAny>>,
+        not_found: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let url = match url {
+            Some(url) => url,
+            None => "**/*".into_pyobject(py)?.into_any(),
+        };
+        delegate(slf, "route_from_har", (slf, path, url, not_found))
     }
 
     /// Removes the routes with `pattern` (only the one with `handler`, if

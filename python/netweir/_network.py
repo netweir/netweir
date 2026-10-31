@@ -9,9 +9,12 @@ later: a response nobody asked for is let go as it arrives.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import inspect
+import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -47,6 +50,73 @@ async def _matches(pattern: Any, url: str, subject: Any) -> bool:
     if isinstance(pattern, re.Pattern):
         return pattern.search(url) is not None
     return bool(await _call(pattern, subject))
+
+
+#: Set by Chrome for what it sends itself, or true only of the bytes as they
+#: were on the wire: a HAR's text is already decoded.
+_UNREPLAYED_HEADERS = {"content-encoding", "content-length", "transfer-encoding"}
+
+
+class _Har:
+    """A HAR file's answers, by method and URL. Requests alike are answered
+    in the order they were recorded, and the last answer goes on being given,
+    as a page that polls should see it change as it did."""
+
+    def __init__(self, entries: list[dict[str, Any]]) -> None:
+        self.entries: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.used: dict[int, int] = {}
+        for entry in entries:
+            request = entry["request"]
+            key = (request["method"].upper(), request["url"].partition("#")[0])
+            self.entries.setdefault(key, []).append(entry)
+
+    def _entry_for(self, method: str, url: str, body: bytes | None) -> dict[str, Any] | None:
+        recorded = self.entries.get((method.upper(), url.partition("#")[0]))
+        if not recorded:
+            return None
+        # The same URL asked different things, as a search's POST does.
+        sent = (body or b"").decode("utf-8", "replace")
+        same = [e for e in recorded if e["request"].get("postData", {}).get("text", "") == sent]
+        choices = same or recorded
+        turn = self.used.get(id(choices[0]), 0)
+        self.used[id(choices[0])] = turn + 1
+        return choices[min(turn, len(choices) - 1)]
+
+    def answer_or(self, not_found: str) -> Any:
+        async def answer(route: Any) -> None:
+            request = route.request
+            entry = self._entry_for(request.method, request.url, request.post_data)
+            response = entry and entry["response"]
+            if not response or not response.get("status"):
+                # Status 0 is how a HAR records what failed or was blocked.
+                if entry is None and not_found == "fallback":
+                    await route.continue_()
+                else:
+                    await route.abort()
+                return
+            content = response.get("content", {})
+            text = content.get("text", "")
+            body = (
+                base64.b64decode(text)
+                if content.get("encoding") == "base64"
+                else text.encode("utf-8")
+            )
+            headers = [
+                (h["name"], h["value"])
+                for h in response.get("headers", [])
+                if h["name"].lower() not in _UNREPLAYED_HEADERS and not h["name"].startswith(":")
+            ]
+            await route.fulfill(status=response["status"], headers=headers, body=body)
+
+        return answer
+
+
+def _read_har(path: Any) -> _Har:
+    try:
+        with open(os.fspath(path), encoding="utf-8") as f:
+            return _Har(json.load(f)["log"]["entries"])
+    except (KeyError, TypeError, AttributeError, ValueError) as e:
+        raise ValueError(f"{os.fspath(path)} isn't a HAR file: {e!r}") from None
 
 
 class Network:
@@ -281,6 +351,14 @@ class Network:
         if self._route_lock is None or self._route_lock[0] is not loop:
             self._route_lock = (loop, asyncio.Lock())
         return self._route_lock[1]
+
+    async def route_from_har(
+        self, owner: Any, path: Any, url: Any = "**/*", not_found: str = "abort"
+    ) -> None:
+        if not_found not in ("abort", "fallback"):
+            raise ValueError(f'not_found is "abort" or "fallback", not {not_found!r}')
+        har = await asyncio.to_thread(_read_har, path)
+        await self.route(owner, url, har.answer_or(not_found))
 
     async def unroute(self, owner: Any, pattern: Any, handler: Any = None) -> None:
         self._routes = [

@@ -813,6 +813,30 @@ pattern function holds up the page's other routed requests. When more
 than one route matches, the newest wins. `await page.unroute(pattern)` removes the routes with that pattern
 (only the one with that handler, if you pass it as well).
 
+### Replaying a HAR file
+
+A HAR file holds what a page fetched and what came back. Replay one and the
+page gets those answers with nothing sent to the network, so you can run a
+scraper against a site's recorded pages as often as you like, offline, and
+get the same result each time:
+
+```python
+await page.route_from_har("shop.har")
+await page.goto("https://shop.example/")
+```
+
+Save the file from Chrome's or Firefox's network panel, or use the one a
+[crawl's `har` setting](crawling.md#keeping-what-you-fetched) writes. A
+request is matched on its method and URL, and on its body when the same URL
+was asked different things. Requests alike get the answers in the order they
+were recorded, and then the last one again.
+
+A request the file doesn't hold fails, as if the network were down, so nothing
+leaks out by accident. Pass `not_found="fallback"` to let those go to the
+network instead, and `url=` (a pattern, as for `route`) to replay only part of
+a site. `route_from_har` is a route like any other: a newer route wins over it,
+and it works on a context too.
+
 A context has `route` and `unroute` too, and they apply to every page in
 it, the ones open now and the ones you open later. A page's own routes
 come first; if none of them matches, the context's get the request.

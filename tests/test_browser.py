@@ -2,6 +2,7 @@
 NETWEIR_REQUIRE_CHROME is set."""
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -372,6 +373,111 @@ async def test_a_page_saves_as_a_pdf_and_can_go_to_a_file(browser, base, tmp_pat
         await page.pdf(width=3)
     with pytest.raises(ValueError, match="width and height together"):
         await page.pdf(format="a4", width=3, height=3)
+
+
+def _har(*entries):
+    return {"log": {"version": "1.2", "entries": list(entries)}}
+
+
+def _entry(url, text="", status=200, method="GET", posted=None, encoding=None, headers=()):
+    request = {"method": method, "url": url, "headers": []}
+    if posted is not None:
+        request["postData"] = {"mimeType": "text/plain", "text": posted}
+    content = {"mimeType": "text/html", "text": text}
+    if encoding:
+        content["encoding"] = encoding
+    return {
+        "request": request,
+        "response": {
+            "status": status,
+            "headers": [{"name": k, "value": v} for k, v in headers],
+            "content": content,
+        },
+    }
+
+
+async def test_a_har_file_answers_requests_and_nothing_reaches_the_network(browser, tmp_path):
+    # Nothing listens at this address: only the file can answer.
+    site = "http://127.0.0.1:9"
+    html = """<title>From the file</title><script>
+      globalThis.go = async (url, init) => {
+        try {
+          const r = await fetch(url, init);
+          return [r.status, r.headers.get("x-kept"), await r.text()];
+        } catch (e) { return "failed"; }
+      };
+    </script>"""
+    path = tmp_path / "shop.har"
+    path.write_text(
+        json.dumps(
+            _har(
+                _entry(
+                    site + "/",
+                    html,
+                    headers=[
+                        ("Content-Type", "text/html"),
+                        # The text is decoded: these would break the page.
+                        ("Content-Encoding", "gzip"),
+                        ("Content-Length", "1"),
+                        (":status", "200"),
+                    ],
+                ),
+                _entry(site + "/poll", "first", headers=[("X-Kept", "yes")]),
+                _entry(site + "/poll", "second"),
+                _entry(site + "/raw", base64.b64encode(b"\xffbytes").decode(), encoding="base64"),
+                _entry(site + "/q", "for a", method="POST", posted="a"),
+                _entry(site + "/q", "for b", method="POST", posted="b"),
+                _entry(site + "/blocked", status=0),
+                _entry(site + "/moved", status=302, headers=[("Location", "/gone")]),
+                _entry(site + "/gone", "not found", status=404),
+            )
+        )
+    )
+    page = await browser.new_page()
+    await page.route_from_har(path)
+    await page.goto(site + "/#part")
+    assert await page.title() == "From the file"
+    assert await page.evaluate("go('/poll')") == [200, "yes", "first"]
+    assert (await page.evaluate("go('/poll')"))[2] == "second"
+    assert (await page.evaluate("go('/poll')"))[2] == "second"
+    assert await page.evaluate("fetch('/raw').then(r => r.bytes()).then(b => b[0])") == 255
+    ask = "go('/q', {method: 'POST', body: '%s'})"
+    assert (await page.evaluate(ask % "b"))[2] == "for b"
+    assert (await page.evaluate(ask % "a"))[2] == "for a"
+    assert (await page.evaluate("go('/gone')"))[0] == 404
+    assert (await page.evaluate("go('/moved')"))[0] == 404
+    assert await page.evaluate("go('/blocked')") == "failed"
+    assert await page.evaluate("go('/not-in-the-file')") == "failed"
+
+
+async def test_a_har_file_can_leave_what_it_lacks_to_the_network(browser, base, tmp_path):
+    path = tmp_path / "part.har"
+    path.write_text(json.dumps(_har(_entry(base + "/only", "from the file"))))
+    page = await browser.new_page()
+    await page.route_from_har(path, url="**/only", not_found="fallback")
+    await page.goto(base + "/")
+    assert await page.evaluate("fetch('/only').then(r => r.text())") == "from the file"
+    # Another page's context shares nothing with this one's route.
+    other = await browser.new_context()
+    await other.route_from_har(path, not_found="fallback")
+    tab = await other.new_page()
+    response = await tab.goto(base + "/")
+    assert response.status == 200
+    await other.close()
+
+
+async def test_a_file_that_isnt_a_har_says_so(browser, tmp_path):
+    page = await browser.new_page()
+    path = tmp_path / "x.har"
+    for text in ("not json", "{}", '{"log": {"entries": [{"request": {}}]}}'):
+        path.write_text(text)
+        with pytest.raises(ValueError, match="isn't a HAR file"):
+            await page.route_from_har(path)
+    with pytest.raises(FileNotFoundError):
+        await page.route_from_har(tmp_path / "missing.har")
+    path.write_text(json.dumps(_har()))
+    with pytest.raises(ValueError, match="not_found"):
+        await page.route_from_har(path, not_found="maybe")
 
 
 async def test_the_browser_can_be_awaited_or_used_as_a_context_manager():
@@ -830,3 +936,27 @@ async def test_a_download_nobody_listens_for_is_cancelled(browser, base):
     assert len(HUNG_UP) == before + 1, "a download held went on"
     await kept.pop().cancel()
     assert await _hung_up(before + 2)
+
+
+async def test_a_har_a_crawl_wrote_replays_in_chrome(browser, base, tmp_path):
+    path = tmp_path / "crawl.har"
+
+    class Spider(netweir.Spider):
+        start_urls = [base + "/"]
+        settings = netweir.Settings(har=str(path))
+
+        def parse(self, page):
+            pass
+
+    await asyncio.to_thread(Spider().run)
+    har = json.loads(path.read_text())
+    entry = next(e for e in har["log"]["entries"] if e["request"]["url"] == base + "/")
+    # Marked, to show the answer came from the file and not the server.
+    entry["response"]["content"]["text"] += "<p id=replayed>from the file</p>"
+    path.write_text(json.dumps(har))
+    page = await browser.new_page()
+    await page.route_from_har(path)
+    await page.goto(base + "/")
+    assert (
+        await page.evaluate("document.querySelector('#replayed')?.textContent") == "from the file"
+    )
