@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Reply, browser, html, serve};
-use netweir_browser::{Error, WaitUntil};
+use netweir_browser::{Error, PdfOptions, WaitUntil};
 use serde_json::json;
 
 const SHORT: Option<Duration> = Some(Duration::from_millis(800));
@@ -924,5 +924,50 @@ async fn a_history_step_that_never_commits_says_so_when_time_runs_out() {
         matches!(&err, Error::Timeout(m) if m.contains("may not have committed")),
         "{err}"
     );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_page_saves_as_a_pdf_of_the_size_and_pages_asked_for() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html("<p>one</p><p style='break-before: page'>two</p>"),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    // Chrome writes each page's dictionary uncompressed.
+    let pages = |pdf: &[u8]| {
+        String::from_utf8_lossy(pdf)
+            .matches("/Type /Page\n")
+            .count()
+    };
+    let whole = page.pdf(&PdfOptions::default()).await.unwrap();
+    assert!(whole.starts_with(b"%PDF-"));
+    assert_eq!(pages(&whole), 2);
+    let first = page
+        .pdf(&PdfOptions {
+            page_ranges: Some("1".into()),
+            landscape: true,
+            paper: Some((4.0, 8.0)),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(pages(&first), 1);
+    // 72 points to the inch, turned on its side.
+    let text = String::from_utf8_lossy(&first);
+    assert!(text.contains("/MediaBox [0 0 576 288]"));
+    // What Chrome refuses is an error, not an empty file.
+    let err = page
+        .pdf(&PdfOptions {
+            page_ranges: Some("nonsense".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Protocol { .. }), "{err}");
     browser.close().await.unwrap();
 }

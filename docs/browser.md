@@ -644,11 +644,29 @@ back as text: `NaN`, `Infinity`, `-0` and BigInts as `"NaN"`,
 `evaluate` has no timeout of its own, so a promise that never settles
 waits forever. Wrap it in `asyncio.wait_for` if that can happen.
 
-## Screenshots and cookies
+## Screenshots, PDFs and cookies
 
 `await page.screenshot("page.png", full_page=True)` saves a PNG and returns
 its bytes; leave out the path to get only the bytes. `quality=` (1 to 100)
 makes a JPEG of that quality instead, often a tenth the size.
+
+`await page.pdf("page.pdf")` saves the page laid out as for printing and
+returns the bytes; leave out the path to get only the bytes. Printing drops
+background colours and images unless you pass `print_background=True`.
+
+```python
+await page.pdf(
+    "report.pdf",
+    format="A4",             # Letter, Legal, Tabloid, A3, A4 or A5; Letter by default
+    landscape=True,
+    margin=0.5,              # inches, on all four sides
+    scale=0.8,
+    page_ranges="1-3, 5",
+)
+```
+
+`width=` and `height=`, in inches, take the place of `format=`. `landscape`
+swaps the two, so give them as they'd be upright.
 
 `await page.cookies()` returns the cookies of the page's context as dicts
 with `name`, `value`, `domain`, `path`, `expires`, `http_only`, `secure`,

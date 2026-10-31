@@ -94,6 +94,22 @@ impl Response {
     }
 }
 
+/// How [`Page::pdf`] lays a page out. Lengths are in inches; what's left
+/// out is Chrome's own: US Letter, its usual margins, a scale of 1.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PdfOptions {
+    pub landscape: bool,
+    /// Prints background colours and images, which printing leaves out.
+    pub print_background: bool,
+    pub scale: Option<f64>,
+    /// Width and height, upright: `landscape` swaps them.
+    pub paper: Option<(f64, f64)>,
+    /// On all four sides.
+    pub margin: Option<f64>,
+    /// Which pages, as `"1-5, 8"`.
+    pub page_ranges: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cookie {
     pub name: String,
@@ -2346,6 +2362,38 @@ impl Page {
             .decode(r["data"].as_str().unwrap_or_default())
             .map_err(|e| Error::Protocol {
                 method: "Page.captureScreenshot".into(),
+                message: e.to_string(),
+            })
+    }
+
+    /// The page as a PDF, laid out as for printing.
+    pub async fn pdf(&self, options: &PdfOptions) -> Result<Vec<u8>> {
+        let mut params = json!({
+            "landscape": options.landscape,
+            "printBackground": options.print_background,
+        });
+        let fields = [
+            ("scale", options.scale),
+            ("paperWidth", options.paper.map(|(width, _)| width)),
+            ("paperHeight", options.paper.map(|(_, height)| height)),
+            ("marginTop", options.margin),
+            ("marginBottom", options.margin),
+            ("marginLeft", options.margin),
+            ("marginRight", options.margin),
+        ];
+        for (name, value) in fields {
+            if let Some(value) = value {
+                params[name] = json!(value);
+            }
+        }
+        if let Some(ranges) = &options.page_ranges {
+            params["pageRanges"] = json!(ranges);
+        }
+        let r = self.call("Page.printToPDF", params).await?;
+        base64::engine::general_purpose::STANDARD
+            .decode(r["data"].as_str().unwrap_or_default())
+            .map_err(|e| Error::Protocol {
+                method: "Page.printToPDF".into(),
                 message: e.to_string(),
             })
     }

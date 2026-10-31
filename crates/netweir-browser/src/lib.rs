@@ -30,7 +30,7 @@ pub use launch::{
     sandbox_grant_args,
 };
 pub use network::{Continue, Request, Route, glob_match, resource_types};
-pub use page::{Cookie, Page, Response, WaitUntil};
+pub use page::{Cookie, Page, PdfOptions, Response, WaitUntil};
 pub use storage::{OriginStorage, StorageState, cookie_of, write_private};
 
 use std::fmt;

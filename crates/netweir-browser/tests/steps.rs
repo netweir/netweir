@@ -71,6 +71,7 @@ async fn steps_click_type_and_wait_with_the_page_own_actions() {
         {"action": "evaluate", "js": "keys"},
         {"action": "select_option", "selector": "#size", "value": "m"},
         {"action": "screenshot"},
+        {"action": "pdf", "print_background": true},
         {"action": "click", "selector": "#go"},
         {"action": "wait_for_navigation"},
         {"action": "evaluate", "js": "document.title"},
@@ -88,13 +89,14 @@ async fn steps_click_type_and_wait_with_the_page_own_actions() {
     assert_eq!(o[6].value, Some(json!(9)), "one keydown a character");
     assert_eq!(o[7].value, Some(json!(["m"])));
     assert!(o[8].image.as_ref().unwrap().starts_with(b"\x89PNG"));
+    assert!(o[9].image.as_ref().unwrap().starts_with(b"%PDF-"));
     assert!(
-        o[10].value.as_ref().unwrap()["url"]
+        o[11].value.as_ref().unwrap()["url"]
             .as_str()
             .unwrap()
             .contains("/results?q=green+tea")
     );
-    assert_eq!(o[11].value, Some(json!("Results")));
+    assert_eq!(o[12].value, Some(json!("Results")));
     assert!(o.iter().all(|o| o.elapsed > Duration::ZERO));
     browser.close().await.unwrap();
 }

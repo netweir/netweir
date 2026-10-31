@@ -892,6 +892,19 @@ class BrowserContext:
         pattern: str | re.Pattern[str] | Callable[[str], Any],
         handler: Callable[[Route], Any] | None = None,
     ) -> Awaitable[None]: ...
+    def pdf(
+        self,
+        path: str | os.PathLike[str] | None = None,
+        *,
+        landscape: bool = False,
+        print_background: bool = False,
+        scale: float | None = None,
+        format: str | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        margin: float | None = None,
+        page_ranges: str | None = None,
+    ) -> Awaitable[bytes]: ...
     def cookies(self) -> Awaitable[list[dict[str, Any]]]: ...
     def set_cookies(self, cookies: list[dict[str, Any]]) -> Awaitable[None]: ...
     def storage_state(

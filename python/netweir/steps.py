@@ -46,6 +46,7 @@ __all__ = [
     "evaluate",
     "fill",
     "hover",
+    "pdf",
     "press",
     "screenshot",
     "scroll",
@@ -277,6 +278,24 @@ def screenshot(
     ``quality`` (1 to 100) a JPEG, often a tenth the size; its ``result``
     is the image's bytes."""
     return _step("screenshot", timeout, on_error, full_page=full_page or None, quality=quality)
+
+
+def pdf(
+    *,
+    landscape: bool = False,
+    print_background: bool = False,
+    timeout: float | None = None,
+    on_error: str = "fail",
+) -> dict[str, Any]:
+    """Saves the page as a PDF, laid out as for printing; its ``result`` is
+    the PDF's bytes."""
+    return _step(
+        "pdf",
+        timeout,
+        on_error,
+        landscape=landscape or None,
+        print_background=print_background or None,
+    )
 
 
 def answer_dialogs(

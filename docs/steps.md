@@ -69,6 +69,7 @@ XPath after `xpath=`: `steps.click("xpath=//button[text()='More']")`.
 | `set_input_files(selector, files)` | puts files in an `<input type=file>`; the paths are read when the step runs | |
 | `evaluate(js)` | runs JavaScript in the page | what it returned |
 | `screenshot(full_page=False, quality=None)` | takes a PNG of the window, or of the whole page; with `quality` (1 to 100), a JPEG, often a tenth the size | the image's bytes |
+| `pdf(landscape=False, print_background=False)` | saves the page as a PDF, laid out as for printing | the PDF's bytes |
 | `answer_dialogs(accept=True, text=None)` | from here to the last step, answers every `alert()`, `confirm()` and `prompt()`: OK if `accept`, with `text` in a prompt's box, Cancel if not | |
 | `call(method)` | runs a function of yours with the page; see [Your own code](#your-own-code) | what it returned |
 
@@ -453,6 +454,7 @@ make it a callback. The warning for a refused request says which rule it broke. 
 | Zyte `response.raw_api_response["actions"]` | `page.steps` |
 | Zyte selectors can't reach into iframes | `frame={"name": ...}` or `frame={"url": ...}` |
 | scrapy-playwright `meta={"playwright": True, "playwright_page_methods": [PageMethod("click", "#more")]}` | `steps=[steps.click("#more")]` |
+| `PageMethod("pdf")`, read back as `.result` | `steps.pdf()`, read back the same way |
 | `PageMethod("screenshot", full_page=True)`, read back as `.result` | `steps.screenshot(full_page=True)`, read back as `page.steps[i]["result"]` |
 | `PageMethod(some_function)` | `steps.call(self.some_method)`, called with `(page, request)` |
 | `playwright_include_page=True`, then `response.meta["playwright_page"]` | `page.browser` in the callback, open until it returns, then closed for you |

@@ -1124,6 +1124,51 @@ impl BrowserPage {
         })
     }
 
+    /// The page as PDF bytes, also written to `path` if given. Lengths are
+    /// in inches.
+    #[pyo3(signature = (path=None, *, landscape=false, print_background=false, scale=None, format=None, width=None, height=None, margin=None, page_ranges=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn pdf<'py>(
+        &self,
+        py: Python<'py>,
+        path: Option<PathBuf>,
+        landscape: bool,
+        print_background: bool,
+        scale: Option<f64>,
+        format: Option<&str>,
+        width: Option<f64>,
+        height: Option<f64>,
+        margin: Option<f64>,
+        page_ranges: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let paper = match (format, width, height) {
+            (None, None, None) => None,
+            (None, Some(width), Some(height)) => Some((width, height)),
+            (Some(format), None, None) => Some(paper_size(format)?),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "a page's size is format, or width and height together",
+                ));
+            }
+        };
+        let options = netweir_browser::PdfOptions {
+            landscape,
+            print_background,
+            scale,
+            paper,
+            margin,
+            page_ranges,
+        };
+        let page = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let pdf = page.pdf(&options).await.map_err(raise)?;
+            if let Some(path) = path {
+                std::fs::write(&path, &pdf)?;
+            }
+            crate::aio::attach(|py| Ok(PyBytes::new(py, &pdf).unbind()))
+        })
+    }
+
     /// The cookies of the page's context, as dicts.
     fn cookies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let page = self.inner.clone();
@@ -1722,9 +1767,26 @@ pub(crate) fn _check_steps(json: &str, cap: Option<f64>) -> PyResult<()> {
     netweir_browser::steps::within(&steps, cap).map_err(PyValueError::new_err)
 }
 
+/// A paper format's width and height in inches.
+fn paper_size(format: &str) -> PyResult<(f64, f64)> {
+    Ok(match format.to_ascii_lowercase().as_str() {
+        "letter" => (8.5, 11.0),
+        "legal" => (8.5, 14.0),
+        "tabloid" => (11.0, 17.0),
+        "a3" => (11.69, 16.54),
+        "a4" => (8.27, 11.69),
+        "a5" => (5.83, 8.27),
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown format {format:?}; the formats are Letter, Legal, Tabloid, A3, A4 and A5"
+            )));
+        }
+    })
+}
+
 /// How each step went, as Python dicts: `action`, `status` ("ok",
 /// "failed" or "skipped"), `error`, `elapsed` (seconds) and `result`
-/// (a screenshot's PNG as bytes).
+/// (a screenshot's or a PDF's bytes).
 pub(crate) fn outcomes_py<'py>(
     py: Python<'py>,
     outcomes: &[netweir_browser::steps::Outcome],

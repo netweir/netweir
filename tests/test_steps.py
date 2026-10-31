@@ -40,6 +40,8 @@ def test_the_builders_give_plain_json_dicts():
     assert steps.scroll(times=3) == {"action": "scroll", "times": 3}
     assert steps.screenshot(full_page=True) == {"action": "screenshot", "full_page": True}
     assert steps.screenshot() == {"action": "screenshot"}
+    assert steps.pdf() == {"action": "pdf"}
+    assert steps.pdf(landscape=True) == {"action": "pdf", "landscape": True}
     assert steps.wait(1.5) == {"action": "wait", "seconds": 1.5}
     assert steps.set_input_files("#cv", ["a.pdf"]) == {
         "action": "set_input_files",

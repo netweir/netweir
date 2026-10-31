@@ -361,6 +361,19 @@ async def test_screenshots_are_png_and_can_go_to_a_file(browser, base, tmp_path)
     assert png.startswith(b"\x89PNG") and (tmp_path / "shot.png").read_bytes() == png
 
 
+async def test_a_page_saves_as_a_pdf_and_can_go_to_a_file(browser, base, tmp_path):
+    page = await browser.new_page()
+    await page.goto(base + "/")
+    pdf = await page.pdf(tmp_path / "page.pdf", format="a4", landscape=True, margin=0.5)
+    assert pdf.startswith(b"%PDF-") and (tmp_path / "page.pdf").read_bytes() == pdf
+    with pytest.raises(ValueError, match="the formats are"):
+        await page.pdf(format="napkin")
+    with pytest.raises(ValueError, match="width and height together"):
+        await page.pdf(width=3)
+    with pytest.raises(ValueError, match="width and height together"):
+        await page.pdf(format="a4", width=3, height=3)
+
+
 async def test_the_browser_can_be_awaited_or_used_as_a_context_manager():
     try:
         async with netweir.browser() as b:

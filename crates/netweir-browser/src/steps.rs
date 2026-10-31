@@ -119,6 +119,10 @@ pub enum Action {
         /// A JPEG of this quality (1 to 100) in place of a PNG.
         quality: Option<u8>,
     },
+    Pdf {
+        landscape: bool,
+        print_background: bool,
+    },
     AnswerDialogs {
         accept: bool,
         text: Option<String>,
@@ -150,6 +154,7 @@ impl Action {
             Action::SetInputFiles { .. } => "set_input_files",
             Action::Evaluate { .. } => "evaluate",
             Action::Screenshot { .. } => "screenshot",
+            Action::Pdf { .. } => "pdf",
             Action::AnswerDialogs { .. } => "answer_dialogs",
             Action::Call { .. } => "call",
         }
@@ -222,7 +227,7 @@ pub struct Outcome {
     /// select_option chose, how many times a scroll loaded more, the URL
     /// and status of the response waited for.
     pub value: Option<Value>,
-    /// A screenshot's PNG, or JPEG with a `quality`.
+    /// A screenshot's PNG, or JPEG with a `quality`, or a PDF's bytes.
     pub image: Option<Arc<Vec<u8>>>,
 }
 
@@ -472,6 +477,10 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
                 ),
             },
         },
+        "pdf" => Action::Pdf {
+            landscape: f.boolean("landscape")?.unwrap_or(false),
+            print_background: f.boolean("print_background")?.unwrap_or(false),
+        },
         "answer_dialogs" => Action::AnswerDialogs {
             accept: f.boolean("accept")?.unwrap_or(true),
             text: f.opt_string("text")?,
@@ -484,7 +493,7 @@ fn parse_step(v: &Value) -> std::result::Result<Step, String> {
                 "unknown action {other:?}; the actions are click, double_click, fill, type, press, hover, \
                  wait_for, wait, wait_for_navigation, wait_for_response, scroll, \
                  select_option, check, uncheck, set_input_files, evaluate, screenshot, \
-                 answer_dialogs and call"
+                 pdf, answer_dialogs and call"
             ));
         }
     })
@@ -812,6 +821,10 @@ pub fn key(steps: &[Step]) -> String {
                 Action::Screenshot { full_page, quality } => {
                     json!(["screenshot", full_page, quality])
                 }
+                Action::Pdf {
+                    landscape,
+                    print_background,
+                } => json!(["pdf", landscape, print_background]),
                 Action::AnswerDialogs { accept, text } => json!(["answer_dialogs", accept, text]),
                 Action::Call { method } => json!(["call", method]),
             };
@@ -1176,6 +1189,18 @@ async fn act(
         Action::Evaluate { js } => Some(frame.evaluate(js).await?).filter(|v| !v.is_null()),
         Action::Screenshot { full_page, quality } => {
             outcome.image = Some(Arc::new(page.capture(*full_page, *quality).await?));
+            None
+        }
+        Action::Pdf {
+            landscape,
+            print_background,
+        } => {
+            let options = crate::PdfOptions {
+                landscape: *landscape,
+                print_background: *print_background,
+                ..Default::default()
+            };
+            outcome.image = Some(Arc::new(page.pdf(&options).await?));
             None
         }
         Action::AnswerDialogs { .. }
