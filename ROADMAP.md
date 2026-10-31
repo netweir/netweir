@@ -7,8 +7,8 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**More of the browser.** Finding elements by their text or role; saving a
-page as a PDF; tracing; and replaying a HAR file through routes.
+**More of the browser.** Saving a page as a PDF; tracing; and replaying a HAR
+file through routes.
 
 ## After that
 

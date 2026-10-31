@@ -18,7 +18,7 @@ Each function here gives a plain dict, ``{"action": "click", "selector":
 ...}``, so a step list is JSON: it's kept in a checkpoint and sent through
 a shared queue as the request is. Writing the dicts yourself does the same.
 
-Selectors are CSS, or XPath after ``xpath=``. Every step takes
+Selectors are CSS, XPath after ``xpath=``, or ``text=`` and ``role=``. Every step takes
 ``timeout``, in seconds (the browser's 30 by default, a day at most),
 and ``on_error``: ``"fail"`` (the default) fails the request, so its
 errback gets a ``FetchError`` of kind ``"step"``; ``"continue"`` notes the

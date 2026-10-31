@@ -1757,3 +1757,88 @@ async fn a_frame_drags_within_itself_wherever_it_sits_in_the_page() {
     );
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn text_and_role_selectors_find_an_element_by_what_it_says() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![(
+        "/",
+        html(concat!(
+            "<script>var said = []; var my = 'Hidden gem';</script>",
+            "<div style='display:none'><button onclick=\"said.push('hidden')\">Sign  in</button></div>",
+            "<button onclick=\"said.push('sign in')\"><span>Sign</span>  <b>in</b></button>",
+            "<button onclick=\"said.push('sign in now')\">Sign in now</button>",
+            "<input type=submit value='Send it' onclick=\"said.push('input');return false\">",
+            "<a href='#x' onclick=\"said.push('link')\">Read more</a>",
+            "<div role=button aria-label='Close it' onclick=\"said.push('close')\">x</div>",
+            "<a role=button href='#y' onclick=\"said.push('as a button')\">Odd</a>",
+            "<div aria-hidden=true><button onclick=\"said.push('aria')\">Unheard</button></div>",
+            "<label for=mail>Email</label><input id=mail>",
+            "<button disabled id=off><span>Off</span></button>",
+            "<h2 onclick=\"said.push('heading')\">Sign in now</h2>",
+        )),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+    let quick = Some(Duration::from_secs(1));
+    for selector in [
+        "text=sign IN",     // the visible one, across its tags
+        "text=\"Sign in\"", // not "Sign in now"
+        "text=Sign in now", // the first holding it
+        "text=Send it",     // a button input's value
+        "role=button[name=\"Sign in\"]",
+        "role=button[name=sign in now]",
+        "role=button[name=Send]",
+        "role=link",
+        "role=button[name='Close it']",
+        "role=button[name=Odd]", // the attribute beats the tag
+        "role=heading[name=Sign in]",
+    ] {
+        page.click(selector, quick).await.unwrap();
+    }
+    assert_eq!(
+        page.evaluate("said").await.unwrap(),
+        serde_json::json!([
+            "sign in",
+            "sign in",
+            "sign in now",
+            "input",
+            "sign in",
+            "sign in now",
+            "input",
+            "link",
+            "close",
+            "as a button",
+            "heading"
+        ])
+    );
+    page.fill("role=textbox[name=Email]", "ada", quick)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.evaluate("mail.value").await.unwrap(),
+        serde_json::json!("ada")
+    );
+
+    // Script text isn't text; hidden from assistive technology isn't a role;
+    // and an <a> with a role of its own isn't a link.
+    for selector in [
+        "text=Hidden gem",
+        "role=button[name=Unheard]",
+        "role=link[name=Odd]",
+    ] {
+        let err = page.click(selector, quick).await.unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{selector}: {err}");
+    }
+    // The text inside a disabled button isn't something to click.
+    let err = page.click("text=Off", quick).await.unwrap_err();
+    assert!(err.to_string().contains("enabled"), "{err}");
+    // A selector that can't mean anything says so at once.
+    for selector in ["text=", "role=button[name=]", "role=but ton"] {
+        let err = page.click(selector, None).await.unwrap_err();
+        assert!(matches!(err, Error::Script(_)), "{selector}: {err}");
+    }
+    browser.close().await.unwrap();
+}

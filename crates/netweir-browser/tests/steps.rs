@@ -373,7 +373,7 @@ async fn double_clicks_xpath_and_two_waits_for_one_url() {
         {"action": "wait_for_response", "url": "**/api/a"},
         // The first response was taken: this one needs a second.
         {"action": "wait_for_response", "url": "**/api/a", "timeout": 0.5, "on_error": "continue"},
-        {"action": "click", "selector": "#two"},
+        {"action": "click", "selector": "role=button[name=two]"},
         {"action": "wait_for_response", "url": "**/api/a"},
     ]))
     .unwrap();

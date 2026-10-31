@@ -243,6 +243,25 @@ listener says to stay or doesn't answer, nothing loads, and you get
 | `scroll(...)`, `select_option(...)`, `check(...)`, `uncheck(...)`, `set_input_files(...)` | see [Scrolling, forms and frames](#scrolling-forms-and-frames) |
 
 Selectors are CSS, or XPath after `xpath=` (`page.click("xpath=//button[2]")`).
+When the markup is a mess of generated class names, say what the element says
+instead:
+
+```python
+await page.click("text=Sign in")                  # anywhere in its text, in either case
+await page.click('text="Sign in"')                # its whole text, exactly
+await page.click("role=button[name=Sign in]")     # a button with that name
+await page.fill('role=textbox[name="Email"]', "ada@example.com")
+await page.wait_for("role=dialog")
+```
+
+`text=` finds the smallest element holding the text, and reads a button
+input's value too. `role=` knows an element's role from its `role` attribute
+or its tag (`<a href>` is a `link`, `<h2>` a `heading`), and its name from
+`aria-label`, `aria-labelledby`, a `<label>`, `alt`, its text, `title` or
+`placeholder`, which covers the common cases of the accessible name's rules
+but not all of them. Either picks the first visible match, or the first if
+none is visible. Like CSS, neither looks inside shadow roots or other frames;
+use a [frame](#frames) for those.
 You don't need to wait before acting: `click` and
 `fill` keep trying until the element can take the action, up to the
 timeout. A click waits for the element to exist, be visible, stop moving,

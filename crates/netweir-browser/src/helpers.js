@@ -37,9 +37,132 @@
     return el && !el.matches("iframe, frame") && !scrollers(el).length;
   };
 
-  // The element a selector finds: CSS, or XPath after "xpath=", whose
-  // first match must be an element.
+  const tidy = (s) => s.replace(/\s+/g, " ").trim();
+
+  // What "text=" and "role=" look for: in quotes the whole text, exactly;
+  // otherwise anywhere in it, in either case.
+  const matcher = (wanted, selector) => {
+    const quoted = /^(["'])(.*)\1$/s.exec(wanted);
+    const want = tidy(quoted ? quoted[2] : wanted);
+    if (!want) throw new Error(`nothing to look for in ${selector}`);
+    if (quoted) return (text) => text === want;
+    const lower = want.toLowerCase();
+    return (text) => text.toLowerCase().includes(lower);
+  };
+
+  const isButtonInput = (el) => el.matches('input[type="button" i], input[type="submit" i], input[type="reset" i]');
+  const UNREAD = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+
+  // The text under `el` as a reader has it, and each deepest element whose
+  // text `matches`, added to `hits`.
+  const read = (el, matches, hits) => {
+    let text = "";
+    let inside = false;
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) text += child.data;
+      else if (child.nodeType === Node.ELEMENT_NODE && !UNREAD.has(child.tagName)) {
+        const before = hits.length;
+        text += read(child, matches, hits);
+        inside ||= hits.length > before;
+      }
+    }
+    if (isButtonInput(el)) text = el.value;
+    if (!inside && matches(tidy(text))) hits.push(el);
+    return text;
+  };
+
+  // Elements with each role that have it without saying so.
+  const IMPLICIT = {
+    article: "article",
+    banner: "header:not(article header, aside header, main header, nav header, section header)",
+    button: 'button, summary, input[type="button" i], input[type="submit" i], input[type="reset" i], input[type="image" i]',
+    cell: "td",
+    checkbox: 'input[type="checkbox" i]',
+    columnheader: "th",
+    combobox: "select:not([multiple]), input[list]",
+    complementary: "aside",
+    contentinfo: "footer:not(article footer, aside footer, main footer, nav footer, section footer)",
+    dialog: "dialog",
+    form: "form",
+    heading: "h1, h2, h3, h4, h5, h6",
+    img: 'img:not([alt=""])',
+    link: "a[href], area[href]",
+    list: "ul, ol",
+    listbox: "select[multiple]",
+    listitem: "li",
+    main: "main",
+    navigation: "nav",
+    option: "option",
+    progressbar: "progress",
+    radio: 'input[type="radio" i]',
+    region: "section",
+    row: "tr",
+    searchbox: 'input[type="search" i]',
+    slider: 'input[type="range" i]',
+    spinbutton: 'input[type="number" i]',
+    table: "table",
+    textbox: 'textarea, input:not([type]), input[type="text" i], input[type="email" i], input[type="tel" i], input[type="url" i], input[type="password" i]',
+  };
+
+  // Roles a name can come from the element's own text for.
+  const NAMED_BY_TEXT = new Set([
+    "button", "cell", "checkbox", "columnheader", "gridcell", "heading", "link", "listitem",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "row", "rowheader",
+    "switch", "tab", "tooltip", "treeitem",
+  ]);
+
+  const textOf = (el) => tidy(read(el, () => false, []));
+
+  // The name assistive technology would read for `el`: the common cases of
+  // the accessible name's rules, not all of them.
+  const accessibleName = (el, role) => {
+    const by = (el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((id) => id && el.ownerDocument.getElementById(id))
+      .filter(Boolean)
+      .map(textOf)
+      .join(" ");
+    const label = [...(el.labels || [])].map(textOf).join(" ");
+    return tidy(
+      by ||
+        el.getAttribute("aria-label") ||
+        label ||
+        (isButtonInput(el) && el.value) ||
+        (el.matches("img, area, input") && el.getAttribute("alt")) ||
+        (NAMED_BY_TEXT.has(role) && textOf(el)) ||
+        el.getAttribute("title") ||
+        el.getAttribute("placeholder") ||
+        "",
+    );
+  };
+
+  const byRole = (selector) => {
+    const parts = /^([a-z-]+)(?:\[name=(.*)\])?$/is.exec(selector.slice(5).trim());
+    if (!parts) throw new Error(`${selector} isn't role=ROLE or role=ROLE[name=NAME]`);
+    const role = parts[1].toLowerCase();
+    const named = parts[2] === undefined ? null : matcher(parts[2], selector);
+    const implicit = Object.hasOwn(IMPLICIT, role) ? IMPLICIT[role] : null;
+    const query = `[role~="${role}" i]` + (implicit ? `, ${implicit}` : "");
+    return [...document.querySelectorAll(query)].filter((el) => {
+      if (el.closest('[aria-hidden="true"]')) return false;
+      const stated = (el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
+      if (stated ? stated !== role : !implicit || !el.matches(implicit)) return false;
+      return !named || named(accessibleName(el, role));
+    });
+  };
+
+  // The element a selector finds: CSS; XPath after "xpath=", whose first
+  // match must be an element; or by what it says after "text=" or "role=".
+  // Of those last two the first visible one, as a page's text often stands
+  // in a hidden menu as well.
   const find = (selector) => {
+    const hits = (found) => found.find(visible) || found[0] || null;
+    if (selector.startsWith("text=")) {
+      const found = [];
+      if (document.body) read(document.body, matcher(selector.slice(5), selector), found);
+      return hits(found);
+    }
+    if (selector.startsWith("role=")) return hits(byRole(selector));
     if (!selector.startsWith("xpath=")) return document.querySelector(selector);
     const node = document.evaluate(
       selector.slice(6), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null,
@@ -56,7 +179,8 @@
       el.contains(hit) ||
       [...(el.labels || [])].some((label) => label === hit || label.contains(hit)));
 
-  const enabled = (el) => !el.matches(":disabled") && !el.closest('[aria-disabled="true"]');
+  // Asked of what a selector found, which can be the text inside a button.
+  const enabled = (el) => !el.closest(':disabled, [aria-disabled="true"]');
 
   globalThis.__netweir = {
     // Where what a finger at (x, y) drags is scrolled to, and as far as

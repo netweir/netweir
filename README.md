@@ -182,8 +182,9 @@ Working today:
   [docs/self-healing.md](docs/self-healing.md#proxies).
 - A Chrome driver for pages that need JavaScript: click, type, hover,
   scroll an endless feed to its end, pick from dropdowns, tick boxes,
-  upload files and reach into iframes like Playwright, then read the page
-  with Netweir's selectors, or read the JSON its own requests got back. A
+  upload files and reach into iframes like Playwright, finding elements by
+  CSS, XPath, their text or their role, then read the page with Netweir's
+  selectors, or read the JSON its own requests got back. A
   profile can be kept between runs. Requests can be blocked, changed or
   answered before they leave Chrome. An `alert()` never stalls a page,
   popups and new tabs come back as pages you can read, and downloads

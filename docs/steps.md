@@ -48,6 +48,8 @@ Each step uses the page method of the same name, so it behaves the same
 way, waits the same way and fails with the same messages. See
 [Browser](browser.md#acting-on-the-page) for those. Selectors are CSS, or
 XPath after `xpath=`: `steps.click("xpath=//button[text()='More']")`.
+`text=` and `role=` find an element by what it says, as in
+[the browser's selectors](browser.md): `steps.click("role=button[name=More]")`.
 
 | Step | Does | Its `result` |
 |---|---|---|
