@@ -213,6 +213,41 @@ impl Browser {
         self.inner.methods_sent()
     }
 
+    /// Starts recording what the whole browser does, for `stop_tracing`.
+    #[pyo3(signature = (*, categories=None, screenshots=false))]
+    fn start_tracing<'py>(
+        &self,
+        py: Python<'py>,
+        categories: Option<Vec<String>>,
+        screenshots: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let browser = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            browser
+                .start_tracing(categories.as_deref(), screenshots)
+                .await
+                .map_err(raise)
+        })
+    }
+
+    /// Stops recording: the trace's JSON as bytes, also written to `path`
+    /// if given.
+    #[pyo3(signature = (path=None))]
+    fn stop_tracing<'py>(
+        &self,
+        py: Python<'py>,
+        path: Option<PathBuf>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let browser = self.inner.clone();
+        crate::aio::future_into_py(py, async move {
+            let trace = browser.stop_tracing().await.map_err(raise)?;
+            if let Some(path) = path {
+                std::fs::write(&path, &trace)?;
+            }
+            crate::aio::attach(|py| Ok(PyBytes::new(py, &trace).unbind()))
+        })
+    }
+
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let browser = self.inner.clone();
         crate::aio::future_into_py(py, async move { browser.close().await.map_err(raise) })

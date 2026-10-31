@@ -682,6 +682,30 @@ cookies and localStorage in Playwright's format, and
 them. The same file starts a `netweir.Client` logged in. See
 [Sessions and cookies](sessions.md).
 
+## Tracing
+
+When a page is slow and you can't tell why, record what Chrome did while it
+loaded:
+
+```python
+await browser.start_tracing(screenshots=True)
+await page.goto("https://example.com/")
+await browser.stop_tracing("trace.json")
+```
+
+Open `trace.json` in the Performance panel of Chrome's developer tools, or at
+[ui.perfetto.dev](https://ui.perfetto.dev). `stop_tracing` returns the bytes
+too, and without a path that's all it does.
+
+A trace covers the whole browser, every page in it, and a browser records one
+at a time: starting a second raises an error, as does stopping when none has
+started. `categories=`
+takes Chrome's trace categories in place of the ones the Performance panel
+records. Tracing slows Chrome down and a trace can run to many megabytes, so
+it's for looking into a problem, not for leaving on in a crawl. It holds the
+URLs the pages visited, and with `screenshots=True` what they showed, so treat
+the file as you would the pages themselves.
+
 ## Reading what the page fetched
 
 Plenty of pages that need JavaScript are a thin shell around an API. The

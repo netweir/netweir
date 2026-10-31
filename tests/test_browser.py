@@ -480,6 +480,17 @@ async def test_a_file_that_isnt_a_har_says_so(browser, tmp_path):
         await page.route_from_har(path, not_found="maybe")
 
 
+async def test_a_trace_goes_to_a_file_and_is_chromes_json(browser, base, tmp_path):
+    page = await browser.new_page()
+    await browser.start_tracing(screenshots=True)
+    await page.goto(base + "/")
+    trace = await browser.stop_tracing(tmp_path / "trace.json")
+    assert (tmp_path / "trace.json").read_bytes() == trace
+    assert json.loads(trace)["traceEvents"]
+    with pytest.raises(netweir.BrowserError):
+        await browser.stop_tracing()
+
+
 async def test_the_browser_can_be_awaited_or_used_as_a_context_manager():
     try:
         async with netweir.browser() as b:

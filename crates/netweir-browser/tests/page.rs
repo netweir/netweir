@@ -971,3 +971,37 @@ async fn a_page_saves_as_a_pdf_of_the_size_and_pages_asked_for() {
     assert!(matches!(err, Error::Protocol { .. }), "{err}");
     browser.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_trace_records_what_the_page_did_and_can_be_taken_again() {
+    let Some(browser) = browser().await else {
+        return;
+    };
+    let server = serve(vec![("/", html("<p>traced</p>"))]);
+    let page = browser.new_page().await.unwrap();
+    let err = browser.stop_tracing().await.unwrap_err();
+    assert!(matches!(err, Error::Protocol { .. }), "{err}");
+    for _ in 0..2 {
+        browser.start_tracing(None, true).await.unwrap();
+        let again = browser.start_tracing(None, false).await.unwrap_err();
+        assert!(matches!(again, Error::Protocol { .. }), "{again}");
+        page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
+        page.evaluate("console.timeStamp('netweir-mark')")
+            .await
+            .unwrap();
+        let trace = browser.stop_tracing().await.unwrap();
+        let trace: serde_json::Value = serde_json::from_slice(&trace).unwrap();
+        let events = trace["traceEvents"].as_array().unwrap();
+        let text = serde_json::to_string(events).unwrap();
+        assert!(text.contains("netweir-mark"));
+        assert!(text.contains(&server.url));
+    }
+    let only: Vec<String> = vec!["blink.user_timing".into()];
+    browser.start_tracing(Some(&only), false).await.unwrap();
+    page.evaluate("performance.mark('netweir-user-mark')")
+        .await
+        .unwrap();
+    let trace = browser.stop_tracing().await.unwrap();
+    assert!(String::from_utf8_lossy(&trace).contains("netweir-user-mark"));
+    browser.close().await.unwrap();
+}

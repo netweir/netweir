@@ -6,7 +6,9 @@ use std::process::Child;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 
 use crate::conn::{Connection, GONE, Handler};
 use crate::environment::{Environment, Geolocation, Size};
@@ -120,6 +122,21 @@ pub struct Browser {
     pub(crate) inner: Arc<Inner>,
 }
 
+/// What DevTools' Performance panel records.
+const TRACE_CATEGORIES: &[&str] = &[
+    "-*",
+    "devtools.timeline",
+    "v8.execute",
+    "disabled-by-default-devtools.timeline",
+    "disabled-by-default-devtools.timeline.frame",
+    "toplevel",
+    "blink.console",
+    "blink.user_timing",
+    "latencyInfo",
+    "disabled-by-default-devtools.timeline.stack",
+    "disabled-by-default-v8.cpu_profiler",
+];
+
 pub(crate) struct Inner {
     pub conn: Connection,
     /// The Chrome netweir launched; None for one it connected to.
@@ -137,6 +154,8 @@ pub(crate) struct Inner {
     /// Contexts netweir made, for closing a browser it connected to,
     /// whose other contexts aren't netweir's to close.
     pub(crate) contexts: Mutex<Vec<String>>,
+    /// Told the trace's stream when Chrome has finished writing it.
+    tracing_done: Arc<Mutex<Option<oneshot::Sender<String>>>>,
     version: String,
     pub identity: Option<Identity>,
     pub timeout: Duration,
@@ -450,6 +469,7 @@ impl Browser {
             keep_profile,
             temp_profile: Mutex::new(temp),
             contexts: Mutex::default(),
+            tracing_done: Arc::default(),
             version: String::new(),
             identity: None,
             timeout: options.timeout,
@@ -533,6 +553,7 @@ impl Browser {
             keep_profile: false,
             temp_profile: Mutex::default(),
             contexts: Mutex::default(),
+            tracing_done: Arc::default(),
             version: String::new(),
             identity: None,
             timeout: options.timeout,
@@ -664,11 +685,27 @@ impl Browser {
         let conn = self.inner.conn.clone();
         let (pages, downloads) = (self.inner.pages.clone(), self.inner.downloads.clone());
         let attaching = self.inner.attaching.clone();
+        let tracing_done = self.inner.tracing_done.clone();
+        let take_done = move || {
+            tracing_done
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+        };
         let handler: Handler = Arc::new(move |method, params| match method {
             "Target.attachedToTarget" => popped(&conn, &pages, &attaching, params),
             "Browser.downloadWillBegin" => unclaimed(&pages, &downloads, params),
             "Browser.downloadProgress" => downloads.progress(params),
-            GONE => downloads.gone(),
+            "Tracing.tracingComplete" => {
+                if let (Some(done), Some(stream)) = (take_done(), params["stream"].as_str()) {
+                    let _ = done.send(stream.to_string());
+                }
+            }
+            GONE => {
+                downloads.gone();
+                // Dropped, so whoever waits for a trace hears it won't come.
+                take_done();
+            }
             _ => {}
         });
         self.inner.conn.on("", handler);
@@ -903,6 +940,73 @@ impl Browser {
 
     /// Asks Chrome to quit, waits for it (killing it after 10 seconds),
     /// and removes its profile directory, unless it was given one.
+    /// Starts recording what the whole browser does, every page of it, for
+    /// [`Browser::stop_tracing`]. `categories` are Chrome's trace categories,
+    /// in place of those DevTools' Performance panel records.
+    pub async fn start_tracing(
+        &self,
+        categories: Option<&[String]>,
+        screenshots: bool,
+    ) -> Result<()> {
+        let mut included: Vec<&str> = match categories {
+            Some(categories) => categories.iter().map(String::as_str).collect(),
+            None => TRACE_CATEGORIES.to_vec(),
+        };
+        if screenshots {
+            included.push("disabled-by-default-devtools.screenshot");
+        }
+        let params = json!({
+            "transferMode": "ReturnAsStream",
+            "traceConfig": {"includedCategories": included},
+        });
+        self.inner.call("", "Tracing.start", params).await?;
+        Ok(())
+    }
+
+    /// Stops recording, and returns the trace: JSON that Chrome's Performance
+    /// panel and Perfetto open.
+    pub async fn stop_tracing(&self) -> Result<Vec<u8>> {
+        let inner = &self.inner;
+        let (done, stream) = oneshot::channel();
+        *inner.tracing_done.lock().unwrap_or_else(|e| e.into_inner()) = Some(done);
+        inner.call("", "Tracing.end", json!({})).await?;
+        let stream = tokio::time::timeout(inner.timeout, stream)
+            .await
+            .map_err(|_| {
+                inner.explain(Error::Timeout(format!(
+                    "Chrome didn't finish its trace within {:?}",
+                    inner.timeout
+                )))
+            })?
+            .map_err(|_| Error::Protocol {
+                method: "Tracing.end".into(),
+                message: "the browser went before its trace was finished".into(),
+            })?;
+        let mut trace = Vec::new();
+        loop {
+            let read = inner.call("", "IO.read", json!({"handle": stream})).await?;
+            let data = read["data"].as_str().unwrap_or_default();
+            if read["base64Encoded"].as_bool().unwrap_or(false) {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|e| Error::Protocol {
+                        method: "IO.read".into(),
+                        message: e.to_string(),
+                    })?;
+                trace.extend_from_slice(&bytes);
+            } else {
+                trace.extend_from_slice(data.as_bytes());
+            }
+            if read["eof"].as_bool().unwrap_or(true) {
+                break;
+            }
+        }
+        inner
+            .call("", "IO.close", json!({"handle": stream}))
+            .await?;
+        Ok(trace)
+    }
+
     pub async fn close(&self) -> Result<()> {
         let inner = self.inner.clone();
         if inner.profile.is_none() {
@@ -1445,6 +1549,7 @@ async fn ask_identity(
             keep_profile: false,
             temp_profile: Mutex::new(Some(temp)),
             contexts: Mutex::default(),
+            tracing_done: Arc::default(),
             version: String::new(),
             identity: None,
             timeout: Duration::from_secs(30),
@@ -2198,6 +2303,7 @@ mod tests {
             keep_profile: false,
             temp_profile: Mutex::new(None),
             contexts: Mutex::default(),
+            tracing_done: Arc::default(),
             version: String::new(),
             identity: None,
             timeout: Duration::from_secs(5),

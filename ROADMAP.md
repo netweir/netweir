@@ -7,10 +7,6 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**More of the browser.** Tracing.
-
-## After that
-
 **More engines.** Firefox and WebKit, but only once they can be driven
 without announcing it, as Chrome is today. And HTTP/3, when a request can go
 out over it looking exactly like the browser it claims to be.
