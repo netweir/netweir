@@ -1508,8 +1508,30 @@ async fn headless_identity(
     outcome
 }
 
-/// Starts a headless Chrome at `executable` to ask what it is.
+/// [`probe_identity`], again with a new Chrome if the first sat on its
+/// first page: on a busy Mac runner one now and then never answers, and
+/// the next does. A second such wait is a launch that failed, whichever
+/// call inside it ran out of time.
 async fn ask_identity(
+    executable: &Path,
+    extra: &[String],
+    timeout: Duration,
+) -> Result<(String, Value)> {
+    again_if_stuck(|| probe_identity(executable, extra, timeout)).await
+}
+
+async fn again_if_stuck<T, F: Future<Output = Result<T>>>(probe: impl Fn() -> F) -> Result<T> {
+    match probe().await {
+        Err(Error::Timeout(_)) => probe().await.map_err(|e| match e {
+            Error::Timeout(message) => Error::Launch(message),
+            other => other,
+        }),
+        other => other,
+    }
+}
+
+/// Starts a headless Chrome at `executable` to ask what it is.
+async fn probe_identity(
     executable: &Path,
     extra: &[String],
     timeout: Duration,
@@ -2145,6 +2167,36 @@ mod tests {
     }
 
     /// How many probes have been started with these switches.
+    #[tokio::test]
+    async fn a_probe_stuck_once_is_asked_again_and_twice_is_a_failed_launch() {
+        let run = |answers: Vec<Result<u8>>| async move {
+            let answers = Mutex::new(answers.into_iter());
+            let asked = std::sync::atomic::AtomicUsize::new(0);
+            let outcome = again_if_stuck(|| {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let answer = answers.lock().unwrap().next().unwrap();
+                async move { answer }
+            })
+            .await;
+            (outcome, asked.into_inner())
+        };
+        let stuck = || Err(Error::Timeout("Chrome didn't answer".into()));
+        assert!(matches!(run(vec![Ok(1)]).await, (Ok(1), 1)));
+        assert!(matches!(run(vec![stuck(), Ok(2)]).await, (Ok(2), 2)));
+        let (twice, asked) = run(vec![stuck(), stuck()]).await;
+        assert_eq!(asked, 2);
+        assert!(
+            matches!(&twice, Err(Error::Launch(m)) if m.contains("didn't answer")),
+            "{twice:?}"
+        );
+        // Anything else is an answer: asking again wouldn't change it.
+        let refused = Err(Error::Launch("refused".into()));
+        assert!(matches!(
+            run(vec![refused]).await,
+            (Err(Error::Launch(_)), 1)
+        ));
+    }
+
     fn probes(extra: &[String]) -> usize {
         let probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
         probed.iter().filter(|p| p.as_slice() == extra).count()
