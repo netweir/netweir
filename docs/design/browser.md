@@ -41,10 +41,11 @@ In this design:
   then going back, forward and reloading, keyboard shortcuts with
   modifiers, and dragging
 
-Not in this design: tracing, PDF, Safari (no BiDi), Camoufox (a third
-protocol), and Firefox for now (see below). Reading what a page fetches,
-and blocking, changing or answering its requests, came later and has a
-design of its own, [network.md](network.md).
+Not in this design: Safari (no BiDi), Camoufox (a third protocol), and
+Firefox for now (see below). Reading what a page fetches, and blocking,
+changing or answering its requests, came later and has a design of its own,
+[network.md](network.md). So did tracing, PDFs and `text=` and `role=`
+selectors, which [browser.md](../browser.md) describes.
 
 ## Architecture
 
