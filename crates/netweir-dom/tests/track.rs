@@ -229,3 +229,46 @@ fn a_tracked_query_must_find_elements() {
     let err = tracker.run(doc.root(), &ctx).err().unwrap();
     assert!(err.contains("element"), "{err}");
 }
+
+fn rebuilt(price: &str) -> String {
+    format!(
+        "<html><body><section class=a1><div class=w><h2 class=x9>Laptop</h2></div>\
+         <div class=w2><span class=q7>{price}</span></div></section></body></html>"
+    )
+}
+
+/// What a fingerprint knows after a crawl of pages whose prices differ.
+fn learned_price() -> Fingerprint {
+    let page = |title: &str, price: &str| {
+        format!(
+            "<html><body><div class=product><h1 class=title>{title}</h1>\
+             <p class=price>{price}</p></div></body></html>"
+        )
+    };
+    let (one, two) = (page("Laptop", "$100.99"), page("Tablet", "$250.49"));
+    let (one, two) = (Document::parse(&one), Document::parse(&two));
+    let query = Query::new(".price").unwrap();
+    let find = |d: &Document| Fingerprint::of(query.select(d.root())[0]);
+    let mut fp = find(&two);
+    fp.learn_from(&find(&one));
+    fp
+}
+
+#[test]
+fn a_lone_price_is_found_after_a_rebuild_changes_its_tag() {
+    let doc = Document::parse(&rebuilt("$312.99"));
+    let (node, _) = relocate(doc.root(), &learned_price(), THRESHOLD).unwrap();
+    assert_eq!(node.text().trim(), "$312.99");
+}
+
+#[test]
+fn two_prices_on_a_rebuilt_page_are_left_alone() {
+    let doc = Document::parse(&rebuilt("$312.99</span><span class=q7>$418.50"));
+    assert!(relocate(doc.root(), &learned_price(), THRESHOLD).is_none());
+}
+
+#[test]
+fn a_labelled_amount_is_not_taken_for_a_missing_price() {
+    let doc = Document::parse(&rebuilt("Shipping $5.00"));
+    assert!(relocate(doc.root(), &learned_price(), THRESHOLD).is_none());
+}

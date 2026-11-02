@@ -232,7 +232,10 @@ Each time the selector matches, Netweir saves what the element looks like:
 its tag, text, attributes, the elements around it and the text just before
 it. When a redesign breaks the selector, every element of the same kind is
 scored against that, and the best one is used if it scores at least
-`track_threshold` (0.75). A warning says so, once per site and name in each
+`track_threshold` (0.75), or within 0.15 of it when it's the only element left
+whose text has the shape this one has had on every page, as a lone price
+does. Elements that just hold text (`p`, `span`, `div`, `td`, `dd`, `li`) count
+as one kind, as headings do. A warning says so, once per site and name in each
 crawl. Below the threshold, nothing is returned, and `score` says how close
 the nearest candidate came.
 

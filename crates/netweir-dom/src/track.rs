@@ -16,6 +16,13 @@ use crate::document::{Node, NodeKind};
 /// The score a candidate needs, by default, to count as the same element.
 pub const THRESHOLD: f64 = 0.75;
 
+/// How far below the threshold a candidate may score when nothing else on
+/// the page has the shape of the text this element is known to hold.
+const LONE_SHAPE_ALLOWANCE: f64 = 0.15;
+
+/// Scores closer than this say nothing about which element is the one.
+const TIE: f64 = 0.02;
+
 /// How much each kind of evidence counts; they add up to 1.
 const WEIGHTS: Weights = Weights {
     text: 0.45,
@@ -223,6 +230,7 @@ fn family(tag: &str) -> &str {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "h",
         "b" | "strong" => "b",
         "i" | "em" => "i",
+        "p" | "span" | "div" | "td" | "dd" | "li" => "text",
         other => other,
     }
 }
@@ -242,7 +250,72 @@ pub fn relocate<'a>(root: Node<'a>, fp: &Fingerprint, threshold: f64) -> Option<
     if still_repeated(root, fp) {
         return None;
     }
-    best(root, fp).filter(|(_, score)| *score >= threshold)
+    best(root, fp).filter(|(node, score)| accepted(root, fp, *node, *score, threshold))
+}
+
+/// Whether the best candidate, `node`, is good enough to count as the
+/// element: it scores at least `threshold`, or nearly that and nothing else
+/// has its shape, and no other element with its shape scores about the same.
+pub fn accepted(
+    root: Node<'_>,
+    fp: &Fingerprint,
+    node: Node<'_>,
+    score: f64,
+    threshold: f64,
+) -> bool {
+    if score >= threshold {
+        !tied(root, fp, node, score)
+    } else {
+        score >= threshold - LONE_SHAPE_ALLOWANCE && lone_shape(root, fp, node)
+    }
+}
+
+/// Whether another element with the text's shape scores within a hair of
+/// `node`: two prices that look equally right, and nothing to choose by.
+fn tied(root: Node<'_>, fp: &Fingerprint, node: Node<'_>, score: f64) -> bool {
+    if !fp.text_varies || !fp.text.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let wanted = number_shape(&fp.text);
+    root.descendants().any(|n| {
+        n != node
+            && n.kind() == NodeKind::Element
+            && !n.children().any(|c| c.kind() == NodeKind::Element)
+            && number_shape(&clip(&text_start(n))) == wanted
+            && (fp.score(n) - score).abs() < TIE
+    })
+}
+
+/// Whether `node` is the one element below `root` whose own text has the
+/// shape this element's text has had on every page: a rebuilt page moves a
+/// price's surroundings, and its being the only price left is evidence for
+/// it. Only text known to vary counts, and only with a digit in it, since
+/// other text has no shape to speak of.
+fn lone_shape(root: Node<'_>, fp: &Fingerprint, node: Node<'_>) -> bool {
+    if !fp.text_varies || !fp.text.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let wanted = number_shape(&fp.text);
+    let mut alike = root.descendants().filter(|n| {
+        n.kind() == NodeKind::Element
+            && !n.children().any(|c| c.kind() == NodeKind::Element)
+            && number_shape(&clip(&text_start(*n))) == wanted
+    });
+    alike.next() == Some(node) && alike.next().is_none()
+}
+
+/// The text with every run of digits a single 0, so $9.99 and $1299.99 are
+/// the same kind of thing.
+fn number_shape(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if !c.is_ascii_digit() {
+            out.push(c);
+        } else if !out.ends_with('0') {
+            out.push('0');
+        }
+    }
+    out
 }
 
 /// The text with every digit a 0: what a price or a date looks like.

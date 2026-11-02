@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::document::{Node, NodeKind};
 use crate::query::{Hit, Query};
-use crate::track::{Fingerprint, best, still_repeated};
+use crate::track::{Fingerprint, accepted, best, still_repeated};
 use crate::xpath::XPath;
 
 /// A compiled CSS (with `::text`/`::attr()`) or XPath query.
@@ -487,7 +487,7 @@ impl Tracker {
             return Ok((Vec::new(), Tracking::Lost(0.0)));
         }
         match best(scope, &fp) {
-            Some((node, score)) if score >= ctx.threshold => {
+            Some((node, score)) if accepted(scope, &fp, node, score, ctx.threshold) => {
                 let hits = match &self.ending {
                     Some(ending) => ending.hits(node)?,
                     None => vec![Hit::Node(node)],
