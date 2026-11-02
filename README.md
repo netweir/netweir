@@ -609,6 +609,90 @@ spec's rules for misnested formatting tags, which can make any
 spec-compliant parser allocate gigabytes; nothing in Netweir caps the
 parser's memory yet.
 
+## When things go wrong, measured
+
+Speed on a good day is half of it. `bench/reliability.py` also measures the
+bad days: a site that rate-limits you, a crawl that's killed, a page that only
+fills in as you scroll, a redesign. It runs Netweir 0.7.0, Scrapy 2.19 and a
+self-hosted Firecrawl (v2.11.645, from its own `docker-compose.yaml`), each
+with its own defaults. Four scenarios use the public practice shop at
+[webscraper.io/test-sites](https://webscraper.io/test-sites/e-commerce/static),
+which has 179 pages and 147 products. The site doesn't rate-limit or get
+redesigned, so the throttle and selector scenarios serve their own pages. One
+M2 Max, November 2026; timings are medians of three to five runs, and ranges
+are the lowest and highest seen.
+
+**A full crawl of the shop.** 179 of 179 pages for all three.
+
+| | Seconds | Peak memory |
+|---|---|---|
+| Netweir | 4.0 | 47 MB |
+| Scrapy | 1.0 | 117 MB |
+| Firecrawl | 59 | about 3 GB across its containers, idle after the runs |
+
+Scrapy finishes first because it doesn't read robots.txt or pace itself by
+default, and Netweir does both. Given the same settings, Netweir is ahead
+either way: 0.26 s to Scrapy's 0.69 s with neither, and 3.8 s to 12.6 s with
+both (Scrapy's `ROBOTSTXT_OBEY` and `AUTOTHROTTLE_ENABLED`). Firecrawl took
+as long with its limits raised: 50 jobs at once instead of 5, 50 pages
+instead of 10, 32 workers instead of 8.
+
+**A site that allows 5 requests a second.** Past that it answers 429 with
+`Retry-After: 1`. The site has 200 pages:
+
+| | Pages fetched | Requests sent during a Retry-After |
+|---|---|---|
+| Netweir | 200 | 0 or 1 |
+| Scrapy | 5 | 17 |
+| Firecrawl | 17 to 30 | 161 to 224 |
+
+Netweir takes about a minute here, which is the site's limit plus its own
+backoff. At 20 requests a second, Netweir and Firecrawl both get all 200
+pages, Netweir in 20 to 24 seconds and Firecrawl in 15 to 25, and Scrapy
+gets 20 to 40. Scrapy retries a 429
+twice at once, then gives up on the page. For this scenario only, Firecrawl
+runs with `ALLOW_LOCAL_WEBHOOKS=true`, without which it won't fetch from a
+local address.
+
+**A crawl stopped a third of the way through, then run again.** Netweir and
+Scrapy keep their state in a folder (`checkpoint=`, `JOBDIR`); for
+Firecrawl, its API container is stopped and started again.
+
+| | After a clean stop | After `kill -9` |
+|---|---|---|
+| Netweir | 179 pages, none twice | 179 pages, none twice |
+| Scrapy | 179 pages, 2 twice | 107 pages on one run; 179, with 108 or 109 twice, on two |
+| Firecrawl | 179 pages, none twice | 179 pages, none twice |
+
+Scrapy's documentation promises a resume only after a clean stop, and that's
+what it delivers. Firecrawl's queue lives in its Postgres container, so a
+job outlives the API; its compose file gives Postgres no volume, so the job
+wouldn't outlive that container.
+
+**A page that loads more products as you scroll.** The shop's laptop page
+shows 117. Netweir, scrolling in Chrome, reads 117. Self-hosted Firecrawl
+reads 3: scrolling is one of its page actions, which need Fire Engine, a
+separate engine its self-hosting guide leaves you to connect. Its hosted
+service has actions, and isn't tested here.
+
+**A redesign.** Each one learns `.price` on 50 product pages, then reads 50
+after a redesign, with a "was" price and a shipping price beside the price
+on every page to catch a wrong guess:
+
+| | Classes renamed | Classes, tags and layout changed |
+|---|---|---|
+| Netweir, `track=` | 50 right, 0 wrong | 50 right, 0 wrong |
+| Scrapling 0.5, `adaptive=True` | 50 right, 0 wrong | 50 right, 0 wrong |
+| Scrapy | 0 found | 0 found |
+
+The second column needs the change in
+[#226](https://github.com/netweir/netweir/pull/226); Netweir 0.7.0 finds 0 of
+those 50. Firecrawl isn't in this table: it reads fields with a language
+model, and the self-hosted setup here has none.
+
+The tests run against someone else's site, so the script stays on the paths
+its robots.txt allows. Please don't run it in a loop.
+
 ## When a page needs a real browser
 
 Some pages are empty until their JavaScript runs. For those, Netweir
