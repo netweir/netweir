@@ -1600,8 +1600,10 @@ async fn probe_identity(
             probe.inner.conn.call("", "Browser.getVersion", json!({})),
         )
         .await
+        // A Timeout, so `again_if_stuck` tries a new Chrome: stuck probes
+        // on a busy Mac runner sat here, with no renderer started yet.
         .map_err(|_| {
-            Error::Launch(format!(
+            Error::Timeout(format!(
                 "{what} didn't answer in {}s",
                 timeout.as_secs_f64()
             ))
@@ -1618,6 +1620,7 @@ async fn probe_identity(
     }
     asked.map_err(|e| match e {
         Error::Launch(message) => Error::Launch(said.explain(message)),
+        Error::Timeout(message) => Error::Timeout(said.explain(message)),
         other => other,
     })
 }
@@ -2294,10 +2297,11 @@ mod tests {
         let fake = fake_chrome(&dir, "exec sleep 60\n");
         for headless in [true, false] {
             let started = Instant::now();
+            let switch = fresh_switch();
             let launched = Browser::launch(LaunchOptions {
                 executable: Some(fake.clone()),
                 headless,
-                args: fresh_switch(),
+                args: switch.clone(),
                 timeout: Duration::from_secs(1),
                 ..LaunchOptions::default()
             })
@@ -2306,6 +2310,8 @@ mod tests {
                 panic!("launched, or failed some other way");
             };
             assert!(message.contains("in 1s"), "{message}");
+            // Headless asks a probe Chrome first, and a silent one twice.
+            assert_eq!(probes(&switch), if headless { 2 } else { 0 });
             assert!(
                 started.elapsed() < Duration::from_secs(10),
                 "headless={headless}: {:?}",
