@@ -581,17 +581,28 @@ with the same limits (100 requests in flight, 8 per site):
 
 | | Pages a second | CPU per page | Peak memory |
 |---|---|---|---|
-| Netweir | 1,770 | 0.22 ms | 68 MB |
-| Scrapy 2.19 | 890 | 1.1 ms | 125 MB |
-| httpx + selectolax | 220 | 3.2 ms | 190 MB |
-| Scrapling 0.4 | 180 | 0.8 ms | 76 MB |
+| Netweir | 1,876 | 0.23 ms | 83 MB |
+| Scrapy 2.19 | 734 | 1.3 ms | 116 MB |
+| httpx + selectolax | 211 | 3.2 ms | 174 MB |
+| Scrapling 0.5 | 188 | 0.7 ms | 66 MB |
+| Firecrawl, self-hosted | 17 | 146 ms | about 4 GB |
 
 With 100 requests in flight and 50 ms per answer, 2,000 pages a second is
 the most any crawler could do here, so Netweir is waiting on the server,
 not on itself. Scrapling is held back by its HTTP session's default of 10
-connections, which it doesn't let you change; that is how it ships. Same
-laptop, Python 3.13; run it yourself with
-`uv run python bench/crawl.py` once the others are installed.
+connections, which it doesn't let you change; that is how it ships.
+
+Firecrawl (v2.11.645, from its own `docker-compose.yaml`, on its defaults)
+gets one crawl job per site with 8 pages at a time. It renders each page in
+its Playwright service, which its compose file limits to 2 CPUs, and that
+is where its time goes. Its CPU and memory are summed across its containers;
+about 2.7 GB of that memory is in use before the crawl starts. It can't be
+told to skip robots.txt (that's an enterprise feature), so it fetches one
+more file per site than the others.
+
+Medians of three runs, all crawlers in one session on one M2 Max, Python
+3.12; run it yourself with `uv run python bench/crawl.py` once the others
+are installed (the docstring says how to start Firecrawl).
 
 Pages you don't control can be built to be slow to parse. Pass a timeout and
 Netweir gives up instead of hanging:
