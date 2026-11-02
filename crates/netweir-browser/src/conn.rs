@@ -66,6 +66,19 @@ impl Dialect {
         }
     }
 
+    /// The route a command waits on, so it fails if that goes away: its
+    /// CDP session, or the browsing context a BiDi command names.
+    fn route_of<'a>(self, route: &'a str, params: &'a Value) -> &'a str {
+        match self {
+            Dialect::Cdp => route,
+            Dialect::Bidi => params
+                .get("context")
+                .or_else(|| params.get("target").and_then(|t| t.get("context")))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        }
+    }
+
     /// The command as written, NUL-terminated. A BiDi command names its
     /// context inside `params`, so `route` only goes on a CDP one.
     fn encode(self, id: u64, route: &str, method: &str, params: Value) -> Vec<u8> {
@@ -277,6 +290,7 @@ impl Connection {
             )));
         }
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let route = dialect.route_of(session, &params).to_string();
         let bytes = dialect.encode(id, session, method, params);
         let (tx, rx) = oneshot::channel();
         {
@@ -285,9 +299,7 @@ impl Connection {
                 return Err(Error::Closed);
             }
             state.sent.insert(method.to_string());
-            state
-                .pending
-                .insert(id, (method.to_string(), session.to_string(), tx));
+            state.pending.insert(id, (method.to_string(), route, tx));
         }
         let sent = match &*self.shared.out.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(out) => out.send(bytes).is_ok(),
@@ -634,6 +646,124 @@ mod tests {
             Dialect::Cdp.forbidden(),
             &["Runtime.enable", "Console.enable", "Log.enable"]
         );
+    }
+
+    /// A BiDi connection and the far end, played by the test.
+    async fn firefox() -> (
+        Connection,
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+    ) {
+        let (ours, theirs) = tokio::io::duplex(1 << 16);
+        let (ours, theirs) = tokio::join!(
+            tokio_tungstenite::client_async("ws://test/session", ours),
+            tokio_tungstenite::accept_async(theirs)
+        );
+        let conn = Connection::over_websocket(ours.unwrap().0, Dialect::Bidi);
+        (conn, theirs.unwrap())
+    }
+
+    async fn command(
+        far: &mut tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+    ) -> Value {
+        loop {
+            if let Some(Ok(Message::Text(text))) = far.next().await {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bidi_call_gets_its_reply() {
+        let (conn, mut far) = firefox().await;
+        let call = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("", "session.status", json!({})).await }
+        });
+        let sent = command(&mut far).await;
+        assert!(sent.get("sessionId").is_none(), "{sent}");
+        let reply = json!({"type": "success", "id": sent["id"], "result": {"ready": true}});
+        far.send(Message::text(reply.to_string())).await.unwrap();
+        assert_eq!(call.await.unwrap().unwrap(), json!({"ready": true}));
+    }
+
+    #[tokio::test]
+    async fn bidi_error_names_the_method() {
+        let (conn, mut far) = firefox().await;
+        let call = tokio::spawn({
+            let conn = conn.clone();
+            async move {
+                conn.call(
+                    "",
+                    "browsingContext.navigate",
+                    json!({"context": "C1", "url": "x"}),
+                )
+                .await
+            }
+        });
+        let sent = command(&mut far).await;
+        let reply =
+            json!({"type": "error", "id": sent["id"], "error": "no such frame", "message": "gone"});
+        far.send(Message::text(reply.to_string())).await.unwrap();
+        let err = call.await.unwrap().unwrap_err();
+        assert!(
+            matches!(&err, Error::Protocol { method, message }
+                if method == "browsingContext.navigate" && message == "gone"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bidi_command_to_destroyed_context_fails() {
+        let (conn, mut far) = firefox().await;
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        conn.on("C1", {
+            let heard = heard.clone();
+            Arc::new(move |method: &str, _: &Value| heard.lock().unwrap().push(method.into()))
+        });
+        let call = tokio::spawn({
+            let conn = conn.clone();
+            async move {
+                conn.call(
+                    "",
+                    "browsingContext.navigate",
+                    json!({"context": "C1", "url": "x"}),
+                )
+                .await
+            }
+        });
+        command(&mut far).await;
+        let destroyed = json!({"type": "event", "method": "browsingContext.contextDestroyed",
+            "params": {"context": "C1", "children": []}});
+        far.send(Message::text(destroyed.to_string()))
+            .await
+            .unwrap();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+            .await
+            .expect("the waiting command should fail, not hang")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Protocol { message, .. }
+                if message.contains("went away before Firefox answered")),
+            "{err}"
+        );
+        assert_eq!(heard.lock().unwrap().as_slice(), [GONE]);
+    }
+
+    #[tokio::test]
+    async fn bidi_close_fails_waiting_commands() {
+        let (conn, mut far) = firefox().await;
+        let call = tokio::spawn({
+            let conn = conn.clone();
+            async move { conn.call("", "session.status", json!({})).await }
+        });
+        command(&mut far).await;
+        far.close(None).await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+            .await
+            .expect("the waiting command should fail, not hang")
+            .unwrap();
+        assert!(matches!(result, Err(Error::Closed)), "{result:?}");
     }
 
     #[tokio::test]
