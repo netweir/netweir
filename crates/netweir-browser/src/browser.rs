@@ -142,7 +142,7 @@ pub(crate) struct Inner {
     /// The Chrome netweir launched; None for one it connected to.
     child: Mutex<Option<Child>>,
     /// What ends the launched Chrome if netweir goes without closing it.
-    lifeline: Mutex<Option<launch::Lifeline>>,
+    lifeline: Mutex<Option<crate::lifeline::Lifeline>>,
     /// The launched Chrome's profile, removed when it closes unless it's
     /// one the caller gave.
     profile: Option<PathBuf>,
@@ -1293,7 +1293,7 @@ impl Inner {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         if let Some(lifeline) = lifeline {
-            lifeline.chrome_gone();
+            lifeline.process_gone();
         }
         self.downloads.remove_all();
         let removed = match &self.profile {
@@ -1344,7 +1344,7 @@ impl Drop for Inner {
                     let _ = child.kill();
                     let _ = child.wait();
                     if let Some(lifeline) = lifeline {
-                        lifeline.chrome_gone();
+                        lifeline.process_gone();
                     }
                     drop(quitting);
                 });
@@ -1399,7 +1399,7 @@ impl Drop for Quitting {
 /// Chrome's helper processes can hold files in the profile for a moment
 /// after the browser exits, and Windows won't delete an open file. On
 /// Windows they've been ended and waited for by now (see
-/// [`launch::Lifeline::chrome_gone`]); what's left is a scanner or an
+/// [`lifeline::Lifeline::process_gone`]); what's left is a scanner or an
 /// indexer with a file open for a moment, which a few seconds' retrying
 /// outlasts. A file still held after that is said in the error, path and
 /// all, rather than waited on for good: Chrome is gone by then, and the

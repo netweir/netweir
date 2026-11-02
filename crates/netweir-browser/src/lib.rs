@@ -11,6 +11,7 @@ mod environment;
 mod events;
 mod frame;
 mod launch;
+mod lifeline;
 mod network;
 mod page;
 pub mod steps;
