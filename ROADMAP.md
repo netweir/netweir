@@ -13,11 +13,9 @@ out over it looking exactly like the browser it claims to be.
 
 ## Shipped
 
-0.6 brought what used to head this list: five more page types (places,
-property, social posts, search results and any page's main content), chunks
-for retrieval with converters for LangChain and LlamaIndex, extraction by
-a language model on your own key, and an MCP server. The
-[release notes](https://github.com/netweir/netweir/releases/tag/v0.6.0)
+0.7 finished the browser list: finding elements by their text or role, saving
+a page as a PDF, tracing, and replaying a HAR file through routes. The
+[release notes](https://github.com/netweir/netweir/releases/tag/v0.7.0)
 have the details.
 
 ## Support
