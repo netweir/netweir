@@ -95,3 +95,8 @@ the file `books.csv` or `books.parquet` to get that format instead.
 - [Self-healing](self-healing.md): block recovery, crash-safe resume and
   selectors that survive a redesign.
 - [Settings](settings.md): every setting and its default.
+
+Want somewhere to practise? [test.netweir.com](https://test.netweir.com/)
+is a site of ours built to be scraped: a 495-product shop, pages that need
+a browser, rate limits, logins and forms. Every test publishes an answer
+key, so you can check your spider's output against what was really there.
