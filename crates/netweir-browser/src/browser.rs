@@ -2311,7 +2311,14 @@ mod tests {
             };
             assert!(message.contains("in 1s"), "{message}");
             // Headless asks a probe Chrome first, and a silent one twice.
-            assert_eq!(probes(&switch), if headless { 2 } else { 0 });
+            // Contains, not equals: $NETWEIR_CHROME_ARGS adds switches.
+            let probed = PROBED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|p| p.contains(&switch[0]))
+                .count();
+            assert_eq!(probed, if headless { 2 } else { 0 });
             assert!(
                 started.elapsed() < Duration::from_secs(10),
                 "headless={headless}: {:?}",
