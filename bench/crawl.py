@@ -1,7 +1,7 @@
-"""A whole crawl, timed: netweir against Scrapy, Scrapling and a plain
-httpx + selectolax script.
+"""A whole crawl, timed: netweir against Scrapy, Scrapling, a plain
+httpx + selectolax script and self-hosted Firecrawl.
 
-    uv run python bench/crawl.py                     # every crawler it can import
+    uv run python bench/crawl.py                     # every crawler it can reach
     uv run python bench/crawl.py --only netweir      # just one
 
 A local server plays 100 sites (site0.localhost ... site99.localhost) of 100
@@ -15,19 +15,35 @@ Install what you want to compare against (Scrapling needs Python 3.13 or
 older for now):
 
     uv pip install scrapy "scrapling[fetchers]" httpx selectolax
+
+Firecrawl runs only if its API answers on localhost:3002. Start it from its
+own checkout, with USE_DB_AUTHENTICATION=false and ALLOW_LOCAL_WEBHOOKS=true
+(it refuses local addresses otherwise) in its .env, and the same
+ALLOW_LOCAL_WEBHOOKS=true on its api service:
+
+    cd "$FIRECRAWL_DIR" && docker compose up -d
+
+FIRECRAWL_DIR says where that checkout is; its containers are the ones
+measured. See run_firecrawl for how its numbers are taken.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
+import http.client
 import json
 import os
 import random
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.request
 
 SITES = 100
 PAGES = 100
@@ -55,7 +71,9 @@ def page(site: int, n: int) -> bytes:
     ).encode()
 
 
-async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, site: int | None = None
+) -> None:
     try:
         while True:
             head = await reader.readuntil(b"\r\n\r\n")
@@ -71,9 +89,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             )
             await asyncio.sleep(LATENCY)
             try:
-                site = int(host.split(".")[0].removeprefix("site"))
                 n = int(path.rsplit("/", 1)[1]) if path.startswith("/p/") else 0
-                body, status = page(site, n), b"200 OK"
+                body = page(
+                    int(host.split(".")[0].removeprefix("site")) if site is None else site, n
+                )
+                status = b"200 OK"
             except ValueError:
                 body, status = b"not found", b"404 Not Found"
             writer.write(
@@ -93,10 +113,22 @@ async def serve(port_file: str) -> None:
     v6 = await asyncio.start_server(handle, host="::1", port=0, backlog=1024)
     port = v6.sockets[0].getsockname()[1]
     v4 = await asyncio.start_server(handle, host="127.0.0.1", port=port, backlog=1024)
-    with open(port_file, "w") as f:
-        f.write(str(port))
-    async with v6, v4:
-        await asyncio.gather(v6.serve_forever(), v4.serve_forever())
+    # Firecrawl's containers can't resolve siteN.localhost; they reach the
+    # host as host.docker.internal. So the same pages are also served on one
+    # port per site, where the port picks the site instead of the Host
+    # header: same handler, same latency, and the others never see them.
+    by_port = [
+        await asyncio.start_server(
+            functools.partial(handle, site=s), host="127.0.0.1", port=0, backlog=1024
+        )
+        for s in range(SITES)
+    ]
+    ports = [port] + [server.sockets[0].getsockname()[1] for server in by_port]
+    with open(port_file + ".tmp", "w") as f:
+        f.write(" ".join(map(str, ports)))
+    os.replace(port_file + ".tmp", port_file)
+    servers = [v6, v4, *by_port]
+    await asyncio.gather(*(server.serve_forever() for server in servers))
 
 
 def start_urls(port: int, path: str = "p/0") -> list[str]:
@@ -264,6 +296,153 @@ def run_httpx(port: int) -> int:
     return asyncio.run(crawl())
 
 
+FIRECRAWL = "http://localhost:3002/v2"
+FIRECRAWL_DIR = os.environ.get("FIRECRAWL_DIR", "firecrawl")
+
+
+def run_firecrawl(site_ports: list[int]) -> dict:
+    """Self-hosted Firecrawl, on its own worker defaults (no tuning, as in
+    reliability.py). Its crawl API takes one site per job, so it gets 100
+    jobs, all started at once, each held to its site's 100 pages and to 8
+    requests at a time (maxConcurrency) to mirror 8 per site; how many run
+    at once overall is up to its workers, not the 100 in flight the others
+    get. It returns each page's raw HTML, and the title and price come out
+    of that here, with the same parse the httpx crawler uses.
+
+    Wall time runs from the first job's start to the last job's end. Firecrawl
+    runs in its containers, not in a process of ours, so CPU is the
+    difference in their summed cgroup CPU counters (Docker Engine API) across
+    the crawl, plus our own parse; peak memory is the peak of their summed
+    memory as docker stats counts it, sampled about once a second."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from selectolax.lexbor import LexborHTMLParser
+
+    containers = subprocess.run(
+        ["docker", "compose", "ps", "-q"],
+        cwd=FIRECRAWL_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    if not containers:
+        return {"name": "firecrawl", "error": f"no containers running in {FIRECRAWL_DIR}"}
+    sock = subprocess.run(
+        ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    sock = sock.removeprefix("unix://")
+
+    class Docker(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX)
+            self.sock.connect(sock)
+
+    def usage() -> tuple[int, int]:
+        """Summed CPU nanoseconds so far, and memory in bytes now."""
+        cpu = memory = 0
+        for container in containers:
+            conn = Docker("docker")
+            conn.request("GET", f"/containers/{container}/stats?stream=false&one-shot=true")
+            stats = json.load(conn.getresponse())
+            conn.close()
+            cpu += stats["cpu_stats"]["cpu_usage"]["total_usage"]
+            mem = stats["memory_stats"]
+            memory += mem["usage"] - mem.get("stats", {}).get("inactive_file", 0)
+        return cpu, memory
+
+    peak = [0]
+    stop = threading.Event()
+
+    def sample() -> None:
+        while not stop.is_set():
+            peak[0] = max(peak[0], usage()[1])
+            stop.wait(1)
+
+    def start(site_port: int) -> str:
+        answer = firecrawl(
+            "/crawl",
+            {
+                "url": f"http://host.docker.internal:{site_port}/p/0",
+                "limit": PAGES,
+                "maxConcurrency": PER_SITE,
+                "crawlEntireDomain": True,  # /p/1 isn't under /p/0
+                "sitemap": "skip",
+                # ignoreRobotsTxt is enterprise-only; /robots.txt answers with a
+                # page, which allows everything, so robots costs it one request.
+                "scrapeOptions": {"formats": ["rawHtml"], "maxAge": 0},
+            },
+        )
+        if not answer.get("success"):
+            raise RuntimeError(f"Firecrawl refused the crawl: {answer}")
+        return answer["id"]
+
+    cpu_before, _ = usage()
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    started = time.perf_counter()
+    deadline = time.monotonic() + 1800
+    try:
+        with ThreadPoolExecutor(SITES) as pool:
+            jobs = list(pool.map(start, site_ports))
+        running = set(jobs)
+        while running and time.monotonic() < deadline:
+            time.sleep(0.25)
+            ongoing = {crawl["id"] for crawl in firecrawl("/crawl/ongoing")["crawls"]}
+            # A job off the ongoing list is checked once, in case it isn't on it yet.
+            running = {
+                job
+                for job in running
+                if job in ongoing or firecrawl(f"/crawl/{job}?limit=1")["status"] == "scraping"
+            }
+        wall = time.perf_counter() - started
+        cpu_after, _ = usage()
+    finally:
+        stop.set()
+        sampler.join()
+
+    parse_started = time.process_time()
+    pages = items = 0
+    for job in jobs:
+        status = firecrawl(f"/crawl/{job}")
+        while True:
+            for doc in status.get("data", []):
+                pages += 1
+                tree = LexborHTMLParser(doc.get("rawHtml") or "")
+                title = tree.css_first("h1.title")
+                price = tree.css_first("p.price")
+                items += bool(title and title.text() and price and price.text())
+            if not status.get("next"):
+                break
+            status = firecrawl(status["next"])
+    cpu = (cpu_after - cpu_before) / 1e9 + time.process_time() - parse_started
+    result = {
+        "name": "firecrawl",
+        "items": items,
+        "pages_per_sec": items / wall,
+        "cpu_ms_per_page": cpu * 1000 / max(items, 1),
+        "peak_rss_mb": peak[0] / 1e6,
+        "wall_s": wall,
+    }
+    if running:
+        result["error"] = f"{len(running)} of {SITES} crawls unfinished after 1800 s"
+        result["pages_returned"] = pages
+    return result
+
+
+def firecrawl(path: str, body: dict | None = None) -> dict:
+    url = path if path.startswith("http") else FIRECRAWL + path
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url, data, {"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read())
+
+
 def logging_off() -> None:
     import logging
 
@@ -316,6 +495,14 @@ def measure(name: str, port: int) -> dict:
 
 
 def available(name: str) -> bool:
+    if name == "firecrawl":
+        try:
+            urllib.request.urlopen("http://localhost:3002/", timeout=5).close()
+        except urllib.error.HTTPError:
+            return True
+        except (urllib.error.URLError, OSError):
+            return False
+        return True
     try:
         __import__(NEEDS[name])
     except Exception:  # noqa: BLE001 - anything that stops the import
@@ -328,7 +515,7 @@ def main() -> None:
     ap.add_argument("--crawler", help=argparse.SUPPRESS)
     ap.add_argument("--port", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--serve", help=argparse.SUPPRESS)
-    ap.add_argument("--only", action="append", choices=list(CRAWLERS))
+    ap.add_argument("--only", action="append", choices=[*CRAWLERS, "firecrawl"])
     ap.add_argument("--json", action="store_true", help="print the results as JSON")
     args = ap.parse_args()
     if args.crawler:
@@ -346,14 +533,14 @@ def main() -> None:
                 break
             time.sleep(0.05)
         with open(port_file) as f:
-            port = int(f.read())
-        names = args.only or list(CRAWLERS)
+            port, *site_ports = map(int, f.read().split())
+        names = args.only or [*CRAWLERS, "firecrawl"]
         results = []
         for name in names:
             if not available(name):
                 print(f"  {name:20} not installed, skipped", flush=True)
                 continue
-            result = measure(name, port)
+            result = run_firecrawl(site_ports) if name == "firecrawl" else measure(name, port)
             results.append(result)
             if "error" in result:
                 print(f"  {name:20} failed: {result['error']}", flush=True)
