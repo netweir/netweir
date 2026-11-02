@@ -129,8 +129,8 @@ Settings(
   not from the roots) and ALPN are the same. A test fetches from the
   fingerprint server with the check off and with the server's certificate
   as the only CA, and holds both handshakes to the profile's recording.
-- **Authorization.** Its place was recorded from Chrome 155 and Firefox
-  158 on macOS: the capture server's `/auth` answers 401 until a request
+- **Authorization.** Its place was recorded from Chrome 155 and 156 and
+  Firefox 158 and 159 on macOS: the capture server's `/auth` answers 401 until a request
   carries a login, then serves a page whose script loads an image, POSTs
   JSON and submits a form that redirects. The browsers were given the
   login in the URL and sent it on everything after.

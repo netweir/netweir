@@ -100,8 +100,8 @@ page a rule extracted the item from, too). Never a navigation.
 Chrome's and Firefox's shapes are written from recordings, kept beside
 the profiles as `*.image.capture.json` and `*.image.http1.capture.json`,
 and the fingerprint test sends the same request and compares it, as it
-does navigations and forms. Chrome 155's and Firefox 158's were
-recorded from those versions. Chrome 154's and Firefox 156's were
+does navigations and forms. Chrome 155's and 156's and Firefox 158's
+and 159's were recorded from those versions. Chrome 154's and Firefox 156's were
 recorded from Google Chrome 155 and Firefox 157.0.1, a version on, so for
 those the test takes the headers that name a version (User-Agent, client
 hints, and Chrome's Accept, to which 155 added `image/jxl`; Firefox added
