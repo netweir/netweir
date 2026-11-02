@@ -534,7 +534,7 @@ impl Browser {
                 .await
                 .map_err(|_| late())?
                 .map_err(refused)?;
-            Connection::over_websocket(socket)
+            Connection::over_websocket(socket, crate::conn::Dialect::Cdp)
         } else {
             let (socket, _) = tokio::time::timeout(
                 options.timeout,
@@ -543,7 +543,7 @@ impl Browser {
             .await
             .map_err(|_| late())?
             .map_err(|e| refused(e.to_string()))?;
-            Connection::over_websocket(socket)
+            Connection::over_websocket(socket, crate::conn::Dialect::Cdp)
         };
         let inner = Inner {
             conn,

@@ -19,8 +19,152 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::{Error, Result};
 
-/// Methods whose side effects page scripts can see. Never sent.
-const FORBIDDEN: &[&str] = &["Runtime.enable", "Console.enable", "Log.enable"];
+/// The protocol a connection speaks: Chrome's DevTools protocol, or
+/// WebDriver BiDi, which Firefox speaks. They differ in how a command is
+/// written, how a reply and an event are told apart, and what an event
+/// is routed by: a CDP session, or a BiDi browsing context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    Cdp,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Firefox's launch, the next step, speaks it")
+    )]
+    Bidi,
+}
+
+/// One message from the browser, as the reader acts on it.
+#[derive(Debug)]
+pub(crate) enum Incoming<'a> {
+    Reply {
+        id: u64,
+        result: std::result::Result<Value, String>,
+    },
+    Event {
+        route: &'a str,
+        method: &'a str,
+        params: &'a Value,
+    },
+    /// The route is gone: what was sent to it won't be answered.
+    Gone { route: &'a str },
+}
+
+impl Dialect {
+    /// The browser on the far end, for messages.
+    pub(crate) fn browser(self) -> &'static str {
+        match self {
+            Dialect::Cdp => "Chrome",
+            Dialect::Bidi => "Firefox",
+        }
+    }
+
+    /// Methods whose side effects page scripts can see. Never sent.
+    fn forbidden(self) -> &'static [&'static str] {
+        match self {
+            Dialect::Cdp => &["Runtime.enable", "Console.enable", "Log.enable"],
+            Dialect::Bidi => &[],
+        }
+    }
+
+    /// The command as written, NUL-terminated. A BiDi command names its
+    /// context inside `params`, so `route` only goes on a CDP one.
+    fn encode(self, id: u64, route: &str, method: &str, params: Value) -> Vec<u8> {
+        let mut message = json!({"id": id, "method": method, "params": params});
+        if self == Dialect::Cdp && !route.is_empty() {
+            message["sessionId"] = Value::from(route);
+        }
+        let mut bytes = serde_json::to_vec(&message).expect("a JSON value serialises");
+        bytes.push(0);
+        bytes
+    }
+
+    /// What `message` means, in the order the reader acts on it. Anything
+    /// it doesn't recognise means nothing: one odd message shouldn't end
+    /// the connection.
+    fn read(self, message: &Value) -> Vec<Incoming<'_>> {
+        match self {
+            Dialect::Cdp => {
+                if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                    let result = match message.get("error") {
+                        Some(e) => Err(e
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("failed")
+                            .to_string()),
+                        None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                    };
+                    return vec![Incoming::Reply { id, result }];
+                }
+                let Some(method) = message.get("method").and_then(Value::as_str) else {
+                    return Vec::new();
+                };
+                let params = message.get("params").unwrap_or(&Value::Null);
+                let route = message
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let mut read = Vec::new();
+                // A detached target's session hears it from the browser's.
+                if method == "Target.detachedFromTarget"
+                    && let Some(gone) = params.get("sessionId").and_then(Value::as_str)
+                {
+                    read.push(Incoming::Gone { route: gone });
+                }
+                read.push(Incoming::Event {
+                    route,
+                    method,
+                    params,
+                });
+                read
+            }
+            Dialect::Bidi => match message.get("type").and_then(Value::as_str) {
+                Some("success") => match message.get("id").and_then(Value::as_u64) {
+                    Some(id) => vec![Incoming::Reply {
+                        id,
+                        result: Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                    }],
+                    None => Vec::new(),
+                },
+                // An error with no id answers a command Firefox couldn't
+                // read, which nothing is waiting for by id.
+                Some("error") => match message.get("id").and_then(Value::as_u64) {
+                    Some(id) => vec![Incoming::Reply {
+                        id,
+                        result: Err(message
+                            .get("message")
+                            .or_else(|| message.get("error"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("failed")
+                            .to_string()),
+                    }],
+                    None => Vec::new(),
+                },
+                Some("event") => {
+                    let Some(method) = message.get("method").and_then(Value::as_str) else {
+                        return Vec::new();
+                    };
+                    let params = message.get("params").unwrap_or(&Value::Null);
+                    let route = params
+                        .get("context")
+                        .or_else(|| params.get("source").and_then(|s| s.get("context")))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let mut read = Vec::new();
+                    if method == "browsingContext.contextDestroyed" {
+                        read.push(Incoming::Gone { route });
+                    }
+                    read.push(Incoming::Event {
+                        route,
+                        method,
+                        params,
+                    });
+                    read
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+}
 
 /// Called on the reader thread for each event of a session.
 pub(crate) type Handler = Arc<dyn Fn(&str, &Value) + Send + Sync>;
@@ -39,6 +183,7 @@ struct Shared {
     out: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
     next_id: AtomicU64,
     state: Mutex<State>,
+    dialect: Dialect,
 }
 
 #[derive(Default)]
@@ -60,7 +205,7 @@ impl Connection {
         output: impl Write + Send + 'static,
         chrome: Option<&std::process::Child>,
     ) -> Connection {
-        let (shared, mut rx) = Shared::new();
+        let (shared, mut rx) = Shared::new(Dialect::Cdp);
         std::thread::Builder::new()
             .name("netweir-cdp-write".into())
             .spawn(move || {
@@ -85,11 +230,14 @@ impl Connection {
 
     /// Over a WebSocket, to a browser already running. Needs a tokio
     /// runtime.
-    pub(crate) fn over_websocket<S>(socket: tokio_tungstenite::WebSocketStream<S>) -> Connection
+    pub(crate) fn over_websocket<S>(
+        socket: tokio_tungstenite::WebSocketStream<S>,
+        dialect: Dialect,
+    ) -> Connection
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let (shared, mut rx) = Shared::new();
+        let (shared, mut rx) = Shared::new(dialect);
         let (mut sink, mut stream) = socket.split();
         tokio::spawn(async move {
             while let Some(mut message) = rx.recv().await {
@@ -122,18 +270,14 @@ impl Connection {
     /// Sends `method` to `session` ("" for the browser) and waits for the
     /// result.
     pub(crate) async fn call(&self, session: &str, method: &str, params: Value) -> Result<Value> {
-        if FORBIDDEN.contains(&method) {
+        let dialect = self.shared.dialect;
+        if dialect.forbidden().contains(&method) {
             return Err(Error::Invalid(format!(
                 "{method} is never sent: pages can detect it"
             )));
         }
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut message = json!({"id": id, "method": method, "params": params});
-        if !session.is_empty() {
-            message["sessionId"] = Value::from(session);
-        }
-        let mut bytes = serde_json::to_vec(&message).expect("a JSON value serialises");
-        bytes.push(0);
+        let bytes = dialect.encode(id, session, method, params);
         let (tx, rx) = oneshot::channel();
         {
             let mut state = self.shared.lock();
@@ -170,7 +314,8 @@ impl Connection {
             .await
             .unwrap_or_else(|_| {
                 Err(Error::Timeout(format!(
-                    "Chrome didn't answer {method} within {}s",
+                    "{} didn't answer {method} within {}s",
+                    self.shared.dialect.browser(),
                     limit.as_secs_f64()
                 )))
             })
@@ -180,12 +325,7 @@ impl Connection {
     /// can't wait: answering a request Chrome is holding, say.
     pub(crate) fn send(&self, session: &str, method: &str, params: Value) {
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut message = json!({"id": id, "method": method, "params": params});
-        if !session.is_empty() {
-            message["sessionId"] = Value::from(session);
-        }
-        let mut bytes = serde_json::to_vec(&message).expect("a JSON value serialises");
-        bytes.push(0);
+        let bytes = self.shared.dialect.encode(id, session, method, params);
         self.shared.lock().sent.insert(method.to_string());
         if let Some(out) = &*self.shared.out.lock().unwrap_or_else(|e| e.into_inner()) {
             let _ = out.send(bytes);
@@ -229,12 +369,13 @@ impl Connection {
 }
 
 impl Shared {
-    fn new() -> (Arc<Shared>, mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn new(dialect: Dialect) -> (Arc<Shared>, mpsc::UnboundedReceiver<Vec<u8>>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             out: Mutex::new(Some(tx)),
             next_id: AtomicU64::new(1),
             state: Mutex::new(State::default()),
+            dialect,
         });
         (shared, rx)
     }
@@ -244,63 +385,54 @@ impl Shared {
     }
 
     fn deliver(&self, message: Value) {
-        if let Some(id) = message.get("id").and_then(Value::as_u64) {
-            let Some((method, _, tx)) = self.lock().pending.remove(&id) else {
-                return;
-            };
-            let result = match message.get("error") {
-                Some(e) => Err(Error::Protocol {
+        for incoming in self.dialect.read(&message) {
+            match incoming {
+                Incoming::Reply { id, result } => {
+                    let Some((method, _, tx)) = self.lock().pending.remove(&id) else {
+                        continue;
+                    };
+                    let _ = tx.send(result.map_err(|message| Error::Protocol { method, message }));
+                }
+                // The browser never answers what was sent to a route that
+                // has gone, so that fails now.
+                Incoming::Gone { route } => {
+                    let stranded: Vec<_> = {
+                        let mut state = self.lock();
+                        let ids: Vec<u64> = state
+                            .pending
+                            .iter()
+                            .filter(|(_, (_, r, _))| r == route)
+                            .map(|(id, _)| *id)
+                            .collect();
+                        ids.iter()
+                            .filter_map(|id| state.pending.remove(id))
+                            .collect()
+                    };
+                    for (method, _, tx) in stranded {
+                        let _ = tx.send(Err(Error::Protocol {
+                            method,
+                            message: format!(
+                                "the session went away before {} answered",
+                                self.dialect.browser()
+                            ),
+                        }));
+                    }
+                    let handler = self.lock().handlers.remove(route);
+                    if let Some(handler) = handler {
+                        handler(GONE, &Value::Null);
+                    }
+                }
+                Incoming::Event {
+                    route,
                     method,
-                    message: e
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("failed")
-                        .to_string(),
-                }),
-                None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
-            };
-            let _ = tx.send(result);
-            return;
-        }
-        let Some(method) = message.get("method").and_then(Value::as_str) else {
-            return;
-        };
-        let params = message.get("params").unwrap_or(&Value::Null);
-        let session = message
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        // A detached target's session hears it from the browser's. Chrome
-        // never answers what was sent to it, so that fails now.
-        if method == "Target.detachedFromTarget"
-            && let Some(gone) = params.get("sessionId").and_then(Value::as_str)
-        {
-            let stranded: Vec<_> = {
-                let mut state = self.lock();
-                let ids: Vec<u64> = state
-                    .pending
-                    .iter()
-                    .filter(|(_, (_, s, _))| s == gone)
-                    .map(|(id, _)| *id)
-                    .collect();
-                ids.iter()
-                    .filter_map(|id| state.pending.remove(id))
-                    .collect()
-            };
-            for (method, _, tx) in stranded {
-                let _ = tx.send(Err(Error::Protocol {
-                    method,
-                    message: "the session went away before Chrome answered".into(),
-                }));
+                    params,
+                } => {
+                    let handler = self.lock().handlers.get(route).cloned();
+                    if let Some(handler) = handler {
+                        handler(method, params);
+                    }
+                }
             }
-            let handler = self.lock().handlers.remove(gone);
-            if let Some(handler) = handler {
-                handler(GONE, &Value::Null);
-            }
-        }
-        let handler = self.lock().handlers.get(session).cloned();
-        if let Some(handler) = handler {
-            handler(method, params);
         }
     }
 
@@ -406,6 +538,103 @@ fn read_loop(mut input: impl BufRead, shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unframed(bytes: &[u8]) -> Value {
+        serde_json::from_slice(bytes.strip_suffix(&[0]).expect("NUL-terminated")).unwrap()
+    }
+
+    #[test]
+    fn cdp_encoding_is_unchanged() {
+        let bytes = Dialect::Cdp.encode(7, "S1", "Page.navigate", json!({"url": "about:blank"}));
+        assert_eq!(
+            unframed(&bytes),
+            json!({"id": 7, "method": "Page.navigate", "params": {"url": "about:blank"}, "sessionId": "S1"})
+        );
+        let browser = unframed(&Dialect::Cdp.encode(8, "", "Browser.getVersion", json!({})));
+        assert!(browser.get("sessionId").is_none(), "{browser}");
+    }
+
+    #[test]
+    fn bidi_encoding_has_no_session() {
+        let params = json!({"context": "ctx", "url": "about:blank"});
+        let bytes = Dialect::Bidi.encode(3, "ctx", "browsingContext.navigate", params.clone());
+        assert_eq!(
+            unframed(&bytes),
+            json!({"id": 3, "method": "browsingContext.navigate", "params": params})
+        );
+    }
+
+    #[test]
+    fn bidi_replies_and_errors() {
+        let ok = json!({"type": "success", "id": 4, "result": {"navigation": "n1"}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&ok)[..],
+            [Incoming::Reply { id: 4, result: Ok(r) }] if r["navigation"] == "n1"
+        ));
+        let err = json!({"type": "error", "id": 5, "error": "no such frame",
+            "message": "Browsing context with id x not found"});
+        assert!(matches!(
+            &Dialect::Bidi.read(&err)[..],
+            [Incoming::Reply { id: 5, result: Err(m) }] if m.contains("not found")
+        ));
+    }
+
+    #[test]
+    fn bidi_events_route_by_context() {
+        let load = json!({"type": "event", "method": "browsingContext.load",
+            "params": {"context": "C1", "url": "x"}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&load)[..],
+            [Incoming::Event {
+                route: "C1",
+                method: "browsingContext.load",
+                ..
+            }]
+        ));
+        let log = json!({"type": "event", "method": "log.entryAdded",
+            "params": {"source": {"realm": "r", "context": "C2"}}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&log)[..],
+            [Incoming::Event { route: "C2", .. }]
+        ));
+        let browser = json!({"type": "event", "method": "browser.somethingNew", "params": {}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&browser)[..],
+            [Incoming::Event { route: "", .. }]
+        ));
+        let gone = json!({"type": "event", "method": "browsingContext.contextDestroyed",
+            "params": {"context": "C3", "children": []}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&gone)[..],
+            [
+                Incoming::Gone { route: "C3" },
+                Incoming::Event { route: "C3", .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn bidi_unknown_messages_are_dropped() {
+        for m in [
+            json!({"id": 1}),
+            json!({"type": "error", "id": null, "error": "invalid argument", "message": "unparsable"}),
+            json!({"type": "weird"}),
+            json!("text"),
+        ] {
+            assert!(Dialect::Bidi.read(&m).is_empty(), "{m}");
+        }
+    }
+
+    #[test]
+    fn dialects_name_their_browser() {
+        assert_eq!(Dialect::Cdp.browser(), "Chrome");
+        assert_eq!(Dialect::Bidi.browser(), "Firefox");
+        assert!(Dialect::Bidi.forbidden().is_empty());
+        assert_eq!(
+            Dialect::Cdp.forbidden(),
+            &["Runtime.enable", "Console.enable", "Log.enable"]
+        );
+    }
 
     #[tokio::test]
     async fn forbidden_methods_are_refused_without_being_sent() {
