@@ -57,6 +57,12 @@ pub(super) async fn open(
         )
         .await?;
     let target = str_of(&created, "context");
+    if let Err(e) = place(&browser, &target).await {
+        let _ = browser
+            .call("", "browsingContext.close", json!({"context": target}))
+            .await;
+        return Err(e);
+    }
     let opening = Opening {
         context,
         owns_context,
@@ -79,6 +85,32 @@ pub(super) async fn open(
     }
     lock_state(&page.inner.shared).url = "about:blank".into();
     Ok(page)
+}
+
+/// Puts the window of the new page `context` where Firefox opened its
+/// first: Firefox cascades each new window from the last, somewhere a
+/// person's one window isn't.
+async fn place(browser: &Inner, context: &str) -> Result<()> {
+    let Some([x, y, width, height]) = browser.first_window else {
+        return Ok(());
+    };
+    let tree = browser
+        .call(
+            "",
+            "browsingContext.getTree",
+            json!({"root": context, "maxDepth": 0}),
+        )
+        .await?;
+    let window = str_of(&tree["contexts"][0], "clientWindow");
+    browser
+        .call(
+            "",
+            "browser.setClientWindowState",
+            json!({"clientWindow": window, "state": "normal",
+                "x": x, "y": y, "width": width, "height": height}),
+        )
+        .await
+        .map(drop)
 }
 
 /// What a Firefox page hears: where its document is, and the responses

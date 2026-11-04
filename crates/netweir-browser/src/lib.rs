@@ -26,7 +26,7 @@ pub use environment::{
     ReducedMotion, Size, device_names,
 };
 pub use events::{Dialog, Download, PageEvent};
-pub use firefox::{find_firefox, firefox_executable, firefox_platform, prepare_firefox};
+pub use firefox::{find_firefox, firefox_executable, firefox_platform, prepare_firefox, user_js};
 pub use frame::{Frame, Pick, typing_time};
 pub use launch::{
     cft_executable, cft_platform, find_chrome, grant_sandbox_access, netweir_home,

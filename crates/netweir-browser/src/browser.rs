@@ -243,6 +243,9 @@ pub(crate) struct Inner {
     /// Firefox's own user context, which its session is confined to (or
     /// "default" in automation mode); None for Chrome.
     pub default_context: Option<String>,
+    /// Where Firefox opened its first window, and its size (x, y, width,
+    /// height): where each page's window goes, as a person's would be.
+    pub first_window: Option<[i64; 4]>,
 }
 
 /// The fields of an [`Inner`] that only a launch fills in.
@@ -549,6 +552,7 @@ impl Browser {
             own: tokio::sync::OnceCell::new(),
             stealth: true,
             default_context: None,
+            first_window: None,
         };
         let what = executable.display().to_string();
         // Google Chrome given its own default profile says so and runs on
@@ -619,6 +623,7 @@ impl Browser {
             own: tokio::sync::OnceCell::new(),
             stealth: started.stealth,
             default_context: Some(started.default_context),
+            first_window: started.first_window,
         };
         Ok(Browser {
             inner: Arc::new(inner),
@@ -691,6 +696,7 @@ impl Browser {
             own: tokio::sync::OnceCell::new(),
             stealth: true,
             default_context: None,
+            first_window: None,
         };
         Browser::finish(inner, &options, &ws, None).await
     }
@@ -1771,6 +1777,7 @@ async fn probe_identity(
             own: tokio::sync::OnceCell::new(),
             stealth: true,
             default_context: None,
+            first_window: None,
         }),
     };
     let what = executable.display().to_string();
@@ -2581,6 +2588,7 @@ mod tests {
             own: tokio::sync::OnceCell::new(),
             stealth: true,
             default_context: None,
+            first_window: None,
         });
         // A target that closes between being made and being attached to.
         std::thread::spawn(move || {

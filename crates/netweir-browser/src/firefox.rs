@@ -180,8 +180,10 @@ user_pref("browser.download.folderList", 2);
 user_pref("browser.download.useDownloadDir", true);
 "#;
 
-/// `user.js` for the profile at `profile`.
-fn user_js(profile: &Path) -> String {
+/// `user.js` for the profile at `profile`. Public only for the stealth
+/// test, whose undriven Firefox must start as Netweir's does.
+#[doc(hidden)]
+pub fn user_js(profile: &Path) -> String {
     let downloads = profile.join("downloads");
     // As a JSON string, which is a JavaScript one: Windows' backslashes
     // escaped.
@@ -201,6 +203,8 @@ pub(crate) struct Started {
     /// automation mode.
     pub default_context: String,
     pub stealth: bool,
+    /// Its first window's place and size.
+    pub first_window: Option<[i64; 4]>,
 }
 
 /// Starts Firefox as `options` ask: the stealth start for a Firefox
@@ -344,6 +348,12 @@ pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
             ));
         }
     };
+    // A new window opens cascaded from the last; each page's is put where
+    // the first opened instead.
+    let windows = conn.call("", "browser.getClientWindows", json!({})).await?;
+    let first_window = windows["clientWindows"]
+        .get(0)
+        .map(|w| ["x", "y", "width", "height"].map(|k| w[k].as_i64().unwrap_or_default()));
     Ok(Started {
         conn,
         process,
@@ -352,6 +362,7 @@ pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
         version: format!("Firefox/{version}"),
         default_context,
         stealth,
+        first_window,
     })
 }
 
