@@ -244,8 +244,9 @@ pub(crate) struct Inner {
     /// "default" in automation mode); None for Chrome.
     pub default_context: Option<String>,
     /// Where Firefox opened its first window, and its size (x, y, width,
-    /// height): where each page's window goes, as a person's would be.
-    pub first_window: Option<[i64; 4]>,
+    /// height), and whether it's maximized: what each page's window
+    /// copies, as a person's would be.
+    pub first_window: Option<([i64; 4], bool)>,
 }
 
 /// The fields of an [`Inner`] that only a launch fills in.

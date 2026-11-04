@@ -85,7 +85,7 @@ pub(super) async fn open(
 /// Firefox can replace a new window's first document while it waits on
 /// it, and the create then fails with "BrowsingContext does no longer
 /// exist" though the window opened. That window is closed and the create
-/// asked again, twice at most.
+/// asked again after a pause, a longer one each time, three times at most.
 async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
     let mut tries = 0;
     loop {
@@ -99,9 +99,12 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
             .await;
         match created {
             Err(Error::Protocol { message, .. })
-                if message.contains("DiscardedBrowsingContextError") && tries < 2 =>
+                if message.contains("DiscardedBrowsingContextError") && tries < 3 =>
             {
                 tries += 1;
+                // 100, 300, then 900 ms: Firefox settling after a window.
+                tokio::time::sleep(std::time::Duration::from_millis(100 * 3u64.pow(tries - 1)))
+                    .await;
                 for left in top_level(browser).await? {
                     if !before.contains(&left) {
                         let _ = browser
@@ -132,7 +135,7 @@ async fn top_level(browser: &Inner) -> Result<Vec<String>> {
 /// first: Firefox cascades each new window from the last, somewhere a
 /// person's one window isn't.
 async fn place(browser: &Inner, context: &str) -> Result<()> {
-    let Some([x, y, width, height]) = browser.first_window else {
+    let Some(([x, y, width, height], maximized)) = browser.first_window else {
         return Ok(());
     };
     let tree = browser
@@ -143,13 +146,16 @@ async fn place(browser: &Inner, context: &str) -> Result<()> {
         )
         .await?;
     let window = str_of(&tree["contexts"][0], "clientWindow");
+    // A maximized window has no frame above its tabs, which a page can
+    // measure, so the page's window is maximized when the first was.
+    let state = if maximized {
+        json!({"clientWindow": window, "state": "maximized"})
+    } else {
+        json!({"clientWindow": window, "state": "normal",
+            "x": x, "y": y, "width": width, "height": height})
+    };
     browser
-        .call(
-            "",
-            "browser.setClientWindowState",
-            json!({"clientWindow": window, "state": "normal",
-                "x": x, "y": y, "width": width, "height": height}),
-        )
+        .call("", "browser.setClientWindowState", state)
         .await
         .map(drop)
 }
