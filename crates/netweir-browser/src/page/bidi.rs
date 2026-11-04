@@ -49,13 +49,7 @@ pub(super) async fn open(
     };
     // A window, not a tab, so every page is in front, as a person's one tab
     // is: a tab behind another is hidden, which its page can see.
-    let created = browser
-        .call(
-            "",
-            "browsingContext.create",
-            json!({"type": "window", "userContext": user_context}),
-        )
-        .await?;
+    let created = create_window(&browser, &user_context).await?;
     let target = str_of(&created, "context");
     if let Err(e) = place(&browser, &target).await {
         let _ = browser
@@ -85,6 +79,53 @@ pub(super) async fn open(
     }
     lock_state(&page.inner.shared).url = "about:blank".into();
     Ok(page)
+}
+
+/// Opens a window whose one tab is in `user_context`. On a busy machine
+/// Firefox can replace a new window's first document while it waits on
+/// it, and the create then fails with "BrowsingContext does no longer
+/// exist" though the window opened. That window is closed and the create
+/// asked again, twice at most.
+async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
+    let mut tries = 0;
+    loop {
+        let before = top_level(browser).await?;
+        let created = browser
+            .call(
+                "",
+                "browsingContext.create",
+                json!({"type": "window", "userContext": user_context}),
+            )
+            .await;
+        match created {
+            Err(Error::Protocol { message, .. })
+                if message.contains("DiscardedBrowsingContextError") && tries < 2 =>
+            {
+                tries += 1;
+                for left in top_level(browser).await? {
+                    if !before.contains(&left) {
+                        let _ = browser
+                            .call("", "browsingContext.close", json!({"context": left}))
+                            .await;
+                    }
+                }
+            }
+            created => return created,
+        }
+    }
+}
+
+/// The ids of every top-level browsing context.
+async fn top_level(browser: &Inner) -> Result<Vec<String>> {
+    let tree = browser
+        .call("", "browsingContext.getTree", json!({"maxDepth": 0}))
+        .await?;
+    Ok(tree["contexts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| str_of(c, "context"))
+        .collect())
 }
 
 /// Puts the window of the new page `context` where Firefox opened its
