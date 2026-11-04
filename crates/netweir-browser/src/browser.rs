@@ -356,10 +356,7 @@ async fn user_agent_of(browser: &Arc<Inner>, env: &Environment, own: &str) -> Re
 impl Browser {
     pub async fn launch(mut options: LaunchOptions) -> Result<Browser> {
         if options.engine == Engine::Firefox {
-            return Err(Error::Unsupported {
-                engine: "Firefox",
-                feature: "Browser.launch".into(),
-            });
+            return Browser::launch_firefox(options).await;
         }
         if !options.stealth {
             return Err(Error::Invalid(
@@ -564,6 +561,68 @@ impl Browser {
             }),
             () = said.refused() => Err(launch::own_profile_refused(&shown)),
         }
+    }
+
+    async fn launch_firefox(options: LaunchOptions) -> Result<Browser> {
+        options.environment.validate()?;
+        if options.environment != Environment::default() {
+            return Err(Error::Unsupported {
+                engine: "Firefox",
+                feature: "LaunchOptions.environment".into(),
+            });
+        }
+        // Each is Chrome's, or not done on Firefox yet: refused rather
+        // than quietly left out.
+        let given = [
+            ("LaunchOptions.proxy", options.proxy.is_some()),
+            ("LaunchOptions.brands", options.brands.is_some()),
+            (
+                "LaunchOptions.worker_header_order",
+                options.worker_header_order,
+            ),
+        ];
+        if let Some((feature, _)) = given.iter().find(|(_, given)| *given) {
+            return Err(Error::Unsupported {
+                engine: "Firefox",
+                feature: feature.to_string(),
+            });
+        }
+        let started = crate::firefox::start(&options).await?;
+        let (environment, screen, screen_scale) = bare(&options);
+        let inner = Inner {
+            conn: started.conn,
+            child: Mutex::new(Some(started.process.child)),
+            lifeline: Mutex::new(Some(started.process.lifeline)),
+            profile: Some(started.profile),
+            keep_profile: options.user_data_dir.is_some(),
+            temp_profile: Mutex::new(started.temp),
+            contexts: Mutex::default(),
+            tracing_done: Arc::default(),
+            version: started.version,
+            identity: None,
+            timeout: options.timeout,
+            pause: options.dialog_pause,
+            proxy_login: None,
+            said: Some(started.process.said),
+            pages: Arc::default(),
+            attaching: Arc::default(),
+            downloads: Arc::default(),
+            environment,
+            arranges: options.headless,
+            screen,
+            screen_scale,
+            worker_header_order: false,
+            window_size: None,
+            agent: None,
+            own_languages: Mutex::default(),
+            screens: tokio::sync::Mutex::new(()),
+            own: tokio::sync::OnceCell::new(),
+            stealth: started.stealth,
+            default_context: Some(started.default_context),
+        };
+        Ok(Browser {
+            inner: Arc::new(inner),
+        })
     }
 
     /// Drives a browser that's already running: a `ws://` DevTools URL, as
@@ -1113,7 +1172,7 @@ impl Browser {
         }
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
-            inner.conn.call("", "Browser.close", json!({})),
+            inner.conn.call("", inner.close_method(), json!({})),
         )
         .await;
         tokio::task::spawn_blocking(move || inner.shut_down(Duration::from_secs(10)))
@@ -1396,6 +1455,14 @@ impl Inner {
         }
     }
 
+    /// What asks the browser to quit.
+    pub(crate) fn close_method(&self) -> &'static str {
+        match self.engine() {
+            Engine::Chrome => "Browser.close",
+            Engine::Firefox => "browser.close",
+        }
+    }
+
     /// For what Netweir can't do on Firefox, or can't do there yet.
     pub(crate) fn chrome_only(&self, feature: &str) -> Result<()> {
         match self.engine() {
@@ -1424,7 +1491,7 @@ impl Drop for Inner {
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
         {
-            self.conn.send("", "Browser.close", json!({}));
+            self.conn.send("", self.close_method(), json!({}));
             self.conn.shut();
             let lifeline = self
                 .lifeline

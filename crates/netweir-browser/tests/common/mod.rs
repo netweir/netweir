@@ -16,6 +16,41 @@ pub fn chrome() -> Option<PathBuf> {
     }
 }
 
+/// The Firefox to test with: one `netweir install firefox` installed, or
+/// None (and a note) when there isn't one. CI sets NETWEIR_REQUIRE_FIREFOX
+/// to make that a failure instead.
+pub fn firefox() -> Option<PathBuf> {
+    match netweir_browser::find_firefox() {
+        Ok(path) => Some(path),
+        Err(e) if std::env::var_os("NETWEIR_REQUIRE_FIREFOX").is_some() => panic!("{e}"),
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            None
+        }
+    }
+}
+
+/// Launches the Firefox at `executable` with `options` otherwise, once
+/// it's this test's turn.
+pub async fn launch_firefox(
+    executable: PathBuf,
+    options: netweir_browser::LaunchOptions,
+) -> TestBrowser {
+    let turn = turn();
+    let browser = netweir_browser::Browser::launch(netweir_browser::LaunchOptions {
+        engine: netweir_browser::Engine::Firefox,
+        executable: Some(executable),
+        timeout: std::time::Duration::from_secs(60),
+        ..options
+    })
+    .await
+    .unwrap();
+    TestBrowser {
+        browser,
+        _turn: turn,
+    }
+}
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -230,6 +265,11 @@ pub fn turn() -> Turn {
 /// one and wait on the other for good, and every other test with them.
 pub fn all_turns() -> Turn {
     turns(ALL_TURNS)
+}
+
+/// `n` turns at once, for a test that runs `n` browsers together.
+pub fn turns_for(n: usize) -> Turn {
+    turns(n)
 }
 
 fn turns(n: usize) -> Turn {

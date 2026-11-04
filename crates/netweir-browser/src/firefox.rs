@@ -2,8 +2,13 @@
 //! to start without the automation flag (see firefox/mozilla.cfg).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use crate::launch::netweir_home;
+use serde_json::{Value, json};
+
+use crate::LaunchOptions;
+use crate::conn::{Connection, Dialect};
+use crate::launch::{Process, Said, TempProfile, netweir_home};
 use crate::{Error, Result};
 
 /// Firefox reads it from its `defaults/pref` folder and is told by it to
@@ -92,7 +97,6 @@ pub(crate) fn is_ours_in(executable: &Path, home: &Path) -> bool {
             .is_some_and(|cfg| cfg.lines().next() == Some(MARK))
 }
 
-#[expect(dead_code, reason = "the Firefox launch, still to come, is its caller")]
 pub(crate) fn is_ours(executable: &Path) -> bool {
     is_ours_in(executable, &netweir_home())
 }
@@ -139,6 +143,303 @@ pub fn find_firefox() -> Result<PathBuf> {
             home.join("firefox").display()
         ))
     })
+}
+
+/// The oldest Firefox Netweir drives: the first whose remote control start
+/// it was tested on.
+const OLDEST: u32 = 159;
+
+/// Written into every profile Netweir makes for Firefox. A folder holding
+/// a Firefox profile without it is a person's, which Netweir won't touch.
+const PROFILE_MARK: &str = "netweir-profile";
+
+/// Where mozilla.cfg writes the BiDi server's port, in the profile.
+const PORT_FILE: &str = "netweir-port";
+
+/// Only what a fresh profile would otherwise show or do that no page
+/// asked for. Nothing from the remote agent's own list of recommended
+/// prefs that a page could see (the popup blocker, focus emulation).
+const USER_JS: &str = r#"// Written by Netweir at each launch.
+// Not asked to be the default browser.
+user_pref("browser.shell.checkDefaultBrowser", false);
+// No welcome or "what's new" page in place of the one asked for.
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("startup.homepage_welcome_url", "");
+user_pref("startup.homepage_welcome_url.additional", "");
+user_pref("browser.startup.page", 0);
+// No data-reporting notice bar, which shortens the page.
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+// The pinned build stays the pinned build: Netweir moves the pin.
+user_pref("app.update.disabledForTesting", true);
+"#;
+
+/// A Firefox started and spoken to: what [`crate::Browser`] is made from.
+pub(crate) struct Started {
+    pub conn: Connection,
+    pub process: Process,
+    pub profile: PathBuf,
+    pub temp: Option<TempProfile>,
+    /// Its product string, `Firefox/<version>`.
+    pub version: String,
+    /// The user context the session is confined to; "default" in
+    /// automation mode.
+    pub default_context: String,
+    pub stealth: bool,
+}
+
+/// Starts Firefox as `options` ask: the stealth start for a Firefox
+/// Netweir installed, automation mode only when `stealth` is false.
+pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
+    let executable = match &options.executable {
+        Some(path) => path.clone(),
+        None => find_firefox()?,
+    };
+    if !executable.is_file() {
+        return Err(Error::Launch(format!(
+            "no Firefox at {}",
+            executable.display()
+        )));
+    }
+    let ours = is_ours(&executable);
+    if options.stealth && !ours {
+        return Err(Error::Launch(format!(
+            "{} isn't a Firefox Netweir installed, and Netweir won't change one it didn't. Run \
+             `netweir install firefox`, or launch with stealth: false to drive it in automation \
+             mode, where pages see navigator.webdriver === true",
+            executable.display()
+        )));
+    }
+    if ours {
+        // One from an older Netweir gets this one's startup files.
+        prepare_firefox(&executable).map_err(Error::Launch)?;
+    }
+    let stealth = options.stealth;
+    if !stealth {
+        crate::warn(&format!(
+            "pages can see navigator.webdriver === true: {} runs in automation mode",
+            executable.display()
+        ));
+    }
+
+    let (profile, temp) = match &options.user_data_dir {
+        Some(dir) => {
+            if dir.as_os_str().to_string_lossy().trim().is_empty() {
+                return Err(Error::Launch(
+                    "the profile folder (user_data_dir) is empty: name a folder".into(),
+                ));
+            }
+            check_profile(dir)?;
+            (dir.clone(), None)
+        }
+        None => {
+            let temp = TempProfile::make()
+                .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
+            (temp.dir().to_path_buf(), Some(temp))
+        }
+    };
+    let port_file = profile.join(PORT_FILE);
+    let prepared = std::fs::create_dir_all(&profile)
+        .and_then(|()| std::fs::write(profile.join(PROFILE_MARK), ""))
+        .and_then(|()| std::fs::write(profile.join("user.js"), USER_JS));
+    prepared.map_err(|e| {
+        Error::Launch(format!(
+            "can't prepare the profile {}: {e}",
+            profile.display()
+        ))
+    })?;
+    // What an earlier launch left must never be read as this one's.
+    for stale in [
+        port_file.clone(),
+        sibling(&port_file, ".tmp"),
+        sibling(&port_file, ".failed"),
+        profile.join("WebDriverBiDiServer.json"),
+    ] {
+        match std::fs::remove_file(&stale) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(Error::Launch(format!(
+                    "can't remove {} from an earlier launch: {e}",
+                    stale.display()
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    let mut args = vec![
+        "-profile".to_string(),
+        profile.display().to_string(),
+        "-no-remote".into(),
+        "-new-instance".into(),
+    ];
+    if options.headless {
+        args.push("-headless".into());
+    }
+    if !stealth {
+        args.push("--remote-debugging-port=0".into());
+    }
+    args.extend(options.args.iter().cloned());
+    let envs: Vec<(&str, &std::ffi::OsStr)> = if stealth {
+        vec![("NETWEIR_FIREFOX_PORT_FILE", port_file.as_os_str())]
+    } else {
+        Vec::new()
+    };
+    let mut process = crate::launch::spawn(&executable, &args, &envs, "Firefox", None)?;
+    let said = process.said.clone();
+
+    let deadline = Instant::now() + options.timeout;
+    let port = wait_for_port(&mut process, &profile, stealth, deadline)
+        .await
+        .map_err(|e| explained(e, &said))?;
+    let url = format!("ws://127.0.0.1:{port}/session");
+    let socket = tokio::time::timeout_at(deadline.into(), tokio_tungstenite::connect_async(&url))
+        .await
+        .map_err(|_| {
+            Error::Launch(format!(
+                "Firefox didn't take the connection to {url} in time"
+            ))
+        })?
+        .map_err(|e| Error::Launch(said.explain(format!("can't connect to {url}: {e}"))))?
+        .0;
+    let conn = Connection::over_websocket(socket, Dialect::Bidi);
+    let capabilities = json!({"alwaysMatch": {
+        // Netweir answers dialogs itself, as it does on Chrome.
+        "unhandledPromptBehavior": {"default": "ignore"},
+    }});
+    let session = tokio::time::timeout_at(
+        deadline.into(),
+        conn.call("", "session.new", json!({"capabilities": capabilities})),
+    )
+    .await
+    .map_err(|_| Error::Launch("Firefox didn't answer session.new in time".into()))?
+    .map_err(|e| Error::Launch(format!("Firefox refused session.new: {e}")))?;
+    let capabilities = &session["capabilities"];
+    let version = capabilities["browserVersion"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    check_version(&version)?;
+    let default_context = match capabilities["moz:userContext"].as_str() {
+        Some(id) => id.to_string(),
+        None if !stealth => "default".to_string(),
+        None => {
+            return Err(Error::Launch(
+                "Firefox's session.new had no moz:userContext, so the stealth start didn't take"
+                    .into(),
+            ));
+        }
+    };
+    Ok(Started {
+        conn,
+        process,
+        profile,
+        temp,
+        version: format!("Firefox/{version}"),
+        default_context,
+        stealth,
+    })
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// A launch error with what Firefox wrote to stderr after it.
+fn explained(e: Error, said: &Said) -> Error {
+    match e {
+        Error::Launch(message) => Error::Launch(said.explain(message)),
+        other => other,
+    }
+}
+
+/// Refuses a folder holding a Firefox profile Netweir didn't make.
+fn check_profile(dir: &Path) -> Result<()> {
+    let firefoxs = ["prefs.js", "times.json", "places.sqlite", "cookies.sqlite"]
+        .iter()
+        .any(|f| dir.join(f).exists());
+    if firefoxs && !dir.join(PROFILE_MARK).exists() {
+        return Err(Error::Launch(format!(
+            "{} holds a Firefox profile Netweir didn't make, and Netweir won't change a person's \
+             profile: give a new folder, or one an earlier launch made",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a Firefox older than the oldest Netweir drives.
+fn check_version(version: &str) -> Result<()> {
+    let major = version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    match major {
+        Some(major) if major >= OLDEST => Ok(()),
+        _ => Err(Error::Launch(format!(
+            "Firefox {version} is older than {OLDEST}, the oldest Netweir drives"
+        ))),
+    }
+}
+
+/// The BiDi server's port, once Firefox has written it: to the port file
+/// in the stealth start, or as automation mode writes it into the profile.
+/// Fails as soon as Firefox exits or mozilla.cfg says a step failed.
+async fn wait_for_port(
+    process: &mut Process,
+    profile: &Path,
+    stealth: bool,
+    deadline: Instant,
+) -> Result<u16> {
+    let port_file = profile.join(PORT_FILE);
+    let failed_file = sibling(&port_file, ".failed");
+    loop {
+        let port = if stealth {
+            std::fs::read_to_string(&port_file)
+                .ok()
+                .and_then(|p| p.trim().parse::<u16>().ok())
+        } else {
+            std::fs::read_to_string(profile.join("WebDriverBiDiServer.json"))
+                .ok()
+                .and_then(|j| serde_json::from_str::<Value>(&j).ok())
+                .and_then(|j| j["ws_port"].as_u64())
+                .and_then(|p| u16::try_from(p).ok())
+        };
+        if let Some(port) = port.filter(|p| *p != 0) {
+            return Ok(port);
+        }
+        // mozilla.cfg says which step failed: in a file, since Windows
+        // Firefox's stderr doesn't reach Netweir, or else on stderr.
+        let failure = std::fs::read_to_string(&failed_file).ok().or_else(|| {
+            process
+                .said
+                .recent()?
+                .lines()
+                .find(|l| l.contains("NETWEIR-FIREFOX failed:"))
+                .map(str::to_string)
+        });
+        if let Some(failure) = failure {
+            return Err(Error::Launch(format!(
+                "Firefox didn't start its remote agent: {}",
+                failure.trim()
+            )));
+        }
+        if let Ok(Some(status)) = process.child.try_wait() {
+            return Err(Error::Launch(format!(
+                "Firefox exited ({status}) before it was ready"
+            )));
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Launch(
+                "Firefox didn't say which port to connect to in time".into(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +528,30 @@ mod tests {
         );
         assert_eq!(installed_firefox(&home.join("nothing")), None);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn firefox_older_than_159_is_refused() {
+        assert!(check_version("159.0").is_ok());
+        assert!(check_version("160.0b3").is_ok());
+        let err = check_version("158.0.2").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "Firefox 158.0.2 is older than 159, the oldest Netweir drives"
+        );
+        assert!(check_version("").is_err());
+    }
+
+    #[test]
+    fn a_profile_netweir_didnt_make_is_refused() {
+        let dir = temp("theirs");
+        assert!(check_profile(&dir).is_ok(), "an empty folder is fine");
+        std::fs::write(dir.join("prefs.js"), "// theirs").unwrap();
+        let err = check_profile(&dir).unwrap_err().to_string();
+        assert!(err.contains("didn't make"), "{err}");
+        std::fs::write(dir.join(PROFILE_MARK), "").unwrap();
+        assert!(check_profile(&dir).is_ok(), "one Netweir made");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

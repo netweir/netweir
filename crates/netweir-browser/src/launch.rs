@@ -468,15 +468,22 @@ pub(crate) struct Started {
 /// It also says, as soon as Chrome does, that Chrome won't be driven
 /// with the profile it was given (see [`refuses_its_profile`]).
 #[derive(Clone)]
-pub(crate) struct Said(Arc<(Mutex<Lines>, Condvar, tokio::sync::watch::Sender<bool>)>);
+pub(crate) struct Said(
+    Arc<(Mutex<Lines>, Condvar, tokio::sync::watch::Sender<bool>)>,
+    /// The browser saying it, for messages.
+    &'static str,
+);
 
 impl Default for Said {
     fn default() -> Said {
-        Said(Arc::new((
-            Mutex::default(),
-            Condvar::new(),
-            tokio::sync::watch::Sender::new(false),
-        )))
+        Said(
+            Arc::new((
+                Mutex::default(),
+                Condvar::new(),
+                tokio::sync::watch::Sender::new(false),
+            )),
+            "Chrome",
+        )
     }
 }
 
@@ -598,8 +605,8 @@ pub(crate) fn check_profile(executable: &Path, dir: &Path) -> Result<()> {
 }
 
 impl Said {
-    fn read(stderr: PipeReader) -> Said {
-        let said = Said::default();
+    fn read(stderr: PipeReader, browser: &'static str) -> Said {
+        let said = Said(Said::default().0, browser);
         let writing = said.clone();
         let _ = std::thread::Builder::new()
             .name("netweir-chrome-stderr".into())
@@ -629,7 +636,7 @@ impl Said {
     /// it; for a Chrome still running.
     pub(crate) fn lately(&self, message: String) -> String {
         match self.recent() {
-            Some(said) => format!("{message}; Chrome said lately:\n{said}"),
+            Some(said) => format!("{message}; {} said lately:\n{said}", self.1),
             None => message,
         }
     }
@@ -663,7 +670,7 @@ impl Said {
             return message;
         }
         let said: Vec<&str> = lines.0.iter().map(String::as_str).collect();
-        format!("{message}; Chrome said:\n{}", said.join("\n"))
+        format!("{message}; {} said:\n{}", self.1, said.join("\n"))
     }
 }
 
@@ -740,15 +747,58 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     // Chrome reads commands from one pipe and writes replies to the other.
     let (chrome_reads, commands) = pipe().map_err(failed)?;
     let (replies, chrome_writes) = pipe().map_err(failed)?;
-    // Its stderr too, so no process started meanwhile keeps the writing
-    // end and Said waits on it after Chrome has gone.
-    let (stderr, chrome_says) = pipe().map_err(failed)?;
+    let Process {
+        child,
+        said,
+        lifeline,
+    } = spawn(
+        executable,
+        args,
+        &[],
+        "Chrome",
+        Some((chrome_reads, chrome_writes)),
+    )?;
+    Ok(Started {
+        child,
+        commands,
+        replies,
+        said,
+        lifeline,
+    })
+}
+
+/// A started browser that talks over a socket rather than a pipe, as
+/// Firefox does: the process, what it writes to stderr, and its lifeline.
+pub(crate) struct Process {
+    pub child: Child,
+    pub said: Said,
+    pub lifeline: Lifeline,
+}
+
+/// Starts `browser` (named for messages) at `executable` with `args` and
+/// `envs`, tied to netweir: in a group of its own on macOS and Linux, in a
+/// job on Windows. `ends` are the pipe ends a browser that reads its
+/// commands from a pipe is handed.
+pub(crate) fn spawn(
+    executable: &Path,
+    args: &[String],
+    envs: &[(&str, &std::ffi::OsStr)],
+    browser: &'static str,
+    ends: Option<(PipeReader, PipeWriter)>,
+) -> Result<Process> {
+    let failed =
+        |e: std::io::Error| Error::Launch(format!("can't start {}: {e}", executable.display()));
+    // Its stderr through a pipe of netweir's, so no process started
+    // meanwhile keeps the writing end and Said waits on it after the
+    // browser has gone.
+    let (stderr, browser_says) = pipe().map_err(failed)?;
     let mut command = Command::new(executable);
     command
         .args(args)
+        .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(chrome_says));
+        .stderr(Stdio::from(browser_says));
     // In a group of its own, which its helpers join: what the watcher
     // ends (see tie).
     #[cfg(unix)]
@@ -756,26 +806,28 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
     // Started suspended, so it's in its job before it can start a helper.
     // chrome-headless-shell is a console program: with a console of its
     // own, hidden, a Ctrl+C or Ctrl-Break meant for the program can't end
-    // it or its helpers before the program closes it. Chrome has no
-    // console, and the flag doesn't apply to it.
+    // it or its helpers before the program closes it. Chrome and Firefox
+    // have no console, and the flag doesn't apply to them.
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut command, {
         use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
         CREATE_NO_WINDOW | CREATE_SUSPENDED
     });
-    // On Windows, Chrome's ends are inheritable from hand_over until they're
-    // dropped, and any child started meanwhile would get them too; then a
-    // browser's reader would never see its Chrome exit. Launches here take
-    // turns through that window, and each starts its watcher in its own
-    // turn: a watcher started during another launch's window took that
-    // Chrome's ends and kept them for as long as it ran.
+    // On Windows, the browser's ends are inheritable from hand_over until
+    // they're dropped, and any child started meanwhile would get them too;
+    // then a browser's reader would never see its browser exit. Launches
+    // here take turns through that window, and each starts its watcher in
+    // its own turn: a watcher started during another launch's window took
+    // that browser's ends and kept them for as long as it ran.
     let (child, lifeline) = {
         let _turn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
-        hand_over(&mut command, &chrome_reads, &chrome_writes).map_err(failed)?;
+        if let Some((reads, writes)) = &ends {
+            hand_over(&mut command, reads, writes).map_err(failed)?;
+        }
         let child = command.spawn().map_err(failed)?;
-        // Our copies of Chrome's ends must close, or we'd never see it exit;
-        // the command holds its stderr's.
-        drop((chrome_reads, chrome_writes, command));
+        // Our copies of the browser's ends must close, or we'd never see
+        // it exit; the command holds its stderr's.
+        drop((ends, command));
         let lifeline = tie(&child);
         (child, lifeline)
     };
@@ -787,11 +839,9 @@ pub(crate) fn start(executable: &Path, args: &[String]) -> Result<Started> {
         let _ = child.wait();
         return Err(failed(e));
     }
-    let said = Said::read(stderr);
-    Ok(Started {
+    let said = Said::read(stderr, browser);
+    Ok(Process {
         child,
-        commands,
-        replies,
         said,
         lifeline,
     })
