@@ -81,15 +81,21 @@ pub(super) async fn open(
     Ok(page)
 }
 
-/// Opens a window whose one tab is in `user_context`. On a busy machine
-/// Firefox can replace a new window's first document while it waits on
-/// it, and the create then fails with "BrowsingContext does no longer
-/// exist" though the window opened. That window is closed and the create
-/// asked again after a pause, a longer one each time, three times at most.
+/// Opens a window whose one tab is in `user_context`. On Windows,
+/// Firefox's create can fail with "BrowsingContext does no longer exist"
+/// though the window opened: the window's first document moved to another
+/// process while the create was waiting on the old one. The window is
+/// fine, so the new one in `user_context` is taken as the answer; only
+/// when none appeared is the create asked again, after a pause, a longer
+/// one each time, three times at most.
 async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
     let mut tries = 0;
     loop {
-        let before = top_level(browser).await?;
+        let before: Vec<String> = top_level(browser)
+            .await?
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
         let created = browser
             .call(
                 "",
@@ -105,12 +111,20 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
                 // 100, 300, then 900 ms: Firefox settling after a window.
                 tokio::time::sleep(std::time::Duration::from_millis(100 * 3u64.pow(tries - 1)))
                     .await;
-                for left in top_level(browser).await? {
-                    if !before.contains(&left) {
-                        let _ = browser
-                            .call("", "browsingContext.close", json!({"context": left}))
-                            .await;
-                    }
+                let new: Vec<(String, String)> = top_level(browser)
+                    .await?
+                    .into_iter()
+                    .filter(|(c, _)| !before.contains(c))
+                    .collect();
+                if let [(context, uc)] = &new[..]
+                    && uc == user_context
+                {
+                    return Ok(json!({"context": context, "userContext": uc}));
+                }
+                for (left, _) in new {
+                    let _ = browser
+                        .call("", "browsingContext.close", json!({"context": left}))
+                        .await;
                 }
             }
             created => return created,
@@ -118,8 +132,8 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
     }
 }
 
-/// The ids of every top-level browsing context.
-async fn top_level(browser: &Inner) -> Result<Vec<String>> {
+/// Every top-level browsing context, with its user context.
+async fn top_level(browser: &Inner) -> Result<Vec<(String, String)>> {
     let tree = browser
         .call("", "browsingContext.getTree", json!({"maxDepth": 0}))
         .await?;
@@ -127,7 +141,7 @@ async fn top_level(browser: &Inner) -> Result<Vec<String>> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|c| str_of(c, "context"))
+        .map(|c| (str_of(c, "context"), str_of(c, "userContext")))
         .collect())
 }
 
