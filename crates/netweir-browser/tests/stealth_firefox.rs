@@ -121,7 +121,8 @@ impl Undriven {
         command
             .arg("-profile")
             .arg(profile)
-            .args(["-no-remote", "-new-instance"])
+            // So ending the process ends the browser on Windows too.
+            .args(["-no-remote", "-new-instance", "-wait-for-browser"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         if headless {

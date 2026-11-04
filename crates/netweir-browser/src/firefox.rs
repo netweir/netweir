@@ -290,6 +290,10 @@ pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
         profile.display().to_string(),
         "-no-remote".into(),
         "-new-instance".into(),
+        // On Windows firefox.exe is a launcher that starts the browser
+        // and exits; this keeps it until the browser ends, so its exit
+        // means the browser's.
+        "-wait-for-browser".into(),
     ];
     if options.headless {
         args.push("-headless".into());
