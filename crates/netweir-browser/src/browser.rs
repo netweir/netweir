@@ -591,6 +591,11 @@ impl Browser {
                 feature: feature.to_string(),
             });
         }
+        // A Firefox dropped with this profile may still be quitting, and
+        // holds its lock until it has.
+        if let Some(dir) = &options.user_data_dir {
+            Quitting::wait_for(dir).await;
+        }
         let started = crate::firefox::start(&options).await?;
         let (environment, screen, screen_scale) = bare(&options);
         let inner = Inner {
@@ -636,6 +641,14 @@ impl Browser {
     /// launched. Closing it closes what netweir opened and leaves the
     /// browser running.
     pub async fn connect(url: &str, options: LaunchOptions) -> Result<Browser> {
+        // Every Firefox Netweir didn't start is in automation mode, and
+        // one it did start holds its one session already.
+        if options.engine == Engine::Firefox {
+            return Err(Error::Unsupported {
+                engine: "Firefox",
+                feature: "Browser.connect".into(),
+            });
+        }
         options.environment.validate()?;
         let (environment, screen, screen_scale) = bare(&options);
         let ws = if url.starts_with("http://") {

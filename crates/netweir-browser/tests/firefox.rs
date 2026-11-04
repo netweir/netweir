@@ -24,27 +24,35 @@ fn firefox_options() -> LaunchOptions {
     }
 }
 
-/// Whether anything of the browser started as `pid` still runs: its
-/// process group on macOS and Linux (helpers and watcher too), the
-/// process itself on Windows, whose job ends the helpers with it.
-fn running(pid: u32) -> bool {
+/// Whether anything of the browser started as `pid` with `profile` still
+/// runs: its process group on macOS and Linux (helpers and watcher too);
+/// on Windows, where the process started can be a launcher that hands
+/// over to another, the process and anything with the profile on its
+/// command line.
+fn running(pid: u32, profile: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
+        let _ = profile;
         unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
     }
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        let query = format!(
+            "@(Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne $PID -and \
+             ($_.ProcessId -eq {pid} -or ($_.CommandLine -and $_.CommandLine.Contains('{}'))) }}).Count",
+            profile.display()
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &query])
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        String::from_utf8_lossy(&out.stdout).trim() != "0"
     }
 }
 
-fn gone_within(pid: u32, limit: Duration) -> bool {
+fn gone_within(pid: u32, profile: &std::path::Path, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
-    while running(pid) {
+    while running(pid, profile) {
         if Instant::now() > deadline {
             return false;
         }
@@ -68,7 +76,7 @@ async fn firefox_launches_and_says_what_it_is() {
     let pid = browser.pid().unwrap();
     let profile = browser.profile_dir().unwrap().to_path_buf();
     browser.close().await.unwrap();
-    assert!(gone_within(pid, Duration::from_secs(15)));
+    assert!(gone_within(pid, &profile, Duration::from_secs(15)));
     assert!(!profile.exists(), "a profile Netweir made goes with it");
 }
 
@@ -242,11 +250,12 @@ fn a_dropped_firefox_ends_its_processes() {
         }))
         .unwrap();
     let pid = browser.pid().unwrap();
+    let profile = browser.profile_dir().unwrap().to_path_buf();
     drop(browser);
     drop(runtime);
     // The watcher asks Firefox to quit and gives it ten seconds.
     assert!(
-        gone_within(pid, Duration::from_secs(20)),
+        gone_within(pid, &profile, Duration::from_secs(20)),
         "Firefox {pid} still runs"
     );
 }
@@ -514,6 +523,40 @@ async fn goto_a_dead_host_is_a_navigation_error() {
         .unwrap_err();
     assert!(
         matches!(&err, Error::Navigation { url, error, .. } if url == "http://127.0.0.1:1/" && !error.is_empty()),
+        "{err:?}"
+    );
+}
+
+/// A Firefox dropped with a kept profile quits in its own time; a launch
+/// with that profile straight after waits for it rather than finding the
+/// profile locked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_profile_is_free_again_after_a_drop() {
+    let Some(executable) = common::firefox() else {
+        return;
+    };
+    let dir = scratch("dropped-kept");
+    let options = LaunchOptions {
+        executable: Some(executable),
+        user_data_dir: Some(dir.clone()),
+        ..firefox_options()
+    };
+    let _turn = common::turn();
+    drop(Browser::launch(options.clone()).await.unwrap());
+    let again = Browser::launch(options).await.unwrap();
+    assert!(again.engine_info().stealth);
+    again.close().await.unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn connecting_to_firefox_is_unsupported() {
+    let err = Browser::connect("ws://127.0.0.1:1/session", firefox_options())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&err, Error::Unsupported { engine: "Firefox", feature } if feature == "Browser.connect"),
         "{err:?}"
     );
 }

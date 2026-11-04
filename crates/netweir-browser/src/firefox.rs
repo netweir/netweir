@@ -322,7 +322,8 @@ pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
         .0;
     let conn = Connection::over_websocket(socket, Dialect::Bidi);
     let capabilities = json!({"alwaysMatch": {
-        // Netweir answers dialogs itself, as it does on Chrome.
+        // Firefox leaves dialogs to the session, as Chrome does: Netweir,
+        // not Firefox, decides how each is answered.
         "unhandledPromptBehavior": {"default": "ignore"},
     }});
     let session = tokio::time::timeout_at(
@@ -382,9 +383,18 @@ fn explained(e: Error, said: &Said) -> Error {
 
 /// Refuses a folder holding a Firefox profile Netweir didn't make.
 fn check_profile(dir: &Path) -> Result<()> {
-    let firefoxs = ["prefs.js", "times.json", "places.sqlite", "cookies.sqlite"]
-        .iter()
-        .any(|f| dir.join(f).exists());
+    // A profile's own files, or those of the folder a person's profiles
+    // are in.
+    let firefoxs = [
+        "prefs.js",
+        "times.json",
+        "places.sqlite",
+        "cookies.sqlite",
+        "profiles.ini",
+        "installs.ini",
+    ]
+    .iter()
+    .any(|f| dir.join(f).exists());
     if firefoxs && !dir.join(PROFILE_MARK).exists() {
         return Err(Error::Launch(format!(
             "{} holds a Firefox profile Netweir didn't make, and Netweir won't change a person's \
@@ -435,17 +445,8 @@ async fn wait_for_port(
         if let Some(port) = port.filter(|p| *p != 0) {
             return Ok(port);
         }
-        // mozilla.cfg says which step failed: in a file, since Windows
-        // Firefox's stderr doesn't reach Netweir, or else on stderr.
-        let failure = std::fs::read_to_string(&failed_file).ok().or_else(|| {
-            process
-                .said
-                .recent()?
-                .lines()
-                .find(|l| l.contains("NETWEIR-FIREFOX failed:"))
-                .map(str::to_string)
-        });
-        if let Some(failure) = failure {
+        // mozilla.cfg says which step failed, in a file beside the port's.
+        if let Ok(failure) = std::fs::read_to_string(&failed_file) {
             return Err(Error::Launch(format!(
                 "Firefox didn't start its remote agent: {}",
                 failure.trim()
@@ -572,6 +573,11 @@ mod tests {
         std::fs::write(dir.join("prefs.js"), "// theirs").unwrap();
         let err = check_profile(&dir).unwrap_err().to_string();
         assert!(err.contains("didn't make"), "{err}");
+        // Nor the folder a person's profiles are in.
+        let root = temp("theirs-root");
+        std::fs::write(root.join("profiles.ini"), "[General]\n").unwrap();
+        assert!(check_profile(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
         std::fs::write(dir.join(PROFILE_MARK), "").unwrap();
         assert!(check_profile(&dir).is_ok(), "one Netweir made");
         std::fs::remove_dir_all(dir).unwrap();

@@ -609,7 +609,7 @@ impl Said {
         let said = Said(Said::default().0, browser);
         let writing = said.clone();
         let _ = std::thread::Builder::new()
-            .name("netweir-chrome-stderr".into())
+            .name(format!("netweir-{}-stderr", browser.to_ascii_lowercase()))
             .spawn(move || {
                 use std::io::BufRead;
                 let (lock, done, refused) = &*writing.0;

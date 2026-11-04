@@ -202,6 +202,9 @@ pub(super) async fn goto(
     let navigation = str_of(&navigated, "navigation");
     let mut state = page.state();
     let response = state.responses.get(&navigation).cloned();
+    // Only the document showing now: one response per navigation would
+    // pile up for as long as the page is open.
+    state.responses.retain(|n, _| *n == navigation);
     state.loader = navigation.clone();
     state.url = match &response {
         Some(r) => r.url.clone(),
