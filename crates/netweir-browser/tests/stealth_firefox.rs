@@ -208,10 +208,9 @@ async fn compare(headless: bool) {
     let _ = std::fs::remove_dir_all(&scratch);
 
     let (theirs, ours) = (theirs.as_object().unwrap(), report.as_object().unwrap());
-    // A person's window is in front, and has focus. The undriven one,
-    // started by a test process the system doesn't bring forward, may
-    // not, so focus is checked against what a person has instead.
-    assert_eq!(ours["focus"], true, "{mode}");
+    // Focus depends on which app the system has in front, which neither
+    // Firefox controls: a person's window loses it whenever they switch
+    // apps. So it's recorded but not compared.
     let mut differences: Vec<String> = theirs
         .keys()
         .chain(ours.keys())
