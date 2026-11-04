@@ -23,6 +23,8 @@ addEventListener('load', async () => {
   o.plugins = n.plugins.length; o.mimeTypes = n.mimeTypes.length;
   Object.assign(o, {sw: screen.width, sh: screen.height, aw: screen.availWidth, ah: screen.availHeight, cd: screen.colorDepth, dpr: devicePixelRatio, iw: innerWidth, ih: innerHeight, ow: outerWidth, oh: outerHeight, sx: screenX, sy: screenY});
   o.vis = document.visibilityState; o.focus = document.hasFocus(); o.hidden = document.hidden;
+  for (const bar of ['toolbar','menubar','personalbar','statusbar','scrollbars','locationbar']) { try { o['bar.'+bar] = window[bar].visible; } catch(e) { o['bar.'+bar] = 'ERR'; } }
+  Object.assign(o, {isx: window.mozInnerScreenX, isy: window.mozInnerScreenY, sl: screen.left, st: screen.top, vvw: visualViewport.width, vvh: visualViewport.height, cw: document.documentElement.clientWidth, ch: document.documentElement.clientHeight});
   o.tz = Intl.DateTimeFormat().resolvedOptions().timeZone; o.locale = Intl.DateTimeFormat().resolvedOptions().locale;
   o.historyLen = history.length; o.opener = !!window.opener; o.frameElem = window.frameElement === null;
   o.notif = typeof Notification !== 'undefined' ? Notification.permission : 'none';
