@@ -10,6 +10,7 @@ netweir fetch https://example.com/ --headers
 netweir view https://example.com/
 netweir shell https://example.com/
 netweir install chrome
+netweir install firefox
 netweir queue push redis://localhost:6379/0 books https://books.toscrape.com/
 """
 
@@ -303,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     shell.add_argument("-c", dest="code", help="evaluate one expression, print it and exit")
     _fetch_options(shell, browser=False)
     install = commands.add_parser("install", help="download a browser for Netweir to drive")
-    install.add_argument("browser", choices=["chrome"])
+    install.add_argument("browser", choices=["chrome", "firefox"])
     install.add_argument(
         "--headless-shell",
         action="store_true",
@@ -591,13 +592,21 @@ def _interrupt(signum, frame) -> None:
 
 
 def _install(args) -> int:
+    from netweir import _native
     from netweir._errors import BrowserError
-    from netweir._native import install_chrome
 
-    what = "chrome-headless-shell" if args.headless_shell else "Chrome"
-    print(f"netweir: installing {what} for Testing...", file=sys.stderr)
+    if args.browser == "firefox" and args.headless_shell:
+        print("netweir: --headless-shell is a Chrome build; Firefox has none", file=sys.stderr)
+        return 2
     try:
-        version, path, already = install_chrome(headless_shell=args.headless_shell)
+        if args.browser == "firefox":
+            what = "Firefox"
+            print("netweir: installing Firefox...", file=sys.stderr)
+            version, path, already = _native.install_firefox()
+        else:
+            what = "chrome-headless-shell" if args.headless_shell else "Chrome"
+            print(f"netweir: installing {what} for Testing...", file=sys.stderr)
+            version, path, already = _native.install_chrome(headless_shell=args.headless_shell)
     except BrowserError as e:
         print(f"netweir: {e}", file=sys.stderr)
         return 1

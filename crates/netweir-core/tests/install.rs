@@ -306,13 +306,15 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// A release pinned to `sum` for this machine's platform; the sums must
-/// live for the whole test run, as the real ones do.
-fn release(sum: String) -> FirefoxRelease {
-    let platform = netweir_browser::firefox_platform().unwrap();
+/// This machine's platform, pinned to `sum`.
+fn pin(sum: &str) -> [(&'static str, &str); 1] {
+    [(netweir_browser::firefox_platform().unwrap(), sum)]
+}
+
+fn release<'a>(sums: &'a [(&'a str, &'a str)]) -> FirefoxRelease<'a> {
     FirefoxRelease {
         version: "159.0.1",
-        sums: Vec::leak(vec![(platform, String::leak(sum) as &str)]),
+        sums,
     }
 }
 
@@ -331,7 +333,8 @@ async fn firefox_installs_once_with_its_startup_files() {
     let (base, hits) = serve("none", vec![(path, archive)]);
     let home = std::env::temp_dir().join(format!("netweir-install-ff-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let release = release(sum);
+    let sums = pin(&sum);
+    let release = release(&sums);
 
     let installed = install_firefox(&base, &home, &release).await.unwrap();
     assert!(!installed.already);
@@ -377,7 +380,7 @@ async fn a_firefox_download_with_the_wrong_sum_is_refused() {
     let (base, _) = serve("none", vec![(path, archive)]);
     let home = std::env::temp_dir().join(format!("netweir-install-ffsum-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let err = install_firefox(&base, &home, &release("0".repeat(64)))
+    let err = install_firefox(&base, &home, &release(&pin(&"0".repeat(64))))
         .await
         .unwrap_err();
     assert!(err.contains("SHA-256"), "{err}");

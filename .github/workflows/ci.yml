@@ -126,6 +126,10 @@ jobs:
       # half a minute at a time.
       - run: uv run netweir install chrome
         timeout-minutes: 10
+      # Mozilla's own build, unpacked and checked against its pinned
+      # SHA-256 as a user gets it, which tests the installer on each system.
+      - run: uv run netweir install firefox
+        timeout-minutes: 10
       # Ubuntu stops the user namespaces Chrome's sandbox needs unless an
       # AppArmor profile allows them, and only Google Chrome's package
       # installs one. This keeps the sandbox on (see docs/browser.md).

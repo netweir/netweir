@@ -795,6 +795,12 @@ def _check_environment(given: Environment) -> None: ...
 def install_chrome(
     headless_shell: bool = False, index: str = ..., home: str | os.PathLike[str] | None = None
 ) -> tuple[str, str, bool]: ...
+def install_firefox(
+    base: str = ...,
+    home: str | os.PathLike[str] | None = None,
+    version: str | None = None,
+    sums: Sequence[tuple[str, str]] | None = None,
+) -> tuple[str, str, bool]: ...
 
 class Browser:
     @property

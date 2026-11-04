@@ -190,16 +190,16 @@ pub const FIREFOX_RELEASES: &str = "https://archive.mozilla.org/pub/firefox/rele
 /// A Firefox release Netweir installs, and the SHA-256 of its download
 /// for each platform, as Mozilla's signed SHA256SUMS lists them.
 #[derive(Debug, Clone, Copy)]
-pub struct FirefoxRelease {
-    pub version: &'static str,
+pub struct FirefoxRelease<'a> {
+    pub version: &'a str,
     /// (platform as Mozilla names it, lowercase hex SHA-256).
-    pub sums: &'static [(&'static str, &'static str)],
+    pub sums: &'a [(&'a str, &'a str)],
 }
 
 /// The Firefox Netweir installs. Moved on with each release, once the
 /// Firefox tests pass on it; the sums come from that release's
 /// SHA256SUMS, after checking its signature.
-pub const FIREFOX: FirefoxRelease = FirefoxRelease {
+pub const FIREFOX: FirefoxRelease<'static> = FirefoxRelease {
     version: "159.0.1",
     sums: &[
         (
@@ -233,7 +233,7 @@ pub const FIREFOX: FirefoxRelease = FirefoxRelease {
 pub async fn install_firefox(
     base: &str,
     home: &Path,
-    release: &FirefoxRelease,
+    release: &FirefoxRelease<'_>,
 ) -> Result<Installed, String> {
     let version = release.version;
     if version.is_empty()

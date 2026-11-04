@@ -2646,17 +2646,53 @@ fn install_chrome(
         ))
     })
     .map(|i| (i.version, i.executable, i.already))
-    .map_err(|e| {
-        crate::aio::attach(|py| -> PyErr {
-            match py
-                .import("netweir._errors")
-                .and_then(|m| m.getattr("BrowserError"))
-                .and_then(|c| c.call1((e.clone(),)))
-            {
-                Ok(v) => PyErr::from_value(v),
-                Err(err) => err,
-            }
-        })
+    .map_err(browser_error)
+}
+
+/// Installs the Firefox Netweir pins (`netweir install firefox`) under
+/// `home` (`$NETWEIR_HOME` or `~/.netweir` by default), from `base`, laid out as
+/// Mozilla's release archive is. `version` and `sums`, (platform, SHA-256)
+/// pairs, replace the pinned release's. Returns (version, executable,
+/// already installed).
+#[pyfunction]
+#[pyo3(signature = (base=netweir_core::install::FIREFOX_RELEASES.to_string(), home=None, version=None, sums=None))]
+fn install_firefox(
+    py: Python<'_>,
+    base: String,
+    home: Option<PathBuf>,
+    version: Option<String>,
+    sums: Option<Vec<(String, String)>>,
+) -> PyResult<(String, PathBuf, bool)> {
+    let home = home.unwrap_or_else(netweir_browser::netweir_home);
+    let pinned = netweir_core::install::FIREFOX;
+    let sums: Option<Vec<(&str, &str)>> = sums
+        .as_ref()
+        .map(|s| s.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect());
+    let release = netweir_core::install::FirefoxRelease {
+        version: version.as_deref().unwrap_or(pinned.version),
+        sums: sums.as_deref().unwrap_or(pinned.sums),
+    };
+    let runtime = pyo3_async_runtimes::tokio::get_runtime();
+    py.detach(|| {
+        runtime.block_on(netweir_core::install::install_firefox(
+            &base, &home, &release,
+        ))
+    })
+    .map(|i| (i.version, i.executable, i.already))
+    .map_err(browser_error)
+}
+
+/// An installer's failure, as BrowserError.
+fn browser_error(e: String) -> PyErr {
+    crate::aio::attach(|py| -> PyErr {
+        match py
+            .import("netweir._errors")
+            .and_then(|m| m.getattr("BrowserError"))
+            .and_then(|c| c.call1((e.clone(),)))
+        {
+            Ok(v) => PyErr::from_value(v),
+            Err(err) => err,
+        }
     })
 }
 
@@ -2682,6 +2718,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(launch, m)?)?;
     m.add_function(wrap_pyfunction!(find_chrome, m)?)?;
     m.add_function(wrap_pyfunction!(install_chrome, m)?)?;
+    m.add_function(wrap_pyfunction!(install_firefox, m)?)?;
     m.add_class::<Browser>()?;
     m.add_class::<BrowserContext>()?;
     m.add_class::<BrowserPage>()?;
