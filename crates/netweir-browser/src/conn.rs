@@ -26,10 +26,6 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dialect {
     Cdp,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Firefox's launch, the next step, speaks it")
-    )]
     Bidi,
 }
 
@@ -56,6 +52,20 @@ impl Dialect {
             Dialect::Cdp => "Chrome",
             Dialect::Bidi => "Firefox",
         }
+    }
+
+    /// Whether `method` is one of this dialect's. CDP names its domains in
+    /// capitals and BiDi its modules in lower case, so a CDP method, from
+    /// a part of Netweir that hasn't learnt Firefox yet, never reaches
+    /// Firefox, where it would fail in a less helpful way.
+    fn speaks(self, method: &str) -> Result<()> {
+        if self == Dialect::Bidi && method.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return Err(Error::Unsupported {
+                engine: self.browser(),
+                feature: method.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Methods whose side effects page scripts can see. Never sent.
@@ -163,8 +173,18 @@ impl Dialect {
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     let mut read = Vec::new();
+                    // A context goes with every frame in it, and their
+                    // commands won't be answered either.
                     if method == "browsingContext.contextDestroyed" {
-                        read.push(Incoming::Gone { route });
+                        let mut gone = vec![params];
+                        while let Some(info) = gone.pop() {
+                            if let Some(route) = info.get("context").and_then(Value::as_str) {
+                                read.push(Incoming::Gone { route });
+                            }
+                            if let Some(children) = info.get("children").and_then(Value::as_array) {
+                                gone.extend(children.iter().rev());
+                            }
+                        }
                     }
                     read.push(Incoming::Event {
                         route,
@@ -284,6 +304,7 @@ impl Connection {
     /// result.
     pub(crate) async fn call(&self, session: &str, method: &str, params: Value) -> Result<Value> {
         let dialect = self.shared.dialect;
+        dialect.speaks(method)?;
         if dialect.forbidden().contains(&method) {
             return Err(Error::Invalid(format!(
                 "{method} is never sent: pages can detect it"
@@ -336,6 +357,9 @@ impl Connection {
     /// Sends without waiting for the reply, for the reader thread, which
     /// can't wait: answering a request Chrome is holding, say.
     pub(crate) fn send(&self, session: &str, method: &str, params: Value) {
+        if self.shared.dialect.speaks(method).is_err() {
+            return;
+        }
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
         let bytes = self.shared.dialect.encode(id, session, method, params);
         self.shared.lock().sent.insert(method.to_string());
@@ -364,6 +388,10 @@ impl Connection {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.shared.lock().closed
+    }
+
+    pub(crate) fn dialect(&self) -> Dialect {
+        self.shared.dialect
     }
 
     pub(crate) fn methods_sent(&self) -> Vec<String> {
@@ -623,6 +651,47 @@ mod tests {
                 Incoming::Event { route: "C3", .. }
             ]
         ));
+    }
+
+    #[test]
+    fn bidi_destroyed_context_ends_its_children() {
+        let gone = json!({"type": "event", "method": "browsingContext.contextDestroyed",
+        "params": {"context": "top", "children": [
+            {"context": "frame1", "children": [{"context": "inner", "children": []}]},
+            {"context": "frame2", "children": null},
+        ]}});
+        let routes: Vec<&str> = Dialect::Bidi
+            .read(&gone)
+            .iter()
+            .filter_map(|i| match i {
+                Incoming::Gone { route } => Some(*route),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(routes, ["top", "frame1", "inner", "frame2"]);
+        // One with no context ends nothing, least of all the browser's own
+        // handler.
+        let nameless = json!({"type": "event", "method": "browsingContext.contextDestroyed",
+            "params": {}});
+        assert!(matches!(
+            &Dialect::Bidi.read(&nameless)[..],
+            [Incoming::Event { route: "", .. }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_cdp_method_reaches_firefox() {
+        let (conn, _firefox) = firefox().await;
+        let err = conn
+            .call("ctx", "Page.captureScreenshot", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Unsupported { engine: "Firefox", feature } if feature == "Page.captureScreenshot"),
+            "{err:?}"
+        );
+        conn.send("ctx", "Fetch.continueRequest", json!({}));
+        assert!(conn.methods_sent().is_empty(), "{:?}", conn.methods_sent());
     }
 
     #[test]
