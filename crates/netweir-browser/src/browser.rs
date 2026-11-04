@@ -985,7 +985,9 @@ impl Browser {
         let env = env.over(&self.inner.environment);
         added_screen(&env, &self.inner.environment)?;
         if self.inner.keep_profile {
-            self.inner.allow_downloads(None).await?;
+            if self.inner.engine() == Engine::Chrome {
+                self.inner.allow_downloads(None).await?;
+            }
             return Page::open(self.inner.clone(), None, false, None, None, env).await;
         }
         let context = self.create_context().await?;
@@ -1028,6 +1030,9 @@ impl Browser {
     /// [`Browser::new_context`], whose pages have `env` (over the
     /// browser's own environment) unless they say otherwise.
     pub async fn new_context_with(&self, env: Environment) -> Result<Context> {
+        if env != Environment::default() {
+            self.inner.chrome_only("a context's environment")?;
+        }
         let env = env.over(&self.inner.environment);
         env.validate()?;
         added_screen(&env, &self.inner.environment)?;
@@ -1048,6 +1053,14 @@ impl Browser {
     }
 
     async fn create_context(&self) -> Result<String> {
+        if self.inner.engine() == Engine::Firefox {
+            // Netweir launched this Firefox, so the context goes with it.
+            let r = self
+                .inner
+                .call("", "browser.createUserContext", json!({}))
+                .await?;
+            return Ok(str_of(&r, "userContext"));
+        }
         // Gone when the connection is, however netweir lets go of it.
         let r = self
             .inner
@@ -2184,15 +2197,14 @@ impl Context {
 
     /// Closes the context and every page in it.
     pub async fn close(&self) -> Result<()> {
-        match self
-            .browser
-            .call(
-                "",
+        let (method, params) = match self.browser.engine() {
+            Engine::Chrome => (
                 "Target.disposeBrowserContext",
                 json!({"browserContextId": self.id}),
-            )
-            .await
-        {
+            ),
+            Engine::Firefox => ("browser.removeUserContext", json!({"userContext": self.id})),
+        };
+        match self.browser.call("", method, params).await {
             Ok(_) | Err(Error::Closed) => Ok(()),
             // Already disposed.
             Err(Error::Protocol { .. }) => Ok(()),

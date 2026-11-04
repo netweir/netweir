@@ -250,3 +250,270 @@ fn a_dropped_firefox_ends_its_processes() {
         "Firefox {pid} still runs"
     );
 }
+
+async fn firefox_browser() -> Option<common::TestBrowser> {
+    let executable = common::firefox()?;
+    Some(common::launch_firefox(executable, LaunchOptions::default()).await)
+}
+
+#[tokio::test]
+async fn firefox_page_navigates_and_evaluates() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![(
+        "/",
+        common::html(
+            "<!DOCTYPE html><html><head><title>hi</title></head><body><p>x</p></body></html>",
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    let url = format!("{}/", server.url);
+    let response = page
+        .goto(&url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.url, url);
+    assert!(
+        response
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.starts_with("text/html")),
+        "{:?}",
+        response.headers
+    );
+    assert_eq!(page.response(), response);
+    assert_eq!(page.url(), url);
+    assert_eq!(page.title().await.unwrap(), "hi");
+    assert_eq!(
+        page.content().await.unwrap(),
+        "<!DOCTYPE html><html><head><title>hi</title></head><body><p>x</p></body></html>"
+    );
+    assert_eq!(
+        page.evaluate("document.querySelector('p').textContent")
+            .await
+            .unwrap(),
+        "x"
+    );
+    // In the page's own world, as on Chrome.
+    page.evaluate("window.mark = 7").await.unwrap();
+    assert_eq!(page.evaluate("window.mark").await.unwrap(), 7);
+    assert_eq!(page.evaluate("navigator.webdriver").await.unwrap(), false);
+    page.goto(&url, netweir_browser::WaitUntil::DomContentLoaded, None)
+        .await
+        .unwrap();
+    page.close().await.unwrap();
+    assert!(page.is_closed());
+    assert!(matches!(page.evaluate("1").await, Err(Error::PageClosed)));
+}
+
+/// What evaluate gives on Firefox is what it gives on Chrome.
+#[tokio::test]
+async fn evaluate_gives_what_chrome_gives() {
+    let (Some(firefox), Some(chrome)) = (firefox_browser().await, common::browser().await) else {
+        return;
+    };
+    let (f, c) = (
+        firefox.new_page().await.unwrap(),
+        chrome.new_page().await.unwrap(),
+    );
+    for js in [
+        "1",
+        "'a'",
+        "null",
+        "undefined",
+        "true",
+        "[1, {a: 2}]",
+        "NaN",
+        "-0",
+        "Infinity",
+        "10n",
+        "new Date(0)",
+        "({f() {}, n: 1, u: undefined})",
+        "[() => 1, undefined, 2]",
+        "Promise.resolve(3)",
+        "() => 4",
+        "async () => 5",
+        "new Map([[1, 2]])",
+        "({nested: {deeper: [1, 'two', {three: 3}]}})",
+    ] {
+        let (on_firefox, on_chrome) = (f.evaluate(js).await, c.evaluate(js).await);
+        assert_eq!(
+            on_firefox.as_ref().unwrap(),
+            on_chrome.as_ref().unwrap(),
+            "{js}"
+        );
+    }
+    for js in [
+        "(() => { throw new Error('no') })()",
+        "Promise.reject(new Error('no'))",
+    ] {
+        for (engine, page) in [("Firefox", &f), ("Chrome", &c)] {
+            let err = page.evaluate(js).await.unwrap_err();
+            assert!(
+                matches!(&err, Error::Script(m) if m.contains("no")),
+                "{engine}: {js}: {err:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn pages_and_contexts_keep_their_cookies_apart() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![("/", common::html("<p>cookies</p>"))]);
+    let url = format!("{}/", server.url);
+    let load = netweir_browser::WaitUntil::Load;
+    let set = "document.cookie = 'k=v; path=/'";
+    let read = "document.cookie";
+    let (a, b) = (
+        browser.new_page().await.unwrap(),
+        browser.new_page().await.unwrap(),
+    );
+    a.goto(&url, load, None).await.unwrap();
+    b.goto(&url, load, None).await.unwrap();
+    a.evaluate(set).await.unwrap();
+    assert_eq!(a.evaluate(read).await.unwrap(), "k=v");
+    assert_eq!(
+        b.evaluate(read).await.unwrap(),
+        "",
+        "pages of their own share nothing"
+    );
+
+    let context = browser.new_context().await.unwrap();
+    let (c1, c2) = (
+        context.new_page().await.unwrap(),
+        context.new_page().await.unwrap(),
+    );
+    c1.goto(&url, load, None).await.unwrap();
+    c2.goto(&url, load, None).await.unwrap();
+    c1.evaluate(set).await.unwrap();
+    assert_eq!(
+        c2.evaluate(read).await.unwrap(),
+        "k=v",
+        "a context's pages share"
+    );
+    context.close().await.unwrap();
+    // Its pages went with it.
+    assert!(c1.evaluate("1").await.is_err());
+}
+
+#[tokio::test]
+async fn every_firefox_page_is_visible() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let (a, b) = (
+        browser.new_page().await.unwrap(),
+        browser.new_page().await.unwrap(),
+    );
+    let context = browser.new_context().await.unwrap();
+    let c = context.new_page().await.unwrap();
+    for page in [&a, &b, &c] {
+        assert_eq!(
+            page.evaluate("document.visibilityState").await.unwrap(),
+            "visible"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_kept_profile_keeps_firefox_s_cookies() {
+    let Some(executable) = common::firefox() else {
+        return;
+    };
+    let dir = scratch("kept");
+    let server = common::serve(vec![("/", common::html("<p>kept</p>"))]);
+    let url = format!("{}/", server.url);
+    let load = netweir_browser::WaitUntil::Load;
+    for round in 0..2 {
+        let browser = common::launch_firefox(
+            executable.clone(),
+            LaunchOptions {
+                user_data_dir: Some(dir.clone()),
+                ..LaunchOptions::default()
+            },
+        )
+        .await;
+        let page = browser.new_page().await.unwrap();
+        page.goto(&url, load, None).await.unwrap();
+        if round == 0 {
+            page.evaluate("document.cookie = 'kept=yes; path=/; max-age=3600'")
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(page.evaluate("document.cookie").await.unwrap(), "kept=yes");
+        }
+        browser.close().await.unwrap();
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn unported_methods_are_unsupported_and_send_nothing() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let page = browser.new_page().await.unwrap();
+    let before = browser.methods_sent();
+    let unsupported = |r: Result<(), Error>, what: &str| match r {
+        Err(Error::Unsupported {
+            engine: "Firefox",
+            feature,
+        }) => assert!(feature.contains(what), "{feature}"),
+        other => panic!("{what}: {other:?}"),
+    };
+    unsupported(page.screenshot(false).await.map(drop), "screenshot");
+    unsupported(page.click("p", None).await, "click");
+    unsupported(page.route().await.map(drop), "route");
+    unsupported(page.main_frame().fill("input", "x", None).await, "fill");
+    unsupported(
+        browser
+            .new_page_with(netweir_browser::Environment {
+                locale: Some("de-DE".into()),
+                ..Default::default()
+            })
+            .await
+            .map(drop),
+        "environment",
+    );
+    unsupported(
+        page.goto("about:blank", netweir_browser::WaitUntil::NetworkIdle, None)
+            .await
+            .map(drop),
+        "NetworkIdle",
+    );
+    let context = browser.new_context().await.unwrap();
+    unsupported(context.cookies().await.map(drop), "cookies");
+    // A set: the context was made with a method new_page had sent.
+    let sent = browser.methods_sent();
+    assert_eq!(sent, before, "nothing was sent for them");
+    assert!(
+        sent.iter()
+            .all(|m| m.starts_with(|c: char| c.is_ascii_lowercase())),
+        "{sent:?}"
+    );
+}
+
+#[tokio::test]
+async fn goto_a_dead_host_is_a_navigation_error() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let page = browser.new_page().await.unwrap();
+    let err = page
+        .goto(
+            "http://127.0.0.1:1/",
+            netweir_browser::WaitUntil::Load,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Navigation { url, error, .. } if url == "http://127.0.0.1:1/" && !error.is_empty()),
+        "{err:?}"
+    );
+}

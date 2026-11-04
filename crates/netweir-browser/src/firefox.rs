@@ -175,7 +175,19 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 // The pinned build stays the pinned build: Netweir moves the pin.
 user_pref("app.update.disabledForTesting", true);
+// Downloads stay in the profile, never in the person's own folder.
+user_pref("browser.download.folderList", 2);
+user_pref("browser.download.useDownloadDir", true);
 "#;
+
+/// `user.js` for the profile at `profile`.
+fn user_js(profile: &Path) -> String {
+    let downloads = profile.join("downloads");
+    // As a JSON string, which is a JavaScript one: Windows' backslashes
+    // escaped.
+    let dir = serde_json::to_string(&downloads.display().to_string()).expect("a string serialises");
+    format!("{USER_JS}user_pref(\"browser.download.dir\", {dir});\n")
+}
 
 /// A Firefox started and spoken to: what [`crate::Browser`] is made from.
 pub(crate) struct Started {
@@ -244,7 +256,7 @@ pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
     let port_file = profile.join(PORT_FILE);
     let prepared = std::fs::create_dir_all(&profile)
         .and_then(|()| std::fs::write(profile.join(PROFILE_MARK), ""))
-        .and_then(|()| std::fs::write(profile.join("user.js"), USER_JS));
+        .and_then(|()| std::fs::write(profile.join("user.js"), user_js(&profile)));
     prepared.map_err(|e| {
         Error::Launch(format!(
             "can't prepare the profile {}: {e}",

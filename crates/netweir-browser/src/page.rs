@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use base64::Engine;
+use base64::Engine as _;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio::time::Instant;
@@ -19,7 +19,9 @@ use crate::frame::Frame;
 use crate::network::{
     Decider, Request, Route, SharedRules, chrome_type, headers_of, lock, went_away,
 };
-use crate::{Error, Result};
+use crate::{Engine, Error, Result};
+
+mod bidi;
 
 /// The lifecycle event a navigation waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +230,13 @@ pub(crate) struct PageInner {
     offline_workers: Mutex<Vec<String>>,
     /// Where its steps' held uploads were copied, removed when it closes.
     pub(crate) uploads: crate::uploads::UploadDirs,
+}
+
+/// Runs `body` (a function body; `await` allowed) in a Firefox page's main
+/// frame: in the page's own world, or with `sandboxed`, in netweir's,
+/// where page script can't see it.
+pub(crate) async fn firefox_call(page: &Page, body: &str, sandboxed: bool) -> Result<Value> {
+    bidi::call(page, body, sandboxed).await
 }
 
 /// A page's environment, and the user agent override every session of it
@@ -580,6 +589,9 @@ impl Page {
         env: Environment,
     ) -> Result<Page> {
         env.validate()?;
+        if browser.engine() == Engine::Firefox {
+            return bidi::open(browser, context, owns_context, guard, shared_context, env).await;
+        }
         let mut params = json!({"url": "about:blank"});
         if let Some(id) = &context {
             params["browserContextId"] = Value::from(id.as_str());
@@ -770,7 +782,11 @@ impl Page {
             env: env.clone(),
         });
         let own = session.clone();
-        let handler: Handler = Arc::new(move |method, params| watch.hear(&own, method, params));
+        let handler: Handler = if browser.engine() == Engine::Firefox {
+            bidi::handler(shared.clone())
+        } else {
+            Arc::new(move |method, params| watch.hear(&own, method, params))
+        };
         conn.on(&session, handler);
         let front = match &opener {
             Some(opener) => {
@@ -813,6 +829,10 @@ impl Page {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(Arc::downgrade(&page.inner));
+        }
+        // A Firefox page is set up over BiDi, by bidi::open.
+        if browser.engine() == Engine::Firefox {
+            return Ok(page);
         }
         type Step<'a> =
             std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
@@ -962,6 +982,15 @@ impl Page {
         }
     }
 
+    pub(crate) fn is_firefox(&self) -> bool {
+        self.inner.browser.engine() == Engine::Firefox
+    }
+
+    /// For what Netweir can't do on a Firefox page, or can't do there yet.
+    pub(crate) fn chrome_only(&self, feature: &str) -> Result<()> {
+        self.inner.browser.chrome_only(feature)
+    }
+
     /// The runtime the page's own tasks run on.
     pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
         self.inner.decider.runtime.clone()
@@ -1066,6 +1095,9 @@ impl Page {
         wait: WaitUntil,
         timeout: Option<Duration>,
     ) -> Result<Response> {
+        if self.is_firefox() {
+            return bidi::goto(self, url, wait, timeout).await;
+        }
         let deadline = Instant::now() + self.timeout(timeout);
         let mut retries = 0;
         let r = loop {
@@ -1124,6 +1156,7 @@ impl Page {
         wait: WaitUntil,
         timeout: Option<Duration>,
     ) -> Result<Option<Response>> {
+        self.chrome_only("Page.go_back")?;
         self.go_by(-1, wait, timeout).await
     }
 
@@ -1139,6 +1172,7 @@ impl Page {
         wait: WaitUntil,
         timeout: Option<Duration>,
     ) -> Result<Option<Response>> {
+        self.chrome_only("Page.go_forward")?;
         self.go_by(1, wait, timeout).await
     }
 
@@ -1171,6 +1205,7 @@ impl Page {
     /// Loads the document again, as the reload button does, and waits
     /// for `wait`.
     pub async fn reload(&self, wait: WaitUntil, timeout: Option<Duration>) -> Result<Response> {
+        self.chrome_only("Page.reload")?;
         let deadline = self.deadline(timeout);
         let url = self.url();
         let go = self.call("Page.reload", json!({}));
@@ -1298,6 +1333,7 @@ impl Page {
         wait: WaitUntil,
         timeout: Option<Duration>,
     ) -> Result<Response> {
+        self.chrome_only("Page.wait_for_navigation")?;
         let event = wait.event();
         let deadline = Instant::now() + self.timeout(timeout);
         // A page's script that navigates may wait on a frame, or check
@@ -1321,6 +1357,7 @@ impl Page {
         wait: WaitUntil,
         timeout: Option<Duration>,
     ) -> Result<Response> {
+        self.chrome_only("Page.wait_for_load")?;
         let event = wait.event();
         let deadline = Instant::now() + self.timeout(timeout);
         let (loader, url) = {
@@ -1379,7 +1416,8 @@ impl Page {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = self.state();
         // A page that's gone has nothing more to say: the receiver ends.
-        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
+        // So does a Firefox page's, which tells of nothing yet.
+        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) && !self.is_firefox() {
             state.listeners.push(tx);
         }
         rx
@@ -1394,7 +1432,7 @@ impl Page {
     pub fn dialogs(&self) -> tokio::sync::mpsc::UnboundedReceiver<Dialog> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = self.state();
-        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
+        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) && !self.is_firefox() {
             state.dialogs = Some(tx);
         }
         rx
@@ -1405,6 +1443,7 @@ impl Page {
     /// bytes of them, so the body of a response from before a navigation,
     /// or of one Chrome let go of, is [`Error::Gone`].
     pub async fn body(&self, response: &Response) -> Result<Vec<u8>> {
+        self.chrome_only("Page.body")?;
         let id = &response.request_id;
         if id.is_empty() {
             return Err(Error::Gone(format!(
@@ -1457,6 +1496,7 @@ impl Page {
     /// resource types ("image", "font", ...) and those whose URLs match
     /// one of the globs. Adds to what the page already blocks.
     pub async fn block(&self, resource_types: &[&str], urls: &[String]) -> Result<()> {
+        self.chrome_only("Page.block")?;
         add_blocks(&self.inner.rules, resource_types, urls)?;
         self.refresh_fetch().await
     }
@@ -1465,6 +1505,7 @@ impl Page {
     /// to decide about, until [`Page::unroute`]. Documents a guard refuses
     /// and requests the page blocks never get there.
     pub async fn route(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<Route>> {
+        self.chrome_only("Page.route")?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         lock(&self.inner.rules).routes = Some(tx);
         self.refresh_fetch().await?;
@@ -1473,6 +1514,7 @@ impl Page {
 
     /// Stops routing; requests waiting for a decision go on unchanged.
     pub async fn unroute(&self) -> Result<()> {
+        self.chrome_only("Page.unroute")?;
         lock(&self.inner.rules).routes = None;
         self.refresh_fetch().await
     }
@@ -1602,17 +1644,20 @@ impl Page {
     /// Clicks the element's centre with the mouse, once it's visible,
     /// still, enabled and not covered.
     pub async fn click(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.chrome_only("Page.click")?;
         self.main_frame().click(selector, timeout).await
     }
 
     /// See [`Frame::dblclick`].
     pub async fn dblclick(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.chrome_only("Page.dblclick")?;
         self.main_frame().dblclick(selector, timeout).await
     }
 
     /// Replaces the element's contents with `text` in one go, as pasting
     /// would.
     pub async fn fill(&self, selector: &str, text: &str, timeout: Option<Duration>) -> Result<()> {
+        self.chrome_only("Page.fill")?;
         self.main_frame().fill(selector, text, timeout).await
     }
 
@@ -1624,6 +1669,7 @@ impl Page {
         delay: (Duration, Duration),
         timeout: Option<Duration>,
     ) -> Result<()> {
+        self.chrome_only("Page.type_text")?;
         self.main_frame()
             .type_text(selector, text, delay, timeout)
             .await
@@ -1632,11 +1678,13 @@ impl Page {
     /// Moves the mouse to the element's centre, once it's visible, still
     /// and not covered.
     pub async fn hover(&self, selector: &str, timeout: Option<Duration>) -> Result<()> {
+        self.chrome_only("Page.hover")?;
         self.main_frame().hover(selector, timeout).await
     }
 
     /// See [`Frame::drag`].
     pub async fn drag(&self, source: &str, target: &str, timeout: Option<Duration>) -> Result<()> {
+        self.chrome_only("Page.drag")?;
         self.main_frame().drag(source, target, timeout).await
     }
 
@@ -1650,6 +1698,7 @@ impl Page {
         idle: Duration,
         timeout: Option<Duration>,
     ) -> Result<u32> {
+        self.chrome_only("Page.scroll")?;
         self.main_frame()
             .scroll(selector, x, y, times, idle, timeout)
             .await
@@ -1662,6 +1711,7 @@ impl Page {
         pick: &crate::Pick,
         timeout: Option<Duration>,
     ) -> Result<Vec<String>> {
+        self.chrome_only("Page.select_option")?;
         self.main_frame()
             .select_option(selector, pick, timeout)
             .await
@@ -1674,6 +1724,7 @@ impl Page {
         on: bool,
         timeout: Option<Duration>,
     ) -> Result<()> {
+        self.chrome_only("Page.set_checked")?;
         self.main_frame().set_checked(selector, on, timeout).await
     }
 
@@ -1684,6 +1735,7 @@ impl Page {
         files: &[std::path::PathBuf],
         timeout: Option<Duration>,
     ) -> Result<()> {
+        self.chrome_only("Page.set_input_files")?;
         self.main_frame()
             .set_input_files(selector, files, timeout)
             .await
@@ -1697,6 +1749,7 @@ impl Page {
         state: &str,
         timeout: Option<Duration>,
     ) -> Result<()> {
+        self.chrome_only("Page.wait_for")?;
         self.main_frame().wait_for(selector, state, timeout).await
     }
 
@@ -1711,6 +1764,7 @@ impl Page {
     /// pressed and let go. "+" alone is the plus key, as is the last "+"
     /// of "Shift++".
     pub async fn press(&self, keys: &str) -> Result<()> {
+        self.chrome_only("Page.press")?;
         let (mut names, name) = split_keys(keys);
         // A modifier on its own is pressed with the others, and no key.
         let alone = modifier(name, false).is_some();
@@ -2303,6 +2357,7 @@ impl Page {
     /// those Chrome runs in processes of their own, with the frames inside
     /// them.
     pub async fn frames(&self) -> Result<Vec<Frame>> {
+        self.chrome_only("Page.frames")?;
         let mut sessions = vec![self.inner.session.clone()];
         sessions.extend(self.state().children.iter().map(|(s, _)| s.clone()));
         let mut frames: Vec<Frame> = Vec::new();
@@ -2337,12 +2392,14 @@ impl Page {
 
     /// A PNG of the viewport, or of the whole page.
     pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>> {
+        self.chrome_only("Page.screenshot")?;
         self.capture(full_page, None).await
     }
 
     /// [`Page::screenshot`], or with a `quality` (1 to 100) a JPEG of
     /// that quality, which is often a tenth the size.
     pub async fn capture(&self, full_page: bool, quality: Option<u8>) -> Result<Vec<u8>> {
+        self.chrome_only("Page.capture")?;
         let mut params = match quality {
             Some(q) => json!({"format": "jpeg", "quality": q.clamp(1, 100)}),
             None => json!({"format": "png"}),
@@ -2368,6 +2425,7 @@ impl Page {
 
     /// The page as a PDF, laid out as for printing.
     pub async fn pdf(&self, options: &PdfOptions) -> Result<Vec<u8>> {
+        self.chrome_only("Page.pdf")?;
         let mut params = json!({
             "landscape": options.landscape,
             "printBackground": options.print_background,
@@ -2400,16 +2458,19 @@ impl Page {
 
     /// The cookies of the page's context.
     pub async fn cookies(&self) -> Result<Vec<Cookie>> {
+        self.chrome_only("Page.cookies")?;
         context_cookies(&self.inner.browser, self.inner.context.as_deref()).await
     }
 
     pub async fn set_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        self.chrome_only("Page.set_cookies")?;
         set_context_cookies(&self.inner.browser, self.inner.context.as_deref(), cookies).await
     }
 
     /// The page's context's cookies, and the localStorage of every origin
     /// its documents came from (see `Context::storage_state`).
     pub async fn storage_state(&self) -> Result<crate::StorageState> {
+        self.chrome_only("Page.storage_state")?;
         let origins: Vec<String> = self
             .state()
             .origins
@@ -2429,6 +2490,9 @@ impl Page {
     pub async fn close(&self) -> Result<()> {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return Ok(());
+        }
+        if self.is_firefox() {
+            return bidi::close(self).await;
         }
         // Chrome may read an upload until the page goes, and not after.
         self.inner.uploads.clear();
@@ -3035,6 +3099,7 @@ impl Page {
     /// in place of those the page had: in the page, its frames and its
     /// workers.
     pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
+        self.chrome_only("Page.set_extra_headers")?;
         let mut env = self.environment();
         env.extra_headers = headers.to_vec();
         env.validate()?;
@@ -3047,6 +3112,7 @@ impl Page {
     /// What `prefers-color-scheme` and `prefers-reduced-motion` match, in
     /// the page and its frames; None leaves one as it is.
     pub async fn emulate_media(&self, change: &crate::MediaChange) -> Result<()> {
+        self.chrome_only("Page.emulate_media")?;
         let mut env = self.environment();
         if let Some(v) = change.media {
             env.media = v;
@@ -3073,6 +3139,7 @@ impl Page {
     /// now on, before the document's own scripts. Not in workers: Chrome
     /// has no way to run anything in one before its own script.
     pub async fn add_init_script(&self, script: &str) -> Result<()> {
+        self.chrome_only("Page.add_init_script")?;
         let params = json!({"source": script});
         self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())
             .await
@@ -3106,6 +3173,7 @@ impl Page {
     /// so asking fails as it does without a position. A page also needs
     /// the "geolocation" permission for its origin to be told.
     pub async fn set_geolocation(&self, at: Option<Geolocation>) -> Result<()> {
+        self.chrome_only("Page.set_geolocation")?;
         let mut env = self.environment();
         env.geolocation = at;
         env.validate()?;
@@ -3126,6 +3194,7 @@ impl Page {
     /// Takes the page, its frames and its workers off the network, or
     /// puts them back: requests fail, and `navigator.onLine` says so.
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
+        self.chrome_only("Page.set_offline")?;
         lock_env(&self.inner.env).env.offline = Some(offline);
         for (method, params) in crate::environment::offline(offline) {
             let kind = match method {
@@ -3223,6 +3292,7 @@ impl Page {
         permissions: &[String],
         origin: Option<&str>,
     ) -> Result<()> {
+        self.chrome_only("Page.grant_permissions")?;
         grant(
             &self.inner.browser,
             self.inner.context.as_deref(),
@@ -3234,6 +3304,7 @@ impl Page {
 
     /// Takes back every permission granted in the page's context.
     pub async fn clear_permissions(&self) -> Result<()> {
+        self.chrome_only("Page.clear_permissions")?;
         clear_permissions(&self.inner.browser, self.inner.context.as_deref()).await
     }
 

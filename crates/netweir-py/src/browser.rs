@@ -115,6 +115,9 @@ pub(crate) fn launch<'py>(
     }
     let timeout = seconds("timeout", Some(timeout))?.expect("checked above");
     let options = LaunchOptions {
+        // Python asks for Firefox once its engine is complete.
+        engine: netweir_browser::Engine::Chrome,
+        stealth: true,
         executable,
         headless,
         args,
