@@ -6,7 +6,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use netweir_browser::{cft_executable, cft_platform};
-use netweir_core::install::install_chrome;
+use netweir_core::install::{FirefoxRelease, install_chrome, install_firefox};
 
 /// The paths a server was asked for.
 type Hits = Arc<Mutex<Vec<String>>>;
@@ -245,4 +245,195 @@ async fn a_broken_install_is_replaced_and_leftovers_swept() {
     assert!(!leftover.exists());
     assert!(running.exists(), "an install under way is left alone");
     std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// An archive laid out as Mozilla's download for this machine, holding a
+/// stand-in executable, made with the tools the installer unpacks with;
+/// None on Windows, whose download is an installer that can't be faked.
+fn fake_firefox() -> Option<(&'static str, Vec<u8>)> {
+    // Tests run at once, so each gets a folder of its own.
+    static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!("netweir-fake-ff-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let tree = work.join("tree");
+    let exe = netweir_browser::firefox_executable(&tree);
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "#!/bin/sh\necho firefox\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (name, archive) = if cfg!(target_os = "macos") {
+        let dmg = work.join("ff.dmg");
+        let ok = std::process::Command::new("hdiutil")
+            .args(["create", "-quiet", "-format", "UDZO", "-srcfolder"])
+            .arg(&tree)
+            .arg(&dmg)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "hdiutil create");
+        ("Firefox%20159.0.1.dmg", dmg)
+    } else if cfg!(windows) {
+        let _ = std::fs::remove_dir_all(&work);
+        return None;
+    } else {
+        let tar = work.join("ff.tar.xz");
+        let ok = std::process::Command::new("tar")
+            .arg("-cJf")
+            .arg(&tar)
+            .arg("-C")
+            .arg(&tree)
+            .arg("firefox")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "tar -cJf");
+        ("firefox-159.0.1.tar.xz", tar)
+    };
+    let bytes = std::fs::read(&archive).unwrap();
+    std::fs::remove_dir_all(&work).unwrap();
+    Some((name, bytes))
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A release pinned to `sum` for this machine's platform; the sums must
+/// live for the whole test run, as the real ones do.
+fn release(sum: String) -> FirefoxRelease {
+    let platform = netweir_browser::firefox_platform().unwrap();
+    FirefoxRelease {
+        version: "159.0.1",
+        sums: Vec::leak(vec![(platform, String::leak(sum) as &str)]),
+    }
+}
+
+fn firefox_path(name: &str) -> String {
+    let platform = netweir_browser::firefox_platform().unwrap();
+    format!("/159.0.1/{platform}/en-US/{name}")
+}
+
+#[tokio::test]
+async fn firefox_installs_once_with_its_startup_files() {
+    let Some((name, archive)) = fake_firefox() else {
+        return;
+    };
+    let sum = sha256(&archive);
+    let path: &'static str = String::leak(firefox_path(name));
+    let (base, hits) = serve("none", vec![(path, archive)]);
+    let home = std::env::temp_dir().join(format!("netweir-install-ff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let release = release(sum);
+
+    let installed = install_firefox(&base, &home, &release).await.unwrap();
+    assert!(!installed.already);
+    assert_eq!(installed.version, "159.0.1");
+    assert_eq!(
+        installed.executable,
+        netweir_browser::firefox_executable(&home.join("firefox/159.0.1"))
+    );
+    assert!(installed.executable.is_file());
+    let resources = if cfg!(target_os = "macos") {
+        installed
+            .executable
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Resources")
+    } else {
+        installed.executable.parent().unwrap().to_path_buf()
+    };
+    assert!(resources.join("mozilla.cfg").is_file());
+    assert!(resources.join("defaults/pref/autoconfig.js").is_file());
+    // Nothing but the version folder is left: no download, no mount.
+    let left: Vec<_> = std::fs::read_dir(home.join("firefox"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["159.0.1"]);
+
+    let again = install_firefox(&base, &home, &release).await.unwrap();
+    assert!(again.already);
+    let downloads = hits.lock().unwrap().iter().filter(|p| *p == path).count();
+    assert_eq!(downloads, 1, "not downloaded twice");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test]
+async fn a_firefox_download_with_the_wrong_sum_is_refused() {
+    let Some((name, archive)) = fake_firefox() else {
+        return;
+    };
+    let path: &'static str = String::leak(firefox_path(name));
+    let (base, _) = serve("none", vec![(path, archive)]);
+    let home = std::env::temp_dir().join(format!("netweir-install-ffsum-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let err = install_firefox(&base, &home, &release("0".repeat(64)))
+        .await
+        .unwrap_err();
+    assert!(err.contains("SHA-256"), "{err}");
+    assert!(err.contains("nothing was installed"), "{err}");
+    let left = std::fs::read_dir(home.join("firefox")).map_or(0, |d| d.count());
+    assert_eq!(left, 0, "nothing unpacked");
+}
+
+#[tokio::test]
+async fn no_firefox_for_a_platform_netweir_has_no_sum_for() {
+    let Some(platform) = netweir_browser::firefox_platform() else {
+        return;
+    };
+    let (base, hits) = serve("none", vec![]);
+    let home = std::env::temp_dir().join(format!("netweir-install-ffnone-{}", std::process::id()));
+    let nowhere = FirefoxRelease {
+        version: "159.0.1",
+        sums: &[("elsewhere", "00")],
+    };
+    let err = install_firefox(&base, &home, &nowhere).await.unwrap_err();
+    assert!(err.contains(platform), "{err}");
+    assert!(hits.lock().unwrap().is_empty(), "nothing fetched");
+    assert!(!home.exists());
+}
+
+#[tokio::test]
+async fn a_firefox_version_that_isnt_one_isnt_made_a_folder() {
+    let (base, hits) = serve("none", vec![]);
+    let home = std::env::temp_dir().join(format!("netweir-install-ffbad-{}", std::process::id()));
+    let bad = FirefoxRelease {
+        version: "../../escaped",
+        sums: &[],
+    };
+    let err = install_firefox(&base, &home, &bad).await.unwrap_err();
+    assert!(err.contains("escaped"), "{err}");
+    assert!(hits.lock().unwrap().is_empty());
+    assert!(!home.exists());
+}
+
+/// The real thing, from Mozilla, as `netweir install firefox` gets it.
+#[tokio::test]
+#[ignore = "downloads Firefox from archive.mozilla.org"]
+async fn real_firefox_installs() {
+    let home = std::env::temp_dir().join(format!("netweir-install-real-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let installed = install_firefox(
+        netweir_core::install::FIREFOX_RELEASES,
+        &home,
+        &netweir_core::install::FIREFOX,
+    )
+    .await
+    .unwrap();
+    assert!(
+        installed.executable.is_file(),
+        "{}",
+        installed.executable.display()
+    );
+    eprintln!("installed {}", installed.executable.display());
 }
