@@ -126,9 +126,32 @@ pub(crate) struct TreeBuilder {
     /// How many HTML elements of each tag are open, so "is there a p in
     /// button scope" is answered without walking the stack when none is.
     counts: [u32; 256],
+    /// How many open elements have each name, for those `counts` doesn't
+    /// cover: HTML elements of no known tag, and foreign elements. Keyed
+    /// by [`name_key`]: two names can share a slot, which only makes a
+    /// count too high, so the walk it saves is made after all.
+    names: Box<[u32; NAME_SLOTS]>,
     /// Whether each node is on the stack of open elements, so asking is
     /// one lookup however deep the stack is.
     on_stack: Vec<bool>,
+}
+
+/// How many counters [`TreeBuilder::names`] has.
+const NAME_SLOTS: usize = 1024;
+
+/// FNV-1a over `name` in ASCII lower case, and whether it's an HTML
+/// element's: a slot in [`TreeBuilder::names`], found without allocating.
+fn name_key(html: bool, name: &str) -> usize {
+    let mut h: u64 = if html {
+        0xcbf2_9ce4_8422_2325
+    } else {
+        0x8422_2325_cbf2_9ce4
+    };
+    for b in name.bytes() {
+        h ^= u64::from(b.to_ascii_lowercase());
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    (h ^ (h >> 32)) as usize % NAME_SLOTS
 }
 
 fn is_space(c: u8) -> bool {
@@ -535,6 +558,7 @@ impl TreeBuilder {
             selected: HashMap::new(),
             option_select: HashMap::new(),
             counts: [0; 256],
+            names: Box::new([0; NAME_SLOTS]),
             on_stack: vec![false; capacity / 24 + 1024],
         }
     }
@@ -624,28 +648,39 @@ impl TreeBuilder {
         }
     }
 
-    fn push_open(&mut self, o: Open) {
-        self.mark(o.id, true);
-        if o.ns == Ns::Html {
-            self.counts[o.tag as usize] += 1;
+    /// Counts `o` as opened (`by` 1) or closed (`by` -1).
+    fn count(&mut self, o: Open, by: i32) {
+        self.mark(o.id, by > 0);
+        if o.ns == Ns::Html && o.tag != Tag::Other {
+            self.counts[o.tag as usize] = self.counts[o.tag as usize].wrapping_add_signed(by);
+            return;
         }
+        let Some(name) = self.doc.element(o.id).map(|e| self.doc.element_name(e)) else {
+            return;
+        };
+        let n = &mut self.names[name_key(o.ns == Ns::Html, name)];
+        *n = n.wrapping_add_signed(by);
+    }
+
+    /// How many open elements are named `name`, HTML ones of no known tag
+    /// (`html`) or foreign ones; or more, when names share a key.
+    fn open_named(&self, html: bool, name: &str) -> u32 {
+        self.names[name_key(html, name)]
+    }
+
+    fn push_open(&mut self, o: Open) {
+        self.count(o, 1);
         self.open.push(o);
     }
 
     fn remove_open_at(&mut self, i: usize) -> Open {
         let o = self.open.remove(i);
-        self.mark(o.id, false);
-        if o.ns == Ns::Html {
-            self.counts[o.tag as usize] -= 1;
-        }
+        self.count(o, -1);
         o
     }
 
     fn insert_open_at(&mut self, i: usize, o: Open) {
-        self.mark(o.id, true);
-        if o.ns == Ns::Html {
-            self.counts[o.tag as usize] += 1;
-        }
+        self.count(o, 1);
         self.open.insert(i, o);
     }
 
@@ -655,10 +690,7 @@ impl TreeBuilder {
 
     fn pop(&mut self) -> Option<Open> {
         let o = self.open.pop()?;
-        self.mark(o.id, false);
-        if o.ns == Ns::Html {
-            self.counts[o.tag as usize] -= 1;
-        }
+        self.count(o, -1);
         if o.is(Tag::Option) {
             self.option_popped(o.id);
         }
@@ -1084,6 +1116,12 @@ impl TreeBuilder {
 
     /// The spec's "nearest ancestor select" of an option.
     fn nearest_select(&self, id: NodeId) -> NodeId {
+        // An option is inserted where the parser is, under open elements,
+        // so with no select open there is none above it; and the walk
+        // below would go all the way up to say so.
+        if self.open_count(Tag::Select) == 0 {
+            return NONE;
+        }
         let mut optgroup = false;
         let mut at = self.doc.parent(id);
         while let Some(a) = at {
@@ -1206,18 +1244,28 @@ impl TreeBuilder {
         }
     }
 
+    /// Copies `id` and everything under it, in tree order, with a stack
+    /// of its own: the page decides how deep it goes, and a call per
+    /// level overflowed the thread's stack.
     fn deep_clone(&mut self, id: NodeId) -> NodeId {
-        let mut data = self.doc.nodes[id as usize].data;
-        if let Data::Element(e) = &mut data {
-            e.contents = NONE;
+        let mut root = NONE;
+        let mut stack = vec![(id, NONE)];
+        while let Some((from, parent)) = stack.pop() {
+            let mut data = self.doc.nodes[from as usize].data;
+            if let Data::Element(e) = &mut data {
+                e.contents = NONE;
+            }
+            let copy = self.doc.add(data);
+            if parent == NONE {
+                root = copy;
+            } else {
+                self.doc.insert(parent, copy, NONE);
+            }
+            let at = stack.len();
+            stack.extend(self.doc.children(from).map(|c| (c, copy)));
+            stack[at..].reverse();
         }
-        let copy = self.doc.add(data);
-        let children: Vec<NodeId> = self.doc.children(id).collect();
-        for child in children {
-            let c = self.deep_clone(child);
-            self.doc.insert(copy, c, NONE);
-        }
-        copy
+        root
     }
 
     fn insert_html(&mut self, s: &Start<'_>) -> NodeId {
@@ -2006,6 +2054,15 @@ impl TreeBuilder {
     }
 
     fn any_other_end(&mut self, e: End<'_>) {
+        // With no open element of that name the walk below can only end
+        // without doing anything, after going through the whole stack.
+        let open = match e.tag {
+            Tag::Other => self.open_named(true, e.name),
+            tag => self.open_count(tag),
+        };
+        if open == 0 {
+            return;
+        }
         for i in (0..self.open.len()).rev() {
             let node = self.open[i];
             if self.names_match(node, &e) {
@@ -2704,6 +2761,20 @@ impl TreeBuilder {
                     return;
                 }
                 let mut i = self.open.len() - 1;
+                // Unless the current node or an open foreign element has
+                // that name, the walk below ends at the nearest HTML
+                // element, which then takes the token; without walking
+                // there one element at a time.
+                let current = self
+                    .doc
+                    .element(c.id)
+                    .is_some_and(|el| self.doc.element_name(el).eq_ignore_ascii_case(e.name));
+                if !current && self.open_named(false, e.name) == 0 {
+                    if i > 0 {
+                        self.html(t);
+                    }
+                    return;
+                }
                 loop {
                     if i == 0 {
                         return;
@@ -2962,6 +3033,73 @@ mod tests {
 #[cfg(test)]
 mod hostile {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    /// The best of three parses of `html`.
+    fn best(html: &str) -> Duration {
+        (0..3)
+            .map(|_| {
+                let start = Instant::now();
+                std::hint::black_box(parse(html, false));
+                start.elapsed()
+            })
+            .min()
+            .unwrap()
+    }
+
+    /// Fails if four times the input takes more than eight times as long:
+    /// linear work takes four, quadratic sixteen.
+    fn grows_linearly(make: impl Fn(usize) -> String) {
+        let (small, large) = (make(5_000), make(20_000));
+        let (a, b) = (best(&small), best(&large));
+        assert!(
+            b < a * 8 + Duration::from_millis(20),
+            "{} bytes took {a:?}, {} bytes took {b:?}",
+            small.len(),
+            large.len()
+        );
+    }
+
+    /// A selected option's contents are copied into `<selectedcontent>`
+    /// as it closes, and the copy recursed once per level: a hundred
+    /// kilobytes of nesting overflowed a thread's stack.
+    #[test]
+    fn copying_deep_option_contents_keeps_to_a_small_stack() {
+        let html = format!(
+            "<select><button><selectedcontent></selectedcontent></button><option>{}",
+            "<div>".repeat(20_000)
+        );
+        let parsed = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || parse(&html, false).len())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(parsed > 40_000, "both copies are there: {parsed} nodes");
+    }
+
+    /// An end tag nothing open matches walked the whole stack of open
+    /// elements, for each such tag.
+    #[test]
+    fn unmatched_end_tags_under_deep_nesting_cost_linear_time() {
+        grows_linearly(|n| format!("{}{}", "<span>".repeat(n), "</x>".repeat(n)));
+        grows_linearly(|n| format!("{}{}", "<span>".repeat(n), "</p>".repeat(n)));
+        grows_linearly(|n| format!("{}{}", "<x-a>".repeat(n), "</x-b>".repeat(n)));
+    }
+
+    /// The same, inside SVG, where an end tag is first looked for among
+    /// the open foreign elements.
+    #[test]
+    fn unmatched_end_tags_in_deep_svg_cost_linear_time() {
+        grows_linearly(|n| format!("<svg>{}{}", "<g>".repeat(n), "</x>".repeat(n)));
+    }
+
+    /// Each option looked up the tree for a select, all the way up when
+    /// there was none.
+    #[test]
+    fn options_under_deep_nesting_cost_linear_time() {
+        grows_linearly(|n| format!("{}{}", "<div>".repeat(n), "<option>".repeat(n)));
+    }
 
     /// Each `<body X>` merges an attribute (copied into the parse buffer)
     /// and then text goes back into the same text node, so a text node
