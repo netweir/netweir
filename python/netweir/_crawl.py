@@ -3330,4 +3330,6 @@ _NOT_ITEMS = (str, bytes, bytearray, int, float, bool, set, frozenset)
 
 
 def _why(reason: str) -> str:
-    return "robots.txt" if reason == "robots" else "TDM reserved"
+    return {"robots": "robots.txt", "tdm": "TDM reserved"}.get(
+        reason, "redirected to a page already seen"
+    )

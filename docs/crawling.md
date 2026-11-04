@@ -102,7 +102,11 @@ tie and go in the order they were submitted.
 `page.depth` is how many links the crawl followed from a start page to get
 here. A request the same as one already seen (same method, URL and body,
 ignoring fragments, query order and tracking parameters such as `utm_*`) is
-dropped unless `dont_filter=True`. Forms, JSON and other bodies are in
+dropped unless `dont_filter=True`. So is a request that redirects to a page
+the crawl already has, such as a link without its trailing slash to a
+product fetched with one: it's counted in `duplicates` and logged as
+skipped. A redirect back to a URL the same request already passed through,
+as a login wall does after setting a cookie, is followed. Forms, JSON and other bodies are in
 [Forms, logins and APIs](forms.md); cookies, several logged-in users in one
 crawl and starting a crawl logged in are in [Sessions and cookies](sessions.md).
 

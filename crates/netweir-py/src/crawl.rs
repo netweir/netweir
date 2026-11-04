@@ -664,6 +664,7 @@ impl Engine {
                         let why = match reason {
                             DropReason::Robots => "robots",
                             DropReason::TdmReserved => "tdm",
+                            DropReason::Duplicate => "duplicate",
                         };
                         match self.tags().remove(&id) {
                             Some(Tag {
@@ -1560,6 +1561,7 @@ impl Crawler {
                         let why = match reason {
                             DropReason::Robots => "robots",
                             DropReason::TdmReserved => "tdm",
+                            DropReason::Duplicate => "duplicate",
                         };
                         tuple(py, vec![s("dropped")?, s(why)?])?
                     }

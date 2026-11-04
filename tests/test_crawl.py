@@ -59,6 +59,11 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.2)
             n = int(p.rsplit("/", 1)[1])
             self.send(200, f'<h1>{n}</h1><a href="/slow/{n + 1}">next</a>')
+        elif p.startswith("/moved/"):
+            self.send_response(308)
+            self.send_header("Location", "/book/" + p.rsplit("/", 1)[1])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif p == "/boom":
             self.send(500, "<h1>error</h1>")
         else:
@@ -150,6 +155,31 @@ def test_each_page_is_fetched_once(base):
     stats = spider.run()
     assert stats["fetched"] == 1
     assert stats["duplicates"] == 3
+
+
+def test_a_redirect_to_a_page_already_fetched_is_skipped(base, caplog):
+    class Moved(netweir.Spider):
+        settings = FAST
+
+        async def parse(self, page):
+            yield {"url": page.url}
+            if page.url.endswith("/book/a"):
+                yield page.follow("/moved/a")
+
+    spider = Moved()
+    spider.start_urls = [f"{base}/book/a"]
+    items = []
+    spider.pipelines = [lambda item: items.append(item) or item]
+    Handler.log.clear()
+    with caplog.at_level(logging.INFO, logger="netweir"):
+        stats = spider.run()
+    assert items == [{"url": f"{base}/book/a"}]
+    assert [p for p in Handler.log if not p.startswith(("/robots.txt", "/.well-known/"))] == [
+        "/book/a",
+        "/moved/a",
+    ]
+    assert stats["duplicates"] == 1
+    assert f"skipped {base}/moved/a: redirected to a page already seen" in caplog.text
 
 
 @pytest.mark.parametrize("style", ["async_gen", "gen", "coroutine", "plain", "none"])

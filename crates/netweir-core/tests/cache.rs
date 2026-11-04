@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use netweir_core::{
-    CrawlRequest, CrawlSettings, Crawler, Event, FetchOptions, Profile, Response, Submitted,
+    CrawlRequest, CrawlSettings, Crawler, DropReason, Event, FetchOptions, Profile, Response,
+    Submitted,
 };
 use site::{Page, Site};
 
@@ -609,6 +610,36 @@ async fn every_hop_of_a_cached_redirect_counts_as_seen_and_is_saved() {
         );
     }
     assert_eq!(site.paths().len(), 3);
+}
+
+#[tokio::test]
+async fn a_cached_redirect_to_a_page_already_seen_is_a_duplicate() {
+    let site = Site::start(vec![
+        ("/p", Page::status(308, "").with_header("location", "/p/")),
+        ("/p/", Page::html("p")),
+    ])
+    .await;
+    let dir = Dir::new("seen-redirect");
+    run(quiet(&dir), &site, &["/p/"]).await;
+    run(quiet(&dir), &site, &["/p"]).await;
+    let c = crawler(quiet(&dir));
+    c.submit(request(1, site.url("/p/")));
+    assert_eq!(texts(&drain(&c).await), ["p"]);
+    c.submit(request(2, site.url("/p")));
+    let events = drain(&c).await;
+    assert!(
+        matches!(
+            &events[..],
+            [Event::Dropped {
+                id: 2,
+                reason: DropReason::Duplicate
+            }]
+        ),
+        "as a fetch would: {events:?}"
+    );
+    assert_eq!(c.stats().cache_hits, 2);
+    assert_eq!(c.stats().duplicates, 1);
+    assert_eq!(site.paths(), ["/p/", "/p", "/p/"], "nothing new asked");
 }
 
 #[tokio::test]

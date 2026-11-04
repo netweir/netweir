@@ -340,6 +340,26 @@ impl From<Arc<[Step]>> for RequestSteps {
 
 /// `request`'s fingerprint: its method, URL and body, in its cookie jar,
 /// and with what its own steps do when they count.
+/// The fingerprint a redirect back to `request` would have: without its
+/// steps, which a redirect doesn't carry.
+fn first_hop(request: &CrawlRequest) -> Option<Fingerprint> {
+    let o = &request.outgoing;
+    fingerprint_with(&o.method, &request.url, o.body.as_deref())
+        .map(|fp| in_jar(fp, request.cookies.jar.as_deref()))
+}
+
+/// Whether a redirect to `fp` ends `passed`'s request as a duplicate: the
+/// crawl has seen it, and not on this request's own way there.
+fn seen_elsewhere(
+    seen: &HashSet<Fingerprint>,
+    passed: &Option<Vec<Fingerprint>>,
+    fp: Fingerprint,
+) -> bool {
+    passed
+        .as_ref()
+        .is_some_and(|passed| !passed.contains(&fp) && seen.contains(&fp))
+}
+
 fn fingerprint_of(request: &CrawlRequest) -> Option<Fingerprint> {
     let o = &request.outgoing;
     let fp = fingerprint_with(&o.method, &request.url, o.body.as_deref())
@@ -409,6 +429,8 @@ pub enum DropReason {
     Robots,
     /// The site reserves text and data mining rights for it (TDMRep).
     TdmReserved,
+    /// It redirected to a page the crawl had already seen.
+    Duplicate,
 }
 
 #[derive(Debug, Clone)]
@@ -1321,6 +1343,13 @@ struct Queued {
     path: String,
     /// Redirects followed so far to get to `request.url`.
     hops: usize,
+    /// Where the request has been: its own fingerprint, then each
+    /// redirect's. A redirect back to one of them isn't a duplicate, since
+    /// a site that sets a cookie often sends you back to the same page.
+    /// None when no redirect may be dropped as a duplicate: a download, a
+    /// `dont_filter` request, or one read back from the checkpoint, whose
+    /// redirects this same request marked seen before the crawl stopped.
+    passed: Option<Vec<Fingerprint>>,
     /// Tries already made.
     attempts: u32,
     /// Fetch it in Chrome.
@@ -1883,6 +1912,7 @@ impl Crawler {
                 request,
                 &url,
                 0,
+                None,
                 keep,
                 hit,
             );
@@ -2033,7 +2063,11 @@ impl Crawler {
             (None, Some(_), Persist::Restored(row)) => Some((request.id, row)),
             (saving, ..) => saving,
         };
-        if !enqueue(settings, &mut state, request, &url, 0, keep, hit) {
+        let passed = (!restored && !request.dont_filter)
+            .then(|| first_hop(&request))
+            .flatten()
+            .map(|fp| vec![fp]);
+        if !enqueue(settings, &mut state, request, &url, 0, passed, keep, hit) {
             return Submitted::Invalid;
         }
         if let Some((id, row)) = saving {
@@ -2220,7 +2254,12 @@ impl Shared {
                 reason: DropReason::TdmReserved,
                 ..
             } => state.stats.dropped_tdm += 1,
-            Event::Blocked { .. }
+            // Counted with the other duplicates where it's dropped.
+            Event::Dropped {
+                reason: DropReason::Duplicate,
+                ..
+            }
+            | Event::Blocked { .. }
             | Event::Paused { .. }
             | Event::Warning { .. }
             | Event::Leased { .. }
@@ -2835,12 +2874,14 @@ fn wants_browser(settings: &CrawlSettings, request: &CrawlRequest) -> bool {
 /// Queues `request` for `url` (the request's own URL, or where a redirect
 /// led) on its host, and marks the host ready; or, for a `hit`, on the
 /// queue served from the cache. False if the URL can't be crawled.
+#[allow(clippy::too_many_arguments)]
 fn enqueue(
     settings: &CrawlSettings,
     state: &mut State,
     mut request: CrawlRequest,
     url: &str,
     hops: usize,
+    passed: Option<Vec<Fingerprint>>,
     keep: Option<Keep>,
     hit: bool,
 ) -> bool {
@@ -2876,6 +2917,7 @@ fn enqueue(
         origin,
         path,
         hops,
+        passed,
         attempts: 0,
         in_browser,
         keep,
@@ -3367,15 +3409,31 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
                 })
             }
         }
+        // A redirect to a page the crawl already has, from another link or
+        // another redirect, ends here, as Scrapy's does: fetching it again
+        // would give the same items twice.
+        (Ok(Hop::Redirect(next, then, _)), _)
+            if fingerprint_with(&then.method, &next, then.body.as_deref())
+                .map(|fp| in_jar(fp, q.request.cookies.jar.as_deref()))
+                .is_some_and(|fp| seen_elsewhere(&state.seen, &q.passed, fp)) =>
+        {
+            state.stats.duplicates += 1;
+            Some(Event::Dropped {
+                id: q.request.id,
+                reason: DropReason::Duplicate,
+            })
+        }
         // The next hop is queued like a new request, on its own host, so it
         // goes through that host's robots.txt, TDMRep and limits. Its URL
-        // counts as seen, but is fetched even if seen: this request has to
-        // end somewhere.
+        // counts as seen.
         (Ok(Hop::Redirect(next, then, cookies)), _) => {
             // A download's redirect isn't a page the crawl has seen.
             let seen = fingerprint_with(&then.method, &next, then.body.as_deref())
                 .map(|fp| in_jar(fp, q.request.cookies.jar.as_deref()))
                 .filter(|_| !state.is_download(&q));
+            if let (Some(fp), Some(passed)) = (seen, &mut q.passed) {
+                passed.push(fp);
+            }
             if let Some(fp) = seen {
                 state.seen.insert(fp);
                 if let Some(cp) = &shared.checkpoint {
@@ -3403,6 +3461,7 @@ async fn fetch(shared: Arc<Shared>, mut q: Queued, (session, proxy): Route) {
                 q.request,
                 &next,
                 q.hops + 1,
+                q.passed,
                 q.keep,
                 false,
             ) {
@@ -3476,12 +3535,28 @@ async fn serve(shared: Arc<Shared>, q: Queued) {
             }
             // What the fetch did along the way, done again: each hop's
             // cookies into the jar its host's requests use, and where each
-            // led marked seen.
+            // led marked seen, or the request dropped where a fetch would
+            // have dropped it.
+            let mut passed = q.passed.clone();
             for r in &redirects {
                 if let Some(keeper) = cookie_keeper(&shared, &state, &q.request, &r.url) {
                     keeper.add_set_cookies(&r.url, &q.request.outgoing, &r.cookies);
                 }
                 if let Some(fp) = r.seen {
+                    if seen_elsewhere(&state.seen, &passed, fp) {
+                        state.stats.duplicates += 1;
+                        let event = Event::Dropped {
+                            id: q.request.id,
+                            reason: DropReason::Duplicate,
+                        };
+                        shared.push_event_from(&mut state, event, true);
+                        drop(state);
+                        shared.schedule.notify_one();
+                        return;
+                    }
+                    if let Some(passed) = &mut passed {
+                        passed.push(fp);
+                    }
                     state.seen.insert(fp);
                     if let Some(cp) = &shared.checkpoint {
                         cp.seen(fp);
@@ -5282,6 +5357,7 @@ mod tests {
             origin: String::new(),
             path: String::new(),
             hops: 0,
+            passed: None,
             attempts: 0,
             in_browser: false,
             keep: None,

@@ -488,6 +488,74 @@ async fn a_redirect_target_counts_as_seen() {
 }
 
 #[tokio::test]
+async fn a_redirect_to_a_page_already_seen_is_a_duplicate() {
+    // A shop's link without its trailing slash, to a product already
+    // fetched from a link with one.
+    let site = Site::start(vec![
+        ("/p", Page::status(308, "").with_header("location", "/p/")),
+        ("/p/", Page::html("p")),
+    ])
+    .await;
+    let c = crawler(CrawlSettings {
+        obey_robots: false,
+        obey_tdmrep: false,
+        ..settings()
+    });
+    c.submit(request(1, site.url("/p/")));
+    assert_eq!(fetched(&drain(&c).await), [1]);
+    c.submit(request(2, site.url("/p")));
+    let events = drain(&c).await;
+    assert_eq!(dropped(&events), [(2, DropReason::Duplicate)]);
+    assert!(fetched(&events).is_empty());
+    assert_eq!(site.paths(), ["/p/", "/p"], "the product once");
+    assert_eq!(c.stats().duplicates, 1);
+}
+
+#[tokio::test]
+async fn dont_filter_follows_a_redirect_to_a_page_already_seen() {
+    let site = Site::start(vec![
+        ("/p", Page::status(308, "").with_header("location", "/p/")),
+        ("/p/", Page::html("p")),
+    ])
+    .await;
+    let c = crawler(CrawlSettings {
+        obey_robots: false,
+        obey_tdmrep: false,
+        ..settings()
+    });
+    c.submit(request(1, site.url("/p/")));
+    drain(&c).await;
+    c.submit(CrawlRequest {
+        dont_filter: true,
+        ..request(2, site.url("/p"))
+    });
+    assert_eq!(fetched(&drain(&c).await), [2]);
+    assert_eq!(site.paths(), ["/p/", "/p", "/p/"]);
+}
+
+#[tokio::test]
+async fn a_redirect_back_to_where_a_request_started_is_followed() {
+    // Login walls do this: set a cookie, then send you back.
+    let site = Site::start(vec![
+        ("/a", Page::status(302, "").with_header("location", "/b")),
+        ("/b", Page::status(302, "").with_header("location", "/a")),
+    ])
+    .await;
+    let c = crawler(CrawlSettings {
+        obey_robots: false,
+        obey_tdmrep: false,
+        ..settings()
+    });
+    c.submit(request(1, site.url("/a")));
+    let events = drain(&c).await;
+    assert!(dropped(&events).is_empty(), "/a and /b are its own hops");
+    assert_eq!(site.paths().len(), 21, "the first request and 20 redirects");
+    assert!(
+        matches!(&events[..], [Event::Failed { id: 1, error }] if error.kind == netweir_core::FetchErrorKind::TooManyRedirects)
+    );
+}
+
+#[tokio::test]
 async fn redirect_loops_end_as_failures() {
     let site = Site::start(vec![("/loop", redirect("/loop"))]).await;
     let c = crawler(CrawlSettings {
@@ -734,6 +802,42 @@ async fn dropping_the_crawler_closes_its_checkpoint() {
         .unwrap();
     assert_eq!(n, 2000);
     drop(conn);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_resumed_request_follows_its_own_redirect_again() {
+    // Before the stop, /p's redirect marked /p/ seen; its page was never
+    // dealt with, so the resumed request has to get there again.
+    let site = Site::start(vec![
+        ("/p", Page::status(308, "").with_header("location", "/p/")),
+        ("/p/", Page::html("p")),
+    ])
+    .await;
+    let dir = std::env::temp_dir().join(format!("netweir-crawl-cp-hop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let with_checkpoint = || CrawlSettings {
+        obey_robots: false,
+        obey_tdmrep: false,
+        checkpoint: Some(dir.join("crawl.sqlite3")),
+        ..settings()
+    };
+    {
+        let c = crawler(with_checkpoint());
+        c.submit_with(request(1, site.url("/p")), "{}");
+        assert_eq!(fetched(&drain(&c).await), [1]);
+        c.flush().unwrap();
+    }
+    let c = crawler(with_checkpoint());
+    let saved = c.saved().unwrap();
+    assert_eq!(saved.pending.len(), 1);
+    let p = &saved.pending[0];
+    assert_eq!(
+        c.resubmit(request(2, p.url.clone()), p.row),
+        Submitted::Queued
+    );
+    assert_eq!(fetched(&drain(&c).await), [2]);
+    drop(c);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
