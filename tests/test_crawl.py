@@ -59,9 +59,9 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.2)
             n = int(p.rsplit("/", 1)[1])
             self.send(200, f'<h1>{n}</h1><a href="/slow/{n + 1}">next</a>')
-        elif p.startswith("/moved/"):
+        elif p == "/moved/a":
             self.send_response(308)
-            self.send_header("Location", "/book/" + p.rsplit("/", 1)[1])
+            self.send_header("Location", "/book/a")
             self.send_header("Content-Length", "0")
             self.end_headers()
         elif p == "/boom":
