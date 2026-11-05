@@ -352,6 +352,12 @@ async fn at_origin(
         page.evaluate(&js).await
     }
     .await;
+    // Closing lets go of its routes before Firefox closes the page, and a
+    // request it starts meanwhile, which no route then answers, would go
+    // on to the site: so nothing at all goes from here on.
+    if browser.engine() == crate::browser::Engine::Firefox {
+        let _ = page.block(&[], &["**".to_string()]).await;
+    }
     let _ = page.close().await;
     result
 }
