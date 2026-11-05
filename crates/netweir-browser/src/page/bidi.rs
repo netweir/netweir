@@ -151,42 +151,48 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
                 json!({"type": "window", "userContext": user_context}),
             )
             .await;
-        match created {
-            Err(Error::Protocol { method, message })
+        // On a busy machine the tab Firefox opens the window with can be
+        // replaced as it opens: Firefox then fails, or answers with no id,
+        // while the window it opened shows in the tree.
+        let message = match created {
+            Ok(v) if !str_of(&v, "context").is_empty() => return Ok(v),
+            Ok(_) => "Firefox answered with no context".to_string(),
+            Err(Error::Protocol { message, .. })
                 if message.contains("DiscardedBrowsingContextError") =>
             {
-                if tries == 3 {
-                    // Says what Firefox had open, which no failure has shown yet.
-                    let open = top_level(browser).await.map(|t| format!("{t:?}"));
-                    return Err(Error::Protocol {
-                        method,
-                        message: format!(
-                            "{message} (4 tries, each waited {WINDOW_SHOWS:?} for the window; \
-                             before the last: {before:?}; after: {open:?}; \
-                             user context {user_context})"
-                        ),
-                    });
-                }
-                tries += 1;
-                let gives_up = tokio::time::Instant::now() + WINDOW_SHOWS;
-                while tokio::time::Instant::now() < gives_up {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    let ours = top_level(browser)
-                        .await?
-                        .into_iter()
-                        .find(|(c, uc)| !before.contains(c) && uc == user_context);
-                    if let Some((context, uc)) = ours {
-                        return Ok(json!({"context": context, "userContext": uc}));
-                    }
-                }
+                message
             }
-            created => return created,
+            Err(e) => return Err(e),
+        };
+        if tries == 3 {
+            // Says what Firefox had open, which no failure has shown yet.
+            let open = top_level(browser).await.map(|t| format!("{t:?}"));
+            return Err(Error::Protocol {
+                method: "browsingContext.create".into(),
+                message: format!(
+                    "{message} (4 tries, each waited {WINDOW_SHOWS:?} for the window; \
+                     before the last: {before:?}; after: {open:?}; \
+                     user context {user_context})"
+                ),
+            });
+        }
+        tries += 1;
+        let gives_up = tokio::time::Instant::now() + WINDOW_SHOWS;
+        while tokio::time::Instant::now() < gives_up {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let ours = top_level(browser)
+                .await?
+                .into_iter()
+                .find(|(c, uc)| !c.is_empty() && !before.contains(c) && uc == user_context);
+            if let Some((context, uc)) = ours {
+                return Ok(json!({"context": context, "userContext": uc}));
+            }
         }
     }
 }
 
-/// How long a window Firefox opened, though its create failed, is waited
-/// for to show in the tree.
+/// How long a window Firefox opened, though its create failed or gave no
+/// id, is waited for to show in the tree.
 const WINDOW_SHOWS: Duration = Duration::from_secs(5);
 
 /// Every top-level browsing context, with its user context.
