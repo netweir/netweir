@@ -156,9 +156,21 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
             )
             .await;
         match created {
-            Err(Error::Protocol { message, .. })
-                if message.contains("DiscardedBrowsingContextError") && tries < 3 =>
+            Err(Error::Protocol { method, message })
+                if message.contains("DiscardedBrowsingContextError") =>
             {
+                if tries == 3 {
+                    // Says what Firefox had open, which no failure has shown yet.
+                    let open = top_level(browser).await.map(|t| format!("{t:?}"));
+                    return Err(Error::Protocol {
+                        method,
+                        message: format!(
+                            "{message} (4 tries, each waited {WINDOW_SHOWS:?} for the window; \
+                             before the last: {before:?}; after: {open:?}; \
+                             user context {user_context})"
+                        ),
+                    });
+                }
                 tries += 1;
                 let gives_up = tokio::time::Instant::now() + WINDOW_SHOWS;
                 while tokio::time::Instant::now() < gives_up {
