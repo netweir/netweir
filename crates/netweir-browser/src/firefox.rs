@@ -250,7 +250,12 @@ async fn names_its_windows(conn: &Connection) -> Result<bool> {
 
 /// Ends a Firefox started here before any browser took it over.
 fn end(started: Started) {
-    let Started { conn, mut process, temp, .. } = started;
+    let Started {
+        conn,
+        mut process,
+        temp,
+        ..
+    } = started;
     conn.shut();
     let _ = process.child.kill();
     let _ = process.child.wait();
