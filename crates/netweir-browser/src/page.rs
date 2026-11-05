@@ -610,7 +610,7 @@ impl Page {
         shared_context: Option<Arc<ContextRules>>,
         env: Environment,
     ) -> Result<Page> {
-        env.validate()?;
+        env.validate_on(browser.engine() == Engine::Firefox)?;
         if browser.engine() == Engine::Firefox {
             return bidi::open(browser, context, owns_context, guard, shared_context, env).await;
         }
@@ -3070,6 +3070,9 @@ pub(crate) async fn grant(
     permissions: &[String],
     origin: Option<&str>,
 ) -> Result<()> {
+    if browser.engine() == crate::browser::Engine::Firefox {
+        return bidi::grant(browser, context, permissions, origin).await;
+    }
     for name in permissions {
         let mut params = json!({
             "permission": crate::environment::permission(name)?,
@@ -3097,6 +3100,9 @@ pub(crate) async fn grant(
 /// Takes back every permission granted in `context`, so each is as a new
 /// person's Chrome has it.
 pub(crate) async fn clear_permissions(browser: &Inner, context: Option<&str>) -> Result<()> {
+    if browser.engine() == crate::browser::Engine::Firefox {
+        return bidi::clear_permissions(browser, context).await;
+    }
     let mut params = json!({});
     if let Some(id) = context {
         params["browserContextId"] = Value::from(id);
@@ -3155,7 +3161,7 @@ impl Page {
     pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
         let mut env = self.environment();
         env.extra_headers = headers.to_vec();
-        env.validate()?;
+        env.validate_on(self.is_firefox())?;
         let params = env.headers_param();
         self.replace_environment(env);
         if self.is_firefox() {
@@ -3236,11 +3242,13 @@ impl Page {
     /// so asking fails as it does without a position. A page also needs
     /// the "geolocation" permission for its origin to be told.
     pub async fn set_geolocation(&self, at: Option<Geolocation>) -> Result<()> {
-        self.chrome_only("Page.set_geolocation")?;
         let mut env = self.environment();
         env.geolocation = at;
-        env.validate()?;
+        env.validate_on(self.is_firefox())?;
         self.replace_environment(env);
+        if self.is_firefox() {
+            return bidi::set_geolocation(self, at).await;
+        }
         match at {
             Some(g) => {
                 self.call("Emulation.setGeolocationOverride", geolocation(g))
@@ -3357,7 +3365,6 @@ impl Page {
         permissions: &[String],
         origin: Option<&str>,
     ) -> Result<()> {
-        self.chrome_only("Page.grant_permissions")?;
         grant(
             &self.inner.browser,
             self.inner.context.as_deref(),
@@ -3369,7 +3376,6 @@ impl Page {
 
     /// Takes back every permission granted in the page's context.
     pub async fn clear_permissions(&self) -> Result<()> {
-        self.chrome_only("Page.clear_permissions")?;
         clear_permissions(&self.inner.browser, self.inner.context.as_deref()).await
     }
 

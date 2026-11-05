@@ -409,6 +409,12 @@ impl Environment {
     /// Checks the settings agree with each other and with what Chrome can
     /// show, so a page is never made that contradicts itself.
     pub fn validate(&self) -> Result<()> {
+        self.validate_on(false)
+    }
+
+    /// [`Environment::validate`], for the browser it's for: on Firefox, a
+    /// user agent must be Firefox's.
+    pub(crate) fn validate_on(&self, firefox: bool) -> Result<()> {
         let bad = |m: String| Err(Error::Invalid(m));
         for (what, size) in [("viewport", self.viewport), ("screen", self.screen)] {
             if let Some(s) = size
@@ -502,6 +508,16 @@ impl Environment {
             if !token || value.contains(['\r', '\n', '\0']) {
                 return bad(format!("not a header Chrome can send: {name:?}: {value:?}"));
             }
+        }
+        if firefox {
+            if let Some(ua) = &self.user_agent
+                && (ua.contains("Headless") || !ua.contains("Firefox/"))
+            {
+                return bad(format!(
+                    "user_agent must be Firefox's, as the running Firefox is: {ua:?}"
+                ));
+            }
+            return Ok(());
         }
         if let Some(ua) = &self.user_agent
             && (ua.contains("Headless") || !ua.contains("Chrome/"))

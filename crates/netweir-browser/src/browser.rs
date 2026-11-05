@@ -247,6 +247,10 @@ pub(crate) struct Inner {
     /// height), and whether it's maximized: what each page's window
     /// copies, as a person's would be.
     pub first_window: Option<([i64; 4], bool)>,
+    /// The permissions granted on Firefox, by user context, origin and
+    /// descriptor: Firefox can't take them all back at once, so each is
+    /// taken back by name.
+    pub granted: Mutex<Vec<(String, String, Value)>>,
 }
 
 /// The fields of an [`Inner`] that only a launch fills in.
@@ -554,6 +558,7 @@ impl Browser {
             stealth: true,
             default_context: None,
             first_window: None,
+            granted: Default::default(),
         };
         let what = executable.display().to_string();
         // Google Chrome given its own default profile says so and runs on
@@ -569,11 +574,11 @@ impl Browser {
     }
 
     async fn launch_firefox(options: LaunchOptions) -> Result<Browser> {
-        options.environment.validate()?;
-        if options.environment != Environment::default() {
+        options.environment.validate_on(true)?;
+        if let Some(what) = crate::page::bidi::env_unsupported(&options.environment) {
             return Err(Error::Unsupported {
                 engine: "Firefox",
-                feature: "LaunchOptions.environment".into(),
+                feature: what.to_string(),
             });
         }
         // Each is Chrome's, or not done on Firefox yet: refused rather
@@ -630,6 +635,7 @@ impl Browser {
             stealth: started.stealth,
             default_context: Some(started.default_context),
             first_window: started.first_window,
+            granted: Default::default(),
         };
         Ok(Browser {
             inner: Arc::new(inner),
@@ -711,6 +717,7 @@ impl Browser {
             stealth: true,
             default_context: None,
             first_window: None,
+            granted: Default::default(),
         };
         Browser::finish(inner, &options, &ws, None).await
     }
@@ -1049,11 +1056,16 @@ impl Browser {
     /// [`Browser::new_context`], whose pages have `env` (over the
     /// browser's own environment) unless they say otherwise.
     pub async fn new_context_with(&self, env: Environment) -> Result<Context> {
-        if env != Environment::default() {
-            self.inner.chrome_only("a context's environment")?;
+        if self.inner.engine() == Engine::Firefox
+            && let Some(what) = crate::page::bidi::env_unsupported(&env)
+        {
+            return Err(Error::Unsupported {
+                engine: "Firefox",
+                feature: what.to_string(),
+            });
         }
         let env = env.over(&self.inner.environment);
-        env.validate()?;
+        env.validate_on(self.inner.engine() == Engine::Firefox)?;
         added_screen(&env, &self.inner.environment)?;
         let id = self.create_context().await?;
         let context = Context {
@@ -1791,6 +1803,7 @@ async fn probe_identity(
             stealth: true,
             default_context: None,
             first_window: None,
+            granted: Default::default(),
         }),
     };
     let what = executable.display().to_string();
@@ -2094,20 +2107,17 @@ impl Context {
         permissions: &[String],
         origin: Option<&str>,
     ) -> Result<()> {
-        self.browser.chrome_only("Context.grant_permissions")?;
         crate::page::grant(&self.browser, Some(&self.id), permissions, origin).await
     }
 
     /// Takes back every permission granted in the context.
     pub async fn clear_permissions(&self) -> Result<()> {
-        self.browser.chrome_only("Context.clear_permissions")?;
         crate::page::clear_permissions(&self.browser, Some(&self.id)).await
     }
 
     /// See [`Page::set_geolocation`]; for every page of the context, those
     /// open now and those opened later.
     pub async fn set_geolocation(&self, at: Option<Geolocation>) -> Result<()> {
-        self.browser.chrome_only("Context.set_geolocation")?;
         self.update(|e| e.geolocation = at);
         for page in self.rules.pages() {
             gone_is_fine(page.set_geolocation(at).await)?;
@@ -2128,7 +2138,7 @@ impl Context {
     pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
         let mut env = self.environment();
         env.extra_headers = headers.to_vec();
-        env.validate()?;
+        env.validate_on(self.browser.engine() == Engine::Firefox)?;
         self.update(|e| e.extra_headers = headers.to_vec());
         for page in self.rules.pages() {
             gone_is_fine(page.set_extra_headers(headers).await)?;
@@ -2599,6 +2609,7 @@ mod tests {
             stealth: true,
             default_context: None,
             first_window: None,
+            granted: Default::default(),
         });
         // A target that closes between being made and being attached to.
         std::thread::spawn(move || {

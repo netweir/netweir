@@ -165,21 +165,68 @@ pub(super) async fn open(
 }
 
 /// The first part of `env` a Firefox page can't have, by the name its
-/// error gives; None when Firefox can give it all.
-fn env_unsupported(env: &Environment) -> Option<&'static str> {
-    // What's ported so far: the rest is phase 4's environment work.
-    let ported = Environment {
-        extra_headers: Vec::new(),
-        offline: None,
-        init_scripts: Vec::new(),
-        ..env.clone()
-    };
-    (ported != Environment::default()).then_some("a page's environment")
+/// error gives; None when Firefox can give it all. A phone's environment
+/// and touch are Chrome's; the media features (colour scheme, reduced
+/// motion, forced colours, contrast, print) Firefox has no command for.
+pub(crate) fn env_unsupported(env: &Environment) -> Option<&'static str> {
+    let unsupported = [
+        (env.phone.is_some(), "a phone's environment"),
+        (env.mobile == Some(true), "a phone's layout (mobile)"),
+        (env.has_touch == Some(true), "touch"),
+        (env.color_scheme.is_some(), "a colour scheme"),
+        (env.reduced_motion.is_some(), "reduced motion"),
+        (env.forced_colors.is_some(), "forced colours"),
+        (env.contrast.is_some(), "a contrast preference"),
+        (env.media.is_some(), "a media type"),
+        (
+            !env.permissions.is_empty(),
+            "permissions for every origin (grant them to an origin)",
+        ),
+    ];
+    unsupported
+        .into_iter()
+        .find_map(|(set, what)| set.then_some(what))
 }
 
 /// Gives a new Firefox page `env`, on its own browsing context, before
 /// anything loads in it.
 async fn apply_env(page: &Page, env: &Environment) -> Result<()> {
+    let browser = &page.inner.browser;
+    let contexts = json!([page.inner.target]);
+    let emulate = |method: &'static str, mut params: Value| {
+        params["contexts"] = contexts.clone();
+        browser.call("", method, params)
+    };
+    if let Some(locale) = &env.locale {
+        emulate("emulation.setLocaleOverride", json!({"locale": locale})).await?;
+    }
+    if let Some(timezone) = &env.timezone {
+        emulate(
+            "emulation.setTimezoneOverride",
+            json!({"timezone": timezone}),
+        )
+        .await?;
+    }
+    if let Some(user_agent) = &env.user_agent {
+        emulate(
+            "emulation.setUserAgentOverride",
+            json!({"userAgent": user_agent}),
+        )
+        .await?;
+    }
+    if let Some(screen) = env.screen {
+        emulate(
+            "emulation.setScreenSettingsOverride",
+            json!({"screenArea": {"width": screen.width, "height": screen.height}}),
+        )
+        .await?;
+    }
+    if env.viewport.is_some() || env.device_scale_factor.is_some() {
+        set_viewport(page, env).await?;
+    }
+    if let Some(at) = env.geolocation {
+        set_geolocation(page, Some(at)).await?;
+    }
     for script in &env.init_scripts {
         add_init_script(page, script).await?;
     }
@@ -190,6 +237,125 @@ async fn apply_env(page: &Page, env: &Environment) -> Result<()> {
         set_offline(page, true).await?;
     }
     Ok(())
+}
+
+/// The page's viewport and pixel ratio, as `env` has them; what it leaves
+/// unset stays as the window has it.
+async fn set_viewport(page: &Page, env: &Environment) -> Result<()> {
+    let mut params = json!({"context": page.inner.target});
+    if let Some(v) = env.viewport {
+        params["viewport"] = json!({"width": v.width, "height": v.height});
+    }
+    if let Some(ratio) = env.device_scale_factor {
+        params["devicePixelRatio"] = Value::from(ratio);
+    }
+    page.inner
+        .browser
+        .call("", "browsingContext.setViewport", params)
+        .await?;
+    Ok(())
+}
+
+/// Where the page says it is, or where it really is for None.
+pub(super) async fn set_geolocation(
+    page: &Page,
+    at: Option<crate::environment::Geolocation>,
+) -> Result<()> {
+    let coordinates = match at {
+        Some(g) => {
+            json!({"latitude": g.latitude, "longitude": g.longitude, "accuracy": g.accuracy})
+        }
+        None => Value::Null,
+    };
+    page.inner
+        .browser
+        .call(
+            "",
+            "emulation.setGeolocationOverride",
+            json!({"coordinates": coordinates, "contexts": [page.inner.target]}),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Grants `permissions` to `origin` in `context`, a Firefox user context
+/// (the session's own when None). Firefox grants only to an origin.
+pub(crate) async fn grant(
+    browser: &Inner,
+    context: Option<&str>,
+    permissions: &[String],
+    origin: Option<&str>,
+) -> Result<()> {
+    if permissions.is_empty() {
+        return Ok(());
+    }
+    let Some(origin) = origin else {
+        return Err(unsupported(
+            "permissions for every origin (grant them to an origin)",
+        ));
+    };
+    let user_context = user_context_of(browser, context);
+    for name in permissions {
+        let descriptor = crate::environment::permission(name)?;
+        set_permission(browser, &user_context, origin, &descriptor, "granted")
+            .await
+            .map_err(|e| match e {
+                Error::Protocol { message, .. } => {
+                    Error::Invalid(format!("Firefox wouldn't grant {name:?}: {message}"))
+                }
+                e => e,
+            })?;
+        let mut granted = browser.granted.lock().unwrap_or_else(|e| e.into_inner());
+        granted.retain(|(c, o, d)| !(*c == user_context && o == origin && *d == descriptor));
+        granted.push((user_context.clone(), origin.to_string(), descriptor));
+    }
+    Ok(())
+}
+
+/// Takes back every permission granted in `context`: each is asked for
+/// again, as it is in a new profile.
+pub(crate) async fn clear_permissions(browser: &Inner, context: Option<&str>) -> Result<()> {
+    let user_context = user_context_of(browser, context);
+    let taken: Vec<(String, String, Value)> = {
+        let mut granted = browser.granted.lock().unwrap_or_else(|e| e.into_inner());
+        let (taken, kept) = granted.drain(..).partition(|(c, _, _)| *c == user_context);
+        *granted = kept;
+        taken
+    };
+    for (_, origin, descriptor) in taken {
+        set_permission(browser, &user_context, &origin, &descriptor, "prompt").await?;
+    }
+    Ok(())
+}
+
+async fn set_permission(
+    browser: &Inner,
+    user_context: &str,
+    origin: &str,
+    descriptor: &Value,
+    state: &str,
+) -> Result<()> {
+    browser
+        .call(
+            "",
+            "permissions.setPermission",
+            json!({
+                "descriptor": descriptor,
+                "state": state,
+                "origin": origin,
+                "userContext": user_context,
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A Firefox user context: `context`, or the session's own for None.
+fn user_context_of(browser: &Inner, context: Option<&str>) -> String {
+    context
+        .map(str::to_string)
+        .or_else(|| browser.default_context.clone())
+        .unwrap_or_else(|| "default".into())
 }
 
 /// Runs `script` in every document the page and its frames load from now
@@ -1686,11 +1852,7 @@ pub(crate) async fn set_cookies(
 
 /// The storage partition of a Firefox user context.
 fn partition(browser: &Inner, context: Option<&str>) -> Value {
-    let context = context
-        .map(str::to_string)
-        .or_else(|| browser.default_context.clone())
-        .unwrap_or_else(|| "default".into());
-    json!({"type": "storageKey", "userContext": context})
+    json!({"type": "storageKey", "userContext": user_context_of(browser, context)})
 }
 
 #[cfg(test)]

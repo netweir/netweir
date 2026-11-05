@@ -1225,25 +1225,34 @@ async fn hover_sends_mouseover_even_with_the_mouse_already_on_the_spot() {
 }
 
 /// A page that says it runs on `system` ("Windows" or "Mac"), in the
-/// Chrome running.
+/// browser running.
 async fn page_on(browser: &netweir_browser::Browser, system: &str) -> netweir_browser::Page {
-    let major = browser
-        .version()
+    let version = browser.version();
+    let major = version
         .split('/')
         .nth(1)
         .and_then(|v| v.split('.').next())
         .unwrap()
         .to_string();
-    let os = match system {
-        "Windows" => "Windows NT 10.0; Win64; x64",
-        _ => "Macintosh; Intel Mac OS X 10_15_7",
+    let user_agent = if version.starts_with("Firefox/") {
+        let os = match system {
+            "Windows" => "Windows NT 10.0; Win64; x64",
+            _ => "Macintosh; Intel Mac OS X 10.15",
+        };
+        format!("Mozilla/5.0 ({os}; rv:{major}.0) Gecko/20100101 Firefox/{major}.0")
+    } else {
+        let os = match system {
+            "Windows" => "Windows NT 10.0; Win64; x64",
+            _ => "Macintosh; Intel Mac OS X 10_15_7",
+        };
+        format!(
+            "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/{major}.0.0.0 Safari/537.36"
+        )
     };
     browser
         .new_page_with(netweir_browser::Environment {
-            user_agent: Some(format!(
-                "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) \
-                 Chrome/{major}.0.0.0 Safari/537.36"
-            )),
+            user_agent: Some(user_agent),
             ..Default::default()
         })
         .await

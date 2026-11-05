@@ -375,6 +375,18 @@ pub fn engine() -> netweir_browser::Engine {
 /// with what they're waiting for.
 pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
     (
+        "control_or_meta_a_selects_the_field_on_each_system_and_backspace_empties_it",
+        "another system's editing shortcuts: Firefox edits a field as the system it runs on does",
+    ),
+    (
+        "undo_and_redo_take_back_typing_on_each_system",
+        "another system's editing shortcuts: Firefox edits a field as the system it runs on does",
+    ),
+    (
+        "word_and_line_shortcuts_edit_the_field_as_each_system_does",
+        "another system's editing shortcuts: Firefox edits a field as the system it runs on does",
+    ),
+    (
         "a_guarded_page_fetches_nothing_ahead_past_the_guard",
         "speculation rules and prerendering, which Firefox has none of",
     ),
@@ -453,18 +465,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
     (
         "a_trace_records_what_the_page_did_and_can_be_taken_again",
         "CDP-format tracing, which Firefox has none of",
-    ),
-    (
-        "control_or_meta_a_selects_the_field_on_each_system_and_backspace_empties_it",
-        "environments (phase 4)",
-    ),
-    (
-        "undo_and_redo_take_back_typing_on_each_system",
-        "environments (phase 4)",
-    ),
-    (
-        "word_and_line_shortcuts_edit_the_field_as_each_system_does",
-        "environments (phase 4)",
     ),
 ];
 
