@@ -798,8 +798,10 @@ fn a_dropped_server_doesnt_answer_on_a_connection_already_open() {
     // Accepted before the drop, as a connection Chrome opened ahead of need.
     let mut probe = std::net::TcpStream::connect(&addr).unwrap();
     probe.write_all(b"GET /a HTTP/1.1\r\n\r\n").unwrap();
-    let mut answer = String::new();
-    probe.read_to_string(&mut answer).unwrap();
+    let mut answer = Vec::new();
+    // Windows may reset the connection once the answer is sent: the bytes read stay.
+    let _ = probe.read_to_end(&mut answer);
+    let answer = String::from_utf8_lossy(&answer);
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
     drop(server);
     let _ = idle.write_all(b"GET /a HTTP/1.1\r\n\r\n");
