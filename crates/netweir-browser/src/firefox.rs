@@ -186,10 +186,6 @@ user_pref("dom.file.createInChild", true);
 // stopping the page's dialogs, which BiDi doesn't tell of: it would wait
 // unanswered. The box is Firefox's own, out of the page's sight.
 user_pref("dom.successive_dialog_time_limit", 0);
-// An http page's load is tried over https first, and one not done in three
-// seconds gets a second try over http alongside, which no route or guard
-// hears of: one held by a route would reach the site anyway.
-user_pref("dom.security.https_only_mode_send_http_background_request", false);
 "#;
 
 /// `user.js` for the profile at `profile`. Public only for the stealth
