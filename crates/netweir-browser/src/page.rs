@@ -811,6 +811,7 @@ impl Page {
                 shared.clone(),
                 &browser,
                 decider.clone(),
+                context.clone(),
                 tokio::runtime::Handle::current(),
             )
         } else {

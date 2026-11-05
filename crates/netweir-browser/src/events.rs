@@ -368,9 +368,10 @@ struct DownloadInner {
     guid: String,
     url: String,
     suggested_filename: String,
-    /// Where Chrome writes it; None for a page whose context has no
-    /// folder of netweir's.
-    file: Option<PathBuf>,
+    /// Where the browser writes it; None for a page whose context has no
+    /// folder of netweir's. Firefox names it itself, and says so once it
+    /// has finished.
+    file: Mutex<Option<PathBuf>>,
     context: Option<String>,
     conn: Connection,
     timeout: Duration,
@@ -424,7 +425,8 @@ impl Download {
                 inner.url
             )));
         }
-        inner.file.clone().ok_or_else(|| {
+        let file = inner.file.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        file.ok_or_else(|| {
             Error::Gone(format!(
                 "the download of {} went where Chrome keeps them, not to a folder of netweir's",
                 inner.url
@@ -432,9 +434,15 @@ impl Download {
         })
     }
 
-    /// Stops it, if it hasn't finished.
+    /// Stops it, if it hasn't finished. Firefox can't stop one.
     pub async fn cancel(&self) -> Result<()> {
         let inner = &self.inner;
+        if inner.conn.dialect() == crate::conn::Dialect::Bidi {
+            return Err(Error::Unsupported {
+                engine: "Firefox",
+                feature: "Download.cancel".into(),
+            });
+        }
         let cancel = inner.conn.call_within(
             inner.timeout,
             "",
@@ -534,6 +542,37 @@ impl Downloads {
         context: Option<&str>,
         params: &Value,
     ) -> Option<Download> {
+        let file = self
+            .folder_of(context)
+            .map(|f| f.join(str_of(params, "guid")));
+        self.begin_at(conn, timeout, context, params, file)
+    }
+
+    /// For Firefox's `browsingContext.downloadWillBegin`: the download,
+    /// keyed by its navigation, whose file is named when it ends.
+    pub(crate) fn begin_bidi(
+        &self,
+        conn: &Connection,
+        timeout: Duration,
+        context: Option<&str>,
+        params: &Value,
+    ) -> Option<Download> {
+        let params = json!({
+            "guid": params["navigation"],
+            "url": params["url"],
+            "suggestedFilename": params["suggestedFilename"],
+        });
+        self.begin_at(conn, timeout, context, &params, None)
+    }
+
+    fn begin_at(
+        &self,
+        conn: &Connection,
+        timeout: Duration,
+        context: Option<&str>,
+        params: &Value,
+        file: Option<PathBuf>,
+    ) -> Option<Download> {
         let guid = str_of(params, "guid");
         let mut under_way = self.under_way.lock().unwrap_or_else(|e| e.into_inner());
         if under_way.downloads.contains_key(&guid) {
@@ -544,7 +583,7 @@ impl Downloads {
         let ended = under_way.looking.remove(&guid).flatten();
         let download = Download {
             inner: Arc::new(DownloadInner {
-                file: self.folder_of(context).map(|f| f.join(&guid)),
+                file: Mutex::new(file),
                 guid: guid.clone(),
                 url: str_of(params, "url"),
                 suggested_filename: str_of(params, "suggestedFilename"),
@@ -601,6 +640,27 @@ impl Downloads {
         if let Some(download) = download {
             download.done.send_replace(Some(end));
         }
+    }
+
+    /// For Firefox's `browsingContext.downloadEnd`: it finished, at the
+    /// file Firefox names, or it was canceled.
+    pub(crate) fn end_bidi(&self, params: &Value) {
+        let guid = str_of(params, "navigation");
+        let finished = params["status"] == "complete";
+        if finished
+            && let Some(path) = params["filepath"].as_str()
+            && let Some(download) = self
+                .under_way
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .downloads
+                .get(&guid)
+                .and_then(Weak::upgrade)
+        {
+            *download.file.lock().unwrap_or_else(|e| e.into_inner()) = Some(PathBuf::from(path));
+        }
+        let state = if finished { "completed" } else { "canceled" };
+        self.progress(&json!({"guid": guid, "state": state}));
     }
 
     /// The browser has gone: nothing under way will finish.

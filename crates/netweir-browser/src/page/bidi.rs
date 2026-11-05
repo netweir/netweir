@@ -41,6 +41,8 @@ const EVENTS: &[&str] = &[
     "script.message",
     "browsingContext.userPromptOpened",
     "browsingContext.userPromptClosed",
+    "browsingContext.downloadWillBegin",
+    "browsingContext.downloadEnd",
 ];
 
 /// The channel [`WATCH`] tells netweir on.
@@ -588,9 +590,11 @@ pub(super) fn handler(
     shared: Arc<Shared>,
     browser: &Inner,
     decider: Arc<Decider>,
+    context: Option<String>,
     runtime: tokio::runtime::Handle,
 ) -> Handler {
     let (conn, timeout, pause) = (browser.conn.clone(), browser.timeout, browser.pause);
+    let downloads = browser.downloads.clone();
     Arc::new(move |method, params| {
         let mut state = lock_state(&shared);
         let own = params["context"] == state.frame.as_str();
@@ -718,6 +722,14 @@ pub(super) fn handler(
                     state.dialogs = None;
                 }
             }
+            "browsingContext.downloadWillBegin" => {
+                if let Some(download) =
+                    downloads.begin_bidi(&conn, timeout, context.as_deref(), params)
+                {
+                    state.tell(PageEvent::Download(download));
+                }
+            }
+            "browsingContext.downloadEnd" => downloads.end_bidi(params),
             "browsingContext.userPromptClosed" => {
                 state.open_prompts = state.open_prompts.saturating_sub(1);
             }
