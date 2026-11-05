@@ -1027,38 +1027,42 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
     };
     assert!(header("user-agent").contains("Linux"), "{sent:?}");
 
+    // A permission the system has no say in, granted and taken back.
     let origin = server.url.trim_end_matches('/').to_string();
-    let state = "navigator.permissions.query({name: 'geolocation'}).then((p) => p.state)";
+    let state = |name: &str| {
+        format!("navigator.permissions.query({{name: '{name}'}}).then((p) => p.state)")
+    };
+    context
+        .grant_permissions(&["persistent-storage".into()], Some(&origin))
+        .await
+        .unwrap();
+    assert_eq!(
+        page.evaluate(&state("persistent-storage")).await.unwrap(),
+        serde_json::json!("granted")
+    );
+    context.clear_permissions().await.unwrap();
+    assert_eq!(
+        page.evaluate(&state("persistent-storage")).await.unwrap(),
+        serde_json::json!("prompt")
+    );
+    // Where it is: Firefox asks the system too, and a machine with
+    // location turned off (a CI runner's) leaves geolocation at prompt
+    // whatever is granted, so the place is read only where it can be.
     context
         .grant_permissions(&["geolocation".into()], Some(&origin))
         .await
         .unwrap();
-    let read = page.evaluate(state).await.unwrap();
-    if read != serde_json::json!("granted") {
-        // What a run on a CI runner needs to tell why: where the page is,
-        // and whether the grant reaches it later.
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        let later = page
-            .evaluate(&format!(
-                "Promise.all([location.origin, isSecureContext, {state}])"
-            ))
+    if page.evaluate(&state("geolocation")).await.unwrap() == serde_json::json!("granted") {
+        let at = page
+            .evaluate(
+                "new Promise((ok, no) => navigator.geolocation.getCurrentPosition( \
+                   (p) => ok([p.coords.latitude, p.coords.longitude]), (e) => no(e.message)))",
+            )
             .await
             .unwrap();
-        panic!("granted to {origin}, the page read {read} at once and {later} 10s on");
+        assert_eq!(at, serde_json::json!([52.52, 13.4]));
     }
-    let at = page
-        .evaluate(
-            "new Promise((ok, no) => navigator.geolocation.getCurrentPosition( \
-               (p) => ok([p.coords.latitude, p.coords.longitude]), (e) => no(e.message)))",
-        )
-        .await
-        .unwrap();
-    assert_eq!(at, serde_json::json!([52.52, 13.4]));
     context.clear_permissions().await.unwrap();
-    assert_eq!(
-        page.evaluate(state).await.unwrap(),
-        serde_json::json!("prompt")
-    );
 
     for (env, what) in [
         (
