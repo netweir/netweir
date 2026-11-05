@@ -131,10 +131,16 @@ pub(super) async fn open(
 /// Firefox's create can fail with "BrowsingContext does no longer exist"
 /// though the window opened: the window's first document moved to another
 /// process while the create was waiting on the old one. The window is
-/// fine, so the new one in `user_context` is taken as the answer; only
-/// when none appeared is the create asked again, after a pause, a longer
-/// one each time, three times at most.
+/// fine, so the new one in `user_context` is taken as the answer once it
+/// shows in the tree, which on a busy machine takes seconds. Only when
+/// none has shown after [`WINDOW_SHOWS`] is the create asked again, three
+/// times at most. Windows other pages are opening meanwhile, in other
+/// user contexts, are left alone.
 async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
+    // One create at a time, so the window that shows is this one's and
+    // not another page's opening at the same moment.
+    static CREATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = CREATING.lock().await;
     let mut tries = 0;
     loop {
         let before: Vec<String> = top_level(browser)
@@ -154,29 +160,26 @@ async fn create_window(browser: &Inner, user_context: &str) -> Result<Value> {
                 if message.contains("DiscardedBrowsingContextError") && tries < 3 =>
             {
                 tries += 1;
-                // 100, 300, then 900 ms: Firefox settling after a window.
-                tokio::time::sleep(std::time::Duration::from_millis(100 * 3u64.pow(tries - 1)))
-                    .await;
-                let new: Vec<(String, String)> = top_level(browser)
-                    .await?
-                    .into_iter()
-                    .filter(|(c, _)| !before.contains(c))
-                    .collect();
-                if let [(context, uc)] = &new[..]
-                    && uc == user_context
-                {
-                    return Ok(json!({"context": context, "userContext": uc}));
-                }
-                for (left, _) in new {
-                    let _ = browser
-                        .call("", "browsingContext.close", json!({"context": left}))
-                        .await;
+                let gives_up = tokio::time::Instant::now() + WINDOW_SHOWS;
+                while tokio::time::Instant::now() < gives_up {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let ours = top_level(browser)
+                        .await?
+                        .into_iter()
+                        .find(|(c, uc)| !before.contains(c) && uc == user_context);
+                    if let Some((context, uc)) = ours {
+                        return Ok(json!({"context": context, "userContext": uc}));
+                    }
                 }
             }
             created => return created,
         }
     }
 }
+
+/// How long a window Firefox opened, though its create failed, is waited
+/// for to show in the tree.
+const WINDOW_SHOWS: Duration = Duration::from_secs(5);
 
 /// Every top-level browsing context, with its user context.
 async fn top_level(browser: &Inner) -> Result<Vec<(String, String)>> {
