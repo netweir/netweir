@@ -391,14 +391,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
         "speculation rules and prerendering, which Firefox has none of",
     ),
     (
-        "steps_click_type_and_wait_with_the_page_own_actions",
-        "wait_for_response, on a page's responses (phase 4)",
-    ),
-    (
-        "double_clicks_xpath_and_two_waits_for_one_url",
-        "wait_for_response, on a page's responses (phase 4)",
-    ),
-    (
         "drag_to_a_target_out_of_view_with_the_source_says_so_and_presses_nothing",
         "HTML5 drag and drop, which Firefox doesn't begin from WebDriver's mouse",
     ),
