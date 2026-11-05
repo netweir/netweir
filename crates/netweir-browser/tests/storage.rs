@@ -71,7 +71,13 @@ async fn a_storage_state_carries_cookies_and_local_storage_to_a_new_context() {
     page.goto(&format!("{}/other", server.url), WaitUntil::Load, None)
         .await
         .unwrap();
-    assert_eq!(server.paths()[requests..], ["/other"]);
+    // Each request's headers too, to tell which part of Firefox sent one.
+    assert_eq!(
+        server.paths()[requests..],
+        ["/other"],
+        "{:?}",
+        &server.seen.lock().unwrap()[requests..]
+    );
     let cookie = server
         .headers_for("/other")
         .into_iter()
