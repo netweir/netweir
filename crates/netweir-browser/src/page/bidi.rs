@@ -307,11 +307,51 @@ pub(crate) async fn grant(
                 }
                 e => e,
             })?;
-        let mut granted = browser.granted.lock().unwrap_or_else(|e| e.into_inner());
-        granted.retain(|(c, o, d)| !(*c == user_context && o == origin && *d == descriptor));
-        granted.push((user_context.clone(), origin.to_string(), descriptor));
+        {
+            let mut granted = browser.granted.lock().unwrap_or_else(|e| e.into_inner());
+            granted.retain(|(c, o, d)| !(*c == user_context && o == origin && *d == descriptor));
+            granted.push((user_context.clone(), origin.to_string(), descriptor.clone()));
+        }
+        seen_by_pages(browser, &user_context, origin, &descriptor, "granted").await;
     }
     Ok(())
+}
+
+/// Waits, for a few seconds at most, until each open page of
+/// `user_context` at `origin` reads the permission `descriptor` as
+/// `state`. Firefox tells a page's process of a change on its own time,
+/// so a page asking at once could still read the old one; on Chrome the
+/// change is the page's when the call returns, and so it is here.
+async fn seen_by_pages(
+    browser: &Inner,
+    user_context: &str,
+    origin: &str,
+    descriptor: &Value,
+    state: &str,
+) {
+    let pages: Vec<Page> = browser
+        .pages
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .map(|inner| Page { inner })
+        .filter(|page| {
+            user_context_of(browser, page.inner.context.as_deref()) == user_context
+                && page.url().starts_with(origin)
+        })
+        .collect();
+    let ask = format!("navigator.permissions.query({descriptor}).then((p) => p.state)");
+    let gives_up = tokio::time::Instant::now() + Duration::from_secs(5);
+    for page in pages {
+        while tokio::time::Instant::now() < gives_up {
+            match helper(&page, &page.inner.target, &ask).await {
+                Ok(v) if v != state => tokio::time::sleep(Duration::from_millis(50)).await,
+                // Seen, or a permission the page can't ask about.
+                _ => break,
+            }
+        }
+    }
 }
 
 /// Takes back every permission granted in `context`: each is asked for
@@ -326,6 +366,7 @@ pub(crate) async fn clear_permissions(browser: &Inner, context: Option<&str>) ->
     };
     for (_, origin, descriptor) in taken {
         set_permission(browser, &user_context, &origin, &descriptor, "prompt").await?;
+        seen_by_pages(browser, &user_context, &origin, &descriptor, "prompt").await;
     }
     Ok(())
 }
