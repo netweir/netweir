@@ -186,6 +186,10 @@ user_pref("dom.file.createInChild", true);
 // stopping the page's dialogs, which BiDi doesn't tell of: it would wait
 // unanswered. The box is Firefox's own, out of the page's sight.
 user_pref("dom.successive_dialog_time_limit", 0);
+// Firefox loads sites from its history again in a hidden browser, for the
+// new tab page's pictures of them: requests no route or guard hears of,
+// which no page asked for.
+user_pref("browser.pagethumbnails.capturing_disabled", true);
 "#;
 
 /// `user.js` for the profile at `profile`. Public only for the stealth
