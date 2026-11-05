@@ -301,8 +301,23 @@ async fn at_origin(
     let result = async {
         let mut routes = page.route().await?;
         let answered = format!("{origin}/");
+        // Firefox tries an http site over https first, even for a POST,
+        // and stays on http when the https one sends it back there.
+        let upgraded = answered
+            .strip_prefix("http://")
+            .filter(|_| browser.engine() == crate::browser::Engine::Firefox)
+            .map(|rest| format!("https://{rest}"));
         tokio::spawn(async move {
             while let Some(route) = routes.recv().await {
+                if upgraded
+                    .as_deref()
+                    .is_some_and(|u| route.request().url.starts_with(u))
+                {
+                    let _ = route
+                        .fulfill(307, &[("Location".into(), answered.clone())], b"")
+                        .await;
+                    continue;
+                }
                 if !route.request().url.starts_with(&answered) {
                     let _ = route.abort().await;
                     continue;

@@ -475,8 +475,12 @@ async fn unported_methods_are_unsupported_and_send_nothing() {
         }) => assert!(feature.contains(what), "{feature}"),
         other => panic!("{what}: {other:?}"),
     };
-    unsupported(page.add_init_script("1").await, "add_init_script");
-    unsupported(page.set_offline(true).await, "set_offline");
+    unsupported(page.set_geolocation(None).await, "set_geolocation");
+    unsupported(
+        page.emulate_media(&netweir_browser::MediaChange::default())
+            .await,
+        "emulate_media",
+    );
     unsupported(
         browser
             .new_page_with(netweir_browser::Environment {
@@ -488,7 +492,7 @@ async fn unported_methods_are_unsupported_and_send_nothing() {
         "environment",
     );
     let context = browser.new_context().await.unwrap();
-    unsupported(context.cookies().await.map(drop), "cookies");
+    unsupported(context.clear_permissions().await, "clear_permissions");
     // A set: the context was made with a method new_page had sent.
     let sent = browser.methods_sent();
     assert_eq!(sent, before, "nothing was sent for them");
@@ -899,4 +903,60 @@ async fn a_firefox_step_waiting_for_a_response_says_it_cant() {
     let report = steps::run(&page, &list, &*no_calls, None).await;
     let failure = report.failure().unwrap_or_default();
     assert!(failure.contains("isn't available on Firefox"), "{failure}");
+}
+
+/// A context's init script runs before a Firefox page's own scripts, even
+/// where the page's CSP forbids eval; its extra headers go with each
+/// request; offline takes the page off the network and puts it back.
+#[tokio::test]
+async fn a_firefox_page_has_its_init_scripts_headers_and_offline() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let mut strict = common::html("<script src=/own.js></script>");
+    strict
+        .headers
+        .push(("Content-Security-Policy", "script-src 'self'".into()));
+    let server = common::serve(vec![
+        ("/", strict),
+        ("/own.js", common::html("var own = typeof early;")),
+        ("/ping", common::html("pong")),
+    ]);
+    let context = browser.new_context().await.unwrap();
+    context
+        .add_init_script("var early = document.readyState;")
+        .await
+        .unwrap();
+    context
+        .set_extra_headers(&[("X-Netweir-Test".into(), "yes".into())])
+        .await
+        .unwrap();
+    let page = context.new_page().await.unwrap();
+    let load = netweir_browser::WaitUntil::Load;
+    page.goto(&format!("{}/", server.url), load, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.evaluate("[early, own]").await.unwrap(),
+        serde_json::json!(["loading", "string"])
+    );
+    let sent = server.headers_for("/");
+    assert!(
+        sent.iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("x-netweir-test") && v == "yes"),
+        "{sent:?}"
+    );
+    let ping =
+        "fetch('/ping').then(() => [navigator.onLine, 'ok'], () => [navigator.onLine, 'failed'])";
+    page.set_offline(true).await.unwrap();
+    assert_eq!(
+        page.evaluate(ping).await.unwrap(),
+        serde_json::json!([false, "failed"])
+    );
+    page.set_offline(false).await.unwrap();
+    assert_eq!(
+        page.evaluate(ping).await.unwrap(),
+        serde_json::json!([true, "ok"])
+    );
+    browser.close().await.unwrap();
 }

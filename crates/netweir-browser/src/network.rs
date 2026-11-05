@@ -124,18 +124,20 @@ pub(crate) fn bidi_headers(headers: &Value) -> Vec<(String, String)> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|h| {
-            let value = &h["value"];
-            let text = match value["type"].as_str() {
-                Some("base64") => base64::engine::general_purpose::STANDARD
-                    .decode(value["value"].as_str().unwrap_or_default())
-                    .map(|b| String::from_utf8_lossy(&b).into_owned())
-                    .unwrap_or_default(),
-                _ => str_of(value, "value"),
-            };
-            (str_of(h, "name"), text)
-        })
+        .map(|h| (str_of(h, "name"), bidi_text(&h["value"])))
         .collect()
+}
+
+/// A BiDi `network.BytesValue` as text: bytes that aren't are read as
+/// lossy UTF-8.
+pub(crate) fn bidi_text(value: &Value) -> String {
+    match value["type"].as_str() {
+        Some("base64") => base64::engine::general_purpose::STANDARD
+            .decode(value["value"].as_str().unwrap_or_default())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default(),
+        _ => str_of(value, "value"),
+    }
 }
 
 /// Netweir's resource type for a BiDi request, from what it's for (its

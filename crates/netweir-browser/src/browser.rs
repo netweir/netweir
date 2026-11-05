@@ -2117,7 +2117,6 @@ impl Context {
 
     /// See [`Page::set_offline`]; for every page of the context.
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
-        self.browser.chrome_only("Context.set_offline")?;
         self.update(|e| e.offline = Some(offline));
         for page in self.rules.pages() {
             gone_is_fine(page.set_offline(offline).await)?;
@@ -2127,7 +2126,6 @@ impl Context {
 
     /// See [`Page::set_extra_headers`]; for every page of the context.
     pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
-        self.browser.chrome_only("Context.set_extra_headers")?;
         let mut env = self.environment();
         env.extra_headers = headers.to_vec();
         env.validate()?;
@@ -2140,7 +2138,6 @@ impl Context {
 
     /// See [`Page::add_init_script`]; for every page of the context.
     pub async fn add_init_script(&self, script: &str) -> Result<()> {
-        self.browser.chrome_only("Context.add_init_script")?;
         self.update(|e| e.init_scripts.push(script.to_string()));
         for page in self.rules.pages() {
             gone_is_fine(page.add_init_script(script).await)?;
@@ -2180,12 +2177,10 @@ impl Context {
     }
 
     pub async fn cookies(&self) -> Result<Vec<Cookie>> {
-        self.browser.chrome_only("Context.cookies")?;
         context_cookies(&self.browser, Some(&self.id)).await
     }
 
     pub async fn set_cookies(&self, cookies: &[Cookie]) -> Result<()> {
-        self.browser.chrome_only("Context.set_cookies")?;
         set_context_cookies(&self.browser, Some(&self.id), cookies).await
     }
 
@@ -2194,7 +2189,6 @@ impl Context {
     /// them. Each origin is read in a page opened for it, whose requests
     /// never leave Chrome.
     pub async fn storage_state(&self) -> Result<crate::StorageState> {
-        self.browser.chrome_only("Context.storage_state")?;
         let origins: Vec<String> = self
             .rules
             .origins
@@ -2209,7 +2203,6 @@ impl Context {
     /// Sets a storage state's cookies and localStorage in the context, as
     /// a new Playwright context made with `storage_state` has them.
     pub async fn set_storage_state(&self, state: &crate::StorageState) -> Result<()> {
-        self.browser.chrome_only("Context.set_storage_state")?;
         crate::storage::set_state(&self.browser, Some(&self.id), &self.rules.origins, state).await
     }
 
@@ -2295,6 +2288,9 @@ fn added_screen(env: &Environment, browser: &Environment) -> Result<()> {
 }
 
 pub(crate) async fn context_cookies(browser: &Inner, context: Option<&str>) -> Result<Vec<Cookie>> {
+    if browser.engine() == Engine::Firefox {
+        return crate::page::bidi::cookies(browser, context).await;
+    }
     let mut params = json!({});
     if let Some(id) = context {
         params["browserContextId"] = Value::from(id);
@@ -2308,6 +2304,9 @@ pub(crate) async fn set_context_cookies(
     context: Option<&str>,
     cookies: &[Cookie],
 ) -> Result<()> {
+    if browser.engine() == Engine::Firefox {
+        return crate::page::bidi::set_cookies(browser, context, cookies).await;
+    }
     let mut params = json!({"cookies": cookies_to(cookies)});
     if let Some(id) = context {
         params["browserContextId"] = Value::from(id);

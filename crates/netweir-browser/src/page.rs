@@ -2515,19 +2515,16 @@ impl Page {
 
     /// The cookies of the page's context.
     pub async fn cookies(&self) -> Result<Vec<Cookie>> {
-        self.chrome_only("Page.cookies")?;
         context_cookies(&self.inner.browser, self.inner.context.as_deref()).await
     }
 
     pub async fn set_cookies(&self, cookies: &[Cookie]) -> Result<()> {
-        self.chrome_only("Page.set_cookies")?;
         set_context_cookies(&self.inner.browser, self.inner.context.as_deref(), cookies).await
     }
 
     /// The page's context's cookies, and the localStorage of every origin
     /// its documents came from (see `Context::storage_state`).
     pub async fn storage_state(&self) -> Result<crate::StorageState> {
-        self.chrome_only("Page.storage_state")?;
         let origins: Vec<String> = self
             .state()
             .origins
@@ -3156,12 +3153,14 @@ impl Page {
     /// in place of those the page had: in the page, its frames and its
     /// workers.
     pub async fn set_extra_headers(&self, headers: &[(String, String)]) -> Result<()> {
-        self.chrome_only("Page.set_extra_headers")?;
         let mut env = self.environment();
         env.extra_headers = headers.to_vec();
         env.validate()?;
         let params = env.headers_param();
         self.replace_environment(env);
+        if self.is_firefox() {
+            return bidi::set_extra_headers(self, headers).await;
+        }
         self.everywhere(Kind::Worker, "Network.setExtraHTTPHeaders", params)
             .await
     }
@@ -3196,7 +3195,14 @@ impl Page {
     /// now on, before the document's own scripts. Not in workers: Chrome
     /// has no way to run anything in one before its own script.
     pub async fn add_init_script(&self, script: &str) -> Result<()> {
-        self.chrome_only("Page.add_init_script")?;
+        if self.is_firefox() {
+            bidi::add_init_script(self, script).await?;
+            lock_env(&self.inner.env)
+                .env
+                .init_scripts
+                .push(script.to_string());
+            return Ok(());
+        }
         let params = json!({"source": script});
         self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())
             .await
@@ -3251,8 +3257,10 @@ impl Page {
     /// Takes the page, its frames and its workers off the network, or
     /// puts them back: requests fail, and `navigator.onLine` says so.
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
-        self.chrome_only("Page.set_offline")?;
         lock_env(&self.inner.env).env.offline = Some(offline);
+        if self.is_firefox() {
+            return bidi::set_offline(self, offline).await;
+        }
         for (method, params) in crate::environment::offline(offline) {
             let kind = match method {
                 crate::environment::NETWORK_STATE => Kind::Page,

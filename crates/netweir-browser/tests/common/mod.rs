@@ -459,10 +459,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
         "environments (phase 4)",
     ),
     (
-        "pages_keep_their_cookies_to_their_own_context",
-        "network control (phase 4)",
-    ),
-    (
         "undo_and_redo_take_back_typing_on_each_system",
         "environments (phase 4)",
     ),

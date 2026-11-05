@@ -10,14 +10,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    ContextRules, KEPT, LOADING, Opening, Page, PageEnv, Response, Shared, Start, State, WaitUntil,
-    lock_state, note_origin,
+    ContextRules, Cookie, KEPT, LOADING, Opening, Page, PageEnv, Response, Shared, Start, State,
+    WaitUntil, lock_state, note_origin,
 };
 use crate::browser::{Guard, Inner, str_of};
 use crate::conn::{GONE, Handler};
 use crate::environment::Environment;
 use crate::events::PageEvent;
-use crate::network::{Decider, Request, bidi_headers, bidi_type};
+use crate::network::{Decider, Request, bidi_headers, bidi_text, bidi_type};
 use crate::{Error, Result};
 
 /// The sandbox netweir's own scripts run in, apart from the page's.
@@ -65,8 +65,8 @@ pub(super) async fn open(
     shared_context: Option<Arc<ContextRules>>,
     env: Environment,
 ) -> Result<Page> {
-    if env != Environment::default() {
-        return Err(unsupported("a page's environment"));
+    if let Some(what) = env_unsupported(&env) {
+        return Err(unsupported(what));
     }
     let user_context = match context.clone().or_else(|| browser.default_context.clone()) {
         Some(id) => id,
@@ -92,7 +92,10 @@ pub(super) async fn open(
         guard,
         shared_context,
         opener: None,
-        env: PageEnv::default(),
+        env: PageEnv {
+            env: env.clone(),
+            ..PageEnv::default()
+        },
     };
     let page = Page::start(browser.clone(), target.clone(), target.clone(), opening).await?;
     let subscribed = browser
@@ -144,8 +147,13 @@ pub(super) async fn open(
             return Err(e);
         }
     };
-    // Its context's rules (or its opener's) from the first request on.
-    if let Err(e) = page.refresh_fetch().await {
+    // Its environment and its context's rules (or its opener's) from
+    // the first request on.
+    let ready = match apply_env(&page, &env).await {
+        Ok(()) => page.refresh_fetch().await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = ready {
         let _ = page.close().await;
         return Err(e);
     }
@@ -154,6 +162,89 @@ pub(super) async fn open(
     state.collector = Some(collector);
     drop(state);
     Ok(page)
+}
+
+/// The first part of `env` a Firefox page can't have, by the name its
+/// error gives; None when Firefox can give it all.
+fn env_unsupported(env: &Environment) -> Option<&'static str> {
+    // What's ported so far: the rest is phase 4's environment work.
+    let ported = Environment {
+        extra_headers: Vec::new(),
+        offline: None,
+        init_scripts: Vec::new(),
+        ..env.clone()
+    };
+    (ported != Environment::default()).then_some("a page's environment")
+}
+
+/// Gives a new Firefox page `env`, on its own browsing context, before
+/// anything loads in it.
+async fn apply_env(page: &Page, env: &Environment) -> Result<()> {
+    for script in &env.init_scripts {
+        add_init_script(page, script).await?;
+    }
+    if !env.extra_headers.is_empty() {
+        set_extra_headers(page, &env.extra_headers).await?;
+    }
+    if env.offline == Some(true) {
+        set_offline(page, true).await?;
+    }
+    Ok(())
+}
+
+/// Runs `script` in every document the page and its frames load from now
+/// on, in the page's own world, before its own scripts. A preload script
+/// is a function, so the script is run by indirect eval, which keeps its
+/// top-level declarations global, as a script's are.
+pub(super) async fn add_init_script(page: &Page, script: &str) -> Result<()> {
+    let source = serde_json::to_string(script).unwrap_or_default();
+    page.inner
+        .browser
+        .call(
+            "",
+            "script.addPreloadScript",
+            json!({
+                "functionDeclaration": format!("() => {{ (0, eval)({source}); }}"),
+                "contexts": [page.inner.target],
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Sends every request of the page and its frames with `headers` too.
+pub(super) async fn set_extra_headers(page: &Page, headers: &[(String, String)]) -> Result<()> {
+    let headers: Vec<Value> = headers
+        .iter()
+        .map(|(name, value)| json!({"name": name, "value": {"type": "string", "value": value}}))
+        .collect();
+    page.inner
+        .browser
+        .call(
+            "",
+            "network.setExtraHeaders",
+            json!({"headers": headers, "contexts": [page.inner.target]}),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Takes the page and its frames off the network, or puts them back.
+pub(super) async fn set_offline(page: &Page, offline: bool) -> Result<()> {
+    let conditions = if offline {
+        json!({"type": "offline"})
+    } else {
+        Value::Null
+    };
+    page.inner
+        .browser
+        .call(
+            "",
+            "emulation.setNetworkConditions",
+            json!({"networkConditions": conditions, "contexts": [page.inner.target]}),
+        )
+        .await?;
+    Ok(())
 }
 
 /// The most of one response's body a Firefox page keeps: Chrome's
@@ -1518,6 +1609,88 @@ pub(crate) fn to_json(remote: &Value) -> Result<Value> {
 /// Values left out of an object, and written as null in an array.
 fn jsonless(remote: &Value) -> bool {
     remote["type"] == "undefined"
+}
+
+/// The cookies of `context`, a Firefox user context (the session's own
+/// when None), as Chrome's would read.
+pub(crate) async fn cookies(browser: &Inner, context: Option<&str>) -> Result<Vec<Cookie>> {
+    let r = browser
+        .call(
+            "",
+            "storage.getCookies",
+            json!({"partition": partition(browser, context)}),
+        )
+        .await?;
+    Ok(r["cookies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| Cookie {
+            name: str_of(c, "name"),
+            value: bidi_text(&c["value"]),
+            domain: str_of(c, "domain"),
+            path: str_of(c, "path"),
+            expires: c["expiry"].as_f64().unwrap_or(-1.0),
+            http_only: c["httpOnly"].as_bool().unwrap_or(false),
+            secure: c["secure"].as_bool().unwrap_or(false),
+            same_site: match c["sameSite"].as_str() {
+                Some("strict") => Some("Strict".into()),
+                Some("lax") => Some("Lax".into()),
+                Some("none") => Some("None".into()),
+                _ => None,
+            },
+            partition_key: None,
+        })
+        .collect())
+}
+
+/// Sets `cookies` in `context`, a Firefox user context (the session's
+/// own when None). A domain with a leading dot is the domain's and its
+/// subdomains', one without it the host's alone, as Firefox keeps them.
+pub(crate) async fn set_cookies(
+    browser: &Inner,
+    context: Option<&str>,
+    cookies: &[Cookie],
+) -> Result<()> {
+    if let Some(c) = cookies.iter().find(|c| c.partition_key.is_some()) {
+        return Err(Error::Unsupported {
+            engine: "Firefox",
+            feature: format!("the partitioned cookie {:?}", c.name),
+        });
+    }
+    for c in cookies {
+        let mut cookie = json!({
+            "name": c.name,
+            "value": {"type": "string", "value": c.value},
+            "domain": c.domain,
+            "path": if c.path.is_empty() { "/" } else { &c.path },
+            "httpOnly": c.http_only,
+            "secure": c.secure,
+        });
+        if c.expires >= 0.0 {
+            cookie["expiry"] = Value::from(c.expires as u64);
+        }
+        if let Some(s) = &c.same_site {
+            cookie["sameSite"] = Value::from(s.to_ascii_lowercase());
+        }
+        browser
+            .call(
+                "",
+                "storage.setCookie",
+                json!({"cookie": cookie, "partition": partition(browser, context)}),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// The storage partition of a Firefox user context.
+fn partition(browser: &Inner, context: Option<&str>) -> Value {
+    let context = context
+        .map(str::to_string)
+        .or_else(|| browser.default_context.clone())
+        .unwrap_or_else(|| "default".into());
+    json!({"type": "storageKey", "userContext": context})
 }
 
 #[cfg(test)]
