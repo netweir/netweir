@@ -1028,10 +1028,19 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
         .grant_permissions(&["geolocation".into()], Some(&origin))
         .await
         .unwrap();
-    assert_eq!(
-        page.evaluate(state).await.unwrap(),
-        serde_json::json!("granted")
-    );
+    let read = page.evaluate(state).await.unwrap();
+    if read != serde_json::json!("granted") {
+        // What a run on a CI runner needs to tell why: where the page is,
+        // and whether the grant reaches it later.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let later = page
+            .evaluate(&format!(
+                "Promise.all([location.origin, isSecureContext, {state}])"
+            ))
+            .await
+            .unwrap();
+        panic!("granted to {origin}, the page read {read} at once and {later} 10s on");
+    }
     let at = page
         .evaluate(
             "new Promise((ok, no) => navigator.geolocation.getCurrentPosition( \
