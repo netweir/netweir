@@ -17,7 +17,7 @@ use crate::browser::{Guard, Inner, str_of};
 use crate::conn::{GONE, Handler};
 use crate::environment::Environment;
 use crate::events::PageEvent;
-use crate::network::{Request, bidi_headers, bidi_type};
+use crate::network::{Decider, Request, bidi_headers, bidi_type};
 use crate::{Error, Result};
 
 /// The sandbox netweir's own scripts run in, apart from the page's.
@@ -65,9 +65,6 @@ pub(super) async fn open(
     shared_context: Option<Arc<ContextRules>>,
     env: Environment,
 ) -> Result<Page> {
-    if guard.is_some() {
-        return Err(unsupported("Browser.new_guarded_page"));
-    }
     if env != Environment::default() {
         return Err(unsupported("a page's environment"));
     }
@@ -92,7 +89,7 @@ pub(super) async fn open(
     let opening = Opening {
         context,
         owns_context,
-        guard: None,
+        guard,
         shared_context,
         opener: None,
         env: PageEnv::default(),
@@ -147,6 +144,11 @@ pub(super) async fn open(
             return Err(e);
         }
     };
+    // Its context's rules (or its opener's) from the first request on.
+    if let Err(e) = page.refresh_fetch().await {
+        let _ = page.close().await;
+        return Err(e);
+    }
     let mut state = lock_state(&page.inner.shared);
     state.url = "about:blank".into();
     state.collector = Some(collector);
@@ -328,6 +330,7 @@ async fn place(browser: &Inner, context: &str) -> Result<()> {
 pub(super) fn handler(
     shared: Arc<Shared>,
     browser: &Inner,
+    decider: Arc<Decider>,
     runtime: tokio::runtime::Handle,
 ) -> Handler {
     let (conn, timeout, pause) = (browser.conn.clone(), browser.timeout, browser.pause);
@@ -505,7 +508,11 @@ pub(super) fn handler(
                     _ => state.loader.clone(),
                 };
                 state.made_for.insert(request.id.clone(), loader);
+                let guarded = own && navigation.is_some();
                 state.tell(PageEvent::Request(request));
+                if params["isBlocked"] == true {
+                    decide(&decider, &runtime, params, guarded);
+                }
             }
             // Its headers are in: when Chrome tells of a response too.
             "network.responseStarted" => {
@@ -514,11 +521,16 @@ pub(super) fn handler(
             }
             "network.fetchError" => {
                 let request = str_of(&params["request"], "request");
+                let refused = decider.refused.take(&request);
                 if own && let Some(navigation) = params["navigation"].as_str() {
                     if state.failures.len() >= KEPT {
                         state.failures.clear();
                     }
-                    let error = chrome_error(params["errorText"].as_str().unwrap_or_default());
+                    let error = if refused {
+                        "net::ERR_BLOCKED_BY_CLIENT".to_string()
+                    } else {
+                        chrome_error(params["errorText"].as_str().unwrap_or_default())
+                    };
                     state.failures.insert(navigation.to_string(), error);
                 }
                 state.in_flight.remove(&request);
@@ -547,6 +559,66 @@ pub(super) fn handler(
         drop(state);
         shared.changed.notify_waiters();
     })
+}
+
+/// Puts a request the page's intercept paused to the guard first, if
+/// it's a document for the page itself and there's a guard; then to the
+/// rules, which let it go on unless they block or route it. The guard is
+/// async and the reader thread can't wait, so it's asked on a task.
+fn decide(decider: &Arc<Decider>, runtime: &tokio::runtime::Handle, params: &Value, guarded: bool) {
+    let Some(guard) = decider.guard.clone().filter(|_| guarded) else {
+        decider.decide_bidi(params);
+        return;
+    };
+    let (decider, params) = (decider.clone(), params.clone());
+    runtime.spawn(async move {
+        if guard(str_of(&params["request"], "url")).await {
+            decider.decide_bidi(&params);
+        } else {
+            let request = str_of(&params["request"], "request");
+            decider.refused.add(request.clone());
+            decider
+                .conn
+                .send("", "network.failRequest", json!({"request": request}));
+        }
+    });
+}
+
+/// Has Firefox pause the page's requests while its rules, its context's,
+/// its guard or its proxy's login need them, with one intercept on its
+/// context (its frames' requests with it), and none otherwise. Page
+/// script can't see an intercept.
+pub(super) async fn refresh_intercept(page: &Page) -> Result<()> {
+    let decider = &page.inner.decider;
+    let _one = decider.fetching.lock().await;
+    let wanted = !decider.patterns().is_empty();
+    let held = decider
+        .intercept
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let browser = &page.inner.browser;
+    let now = match (wanted, held) {
+        (true, None) => {
+            let r = browser
+                .call(
+                    "",
+                    "network.addIntercept",
+                    json!({"phases": ["beforeRequestSent"], "contexts": [decider.frame]}),
+                )
+                .await?;
+            Some(str_of(&r, "intercept"))
+        }
+        (false, Some(id)) => {
+            browser
+                .call("", "network.removeIntercept", json!({"intercept": id}))
+                .await?;
+            None
+        }
+        (_, held) => held,
+    };
+    *decider.intercept.lock().unwrap_or_else(|e| e.into_inner()) = now;
+    Ok(())
 }
 
 /// The response a `network.responseStarted` or `responseCompleted` event
@@ -603,6 +675,30 @@ fn quiet_soon(
     });
 }
 
+/// The failure netweir gave a navigation started after `begun`, when it
+/// blocked it (its guard, its blocks, a route): Firefox fails `navigate`
+/// with only "aborted", and tells the request's own failure as an event,
+/// a moment before or after.
+async fn refused_start(page: &Page, begun: u64) -> Option<String> {
+    let failure = |s: &State| {
+        s.starts
+            .iter()
+            .filter(|st| st.number > begun)
+            .find_map(|st| s.failures.get(&st.loader))
+            .filter(|e| e.contains("BLOCKED_BY_CLIENT"))
+            .cloned()
+    };
+    // The event comes on the same connection, so it's due at once.
+    let _ = page
+        .until(
+            || "the failure of a navigation".into(),
+            Duration::from_millis(500),
+            |s| failure(s).is_some(),
+        )
+        .await;
+    failure(&page.state())
+}
+
 /// Firefox's name for why a document couldn't load, as Chrome names it
 /// (`net::ERR_CONNECTION_REFUSED`), so an error reads the same whichever
 /// browser met it; Firefox's own name follows in brackets. One Chrome has
@@ -652,21 +748,33 @@ pub(super) async fn goto(
         return Err(Error::PageClosed);
     }
     let deadline = page.deadline(timeout);
-    let moved = page.state().moved_within;
+    let (moved, begun) = {
+        let state = page.state();
+        (state.moved_within, state.started)
+    };
     let navigate = page.inner.browser.conn.call(
         "",
         "browsingContext.navigate",
         json!({"context": page.inner.target, "url": url, "wait": "none"}),
     );
-    let navigated = tokio::time::timeout_at(deadline, navigate)
+    let navigated = match tokio::time::timeout_at(deadline, navigate)
         .await
         .map_err(|_| Error::Timeout(format!("navigating to {url}")))?
-        .map_err(|e| match e {
-            // Closed while it waited: its context is gone.
-            _ if page.inner.closed.load(Ordering::Relaxed) => Error::PageClosed,
-            Error::Protocol { message, .. } => page.navigation_error(url, &chrome_error(&message)),
-            e => e,
-        })?;
+    {
+        Ok(navigated) => navigated,
+        // Closed while it waited: its context is gone.
+        Err(_) if page.inner.closed.load(Ordering::Relaxed) => return Err(Error::PageClosed),
+        Err(Error::Protocol { message, .. }) => {
+            // A request netweir failed reads to Firefox as aborted.
+            let refused = match message.contains("NS_ERROR_ABORT") {
+                true => refused_start(page, begun).await,
+                false => None,
+            };
+            let error = refused.unwrap_or_else(|| chrome_error(&message));
+            return Err(page.navigation_error(url, &error));
+        }
+        Err(e) => return Err(e),
+    };
     let navigation = str_of(&navigated, "navigation");
     // Within the same document (a #fragment), it starts, commits and
     // loads nothing, and Firefox says nothing of it: the sandbox's
