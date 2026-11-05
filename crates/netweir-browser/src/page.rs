@@ -367,6 +367,12 @@ pub(crate) struct State {
     /// frames: Firefox tells of no network idle, so the page works it
     /// out, as Chrome does, from these.
     in_flight: HashSet<String>,
+    /// The data collector that keeps a Firefox page's response bodies,
+    /// for [`Page::body`].
+    pub(crate) collector: Option<String>,
+    /// The document each of a Firefox page's requests was made for (by
+    /// its loader), whose bodies go when it does, as Chrome's do.
+    pub(crate) made_for: HashMap<String, String>,
     /// Counts each change to `in_flight`, so a wait for quiet that
     /// started before one knows it's out of date.
     quiet: u64,
@@ -1452,8 +1458,7 @@ impl Page {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = self.state();
         // A page that's gone has nothing more to say: the receiver ends.
-        // So does a Firefox page's, which tells of nothing yet.
-        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) && !self.is_firefox() {
+        if !state.gone && !self.inner.closed.load(Ordering::Relaxed) {
             state.listeners.push(tx);
         }
         rx
@@ -1479,13 +1484,15 @@ impl Page {
     /// bytes of them, so the body of a response from before a navigation,
     /// or of one Chrome let go of, is [`Error::Gone`].
     pub async fn body(&self, response: &Response) -> Result<Vec<u8>> {
-        self.chrome_only("Page.body")?;
         let id = &response.request_id;
         if id.is_empty() {
             return Err(Error::Gone(format!(
                 "{} has no body: there was no response",
                 response.url
             )));
+        }
+        if self.is_firefox() {
+            return bidi::body(self, response).await;
         }
         let key = (response.session.clone(), id.clone());
         self.until(

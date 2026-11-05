@@ -16,6 +16,8 @@ use super::{
 use crate::browser::{Guard, Inner, str_of};
 use crate::conn::{GONE, Handler};
 use crate::environment::Environment;
+use crate::events::PageEvent;
+use crate::network::{Request, bidi_headers, bidi_type};
 use crate::{Error, Result};
 
 /// The sandbox netweir's own scripts run in, apart from the page's.
@@ -33,6 +35,7 @@ const EVENTS: &[&str] = &[
     "browsingContext.fragmentNavigated",
     "browsingContext.historyUpdated",
     "network.beforeRequestSent",
+    "network.responseStarted",
     "network.responseCompleted",
     "network.fetchError",
     "script.message",
@@ -119,12 +122,89 @@ pub(super) async fn open(
         }
         Err(e) => Err(e),
     };
-    if let Err(e) = watched {
-        let _ = page.close().await;
-        return Err(e);
-    }
-    lock_state(&page.inner.shared).url = "about:blank".into();
+    // Keeps response bodies for Page::body, as Chrome does on its own,
+    // up to Chrome's limit for one. Nothing a page can see.
+    let collected = match watched {
+        Ok(_) => {
+            browser
+                .call(
+                    "",
+                    "network.addDataCollector",
+                    json!({
+                        "dataTypes": ["response"],
+                        "maxEncodedDataSize": BODY_KEPT,
+                        "contexts": [target],
+                    }),
+                )
+                .await
+        }
+        Err(e) => Err(e),
+    };
+    let collector = match collected {
+        Ok(r) => str_of(&r, "collector"),
+        Err(e) => {
+            let _ = page.close().await;
+            return Err(e);
+        }
+    };
+    let mut state = lock_state(&page.inner.shared);
+    state.url = "about:blank".into();
+    state.collector = Some(collector);
+    drop(state);
     Ok(page)
+}
+
+/// The most of one response's body a Firefox page keeps: Chrome's
+/// default for one resource.
+const BODY_KEPT: u64 = 10 * 1024 * 1024;
+
+/// The body of a response a Firefox page got, once it has all arrived.
+pub(super) async fn body(page: &Page, response: &Response) -> Result<Vec<u8>> {
+    let id = response.request_id.clone();
+    page.until(
+        || format!("the body of {}", response.url),
+        page.timeout(None),
+        |s| !s.in_flight.contains(&id),
+    )
+    .await?;
+    let (collector, current) = {
+        let state = lock_state(&page.inner.shared);
+        let current = state.made_for.contains_key(&id);
+        (state.collector.clone(), current)
+    };
+    if !current {
+        return Err(Error::Gone(format!(
+            "the body of {} isn't available any more (the page may have navigated away, or \
+             the request failed)",
+            response.url
+        )));
+    }
+    let got = page
+        .inner
+        .browser
+        .call(
+            "",
+            "network.getData",
+            json!({"dataType": "response", "request": id, "collector": collector}),
+        )
+        .await;
+    let bytes = match got {
+        Ok(r) => r["bytes"].clone(),
+        Err(Error::Protocol { message, .. }) => {
+            return Err(Error::Gone(format!(
+                "the body of {} isn't available any more (the page may have navigated \
+                 away, or the request failed): {message}",
+                response.url
+            )));
+        }
+        Err(e) => return Err(e),
+    };
+    let value = bytes["value"].as_str().unwrap_or_default();
+    if bytes["type"] == "base64" {
+        decoded("network.getData", &json!({"data": value}))
+    } else {
+        Ok(value.as_bytes().to_vec())
+    }
 }
 
 /// Opens a window whose one tab is in `user_context`. On Windows,
@@ -289,6 +369,23 @@ pub(super) fn handler(
                         .unwrap_or_else(|| url.clone());
                     state.unreachable.insert(loader.clone(), wanted);
                 }
+                // The bodies of the document going go with it.
+                if let Some(collector) = state.collector.clone() {
+                    let gone: Vec<String> = state
+                        .made_for
+                        .iter()
+                        .filter(|(_, l)| **l != loader)
+                        .map(|(r, _)| r.clone())
+                        .collect();
+                    for request in gone {
+                        state.made_for.remove(&request);
+                        conn.send(
+                            "",
+                            "network.disownData",
+                            json!({"dataType": "response", "collector": collector, "request": request}),
+                        );
+                    }
+                }
                 state.url = url;
                 state.loader = loader.clone();
                 state.navigations += 1;
@@ -395,6 +492,25 @@ pub(super) fn handler(
                     .in_flight
                     .insert(str_of(&params["request"], "request"));
                 state.quiet += 1;
+                let navigation = params["navigation"].as_str();
+                let request = Request::from_bidi(&params["request"], navigation.is_some());
+                if state.made_for.len() >= LOADING {
+                    state.made_for.clear();
+                }
+                // The page's own document request belongs to that
+                // document, not to the one it replaces; a frame's, and
+                // everything else, to the document showing.
+                let loader = match navigation {
+                    Some(n) if own => n.to_string(),
+                    _ => state.loader.clone(),
+                };
+                state.made_for.insert(request.id.clone(), loader);
+                state.tell(PageEvent::Request(request));
+            }
+            // Its headers are in: when Chrome tells of a response too.
+            "network.responseStarted" => {
+                let response = response_of(params);
+                state.tell(PageEvent::Response(response));
             }
             "network.fetchError" => {
                 let request = str_of(&params["request"], "request");
@@ -422,32 +538,32 @@ pub(super) fn handler(
                     shared.changed.notify_waiters();
                     return;
                 };
-                let response = &params["response"];
-                let headers = response["headers"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|h| (str_of(h, "name"), str_of(&h["value"], "value")))
-                    .collect();
-                state.responses.insert(
-                    navigation.to_string(),
-                    Response {
-                        url: str_of(response, "url"),
-                        status: response["status"].as_u64().unwrap_or(0) as u16,
-                        headers,
-                        loader: navigation.to_string(),
-                        request_id: str_of(request, "request"),
-                        session: String::new(),
-                        method: str_of(request, "method"),
-                        resource_type: "document".into(),
-                    },
-                );
+                state
+                    .responses
+                    .insert(navigation.to_string(), response_of(params));
             }
             _ => return,
         }
         drop(state);
         shared.changed.notify_waiters();
     })
+}
+
+/// The response a `network.responseStarted` or `responseCompleted` event
+/// tells of, as Chrome's would read.
+fn response_of(params: &Value) -> Response {
+    let (request, response) = (&params["request"], &params["response"]);
+    let navigation = params["navigation"].as_str();
+    Response {
+        url: str_of(response, "url"),
+        status: response["status"].as_u64().unwrap_or(0) as u16,
+        headers: bidi_headers(&response["headers"]),
+        loader: navigation.unwrap_or_default().to_string(),
+        request_id: str_of(request, "request"),
+        session: String::new(),
+        method: str_of(request, "method"),
+        resource_type: bidi_type(request, navigation.is_some()).into(),
+    }
 }
 
 /// How long a document's network must be quiet to be idle: Chrome's

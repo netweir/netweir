@@ -101,6 +101,67 @@ impl Request {
     }
 }
 
+impl Request {
+    /// From a BiDi `network.RequestData`; `navigation` when it loads a
+    /// document. Firefox doesn't put a request's body in its events, so
+    /// `post_data` is None.
+    pub(crate) fn from_bidi(request: &Value, navigation: bool) -> Request {
+        Request {
+            id: str_of(request, "request"),
+            url: str_of(request, "url"),
+            method: str_of(request, "method"),
+            headers: bidi_headers(&request["headers"]),
+            resource_type: bidi_type(request, navigation).into(),
+            post_data: None,
+        }
+    }
+}
+
+/// BiDi `network.Header`s as pairs; a value that isn't text is decoded
+/// as bytes would be read.
+pub(crate) fn bidi_headers(headers: &Value) -> Vec<(String, String)> {
+    headers
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|h| {
+            let value = &h["value"];
+            let text = match value["type"].as_str() {
+                Some("base64") => base64::engine::general_purpose::STANDARD
+                    .decode(value["value"].as_str().unwrap_or_default())
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default(),
+                _ => str_of(value, "value"),
+            };
+            (str_of(h, "name"), text)
+        })
+        .collect()
+}
+
+/// Netweir's resource type for a BiDi request, from what it's for (its
+/// fetch destination) and, where that's empty, what asked for it.
+pub(crate) fn bidi_type(request: &Value, navigation: bool) -> &'static str {
+    let destination = request["destination"].as_str().unwrap_or_default();
+    match destination {
+        _ if navigation => "document",
+        "document" | "iframe" | "frame" => "document",
+        "style" => "stylesheet",
+        "image" => "image",
+        "font" => "font",
+        "script" | "worker" | "sharedworker" | "serviceworker" => "script",
+        "audio" | "video" => "media",
+        "track" => "texttrack",
+        "manifest" => "manifest",
+        "" => match request["initiatorType"].as_str().unwrap_or_default() {
+            "xmlhttprequest" => "xhr",
+            "fetch" => "fetch",
+            "beacon" | "ping" => "ping",
+            _ => "other",
+        },
+        _ => "other",
+    }
+}
+
 /// A `Network.Headers` object as pairs.
 pub(crate) fn headers_of(headers: &Value) -> Vec<(String, String)> {
     headers
@@ -685,6 +746,30 @@ mod tests {
         assert!(glob_match(r"**/\*", "http://a.test/*"));
         assert!(!glob_match(r"**/\*", "http://a.test/a"));
         assert!(glob_match("**/{a", "http://a.test/{a"));
+    }
+
+    #[test]
+    fn bidi_resource_types_read_as_chrome_names_them() {
+        let of = |destination: &str, initiator: Value| {
+            bidi_type(&json!({"destination": destination, "initiatorType": initiator}), false)
+        };
+        assert_eq!(bidi_type(&json!({"destination": ""}), true), "document");
+        assert_eq!(of("iframe", Value::Null), "document");
+        assert_eq!(of("style", json!("link")), "stylesheet");
+        assert_eq!(of("image", json!("img")), "image");
+        assert_eq!(of("video", json!("video")), "media");
+        assert_eq!(of("", json!("xmlhttprequest")), "xhr");
+        assert_eq!(of("", json!("fetch")), "fetch");
+        assert_eq!(of("", json!("beacon")), "ping");
+        assert_eq!(of("", Value::Null), "other");
+        assert_eq!(of("json", Value::Null), "other");
+        // Each is one of the types block() takes.
+        for ours in [
+            "document", "stylesheet", "image", "font", "script", "media", "texttrack",
+            "manifest", "xhr", "fetch", "ping", "other",
+        ] {
+            assert!(resource_types().any(|t| t == ours), "{ours}");
+        }
     }
 
     #[test]
