@@ -190,6 +190,10 @@ user_pref("dom.successive_dialog_time_limit", 0);
 // new tab page's pictures of them: requests no route or guard hears of,
 // which no page asked for.
 user_pref("browser.pagethumbnails.capturing_disabled", true);
+// Where the system has kept location from Firefox (macOS), a page asking
+// for its position opens the system's settings and waits on a dialog
+// for someone to answer it, whatever position Netweir gave the page.
+user_pref("geo.prompt.open_system_prefs", false);
 "#;
 
 /// `user.js` for the profile at `profile`. Public only for the stealth
