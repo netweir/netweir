@@ -41,6 +41,8 @@ const EVENTS: &[&str] = &[
     "script.message",
     "browsingContext.userPromptOpened",
     "browsingContext.userPromptClosed",
+    "browsingContext.downloadWillBegin",
+    "browsingContext.downloadEnd",
 ];
 
 /// The channel [`WATCH`] tells netweir on.
@@ -629,9 +631,11 @@ pub(super) fn handler(
     shared: Arc<Shared>,
     browser: &Inner,
     decider: Arc<Decider>,
+    context: Option<String>,
     runtime: tokio::runtime::Handle,
 ) -> Handler {
     let (conn, timeout, pause) = (browser.conn.clone(), browser.timeout, browser.pause);
+    let downloads = browser.downloads.clone();
     Arc::new(move |method, params| {
         let mut state = lock_state(&shared);
         let own = params["context"] == state.frame.as_str();
@@ -759,6 +763,14 @@ pub(super) fn handler(
                     state.dialogs = None;
                 }
             }
+            "browsingContext.downloadWillBegin" => {
+                if let Some(download) =
+                    downloads.begin_bidi(&conn, timeout, context.as_deref(), params)
+                {
+                    state.tell(PageEvent::Download(download));
+                }
+            }
+            "browsingContext.downloadEnd" => downloads.end_bidi(params),
             "browsingContext.userPromptClosed" => {
                 state.open_prompts = state.open_prompts.saturating_sub(1);
             }
@@ -1603,6 +1615,30 @@ pub(super) async fn mouse_event(page: &Page, event: &Value) -> Result<Value> {
             return Err(Error::Invalid(format!("no mouse event {other:?}")));
         }
     };
+    perform(page, &context, sources).await
+}
+
+/// Clicks twice where the mouse is, as one double click. Firefox counts
+/// clicks only within one chain of actions, and starts again at a move,
+/// so both clicks go in one chain, with `pauses` (the first button's hold,
+/// the gap, the second's hold) between their presses and releases.
+pub(super) async fn mouse_double(page: &Page, pauses: [Duration; 3]) -> Result<Value> {
+    let context = page
+        .state()
+        .input_frame
+        .clone()
+        .map_or_else(|| page.inner.target.clone(), |(c, _, _)| c);
+    let wait = |d: Duration| json!({"type": "pause", "duration": d.as_millis() as u64});
+    let actions = json!([
+        {"type": "pointerDown", "button": 0},
+        wait(pauses[0]),
+        {"type": "pointerUp", "button": 0},
+        wait(pauses[1]),
+        {"type": "pointerDown", "button": 0},
+        wait(pauses[2]),
+        {"type": "pointerUp", "button": 0},
+    ]);
+    let sources = json!([{"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": actions}]);
     perform(page, &context, sources).await
 }
 

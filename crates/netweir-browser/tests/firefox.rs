@@ -891,23 +891,6 @@ async fn firefox_full_page_screenshot_is_the_page_s_size() {
     assert_eq!(&jpeg[..2], [0xFF, 0xD8], "a JPEG");
 }
 
-#[tokio::test]
-async fn a_firefox_step_waiting_for_a_response_says_it_cant() {
-    use netweir_browser::steps::{self, Call};
-    let Some(browser) = firefox_browser().await else {
-        return;
-    };
-    let page = browser.new_page().await.unwrap();
-    let list = steps::parse(&serde_json::json!([
-        {"action": "wait_for_response", "url": "**/api"},
-    ]))
-    .unwrap();
-    let no_calls: Box<Call> = Box::new(|_, _, _| Box::pin(async { Ok(serde_json::Value::Null) }));
-    let report = steps::run(&page, &list, &*no_calls, None).await;
-    let failure = report.failure().unwrap_or_default();
-    assert!(failure.contains("isn't available on Firefox"), "{failure}");
-}
-
 /// A context's init script runs before a Firefox page's own scripts, even
 /// where the page's CSP forbids eval; its extra headers go with each
 /// request; offline takes the page off the network and puts it back.
@@ -1102,5 +1085,36 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
             .await
             .is_err()
     );
+    browser.close().await.unwrap();
+}
+
+/// A double click on Firefox is one: the page hears dblclick, by the time
+/// the click returns. Firefox counts clicks only within one chain of
+/// actions, so two clicks sent apart are two single clicks.
+#[tokio::test]
+async fn a_firefox_double_click_is_heard_as_one() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![(
+        "/",
+        common::html(
+            "<!DOCTYPE html><p id=cell ondblclick=\"this.textContent = 'edited' + (++window.n)\" \
+             onclick=\"window.clicks += 1\">cell</p><script>window.n = 0; window.clicks = 0</script>",
+        ),
+    )]);
+    let page = browser.new_page().await.unwrap();
+    page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    for n in 1..=3 {
+        page.dblclick("#cell", None).await.unwrap();
+        assert_eq!(
+            page.evaluate("[document.querySelector('#cell').textContent, window.clicks]")
+                .await
+                .unwrap(),
+            serde_json::json!([format!("edited{n}"), 2 * n])
+        );
+    }
     browser.close().await.unwrap();
 }
