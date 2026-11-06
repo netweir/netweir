@@ -315,6 +315,8 @@ async fn netweir_sends_firefox_only_these_methods() {
         "browsingContext.activate",
         "browsingContext.getTree",
         "browser.removeUserContext",
+        // Each context's downloads go to a folder of its own.
+        "browser.setDownloadBehavior",
         "browsingContext.close",
         "browsingContext.create",
         "browsingContext.navigate",
