@@ -375,6 +375,22 @@ pub fn engine() -> netweir_browser::Engine {
 /// with what they're waiting for.
 pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
     (
+        "a_download_nobody_holds_is_cancelled",
+        "cancelling a download, which Firefox can't",
+    ),
+    (
+        "a_cancelled_or_broken_download_says_it_didnt_finish",
+        "cancelling a download, which Firefox can't",
+    ),
+    (
+        "a_download_a_service_worker_answers_is_its_pages",
+        "cancelling a download, which Firefox can't",
+    ),
+    (
+        "a_download_from_a_frame_on_another_site_is_its_pages",
+        "cancelling a download, which Firefox can't",
+    ),
+    (
         "control_or_meta_a_selects_the_field_on_each_system_and_backspace_empties_it",
         "another system's editing shortcuts: Firefox edits a field as the system it runs on does",
     ),
@@ -391,14 +407,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
         "speculation rules and prerendering, which Firefox has none of",
     ),
     (
-        "steps_click_type_and_wait_with_the_page_own_actions",
-        "wait_for_response, on a page's responses (phase 4)",
-    ),
-    (
-        "double_clicks_xpath_and_two_waits_for_one_url",
-        "wait_for_response, on a page's responses (phase 4)",
-    ),
-    (
         "drag_to_a_target_out_of_view_with_the_source_says_so_and_presses_nothing",
         "HTML5 drag and drop, which Firefox doesn't begin from WebDriver's mouse",
     ),
@@ -409,26 +417,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
     (
         "a_frame_drags_within_itself_wherever_it_sits_in_the_page",
         "HTML5 drag and drop, which Firefox doesn't begin from WebDriver's mouse",
-    ),
-    (
-        "a_download_a_service_worker_answers_is_its_pages",
-        "downloads (phase 4)",
-    ),
-    (
-        "a_download_nobody_holds_is_cancelled",
-        "downloads (phase 4)",
-    ),
-    (
-        "a_download_is_saved_in_its_contexts_own_folder",
-        "downloads (phase 4)",
-    ),
-    (
-        "a_download_from_a_frame_on_another_site_is_its_pages",
-        "downloads (phase 4)",
-    ),
-    (
-        "a_cancelled_or_broken_download_says_it_didnt_finish",
-        "downloads (phase 4)",
     ),
     (
         "a_popup_from_a_frame_on_another_site_is_its_pages",
