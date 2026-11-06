@@ -1053,16 +1053,22 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
         .await
         .unwrap();
     if page.evaluate(&state("geolocation")).await.unwrap() == serde_json::json!("granted") {
-        // With a time limit: a position that never comes held the whole
-        // run up on macOS, where the other tests waited their turn behind it.
-        let at = page
-            .evaluate(
-                "new Promise((ok, no) => navigator.geolocation.getCurrentPosition( \
-                   (p) => ok([p.coords.latitude, p.coords.longitude]), \
-                   (e) => no(e.code + ' ' + e.message), {timeout: 10000}))",
-            )
-            .await
-            .unwrap();
+        // With a time limit of the page's own: a position that never came
+        // held the whole run up on macOS, and geolocation's own timeout
+        // only starts once the system has answered.
+        let at = tokio::time::timeout(
+            Duration::from_secs(20),
+            page.evaluate(
+                "new Promise((ok, no) => { \
+                   setTimeout(() => no('no position in 10 seconds'), 10000); \
+                   navigator.geolocation.getCurrentPosition( \
+                     (p) => ok([p.coords.latitude, p.coords.longitude]), \
+                     (e) => no(e.code + ' ' + e.message), {timeout: 10000}); })",
+            ),
+        )
+        .await
+        .expect("the page never answered for its position")
+        .unwrap();
         assert_eq!(at, serde_json::json!([52.52, 13.4]));
     }
     context.clear_permissions().await.unwrap();
