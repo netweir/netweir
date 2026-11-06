@@ -103,7 +103,19 @@ pub(super) async fn open(
     let page = Page::start(browser.clone(), target.clone(), target.clone(), opening).await?;
     // Its environment and its context's rules (or its opener's) from
     // the first request on.
-    let ready = match apply_env(&page, &env).await {
+    // A page with a user context of its own (its popups apart) has its
+    // environment there, so its popups have it from their first request.
+    let scope = match owns_context {
+        true => Scope::User(user_context.clone()),
+        false => Scope::of(&page),
+    };
+    let ready = match apply_env(&page, &on_user_context(&env), &scope).await {
+        Ok(()) if env.viewport.is_some() || env.device_scale_factor.is_some() => {
+            set_viewport(&page, &env).await
+        }
+        r => r,
+    };
+    let ready = match ready {
         Ok(()) => page.refresh_fetch().await,
         Err(e) => Err(e),
     };
@@ -180,12 +192,33 @@ pub(crate) fn env_unsupported(env: &Environment) -> Option<&'static str> {
         .find_map(|(set, what)| set.then_some(what))
 }
 
-/// Gives a new Firefox page `env`, on its own browsing context, before
-/// anything loads in it.
-async fn apply_env(page: &Page, env: &Environment) -> Result<()> {
+/// Where a Firefox page's environment goes: its own browsing context, or
+/// its whole user context, whose popups have it from their first request
+/// (Firefox gives a popup none of its opener's context's).
+pub(super) enum Scope {
+    Context(String),
+    User(String),
+}
+
+impl Scope {
+    fn of(page: &Page) -> Scope {
+        Scope::Context(page.inner.target.clone())
+    }
+
+    fn on(&self, mut params: Value) -> Value {
+        match self {
+            Scope::Context(id) => params["contexts"] = json!([id]),
+            Scope::User(id) => params["userContexts"] = json!([id]),
+        }
+        params
+    }
+}
+
+/// Gives a new Firefox page `env` at `scope` before anything loads in it,
+/// all but its viewport and pixel ratio (see [`set_viewport`]).
+async fn apply_env(page: &Page, env: &Environment, scope: &Scope) -> Result<()> {
     let browser = &page.inner.browser;
-    let emulate =
-        |method: &'static str, params: Value| browser.call("", method, scoped(page, params));
+    let emulate = |method: &'static str, params: Value| browser.call("", method, scope.on(params));
     if let Some(locale) = &env.locale {
         emulate("emulation.setLocaleOverride", json!({"locale": locale})).await?;
     }
@@ -210,20 +243,17 @@ async fn apply_env(page: &Page, env: &Environment) -> Result<()> {
         )
         .await?;
     }
-    if env.viewport.is_some() || env.device_scale_factor.is_some() {
-        set_viewport(page, env).await?;
-    }
     if let Some(at) = env.geolocation {
-        set_geolocation(page, Some(at)).await?;
+        geolocation_on(browser, scope, Some(at)).await?;
     }
     for script in &env.init_scripts {
-        add_init_script(page, script).await?;
+        script_on(browser, scope, script).await?;
     }
     if !env.extra_headers.is_empty() {
-        set_extra_headers(page, &env.extra_headers).await?;
+        headers_on(browser, scope, &env.extra_headers).await?;
     }
     if env.offline == Some(true) {
-        set_offline(page, true).await?;
+        offline_on(browser, scope, true).await?;
     }
     Ok(())
 }
@@ -245,9 +275,135 @@ async fn set_viewport(page: &Page, env: &Environment) -> Result<()> {
     Ok(())
 }
 
+/// What of `env` a page shares with every page of its user context: all
+/// but its window's size.
+pub(super) fn on_user_context(env: &Environment) -> Environment {
+    Environment {
+        viewport: None,
+        device_scale_factor: None,
+        ..env.clone()
+    }
+}
+
+/// What of `env` isn't on the user context already, as `base` has it.
+/// A change that takes something away goes to the whole user context
+/// (see [`Change`]), so `env` only ever adds to `base`.
+fn differences(env: &Environment, base: &Environment) -> Environment {
+    let differs = |a, b| a != b;
+    let mut init_scripts = env.init_scripts.clone();
+    for script in &base.init_scripts {
+        if let Some(at) = init_scripts.iter().position(|s| s == script) {
+            init_scripts.remove(at);
+        }
+    }
+    Environment {
+        locale: env
+            .locale
+            .clone()
+            .filter(|_| differs(&env.locale, &base.locale)),
+        timezone: env
+            .timezone
+            .clone()
+            .filter(|_| differs(&env.timezone, &base.timezone)),
+        user_agent: env
+            .user_agent
+            .clone()
+            .filter(|_| differs(&env.user_agent, &base.user_agent)),
+        screen: env.screen.filter(|_| env.screen != base.screen),
+        geolocation: env
+            .geolocation
+            .filter(|_| env.geolocation != base.geolocation),
+        offline: env.offline.filter(|_| env.offline != base.offline),
+        extra_headers: match env.extra_headers == base.extra_headers {
+            true => Vec::new(),
+            false => env.extra_headers.clone(),
+        },
+        init_scripts,
+        ..Environment::default()
+    }
+}
+
+/// What's on a page's user context: what it was opened with, if it
+/// has the context to itself and its popups, and nothing otherwise.
+fn base_of(page: &Page) -> Environment {
+    match &page.inner.user_env {
+        Some(base) => base.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        None => Environment::default(),
+    }
+}
+
+/// The pages sharing `page`'s user context's environment, `page` aside:
+/// its opener and its popups, and theirs.
+fn sharing(page: &Page) -> Vec<Page> {
+    let Some(base) = &page.inner.user_env else {
+        return Vec::new();
+    };
+    let pages = page
+        .inner
+        .browser
+        .pages
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    pages
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .filter(|p| !Arc::ptr_eq(p, &page.inner))
+        .filter(|p| p.user_env.as_ref().is_some_and(|b| Arc::ptr_eq(b, base)))
+        .map(|inner| Page { inner })
+        .collect()
+}
+
+/// A change to one setting of a page's environment: one that sets
+/// something goes on the page's own browsing context, as on Chrome, where
+/// it reaches neither its opener nor its popups. One that takes it away
+/// can't go there: Firefox reads that as the user context's setting, so
+/// it's taken off the user context, and each other page sharing it that
+/// had its own is given that back on its own context. `held_for_popups`
+/// follows either.
+async fn change<F, S>(page: &Page, sets: bool, clear: F, send: S) -> Result<()>
+where
+    F: Fn(&mut Environment),
+    S: AsyncFn(&Inner, &Scope, &Environment) -> Result<()>,
+{
+    let browser = &page.inner.browser;
+    let env = super::lock_env(&page.inner.env).env.clone();
+    match (&page.inner.user_env, sets) {
+        (Some(base), false) => {
+            let user_context = user_context_of(browser, page.inner.context.as_deref());
+            send(browser, &Scope::User(user_context), &env).await?;
+            clear(&mut base.lock().unwrap_or_else(|e| e.into_inner()));
+            send(browser, &Scope::of(page), &env).await?;
+            for other in sharing(page) {
+                let theirs = super::lock_env(&other.inner.env).env.clone();
+                let mut cleared = theirs.clone();
+                clear(&mut cleared);
+                if theirs != cleared {
+                    send(browser, &Scope::of(&other), &theirs).await?;
+                }
+            }
+        }
+        _ => send(browser, &Scope::of(page), &env).await?,
+    }
+    held_for_popups(page).await
+}
+
 /// Where the page says it is, or where it really is for None.
 pub(super) async fn set_geolocation(
     page: &Page,
+    at: Option<crate::environment::Geolocation>,
+) -> Result<()> {
+    change(
+        page,
+        at.is_some(),
+        |e| e.geolocation = None,
+        async |b, scope, env| geolocation_on(b, scope, env.geolocation).await,
+    )
+    .await
+}
+
+async fn geolocation_on(
+    browser: &Inner,
+    scope: &Scope,
     at: Option<crate::environment::Geolocation>,
 ) -> Result<()> {
     let coordinates = match at {
@@ -256,15 +412,14 @@ pub(super) async fn set_geolocation(
         }
         None => Value::Null,
     };
-    page.inner
-        .browser
+    browser
         .call(
             "",
             "emulation.setGeolocationOverride",
-            scoped(page, json!({"coordinates": coordinates})),
+            scope.on(json!({"coordinates": coordinates})),
         )
         .await?;
-    held_for_popups(page).await
+    Ok(())
 }
 
 /// Grants `permissions` to `origin` in `context`, a Firefox user context
@@ -380,24 +535,6 @@ async fn set_permission(
     Ok(())
 }
 
-/// `params` for a page's environment, scoped to where it goes: a page
-/// with a user context of its own has it on the whole context, so its
-/// popups have it from their first request, as on Chrome, where Firefox
-/// would give a popup none of its opener's; any other page on its own
-/// browsing context.
-// shortcut: a change on the user context reaches the popups open by then
-// too, which on Chrome keep what they had; pin theirs if that matters.
-fn scoped(page: &Page, mut params: Value) -> Value {
-    let inner = &page.inner;
-    if inner.owns_context {
-        let user_context = user_context_of(&inner.browser, inner.context.as_deref());
-        params["userContexts"] = json!([user_context]);
-    } else {
-        params["contexts"] = json!([inner.target]);
-    }
-    params
-}
-
 /// A Firefox user context: `context`, or the session's own for None.
 fn user_context_of(browser: &Inner, context: Option<&str>) -> String {
     context
@@ -407,20 +544,21 @@ fn user_context_of(browser: &Inner, context: Option<&str>) -> String {
 }
 
 /// Runs `script` in every document the page and its frames load from now
-/// on, in the page's own world, before its own scripts. A preload script
-/// is a function, so the script is run by indirect eval, which keeps its
-/// top-level declarations global, as a script's are.
+/// on, in the page's own world, before its own scripts: only the page's,
+/// as on Chrome. A preload script is a function, so the script is run by
+/// indirect eval, which keeps its top-level declarations global, as a
+/// script's are.
 pub(super) async fn add_init_script(page: &Page, script: &str) -> Result<()> {
+    script_on(&page.inner.browser, &Scope::of(page), script).await
+}
+
+async fn script_on(browser: &Inner, scope: &Scope, script: &str) -> Result<()> {
     let source = serde_json::to_string(script).unwrap_or_default();
-    page.inner
-        .browser
+    browser
         .call(
             "",
             "script.addPreloadScript",
-            scoped(
-                page,
-                json!({"functionDeclaration": format!("() => {{ (0, eval)({source}); }}")}),
-            ),
+            scope.on(json!({"functionDeclaration": format!("() => {{ (0, eval)({source}); }}")})),
         )
         .await?;
     Ok(())
@@ -428,37 +566,55 @@ pub(super) async fn add_init_script(page: &Page, script: &str) -> Result<()> {
 
 /// Sends every request of the page and its frames with `headers` too.
 pub(super) async fn set_extra_headers(page: &Page, headers: &[(String, String)]) -> Result<()> {
+    change(
+        page,
+        !headers.is_empty(),
+        |e| e.extra_headers.clear(),
+        async |b, scope, env| headers_on(b, scope, &env.extra_headers).await,
+    )
+    .await
+}
+
+async fn headers_on(browser: &Inner, scope: &Scope, headers: &[(String, String)]) -> Result<()> {
     let headers: Vec<Value> = headers
         .iter()
         .map(|(name, value)| json!({"name": name, "value": {"type": "string", "value": value}}))
         .collect();
-    page.inner
-        .browser
+    browser
         .call(
             "",
             "network.setExtraHeaders",
-            scoped(page, json!({"headers": headers})),
+            scope.on(json!({"headers": headers})),
         )
         .await?;
-    held_for_popups(page).await
+    Ok(())
 }
 
 /// Takes the page and its frames off the network, or puts them back.
 pub(super) async fn set_offline(page: &Page, offline: bool) -> Result<()> {
+    change(
+        page,
+        offline,
+        |e| e.offline = None,
+        async |b, scope, env| offline_on(b, scope, env.offline == Some(true)).await,
+    )
+    .await
+}
+
+async fn offline_on(browser: &Inner, scope: &Scope, offline: bool) -> Result<()> {
     let conditions = if offline {
         json!({"type": "offline"})
     } else {
         Value::Null
     };
-    page.inner
-        .browser
+    browser
         .call(
             "",
             "emulation.setNetworkConditions",
-            scoped(page, json!({"networkConditions": conditions})),
+            scope.on(json!({"networkConditions": conditions})),
         )
         .await?;
-    held_for_popups(page).await
+    Ok(())
 }
 
 /// The most of one response's body a Firefox page keeps: Chrome's
@@ -650,31 +806,25 @@ async fn adopt(opener: Page, target: String, url: String) {
         Ok(popup) => popup,
         Err(e) => return popup_failed(&opener, e),
     };
-    // A user context of the opener's own has its environment already.
-    // Otherwise the popup gets it now, and its first requests, which the
-    // opener's intercept paused (see `holds_popups`), wait for it.
-    // shortcut: a popup of a popup on the user context gets the context's
-    // environment, not what its opener changed since; hold it too if that
-    // matters to someone.
-    let mut own = env.env;
-    let apart = !o.env_in_user_context && holds_popups(&own);
+    // What the opener has beyond its user context's environment, the
+    // popup gets now, and its first requests, which the opener's
+    // intercept paused (see `holds_popups`), wait for it.
+    let own = differences(&on_user_context(&env.env), &base_of(&opener));
+    let apart = holds_popups(&own);
     {
         let mut state = lock_state(&popup.inner.shared);
         state.url = url;
         state.held = apart.then(Vec::new);
     }
-    // A popup keeps the size it was opened at.
-    own.viewport = None;
-    own.device_scale_factor = None;
     let ready = async {
         if apart {
-            apply_env(&popup, &own).await?;
+            apply_env(&popup, &own, &Scope::of(&popup)).await?;
         }
         popup.refresh_fetch().await
     };
     let ready = ready.await;
     if apart {
-        release(&popup, &own);
+        release(&popup, &env.env);
     }
     if let Err(e) = ready {
         let _ = popup.close().await;
@@ -725,16 +875,13 @@ async fn behind(opener: &Page, popup: &Page) {
 /// Has the intercept that holds a page's popups' first requests (see
 /// [`holds_popups`]) follow a change to its environment.
 pub(super) async fn held_for_popups(page: &Page) -> Result<()> {
-    if page.inner.env_in_user_context {
-        return Ok(());
-    }
     page.refresh_fetch().await
 }
 
-/// Whether a page's popups need something of `env` before their first
-/// request, which Firefox gives a popup only from a user context: a page
-/// without one of its own has its requests paused while it does, so its
-/// popups' first are.
+/// Whether a page's popups need something of `env`, what it has beyond
+/// its user context's environment, before their first request: Firefox
+/// gives a popup only the user context's, so while a page has more, its
+/// requests are paused, its popups' first among them.
 pub(super) fn holds_popups(env: &Environment) -> bool {
     env.locale.is_some()
         || env.timezone.is_some()
@@ -1143,7 +1290,10 @@ pub(super) async fn refresh_intercept(page: &Page) -> Result<()> {
     let decider = &page.inner.decider;
     let _one = decider.fetching.lock().await;
     let wanted = !decider.patterns().is_empty()
-        || (!page.inner.env_in_user_context && holds_popups(&super::lock_env(&page.inner.env).env));
+        || holds_popups(&differences(
+            &super::lock_env(&page.inner.env).env,
+            &base_of(page),
+        ));
     let held = decider
         .intercept
         .lock()

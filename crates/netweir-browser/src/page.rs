@@ -199,9 +199,10 @@ pub(crate) struct PageInner {
     pub(crate) context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
-    /// Whether a Firefox page's environment is on its user context, which
-    /// it has to itself, its popups apart: its own, or its opener's.
-    env_in_user_context: bool,
+    /// The environment on a Firefox page's user context, when it has the
+    /// context to itself and its popups: what it was opened with, less
+    /// what was taken away since. Its popups share it.
+    pub(crate) user_env: Option<Arc<Mutex<Environment>>>,
     shared: Arc<Shared>,
     /// netweir's isolated worlds, by (session, frame id): the loader of the
     /// document each was made for (the main frame's; empty for others,
@@ -841,8 +842,13 @@ impl Page {
                 session,
                 context,
                 owns_context,
-                env_in_user_context: owns_context
-                    || opener.as_ref().is_some_and(|o| o.inner.env_in_user_context),
+                user_env: match &opener {
+                    Some(o) => o.inner.user_env.clone(),
+                    None if owns_context && browser.engine() == Engine::Firefox => Some(Arc::new(
+                        Mutex::new(bidi::on_user_context(&lock_env(&env).env)),
+                    )),
+                    None => None,
+                },
                 shared,
                 worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
