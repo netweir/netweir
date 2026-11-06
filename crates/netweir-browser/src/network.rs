@@ -635,14 +635,15 @@ impl Decider {
     }
 
     /// Decides about a request a Firefox page's intercept paused
-    /// (`network.beforeRequestSent` with `isBlocked`).
-    pub(crate) fn decide_bidi(&self, params: &Value) {
+    /// (`network.beforeRequestSent` with `isBlocked`), to go on with
+    /// `tidied` headers, if given, instead of its own.
+    pub(crate) fn decide_bidi(&self, params: &Value, tidied: Option<Vec<(String, String)>>) {
         let navigation = params["navigation"].is_string();
         let request = Request::from_bidi(&params["request"], navigation);
         let paused = request.id.clone();
         let chrome_type = chrome_type(&request.resource_type).unwrap_or("Other");
         let guarded = navigation && params["context"] == self.frame.as_str();
-        self.hand_on("", paused, request, chrome_type, guarded, None, true);
+        self.hand_on("", paused, request, chrome_type, guarded, tidied, true);
     }
 
     /// Blocks `request`, hands it to a route, or lets it go.

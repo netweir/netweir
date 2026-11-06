@@ -199,6 +199,9 @@ pub(crate) struct PageInner {
     pub(crate) context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
+    /// Whether a Firefox page's environment is on its user context, which
+    /// it has to itself, its popups apart: its own, or its opener's.
+    env_in_user_context: bool,
     shared: Arc<Shared>,
     /// netweir's isolated worlds, by (session, frame id): the loader of the
     /// document each was made for (the main frame's; empty for others,
@@ -367,6 +370,10 @@ pub(crate) struct State {
     /// frames: Firefox tells of no network idle, so the page works it
     /// out, as Chrome does, from these.
     in_flight: HashSet<String>,
+    /// A Firefox popup's requests paused before it was set up as its
+    /// opener is, while it's being set up (None once it is), each with
+    /// whether the guard must see it.
+    pub(crate) held: Option<Vec<(Value, bool)>>,
     /// The data collector that keeps a Firefox page's response bodies,
     /// for [`Page::body`].
     pub(crate) collector: Option<String>,
@@ -732,6 +739,7 @@ impl Page {
                     .as_ref()
                     .map(|c| c.origins.clone())
                     .unwrap_or_default(),
+                collector: browser.collector.clone(),
                 ..State::default()
             }),
             changed: Notify::new(),
@@ -833,6 +841,8 @@ impl Page {
                 session,
                 context,
                 owns_context,
+                env_in_user_context: owns_context
+                    || opener.as_ref().is_some_and(|o| o.inner.env_in_user_context),
                 shared,
                 worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
@@ -3212,7 +3222,7 @@ impl Page {
                 .env
                 .init_scripts
                 .push(script.to_string());
-            return Ok(());
+            return bidi::held_for_popups(self).await;
         }
         let params = json!({"source": script});
         self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())

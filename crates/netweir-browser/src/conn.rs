@@ -481,21 +481,20 @@ impl Shared {
                         {
                             state.parents.insert(route.to_string(), parent.to_string());
                         }
-                        // A frame without a handler of its own is its
-                        // page's, however deep it is.
-                        let (mut at, mut hops) = (route, 0);
-                        let mut handler = state.handlers.get(at).cloned();
-                        // A frame tree is never this deep; a loop in it,
-                        // which Firefox would never send, would never end.
-                        while handler.is_none()
-                            && hops < 64
-                            && let Some(parent) = state.parents.get(at)
-                        {
-                            at = parent;
-                            hops += 1;
-                            handler = state.handlers.get(at).cloned();
-                        }
-                        handler
+                        // A popup's coming is for its opener's page to
+                        // hear, as nothing holds the popup yet.
+                        let opener = params
+                            .get("originalOpener")
+                            .and_then(Value::as_str)
+                            .filter(|_| method == "browsingContext.contextCreated")
+                            .filter(|_| !state.handlers.contains_key(route));
+                        let handler = handler_of(&state, opener.unwrap_or(route));
+                        // Anything else no page holds is the browser's, on
+                        // Firefox: a request paused there must still go on.
+                        handler.or_else(|| match self.dialect {
+                            Dialect::Bidi => state.handlers.get("").cloned(),
+                            Dialect::Cdp => None,
+                        })
                     };
                     if let Some(handler) = handler {
                         handler(method, params);
@@ -583,6 +582,23 @@ fn closes_with(
 
 #[cfg(not(windows))]
 fn closes_with(_: &std::process::Child, _: &std::thread::JoinHandle<()>, _: &Arc<Shared>) {}
+
+/// The handler of `route`, or of the page it's a frame of, however deep.
+fn handler_of(state: &State, route: &str) -> Option<Handler> {
+    let (mut at, mut hops) = (route, 0);
+    let mut handler = state.handlers.get(at).cloned();
+    // A frame tree is never this deep; a loop in it, which Firefox would
+    // never send, would never end.
+    while handler.is_none()
+        && hops < 64
+        && let Some(parent) = state.parents.get(at)
+    {
+        at = parent;
+        hops += 1;
+        handler = state.handlers.get(at).cloned();
+    }
+    handler
+}
 
 fn read_loop(mut input: impl BufRead, shared: &Shared) {
     let mut message = Vec::new();
@@ -886,6 +902,55 @@ mod tests {
         assert_eq!(
             heard.lock().unwrap().as_slice(),
             ["frame", "inner", "inner", "frame"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_popups_coming_reaches_its_openers_page_and_the_rest_the_browsers() {
+        let (conn, mut far) = firefox().await;
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hear = |who: &'static str| -> Handler {
+            let heard = heard.clone();
+            Arc::new(move |method: &str, p: &Value| {
+                let context = p["context"].as_str().unwrap_or_default();
+                heard
+                    .lock()
+                    .unwrap()
+                    .push(format!("{who} {method} {context}"))
+            })
+        };
+        conn.on("top", hear("page"));
+        conn.on("", hear("browser"));
+        for event in [
+            json!({"type": "event", "method": "browsingContext.contextCreated",
+                "params": {"context": "frame", "parent": "top"}}),
+            // Opened by the page's frame, then by a context no page holds.
+            json!({"type": "event", "method": "browsingContext.contextCreated",
+                "params": {"context": "popup", "parent": null, "originalOpener": "frame"}}),
+            json!({"type": "event", "method": "browsingContext.contextCreated",
+                "params": {"context": "stray", "parent": null, "originalOpener": "elsewhere"}}),
+            json!({"type": "event", "method": "network.beforeRequestSent",
+                "params": {"context": "popup", "isBlocked": true}}),
+        ] {
+            far.send(Message::text(event.to_string())).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while heard.lock().unwrap().len() < 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            heard.lock().unwrap().as_slice(),
+            [
+                "page browsingContext.contextCreated frame",
+                "page browsingContext.contextCreated popup",
+                "browser browsingContext.contextCreated stray",
+                // Nothing holds the popup yet: only its coming is the
+                // opener's.
+                "browser network.beforeRequestSent popup",
+            ]
         );
     }
 

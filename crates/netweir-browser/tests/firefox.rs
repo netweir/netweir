@@ -1118,3 +1118,127 @@ async fn a_firefox_double_click_is_heard_as_one() {
     }
     browser.close().await.unwrap();
 }
+
+/// What a popup's first document saw and sent, for `opener`'s
+/// environment: Firefox gives a popup none of its opener's, so netweir
+/// does, before the popup's first request goes.
+async fn popup_sees(page: netweir_browser::Page) -> (serde_json::Value, Vec<(String, String)>) {
+    let server = common::serve(vec![
+        (
+            "/",
+            common::html("<a id=open href=/popup target=_blank>open</a>"),
+        ),
+        (
+            "/popup",
+            common::html(
+                "<script>window.first = [navigator.userAgent, navigator.language, \
+                 Intl.DateTimeFormat().resolvedOptions().timeZone, window.inited ?? null];</script>",
+            ),
+        ),
+    ]);
+    page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let mut events = page.listen();
+    page.click("#open", None).await.unwrap();
+    let popup = loop {
+        match tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("no popup")
+        {
+            Some(netweir_browser::PageEvent::Popup(p)) => break p,
+            Some(_) => {}
+            None => panic!("the page went away"),
+        }
+    };
+    popup
+        .wait_for_load(netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let first = popup.evaluate("first").await.unwrap();
+    (first, server.headers_for("/popup"))
+}
+
+fn popup_env() -> netweir_browser::Environment {
+    netweir_browser::Environment {
+        locale: Some("de-DE".into()),
+        timezone: Some("Asia/Tokyo".into()),
+        user_agent: Some(
+            "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0".into(),
+        ),
+        extra_headers: vec![("X-Netweir-Test".into(), "popup".into())],
+        init_scripts: vec!["window.inited = 'yes'".into()],
+        ..Default::default()
+    }
+}
+
+fn assert_opener_env(first: serde_json::Value, headers: Vec<(String, String)>) {
+    let env = popup_env();
+    assert_eq!(
+        first,
+        serde_json::json!([env.user_agent, "de-DE", "Asia/Tokyo", "yes"])
+    );
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(header("user-agent"), env.user_agent);
+    assert_eq!(header("accept-language").as_deref(), Some("de-DE"));
+    assert_eq!(header("x-netweir-test").as_deref(), Some("popup"));
+}
+
+#[tokio::test]
+async fn a_firefox_popup_has_its_openers_environment_from_its_first_request() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let page = browser.new_page_with(popup_env()).await.unwrap();
+    let (first, headers) = popup_sees(page).await;
+    assert_opener_env(first, headers);
+    browser.close().await.unwrap();
+}
+
+/// A context's pages share their user context, so the popup's first
+/// request is held while it's given its opener's environment.
+#[tokio::test]
+async fn a_firefox_popup_in_a_shared_context_has_its_openers_environment_from_its_first_request() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let context = browser.new_context_with(popup_env()).await.unwrap();
+    let page = context.new_page().await.unwrap();
+    let (first, headers) = popup_sees(page).await;
+    assert_opener_env(first, headers);
+    browser.close().await.unwrap();
+}
+
+/// A page's intercept is the whole browser's on Firefox: another page's
+/// requests go on at once, and never reach the first page's routes.
+#[tokio::test]
+async fn a_firefox_pages_routes_see_only_its_own_requests() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![
+        (
+            "/",
+            common::html("<img src=/a.png><script>fetch('/api')</script>"),
+        ),
+        ("/api", common::html("api")),
+    ]);
+    let routed = browser.new_page().await.unwrap();
+    let mut routes = routed.route().await.unwrap();
+    let other = browser.new_page().await.unwrap();
+    other
+        .goto(&server.url, netweir_browser::WaitUntil::NetworkIdle, None)
+        .await
+        .unwrap();
+    assert!(
+        routes.try_recv().is_err(),
+        "another page's request reached the routes"
+    );
+    assert!(server.paths().contains(&"/api".to_string()));
+    browser.close().await.unwrap();
+}
