@@ -124,9 +124,11 @@ impl Undriven {
             .arg("-profile")
             .arg(profile)
             // So ending the process ends the browser on Windows too.
-            .args(["-no-remote", "-new-instance", "-wait-for-browser"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .args(["-no-remote", "-new-instance", "-wait-for-browser"]);
+        // Windows Firefox with no stdout at all can start without loading
+        // the page (netweir/netweir#247), so it writes to a file instead.
+        let out = std::fs::File::create(profile.with_extension("out")).unwrap();
+        command.stdout(out.try_clone().unwrap()).stderr(out);
         if headless {
             command.arg("-headless");
         }
