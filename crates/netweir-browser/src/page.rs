@@ -199,6 +199,10 @@ pub(crate) struct PageInner {
     pub(crate) context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
+    /// The environment on a Firefox page's user context, when it has the
+    /// context to itself and its popups: what it was opened with, less
+    /// what was taken away since. Its popups share it.
+    pub(crate) user_env: Option<Arc<Mutex<Environment>>>,
     shared: Arc<Shared>,
     /// netweir's isolated worlds, by (session, frame id): the loader of the
     /// document each was made for (the main frame's; empty for others,
@@ -367,6 +371,10 @@ pub(crate) struct State {
     /// frames: Firefox tells of no network idle, so the page works it
     /// out, as Chrome does, from these.
     in_flight: HashSet<String>,
+    /// A Firefox popup's requests paused before it was set up as its
+    /// opener is, while it's being set up (None once it is), each with
+    /// whether the guard must see it.
+    pub(crate) held: Option<Vec<(Value, bool)>>,
     /// The data collector that keeps a Firefox page's response bodies,
     /// for [`Page::body`].
     pub(crate) collector: Option<String>,
@@ -732,6 +740,7 @@ impl Page {
                     .as_ref()
                     .map(|c| c.origins.clone())
                     .unwrap_or_default(),
+                collector: browser.collector.clone(),
                 ..State::default()
             }),
             changed: Notify::new(),
@@ -833,6 +842,13 @@ impl Page {
                 session,
                 context,
                 owns_context,
+                user_env: match &opener {
+                    Some(o) => o.inner.user_env.clone(),
+                    None if owns_context && browser.engine() == Engine::Firefox => Some(Arc::new(
+                        Mutex::new(bidi::on_user_context(&lock_env(&env).env)),
+                    )),
+                    None => None,
+                },
                 shared,
                 worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
@@ -3212,7 +3228,7 @@ impl Page {
                 .env
                 .init_scripts
                 .push(script.to_string());
-            return Ok(());
+            return bidi::held_for_popups(self).await;
         }
         let params = json!({"source": script});
         self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())
