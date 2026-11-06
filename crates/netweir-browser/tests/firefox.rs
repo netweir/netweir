@@ -1036,10 +1036,13 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
         .await
         .unwrap();
     if page.evaluate(&state("geolocation")).await.unwrap() == serde_json::json!("granted") {
+        // With a time limit: a position that never comes held the whole
+        // run up on macOS, where the other tests waited their turn behind it.
         let at = page
             .evaluate(
                 "new Promise((ok, no) => navigator.geolocation.getCurrentPosition( \
-                   (p) => ok([p.coords.latitude, p.coords.longitude]), (e) => no(e.message)))",
+                   (p) => ok([p.coords.latitude, p.coords.longitude]), \
+                   (e) => no(e.code + ' ' + e.message), {timeout: 10000}))",
             )
             .await
             .unwrap();
