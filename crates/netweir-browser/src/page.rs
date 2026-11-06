@@ -811,6 +811,7 @@ impl Page {
                 shared.clone(),
                 &browser,
                 decider.clone(),
+                context.clone(),
                 tokio::runtime::Handle::current(),
             )
         } else {
@@ -2114,6 +2115,10 @@ impl Page {
     /// a moment after the first, Chrome told it's the second. On a phone,
     /// two taps.
     pub(crate) async fn mouse_double(&self, x: f64, y: f64) -> Result<()> {
+        if self.is_firefox() && !self.touches() {
+            let pauses = [BUTTON_HOLD, DOUBLE_GAP, BUTTON_HOLD].map(crate::events::pause);
+            return bidi::mouse_double(self, pauses).await.map(drop);
+        }
         self.mouse_press_count(x, y, 1).await?;
         tokio::time::sleep(crate::events::pause(DOUBLE_GAP)).await;
         self.mouse_press_count(x, y, 2).await

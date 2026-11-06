@@ -1090,7 +1090,9 @@ impl Browser {
                 .inner
                 .call("", "browser.createUserContext", json!({}))
                 .await?;
-            return Ok(str_of(&r, "userContext"));
+            let id = str_of(&r, "userContext");
+            self.inner.allow_downloads(Some(&id)).await?;
+            return Ok(id);
         }
         // Gone when the connection is, however netweir lets go of it.
         let r = self
@@ -1407,6 +1409,21 @@ impl Inner {
             .downloads
             .folder(context)
             .map_err(|e| Error::Launch(format!("can't make a folder for downloads: {e}")))?;
+        if self.engine() == Engine::Firefox {
+            let user_context = context
+                .map(str::to_string)
+                .or_else(|| self.default_context.clone())
+                .unwrap_or_else(|| "default".into());
+            let behavior =
+                json!({"type": "allowed", "destinationFolder": folder.display().to_string()});
+            self.call(
+                "",
+                "browser.setDownloadBehavior",
+                json!({"downloadBehavior": behavior, "userContexts": [user_context]}),
+            )
+            .await?;
+            return Ok(());
+        }
         let mut params = json!({
             "behavior": "allowAndName",
             "downloadPath": folder.display().to_string(),
