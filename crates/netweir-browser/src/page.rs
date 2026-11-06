@@ -766,6 +766,7 @@ impl Page {
             login: browser.proxy_login.is_some(),
             fetching: tokio::sync::Mutex::new(false),
             intercept: Mutex::new(None),
+            collector: browser.collector.clone(),
             refused: Default::default(),
             tidy: {
                 let e = lock_env(&env);
