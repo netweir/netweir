@@ -153,6 +153,39 @@ impl Drop for Undriven {
     }
 }
 
+/// Saves what's on the screen to `$NETWEIR_FAILURE_DIR`, when it's set
+/// (in CI, which keeps the folder of a failed run), as best the system's
+/// own tools can.
+fn screenshot(mode: &str) {
+    let Some(dir) = std::env::var_os("NETWEIR_FAILURE_DIR") else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = Path::new(&dir).join(format!("stealth-firefox-{mode}.png"));
+    let path = path.to_string_lossy().into_owned();
+    let saved = if cfg!(target_os = "macos") {
+        std::process::Command::new("screencapture")
+            .args(["-x", &path])
+            .status()
+    } else if cfg!(windows) {
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
+             $b = [System.Windows.Forms.SystemInformation]::VirtualScreen; \
+             $i = New-Object System.Drawing.Bitmap $b.Width, $b.Height; \
+             [System.Drawing.Graphics]::FromImage($i).CopyFromScreen($b.Left, $b.Top, 0, 0, $i.Size); \
+             $i.Save('{path}')"
+        );
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+    } else {
+        std::process::Command::new("import")
+            .args(["-window", "root", &path])
+            .status()
+    };
+    eprintln!("screenshot {path}: {saved:?}");
+}
+
 /// Whether a headed Firefox can open a window here.
 fn has_display() -> bool {
     !cfg!(target_os = "linux") || std::env::var_os("DISPLAY").is_some()
@@ -206,8 +239,6 @@ async fn compare(headless: bool) {
     })
     .await
     .unwrap();
-    browser.close().await.unwrap();
-    let _ = std::fs::remove_dir_all(&scratch);
 
     let (theirs, ours) = (theirs.as_object().unwrap(), report.as_object().unwrap());
     // Focus depends on which app the system has in front, which neither
@@ -228,6 +259,13 @@ async fn compare(headless: bool) {
         .collect();
     differences.sort();
     differences.dedup();
+    if !differences.is_empty() {
+        // Shown while Netweir's window is still open: what the page
+        // can't see (a bar above it, say) is on the screen.
+        screenshot(mode);
+    }
+    browser.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&scratch);
     assert!(
         differences.is_empty(),
         "{mode}: a page can tell Netweir's Firefox from an undriven one:\n{}",
