@@ -161,6 +161,71 @@ Netweir opened and leaves the browser running. A `wss://` URL works too:
 its certificate is checked against Chrome's own root store (not against
 certificates installed on the machine, such as a company's).
 
+## Starting Firefox
+
+`engine="firefox"` drives Firefox instead of Chrome:
+
+```python
+async with netweir.browser(engine="firefox") as browser:
+    page = await browser.new_page()
+    await page.goto("https://quotes.toscrape.com/js/")
+```
+
+It starts the Firefox at `$NETWEIR_FIREFOX`, or else the newest one
+`netweir install firefox` installed:
+
+```
+netweir install firefox
+```
+
+That downloads Mozilla's Firefox 159.0.1 into `~/.netweir/firefox/`
+(`$NETWEIR_HOME` moves it), checked against the SHA-256 sums Netweir
+keeps for that build. The browser tests run on Firefox too, and the
+table further down lists what they skip there and why.
+
+Firefox driven over WebDriver BiDi normally tells every page it's
+automated: `navigator.webdriver` is true and no setting turns that off.
+Netweir starts the Firefox it installed so that pages can't tell. CI
+compares what about 45 page-visible properties say in Netweir's Firefox
+and in the same build started by hand, headless and headed, on Linux,
+macOS and Windows, and any difference fails the build. To get there,
+Netweir adds two startup files to the Firefox it installs, so it won't
+start one it didn't install that way. To drive any other Firefox, ask
+for automation mode, which pages can tell:
+
+```python
+netweir.browser(engine="firefox", executable="/Applications/Firefox.app/Contents/MacOS/firefox", stealth=False)
+```
+
+`browser.engine` says which browser is running (`"chrome"` or
+`"firefox"`), and `browser.stealth` is False only in automation mode.
+
+A `user_data_dir` for Firefox must be a new folder, or one an earlier
+launch made. Netweir refuses a folder holding a Firefox profile it didn't
+make, `stealth=False` or not, so it never changes a person's own.
+A kept profile keeps its cookies and storage in the container Netweir's
+pages use, so logins from the profile's normal tabs aren't there.
+
+What Firefox doesn't do, which raises `BrowserError` naming the feature,
+where Chrome would do it:
+
+| Feature | On Firefox |
+|---|---|
+| `proxy` | not given to Firefox yet |
+| `connect` | Netweir starts its own Firefox; it doesn't attach to one |
+| `worker_header_order` | Chrome's only |
+| a phone's environment, `is_mobile`, `has_touch` | Chrome's only |
+| `color_scheme`, `reduced_motion`, `forced_colors`, `contrast`, `emulate_media()` | Firefox has no command for them |
+| permissions for every origin | grant them to an origin instead |
+| `download.cancel()` | Firefox can't stop a download |
+| an HTML5 drag (`drag()` from a `draggable` element) | Firefox doesn't begin one from WebDriver's mouse |
+| `start_tracing()` and `stop_tracing()` | Chrome's DevTools format |
+| a partitioned cookie | not set on Firefox |
+
+Keyboard shortcuts edit a field the way the system Firefox runs on does
+(Command on macOS, Control elsewhere), whatever system the page's
+environment says.
+
 ## Pages and contexts
 
 `browser.new_page()` opens a page with cookies and storage of its own, so
@@ -966,6 +1031,14 @@ Two settings make Chrome step in on its own:
   started, the request goes to `on_block` as before, and a warning says
   why.
 - `browser="always"`: every request goes through Chrome.
+
+`browser_engine="firefox"` has the crawl use Firefox for all of this
+instead, the one `netweir install firefox` installed. Cookies it earns go
+back to the HTTP client with Netweir's profile for that Firefox version,
+as Chrome's do with Chrome's. `browser_engine="match"` picks the browser
+the crawl's requests already look like: Firefox when `profile` is a
+Firefox one, Chrome otherwise. A crawl with `proxy` or `proxies` refuses
+Firefox for now, since Netweir can't send Firefox through a proxy yet.
 
 Chrome is started the first time the crawl needs it, and again if it
 dies. If it can't start, browser requests fail, each saying why, and it's
