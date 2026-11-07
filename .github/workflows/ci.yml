@@ -233,7 +233,7 @@ jobs:
         timeout-minutes: 15
 
   # Chrome's suites of actions, pages, events and steps again, on Firefox,
-  # and the browser from Python.
+  # and the browser from Python and in a crawl.
   # A test that can't pass there yet is listed in tests/common/mod.rs,
   # with what it waits for.
   firefox:
@@ -269,7 +269,7 @@ jobs:
         timeout-minutes: 20
       # The browser from Python, on Firefox: tests that are Chrome's alone
       # say why in their skip.
-      - run: uv run pytest -q --durations=10 -rs tests/test_browser.py
+      - run: uv run pytest -q --durations=10 -rs tests/test_browser.py tests/test_crawl_browser.py
         timeout-minutes: 15
 
   bench:
