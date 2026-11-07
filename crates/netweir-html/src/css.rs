@@ -130,6 +130,10 @@ enum Pseudo {
     ReadWrite,
     ReadOnly,
     PlaceholderShown,
+    /// `:lang()`'s language ranges, lowercased.
+    Lang(Vec<String>),
+    /// `:dir(rtl)` when true, `:dir(ltr)` when false.
+    Dir(bool),
     /// A state no static page is in: `:hover`, `:focus`, `:visited`...
     Never,
 }
@@ -635,6 +639,36 @@ impl<'a> Parser<'a> {
                     of,
                 }
             }
+            "lang" => {
+                let mut ranges = Vec::new();
+                loop {
+                    self.skip_space();
+                    // A wildcard such as *-CH can't be a name, so it's quoted.
+                    let range = match self.peek() {
+                        Some(q @ ('"' | '\'')) => {
+                            self.pos += 1;
+                            self.string(q)?
+                        }
+                        _ => self.ident()?,
+                    };
+                    ranges.push(range.to_ascii_lowercase());
+                    self.skip_space();
+                    if !self.eat(',') {
+                        break;
+                    }
+                }
+                Pseudo::Lang(ranges)
+            }
+            "dir" => {
+                self.skip_space();
+                let dir = self.ident()?.to_ascii_lowercase();
+                self.skip_space();
+                match dir.as_str() {
+                    "ltr" => Pseudo::Dir(false),
+                    "rtl" => Pseudo::Dir(true),
+                    _ => return error(format!(":dir() takes ltr or rtl, not {dir}")),
+                }
+            }
             _ => return error(format!(":{name}() isn't supported")),
         })
     }
@@ -677,6 +711,53 @@ impl<'a> Parser<'a> {
         }
         b.len()
     }
+}
+
+/// Whether the first strong character of `text` is right to left (Some(true))
+/// or left to right (Some(false)); None when it has none.
+// shortcut: letters in the right-to-left scripts' blocks count as strong
+// right to left and any other letter as strong left to right, rather than
+// reading Unicode's Bidi_Class; use the real table if a script needs it.
+fn first_strong_rtl(text: &str) -> Option<bool> {
+    text.chars()
+        .filter(|c| c.is_alphabetic())
+        .map(|c| {
+            matches!(c as u32,
+            0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF
+            | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
+        })
+        .next()
+}
+
+/// Whether a language `tag` matches a `range`, both lowercase, by RFC 4647's
+/// extended filtering as Selectors 4 uses it: `de` matches `de-CH`, `de-CH`
+/// matches `de-Latn-CH`, and `*` stands for any subtag. Subtags the range
+/// leaves out match anything, but never past a one-letter one such as `x`.
+fn lang_matches(range: &str, tag: &str) -> bool {
+    if range.is_empty() || tag.is_empty() {
+        return range == tag;
+    }
+    let r: Vec<&str> = range.split('-').collect();
+    let t: Vec<&str> = tag.split('-').collect();
+    if r[0] != "*" && r[0] != t[0] {
+        return false;
+    }
+    let (mut i, mut j) = (1, 1);
+    while i < r.len() {
+        if r[i] == "*" {
+            i += 1;
+        } else if j >= t.len() {
+            return false;
+        } else if r[i] == t[j] {
+            i += 1;
+            j += 1;
+        } else if t[j].len() == 1 {
+            return false;
+        } else {
+            j += 1;
+        }
+    }
+    true
 }
 
 /// `2n+1 of .x` into `2n+1` and `.x`.
@@ -1002,6 +1083,106 @@ impl Cx<'_> {
         }
     }
 
+    /// The element's language: the nearest `xml:lang` or `lang` on it or
+    /// an ancestor, `xml:lang` first, as HTML has it. None when nothing says.
+    fn lang(&self, el: NodeId) -> Option<&str> {
+        let mut at = Some(el);
+        while let Some(n) = at {
+            let mut plain = None;
+            for (ns, name, value) in self.doc.attrs(n) {
+                match (ns, name) {
+                    (AttrNs::Xml, "lang") => return Some(value),
+                    (AttrNs::None, "lang") => plain = Some(value),
+                    _ => {}
+                }
+            }
+            if plain.is_some() {
+                return plain;
+            }
+            at = self.doc.parent(n);
+        }
+        None
+    }
+
+    /// Whether the element's directionality is right to left, by HTML's
+    /// rules as far as the document decides them: `dir="ltr"` or `"rtl"`,
+    /// `dir="auto"` and `<bdi>` from their text, and otherwise the parent's,
+    /// left to right at the top. Only an HTML element's `dir` counts.
+    fn is_rtl(&self, el: NodeId) -> bool {
+        let mut at = Some(el);
+        while let Some(n) = at {
+            let Some(e) = self.doc.element(n) else {
+                return false;
+            };
+            if e.ns == Ns::Html {
+                match self.dir(n).as_deref() {
+                    Some("ltr") => return false,
+                    Some("rtl") => return true,
+                    Some("auto") => return self.auto_rtl(n),
+                    _ if self.doc.lower_name(n) == Some("bdi") => return self.auto_rtl(n),
+                    _ => {}
+                }
+            }
+            at = self.doc.parent(n);
+        }
+        false
+    }
+
+    /// A valid `dir` value, lowercased.
+    fn dir(&self, el: NodeId) -> Option<String> {
+        self.attr(el, "dir")
+            .map(|d| d.to_ascii_lowercase())
+            .filter(|d| matches!(d.as_str(), "ltr" | "rtl" | "auto"))
+    }
+
+    /// `dir="auto"`: right to left when the first strong character is. A
+    /// text field reads its value; anything else its text, leaving out
+    /// `<bdi>`, `<script>`, `<style>`, `<textarea>` and anything with its own
+    /// `dir`. No strong character at all is left to right.
+    fn auto_rtl(&self, el: NodeId) -> bool {
+        let tag = self.doc.element(el).map(|e| e.tag);
+        if tag == Some(Tag::Textarea) {
+            return first_strong_rtl(&self.doc.text(el)).unwrap_or(false);
+        }
+        if tag == Some(Tag::Input) {
+            let text_field = self.attr(el, "type").is_none_or(|t| {
+                matches!(
+                    t.to_ascii_lowercase().as_str(),
+                    "text" | "search" | "tel" | "url" | "email"
+                )
+            });
+            return text_field
+                && first_strong_rtl(self.attr(el, "value").unwrap_or("")).unwrap_or(false);
+        }
+        let mut stack: Vec<NodeId> = self.doc.children(el).collect();
+        stack.reverse();
+        while let Some(n) = stack.pop() {
+            match self.doc.kind(n) {
+                crate::Kind::Text(t) => {
+                    if let Some(rtl) = first_strong_rtl(t) {
+                        return rtl;
+                    }
+                }
+                crate::Kind::Element { ns, .. } => {
+                    let skip = ns == Ns::Html
+                        && (self.dir(n).is_some()
+                            || matches!(
+                                self.doc.element(n).map(|e| e.tag),
+                                Some(Tag::Script | Tag::Style | Tag::Textarea)
+                            )
+                            || self.doc.lower_name(n) == Some("bdi"));
+                    if !skip {
+                        let at = stack.len();
+                        stack.extend(self.doc.children(n));
+                        stack[at..].reverse();
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn attr(&self, el: NodeId, name: &str) -> Option<&str> {
         self.doc
             .attrs(el)
@@ -1181,6 +1362,11 @@ impl Cx<'_> {
                 Tag::Textarea => self.attr(el, "placeholder").is_some() && doc.text(el).is_empty(),
                 _ => false,
             },
+            Pseudo::Lang(ranges) => self.lang(el).is_some_and(|tag| {
+                let tag = tag.to_ascii_lowercase();
+                ranges.iter().any(|range| lang_matches(range, &tag))
+            }),
+            Pseudo::Dir(rtl) => self.is_rtl(el) == *rtl,
             Pseudo::Never => false,
         }
     }
