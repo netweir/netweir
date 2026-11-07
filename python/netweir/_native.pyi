@@ -478,6 +478,7 @@ class Crawler:
         browser_worker_header_order: bool = False,
         browser_steps: str | None = None,
         browser_steps_max: float | None = 120.0,
+        browser_engine: Literal["chrome", "firefox", "match"] = "chrome",
     ) -> None: ...
     def add_rule(
         self,
