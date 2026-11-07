@@ -295,3 +295,74 @@ fn selectors_read_as_css_reads_them() {
     assert!(SelectorList::parse(":has(a):has(b)").is_ok());
     assert!(SelectorList::parse(":is(:has(a))").is_ok());
 }
+
+#[test]
+fn default_and_indeterminate_follow_the_markup() {
+    let html = r#"<form id="f">
+<input type="text" name="t"><button id="first" type="button">no</button>
+<button id="go">go</button><input type="submit" id="second">
+<input type="checkbox" id="c1" checked><input type="checkbox" id="c2">
+<input type="radio" id="a1" name="a"><input type="radio" id="a2" name="a" checked>
+<input type="radio" id="b1" name="b"><input type="radio" id="b2" name="b">
+<input type="radio" id="alone">
+<select><option id="o1">x</option><option id="o2" selected>y</option></select>
+</form>
+<form id="g"></form><input type="submit" id="outside" form="g">
+<input type="radio" id="b3" name="b" checked>
+<progress id="busy"></progress><progress id="half" value="0.5"></progress>"#;
+    assert_eq!(
+        select(html, ":default"),
+        [
+            "button#go",
+            "input#c1",
+            "input#a2",
+            "option#o2",
+            "input#outside",
+            "input#b3"
+        ]
+    );
+    // b3 is checked, but outside the form, so form f's group b has none.
+    assert_eq!(
+        select(html, ":indeterminate"),
+        ["input#b1", "input#b2", "input#alone", "progress#busy"]
+    );
+}
+
+#[test]
+fn in_range_and_out_of_range_follow_min_max_and_the_value() {
+    let html = r#"<input id="n1" type="number" min="1" max="10" value="5">
+<input id="n2" type="number" min="1" max="10" value="11"><input id="n3" type="number" min="1" value="0.5e0">
+<input id="n4" type="number" min="1" max="10"><input id="n5" type="number" min="1" value="ten">
+<input id="n6" type="number" value="5"><input id="n7" type="number" min="1" value="0" disabled>
+<input id="n8" type="number" min="1" value="0" readonly><datalist><input id="n9" type="number" min="1" value="0"></datalist>
+<input id="r1" type="range" value="500"><input id="r2" type="range" readonly value="-5">
+<input id="d1" type="date" min="2024-01-01" value="2024-02-29"><input id="d2" type="date" max="2023-12-31" value="2024-01-01">
+<input id="d3" type="date" min="2024-01-01" value="2023-02-29">
+<input id="m1" type="month" max="2024-06" value="2024-07"><input id="w1" type="week" min="2025-W53" value="2025-W01">
+<input id="w2" type="week" min="2020-W53" value="2020-W53">
+<input id="t1" type="time" min="22:00" max="06:00" value="23:30"><input id="t2" type="time" min="22:00" max="06:00" value="12:00">
+<input id="dt" type="datetime-local" max="2024-01-01T12:00" value="2024-01-01 12:00:01">
+<input id="text" type="text" min="1" value="0"><input id="dot" type="number" min="1." value="0">
+<input id="n10" type="number" min="1" value="1.">"#;
+    assert_eq!(
+        select(html, ":in-range"),
+        [
+            "input#n1",
+            "input#n4",
+            "input#n5",
+            "input#r1",
+            "input#r2",
+            "input#d1",
+            "input#d3",
+            "input#w2",
+            "input#t1",
+            "input#n10"
+        ]
+    );
+    assert_eq!(
+        select(html, ":out-of-range"),
+        [
+            "input#n2", "input#n3", "input#d2", "input#m1", "input#t2", "input#dt"
+        ]
+    );
+}
