@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue's run, on the pull request merged onto the latest main.
+  merge_group:
   workflow_dispatch:
 
 # A new push to a pull request ends the run on its old commit, which
