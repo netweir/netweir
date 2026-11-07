@@ -1,7 +1,7 @@
 //! CSS selectors: every feature Netweir's own tests use, the rest of what
 //! lexbor offered, and where browsers and lexbor part ways, the browsers.
 
-use netweir_html::css::SelectorList;
+use netweir_html::css::{MatchOptions, SelectorList};
 use netweir_html::{Document, Kind, NodeId, parse};
 
 const PAGE: &str = r#"<!DOCTYPE html><html><head><title>Shop</title></head><body>
@@ -294,4 +294,103 @@ fn selectors_read_as_css_reads_them() {
     }
     assert!(SelectorList::parse(":has(a):has(b)").is_ok());
     assert!(SelectorList::parse(":is(:has(a))").is_ok());
+}
+
+#[test]
+fn select_iter_finds_matches_lazily_and_select_first_stops_at_one() {
+    let doc = parse(PAGE, false);
+    let list = SelectorList::parse("li, a").unwrap();
+    let all = list.select(&doc, doc.root());
+    assert_eq!(list.select_iter(&doc, doc.root()).collect::<Vec<_>>(), all);
+    assert_eq!(list.select_first(&doc, doc.root()), all.first().copied());
+    assert_eq!(
+        list.select_iter(&doc, doc.root()).nth(2),
+        all.get(2).copied()
+    );
+    let none = SelectorList::parse("table").unwrap();
+    assert_eq!(none.select_first(&doc, doc.root()), None);
+    // Scoped, it stays inside the scope.
+    let ul = SelectorList::parse("ul")
+        .unwrap()
+        .select_first(&doc, doc.root())
+        .unwrap();
+    let first_li = SelectorList::parse("li")
+        .unwrap()
+        .select_first(&doc, ul)
+        .unwrap();
+    assert_eq!(names(&doc, &[first_li]), ["li#17"]);
+}
+
+#[test]
+fn specificity_counts_as_selectors_4_does() {
+    let spec = |s: &str| SelectorList::parse(s).unwrap().specificity();
+    assert_eq!(spec("*"), (0, 0, 0));
+    assert_eq!(spec("li"), (0, 0, 1));
+    assert_eq!(spec("ul li.item[data-id]"), (0, 2, 2));
+    assert_eq!(spec("#main > a:hover"), (1, 1, 1));
+    assert_eq!(spec("a, #x, .y"), (1, 0, 0));
+    assert_eq!(spec(":is(#x, .y) p"), (1, 0, 1));
+    assert_eq!(spec(":where(#x, .y) p"), (0, 0, 1));
+    assert_eq!(spec("p:not(.a, #b)"), (1, 0, 1));
+    assert_eq!(spec("li:has(> a.x)"), (0, 1, 2));
+    assert_eq!(spec("li:nth-child(2n of .item)"), (0, 2, 1));
+    assert_eq!(spec("li:nth-child(odd)"), (0, 1, 1));
+}
+
+fn select_at(html: &str, css: &str, url: &str) -> Vec<String> {
+    let doc = parse(html, false);
+    let list = SelectorList::parse(css).unwrap_or_else(|e| panic!("{css}: {e}"));
+    names(
+        &doc,
+        &list.select_with(&doc, doc.root(), &MatchOptions { url: Some(url) }),
+    )
+}
+
+#[test]
+fn target_is_the_element_the_fragment_indicates() {
+    let html = r#"<div id="outer"><p id="sec">a</p><a name="sec" id="named">b</a><a name="old" id="anchor">c</a></div>
+<p id="top">t</p><p id="café">d</p>"#;
+    assert_eq!(select_at(html, ":target", "https://x.test/#sec"), ["p#sec"]);
+    assert_eq!(select_at(html, ":target", "https://x.test/#old"), ["a#old"]);
+    assert_eq!(select_at(html, ":target", "https://x.test/#top"), ["p#top"]);
+    assert_eq!(
+        select_at(html, ":target", "https://x.test/#caf%C3%A9"),
+        ["p#café"]
+    );
+    assert_eq!(
+        select_at(html, ":target", "https://x.test/#"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        select_at(html, ":target", "https://x.test/#gone"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        select_at(html, ":target-within", "https://x.test/#sec"),
+        ["html", "body", "div#outer", "p#sec"]
+    );
+    // Without a URL, as before.
+    assert_eq!(select(html, ":target"), Vec::<String>::new());
+    assert_eq!(
+        select_at("<p id=top>t</p>", ":target", "https://x.test/#TOP"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn local_link_resolves_against_the_document_url() {
+    let html = r##"<a id="frag" href="#other">1</a><a id="rel" href="b?q">2</a><a id="path" href="b">3</a>
+<a id="abs" href="/a/b?q#x">4</a><a id="host" href="//X.TEST:443/a/b?q">5</a><a id="elsewhere" href="https://y.test/a/b?q">6</a>
+<a id="nohref">7</a><area id="area" href="?q">"##;
+    assert_eq!(
+        select_at(html, ":local-link", "https://x.test/a/b?q#sec"),
+        ["a#frag", "a#rel", "a#abs", "a#host", "area#area"]
+    );
+    // A <base> moves where relative links point.
+    let based = r#"<base href="/c/"><a id="here" href="d">1</a><a id="there" href="b">2</a>"#;
+    assert_eq!(
+        select_at(based, ":local-link", "https://x.test/c/d"),
+        ["a#here"]
+    );
+    assert_eq!(select(html, ":local-link"), Vec::<String>::new());
 }
