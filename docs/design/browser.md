@@ -763,16 +763,51 @@ Canary, compared after following links) is refused before Netweir edits
 its `Preferences`. A Chrome installed anywhere else isn't recognised as
 Google's by its path, so only its own refusal catches it.
 
-## Firefox, later
+## Firefox
 
-Firefox has dropped CDP; its remote protocol is WebDriver BiDi. Under
-BiDi, Firefox reports `navigator.webdriver` as true, and no setting turns
-that off: it follows whether the remote agent is running. Hiding it from
-page script would mean overriding a browser property in JavaScript, which
-detection looks for in its own right. So a Firefox driver would render
-pages but give itself away to every bot check, and Netweir leaves it out
-until a patched build (such as Camoufox, which needs a third protocol) is
-in scope.
+Firefox has dropped CDP; its remote protocol is WebDriver BiDi. A
+Firefox started for automation (with `--remote-debugging-port`, as every
+driver starts it) reports `navigator.webdriver` as true, from the native
+getter, and no setting turns that off. Hiding it from page script would
+mean overriding a browser property in JavaScript, which detection looks
+for in its own right. That's why Firefox was left out at first.
+
+Firefox has a second way to run the same BiDi server: its "remote
+control" start, made for an assistant driving a person's own browser,
+which starts with `isBrowserAutomation: false`. In that mode the flag
+stays false from the native getter, and the prefs that only automation
+applies aren't. Netweir uses it:
+
+- **Only in a Firefox Netweir installed.** `netweir install firefox`
+  downloads Mozilla's stock release, pinned and checked against SHA-256
+  sums kept in Netweir's source, and adds two startup files the
+  enterprise documentation describes (`defaults/pref/autoconfig.js` and
+  `mozilla.cfg`). They start the remote agent at runtime in the remote
+  control mode. Netweir never writes into a Firefox it didn't install,
+  and refuses to drive one in stealth mode.
+- **The pages' own container.** The session Firefox opens in that mode
+  comes with a user context (`moz:userContext`) of its own. Netweir's
+  pages live in it, or in contexts Netweir makes, never in the default
+  one a person's tabs use.
+- **Measured, not asserted.** `tests/stealth_firefox.rs` loads a page
+  reading about 45 page-visible properties in Netweir's Firefox and in
+  the same build started by hand with the same profile settings,
+  headless and headed, on Linux, macOS and Windows. Any difference fails
+  CI.
+- **Automation mode only when asked.** `stealth: false` drives any
+  Firefox, a person's install included, the usual way, with
+  `navigator.webdriver` true. A failed stealth start (no port file, the
+  start throwing, no `moz:userContext` in the session) is an error
+  naming the step, never a quiet fall back to automation mode.
+- **Gaps raise.** What Firefox can't do, or Netweir can't do there yet,
+  raises `Error::Unsupported { engine, feature }` rather than doing
+  something different; [docs/browser.md](../browser.md#starting-firefox)
+  lists them.
+
+The risk is Mozilla changing the remote control path, which is
+experimental. The Firefox version is pinned, and the pin moves only once
+the stealth and launch tests pass on the new release. If the path goes
+away, the docs must say that the engine is then detectable.
 
 ## Testing
 

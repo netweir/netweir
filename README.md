@@ -208,8 +208,11 @@ Working today:
   from other sites all say the same thing, and the request headers
   agree. See [docs/environment.md](docs/environment.md).
 
-Coming next: Firefox in the driver, once there's a Firefox that doesn't
-announce it's automated. The designs are in [docs/design/](docs/design/).
+Firefox too: `netweir.browser(engine="firefox")` drives the Firefox
+`netweir install firefox` installs, which pages can't tell is driven, and
+a crawl takes `browser_engine="firefox"`. See
+[docs/browser.md](docs/browser.md#starting-firefox). The designs are in
+[docs/design/](docs/design/).
 
 ## Install
 
