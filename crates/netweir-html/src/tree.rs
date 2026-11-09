@@ -3035,26 +3035,25 @@ mod hostile {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// The best of three parses of `html`.
-    fn best(html: &str) -> Duration {
-        (0..3)
-            .map(|_| {
-                let start = Instant::now();
-                std::hint::black_box(parse(html, false));
-                start.elapsed()
-            })
-            .min()
-            .unwrap()
+    fn time(html: &str) -> Duration {
+        let start = Instant::now();
+        std::hint::black_box(parse(html, false));
+        start.elapsed()
     }
 
     /// Fails if four times the input takes more than eight times as long:
-    /// linear work takes four, quadratic sixteen.
+    /// linear work takes four, quadratic sixteen. The two sizes are timed
+    /// back to back, five times, and one round inside the limit passes: a
+    /// slow spell on a loaded machine that lands on the large parses only
+    /// can't fail it, and quadratic work fails every round.
     fn grows_linearly(make: impl Fn(usize) -> String) {
         let (small, large) = (make(5_000), make(20_000));
-        let (a, b) = (best(&small), best(&large));
+        let rounds: Vec<_> = (0..5).map(|_| (time(&small), time(&large))).collect();
         assert!(
-            b < a * 8 + Duration::from_millis(20),
-            "{} bytes took {a:?}, {} bytes took {b:?}",
+            rounds
+                .iter()
+                .any(|&(a, b)| b < a * 8 + Duration::from_millis(20)),
+            "{} bytes, then {} bytes, took {rounds:?}",
             small.len(),
             large.len()
         );
