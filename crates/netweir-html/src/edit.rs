@@ -134,22 +134,21 @@ impl Document {
     }
 
     /// Sets an attribute, replacing one of the same name. HTML elements'
-    /// attribute names are lowercased, as `setAttribute` does.
+    /// attribute names are lowercased, as `setAttribute` does; SVG's and
+    /// MathML's keep the case they're given.
     pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
         let Some(e) = self.element(id) else { return };
-        // As the parser stores them: lowercase outside XML, with SVG's
-        // and MathML's case put back when written.
-        let name = if e.ns == Ns::Xml {
-            name.to_string()
-        } else {
-            name.to_ascii_lowercase()
-        };
+        let ns = e.ns;
+        let given = name;
+        let name = stored_attr_name(ns, given);
         let value = self.push_stable(value);
         let name_span = self.push_stable(&name);
         self.rewrite_attrs(id, |doc, attrs| {
+            // By the name as written, so viewBox finds a parsed viewBox, or
+            // as stored, so no two attributes are ever written alike.
             match attrs
                 .iter_mut()
-                .find(|a| a.ns == AttrNs::None && doc.str(a.name) == name)
+                .find(|a| a.ns == AttrNs::None && doc.is_attr(ns, a, &name, given))
             {
                 Some(a) => a.value = value,
                 None => attrs.push(Attr {
@@ -204,14 +203,32 @@ impl Document {
     }
 
     /// Renames the element: lowercased for HTML, as given for the rest.
+    /// An element renamed to `template` gets empty contents, as a new one
+    /// does. A template renamed to anything else gives its contents up as
+    /// ordinary children, ahead of any it has, so its markup stays the same
+    /// and nothing in them is lost.
     pub fn rename(&mut self, id: NodeId, name: &str) {
         let Some(e) = self.element(id).copied() else {
             return;
         };
         let (tag, new) = self.name_element(e.ns, name);
+        let template = e.ns == Ns::Html && tag == Tag::Template;
+        let contents = if template && e.contents == NONE {
+            self.add(Data::Fragment)
+        } else if !template && e.contents != NONE {
+            let first = self.first_child(id).unwrap_or(NONE);
+            while let Some(child) = self.first_child(e.contents) {
+                self.detach(child);
+                self.insert(id, child, first);
+            }
+            NONE
+        } else {
+            e.contents
+        };
         if let Data::Element(e) = &mut self.nodes[id as usize].data {
             e.tag = tag;
             e.name = new;
+            e.contents = contents;
         }
     }
 
@@ -273,18 +290,21 @@ impl Document {
         let Some(e) = self.element(id) else {
             return false;
         };
-        // As the parser stores them: lowercase outside XML, with SVG's
-        // and MathML's case put back when written.
-        let name = if e.ns == Ns::Xml {
-            name.to_string()
-        } else {
-            name.to_ascii_lowercase()
-        };
+        let (ns, given) = (e.ns, name);
+        let name = stored_attr_name(ns, given);
         self.rewrite_attrs(id, |doc, attrs| {
             let before = attrs.len();
-            attrs.retain(|a| doc.str(a.name) != name);
+            attrs.retain(|a| !doc.is_attr(ns, a, &name, given));
             attrs.len() != before
         })
+    }
+
+    /// Whether `a`, on an element in `ns`, is the attribute code calls
+    /// `given`, stored as `stored`: by the name as stored, or on a foreign
+    /// element by the name as written, so viewBox finds a parsed viewBox
+    /// and no two attributes are ever written alike.
+    fn is_attr(&self, ns: Ns, a: &Attr, stored: &str, given: &str) -> bool {
+        self.str(a.name) == stored || (ns != Ns::Html && self.written_name(ns, a) == given)
     }
 
     /// Changes an element's attributes through a copy at the end of the
@@ -312,6 +332,22 @@ impl Document {
     }
 }
 
+/// An attribute name set from code, as the parser would store it: on an
+/// HTML element lowercased, as `setAttribute` does. On SVG and MathML a
+/// name whose case the writer puts back (viewBox, definitionURL) is
+/// lowercased too, and any other keeps the case it's given, as does an XML
+/// one.
+fn stored_attr_name(ns: Ns, given: &str) -> String {
+    let lower = given.to_ascii_lowercase();
+    let restored = match ns {
+        Ns::Html => true,
+        Ns::Svg => crate::tree::svg_attr_name(&lower) == Some(given),
+        Ns::MathMl => lower == "definitionurl" && given == "definitionURL",
+        Ns::Xml => false,
+    };
+    if restored { lower } else { given.to_string() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::EditError;
@@ -336,6 +372,74 @@ mod tests {
         assert_eq!(doc.inner_html(0), "<p>a</p>");
         doc.append(0, second).unwrap();
         assert_eq!(doc.inner_html(0), "<p>a</p><p>b<em>x &amp; y</em></p>");
+    }
+
+    #[test]
+    fn set_attr_keeps_the_case_of_foreign_names() {
+        let mut doc = parse_fragment(
+            "<svg viewBox=\"0 0 1 1\"></svg><math definitionURL=\"a\"></math><p></p>",
+            Ns::Html,
+            "div",
+            false,
+        );
+        let kids: Vec<_> = doc.children(doc.root()).collect();
+        let (svg, math, p) = (kids[0], kids[1], kids[2]);
+        doc.set_attr(svg, "dataFoo", "x");
+        doc.set_attr(svg, "viewBox", "0 0 2 2");
+        doc.set_attr(math, "mathVariant", "bold");
+        doc.set_attr(math, "definitionURL", "b");
+        doc.set_attr(p, "DATA-X", "y");
+        assert_eq!(
+            doc.outer_html(svg),
+            "<svg viewBox=\"0 0 2 2\" dataFoo=\"x\"></svg>"
+        );
+        assert_eq!(
+            doc.outer_html(math),
+            "<math definitionURL=\"b\" mathVariant=\"bold\"></math>"
+        );
+        assert_eq!(doc.outer_html(p), "<p data-x=\"y\"></p>");
+        // A lowercase viewbox finds the same attribute: never two written alike.
+        doc.set_attr(svg, "viewbox", "0 0 3 3");
+        assert_eq!(
+            doc.outer_html(svg),
+            "<svg viewBox=\"0 0 3 3\" dataFoo=\"x\"></svg>"
+        );
+        // And it's set again, not added, when the case matches what was given.
+        doc.set_attr(svg, "dataFoo", "z");
+        assert_eq!(
+            doc.outer_html(svg),
+            "<svg viewBox=\"0 0 3 3\" dataFoo=\"z\"></svg>"
+        );
+        // What set_attr sets, remove_attr finds by the same name.
+        assert!(doc.remove_attr(svg, "dataFoo"));
+        assert!(doc.remove_attr(svg, "viewBox"));
+        assert!(doc.remove_attr(math, "mathVariant"));
+        assert!(!doc.remove_attr(svg, "dataFoo"));
+        assert_eq!(doc.outer_html(svg), "<svg></svg>");
+        assert_eq!(doc.outer_html(math), "<math definitionURL=\"b\"></math>");
+    }
+
+    #[test]
+    fn renaming_to_or_from_template_adds_or_gives_up_its_contents() {
+        let mut doc = parse_fragment("<template><b>x</b>y</template>", Ns::Html, "div", false);
+        let t = doc.first_child(doc.root()).unwrap();
+        doc.rename(t, "div");
+        assert_eq!(doc.template_contents(t), None);
+        assert_eq!(doc.outer_html(t), "<div><b>x</b>y</div>");
+        doc.rename(t, "template");
+        let contents = doc.template_contents(t).expect("new contents");
+        assert_eq!(doc.first_child(contents), None);
+        assert_eq!(doc.outer_html(t), "<template><b>x</b>y</template>");
+        // Contents go ahead of children a template already has, as written.
+        let p = doc.create_element(Ns::Html, "p");
+        doc.append(contents, p).unwrap();
+        doc.rename(t, "section");
+        assert_eq!(doc.outer_html(t), "<section><p></p><b>x</b>y</section>");
+        // Renaming a template to template leaves its contents be.
+        let u = doc.create_element(Ns::Html, "template");
+        let kept = doc.template_contents(u);
+        doc.rename(u, "TEMPLATE");
+        assert_eq!(doc.template_contents(u), kept);
     }
 
     #[test]
