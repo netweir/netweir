@@ -199,6 +199,10 @@ pub(crate) struct PageInner {
     pub(crate) context: Option<String>,
     /// Whether closing the page disposes of its context.
     owns_context: bool,
+    /// The environment on a Firefox page's user context, when it has the
+    /// context to itself and its popups: what it was opened with, less
+    /// what was taken away since. Its popups share it.
+    pub(crate) user_env: Option<Arc<Mutex<Environment>>>,
     shared: Arc<Shared>,
     /// netweir's isolated worlds, by (session, frame id): the loader of the
     /// document each was made for (the main frame's; empty for others,
@@ -367,6 +371,10 @@ pub(crate) struct State {
     /// frames: Firefox tells of no network idle, so the page works it
     /// out, as Chrome does, from these.
     in_flight: HashSet<String>,
+    /// A Firefox popup's requests paused before it was set up as its
+    /// opener is, while it's being set up (None once it is), each with
+    /// whether the guard must see it.
+    pub(crate) held: Option<Vec<(Value, bool)>>,
     /// The data collector that keeps a Firefox page's response bodies,
     /// for [`Page::body`].
     pub(crate) collector: Option<String>,
@@ -389,6 +397,9 @@ pub(crate) struct State {
     /// are open now.
     prompts: u64,
     open_prompts: u64,
+    /// How many of the page's sessions (a service worker's, say) are
+    /// being let go: such a worker reads as attached until it's done.
+    letting_go: usize,
     /// Frames Chrome runs in processes of their own (from other sites),
     /// each with a session: (session, frame id), in the order they came.
     pub(crate) children: Vec<(String, String)>,
@@ -732,6 +743,7 @@ impl Page {
                     .as_ref()
                     .map(|c| c.origins.clone())
                     .unwrap_or_default(),
+                collector: browser.collector.clone(),
                 ..State::default()
             }),
             changed: Notify::new(),
@@ -757,6 +769,7 @@ impl Page {
             login: browser.proxy_login.is_some(),
             fetching: tokio::sync::Mutex::new(false),
             intercept: Mutex::new(None),
+            collector: browser.collector.clone(),
             refused: Default::default(),
             tidy: {
                 let e = lock_env(&env);
@@ -833,6 +846,13 @@ impl Page {
                 session,
                 context,
                 owns_context,
+                user_env: match &opener {
+                    Some(o) => o.inner.user_env.clone(),
+                    None if owns_context && browser.engine() == Engine::Firefox => Some(Arc::new(
+                        Mutex::new(bidi::on_user_context(&lock_env(&env).env)),
+                    )),
+                    None => None,
+                },
                 shared,
                 worlds: tokio::sync::Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
@@ -2853,6 +2873,8 @@ impl Watch {
                 // left first stays held. Left at all, because Chrome keeps
                 // a service worker alive while anything is attached to it.
                 let (conn, parent) = (self.conn.clone(), parent.to_string());
+                let shared = self.shared.clone();
+                lock_state(&shared).letting_go += 1;
                 self.intercept.decider.runtime.spawn(async move {
                     let _ = conn
                         .call(&session, "Runtime.runIfWaitingForDebugger", json!({}))
@@ -2864,6 +2886,8 @@ impl Watch {
                             json!({"sessionId": session}),
                         )
                         .await;
+                    lock_state(&shared).letting_go -= 1;
+                    shared.changed.notify_waiters();
                 });
                 return;
             }
@@ -3212,7 +3236,7 @@ impl Page {
                 .env
                 .init_scripts
                 .push(script.to_string());
-            return Ok(());
+            return bidi::held_for_popups(self).await;
         }
         let params = json!({"source": script});
         self.call("Page.addScriptToEvaluateOnNewDocument", params.clone())
@@ -3320,6 +3344,15 @@ impl Page {
             // The browser's own context, whose id netweir doesn't keep.
             None => !made.iter().any(|m| m == id),
         };
+        // One still being let go reads as attached, and would be passed
+        // over: on Windows CI, a worker stayed online.
+        loop {
+            let changed = self.inner.shared.changed.notified();
+            if lock_state(&self.inner.shared).letting_go == 0 {
+                break;
+            }
+            changed.await;
+        }
         let targets = browser.call("", "Target.getTargets", json!({})).await?;
         for t in targets["targetInfos"].as_array().into_iter().flatten() {
             if t["type"] != "service_worker"

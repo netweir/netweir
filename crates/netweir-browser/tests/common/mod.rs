@@ -419,38 +419,6 @@ pub const FIREFOX_SKIPS: &[(&str, &str)] = &[
         "HTML5 drag and drop, which Firefox doesn't begin from WebDriver's mouse",
     ),
     (
-        "a_popup_from_a_frame_on_another_site_is_its_pages",
-        "popups, told of by the page's events (phase 4)",
-    ),
-    (
-        "choosing_on_an_opener_behind_its_popup_brings_it_back_first",
-        "popups, told of by the page's events (phase 4)",
-    ),
-    (
-        "waiting_on_an_opener_behind_its_popup_brings_it_back_first",
-        "popups, told of by the page's events (phase 4)",
-    ),
-    (
-        "a_blank_popup_a_script_writes_into_is_read",
-        "popups, told of by the page's events (phase 4)",
-    ),
-    (
-        "a_popup_from_a_link_is_read_and_carries_its_openers_rules",
-        "network control (phase 4)",
-    ),
-    (
-        "a_popup_of_a_guarded_page_is_guarded_from_its_first_request",
-        "network control (phase 4)",
-    ),
-    (
-        "a_popup_of_a_shared_context_is_routed_by_the_context",
-        "network control (phase 4)",
-    ),
-    (
-        "a_popup_on_another_site_keeps_its_openers_route",
-        "network control (phase 4)",
-    ),
-    (
         "a_trace_records_what_the_page_did_and_can_be_taken_again",
         "CDP-format tracing, which Firefox has none of",
     ),

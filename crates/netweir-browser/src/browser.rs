@@ -247,6 +247,8 @@ pub(crate) struct Inner {
     /// height), and whether it's maximized: what each page's window
     /// copies, as a person's would be.
     pub first_window: Option<([i64; 4], bool)>,
+    /// The data collector keeping a Firefox browser's response bodies.
+    pub collector: Option<String>,
     /// The permissions granted on Firefox, by user context, origin and
     /// descriptor: Firefox can't take them all back at once, so each is
     /// taken back by name.
@@ -558,6 +560,7 @@ impl Browser {
             stealth: true,
             default_context: None,
             first_window: None,
+            collector: None,
             granted: Default::default(),
         };
         let what = executable.display().to_string();
@@ -603,6 +606,7 @@ impl Browser {
             Quitting::wait_for(dir).await;
         }
         let started = crate::firefox::start(&options).await?;
+        let collector = crate::page::bidi::watch_browser(&started.conn).await?;
         let (environment, screen, screen_scale) = bare(&options);
         let inner = Inner {
             conn: started.conn,
@@ -635,6 +639,7 @@ impl Browser {
             stealth: started.stealth,
             default_context: Some(started.default_context),
             first_window: started.first_window,
+            collector: Some(collector),
             granted: Default::default(),
         };
         Ok(Browser {
@@ -717,6 +722,7 @@ impl Browser {
             stealth: true,
             default_context: None,
             first_window: None,
+            collector: None,
             granted: Default::default(),
         };
         Browser::finish(inner, &options, &ws, None).await
@@ -1342,7 +1348,7 @@ fn shared_worker(
 /// sent and the popup let go before Chrome's next message is read, with
 /// no wait for the runtime's thread to be free and scheduled. On a
 /// Windows runner kept busy, that wait was 35 to 50 ms of every popup.
-fn adopt_now(
+pub(crate) fn adopt_now(
     runtime: &tokio::runtime::Handle,
     adopting: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
@@ -1820,6 +1826,7 @@ async fn probe_identity(
             stealth: true,
             default_context: None,
             first_window: None,
+            collector: None,
             granted: Default::default(),
         }),
     };
@@ -2626,6 +2633,7 @@ mod tests {
             stealth: true,
             default_context: None,
             first_window: None,
+            collector: None,
             granted: Default::default(),
         });
         // A target that closes between being made and being attached to.
