@@ -234,9 +234,7 @@ impl Frame {
         match self.run(Some(id), expression, true).await {
             // The document changed under it, or the frame moved to another
             // process; once more in the new one.
-            Err(Error::Protocol { message, .. })
-                if message.contains("context") || !self.is_main() =>
-            {
+            Err(Error::Protocol { message, .. }) if replaced(&message) || !self.is_main() => {
                 let id = self.world(true).await?;
                 self.run(Some(id), expression, true).await
             }
@@ -909,7 +907,19 @@ impl Frame {
                 Value::from(selector),
                 left.min(Duration::from_secs(1)).as_millis()
             );
-            let now = self.helper(&call).await?;
+            let now = match self.helper(&call).await {
+                Ok(now) => now,
+                // A wait can outlast documents: one that went during the
+                // call, and its replacement before the helper got there,
+                // is waited past as the next document is asked.
+                Err(Error::Protocol { message, .. })
+                    if replaced(&message) && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             if wanted
                 .as_array()
                 .is_some_and(|w| w.contains(&now.as_str().map_or(json!("detached"), Value::from)))
@@ -1424,6 +1434,12 @@ fn never(check: &str) -> &'static str {
         "receives events" => "something else was always at its centre, covering it",
         _ => "it never became actionable",
     }
+}
+
+/// Whether Chrome said a script's document went while it ran: its world
+/// went with it, or the frame navigated.
+fn replaced(message: &str) -> bool {
+    message.contains("context") || message.contains("navigated")
 }
 
 #[cfg(test)]
