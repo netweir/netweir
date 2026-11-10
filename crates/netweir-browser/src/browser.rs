@@ -2563,7 +2563,7 @@ mod tests {
         crate::identity::remember(
             &file,
             &key,
-            "Mozilla/5.0 (X11) AppleWebKit/537.36 HeadlessChrome/1.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Kept; Stale) AppleWebKit/537.36 HeadlessChrome/1.0.0.0 Safari/537.36",
             &json!({"platform": "Linux", "fullVersion": "1.0.0.0"}),
         );
         let browser = Browser::launch(options()).await.unwrap();
@@ -2575,7 +2575,7 @@ mod tests {
             "{full}"
         );
         let agent = browser.inner.agent.clone().unwrap_or_default();
-        assert!(!agent.contains("X11"), "{agent}");
+        assert!(!agent.contains("Stale"), "{agent}");
         browser.close().await.unwrap();
         // The next program asks nothing.
         forget_from_memory(&executable, &extra);
