@@ -1,0 +1,8 @@
+{
+  "name": "bench-puppeteer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "puppeteer": "^25.16.0"
+  }
+}

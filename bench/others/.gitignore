@@ -1,3 +1,4 @@
 spider/target/
 colly/bench-colly
 crawlee-node/node_modules/
+puppeteer/node_modules/
