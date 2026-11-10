@@ -368,6 +368,7 @@ impl Browser {
         if options.engine == Engine::Firefox {
             return Browser::launch_firefox(options).await;
         }
+        let given = options.clone();
         if !options.stealth {
             return Err(Error::Invalid(
                 "stealth: false is for Firefox; Chrome is always launched as a person's browser"
@@ -452,6 +453,9 @@ impl Browser {
         );
         // Chrome's client hints, when they had to be read before launch.
         let mut hints = None;
+        // The version an earlier program was told, if that's where the
+        // hints came from.
+        let mut remembered = None;
         let env = &options.environment;
         // The caller's own, if given.
         let mut agent = options
@@ -467,8 +471,13 @@ impl Browser {
             // high-entropy client hints, which each page's override puts
             // back.
             if !options.args.iter().any(|a| a.starts_with("--user-agent=")) {
-                let (own, metadata) =
+                let (own, metadata, kept) =
                     headless_identity(&executable, &options.args, options.timeout).await?;
+                if kept {
+                    // The user agent says only the major version.
+                    let full = metadata["fullVersion"].as_str().unwrap_or_default();
+                    remembered = Some(full.to_string());
+                }
                 let own = own.replace("HeadlessChrome/", "Chrome/");
                 // The environment's own, where it has one, so a service
                 // worker says it too.
@@ -567,13 +576,23 @@ impl Browser {
         // Google Chrome given its own default profile says so and runs on
         // without listening; that ends the launch at once, not at the
         // timeout.
-        tokio::select! {
+        let launched = tokio::select! {
             finished = Browser::finish(inner, &options, &what, hints) => finished.map_err(|e| match e {
                 Error::Launch(message) => Error::Launch(said.explain(message)),
                 other => other,
             }),
             () = said.refused() => Err(launch::own_profile_refused(&shown)),
+        };
+        // A Chrome updated without its executable changing would keep the
+        // old version's identity: it's asked again, and launched again.
+        if let (Ok(browser), Some(full)) = (&launched, &remembered)
+            && browser.inner.version.rsplit('/').next() != Some(full.as_str())
+        {
+            forget_identity(&executable, &options.args);
+            let _ = browser.close().await;
+            return Box::pin(Browser::launch(given)).await;
         }
+        launched
     }
 
     async fn launch_firefox(options: LaunchOptions) -> Result<Browser> {
@@ -1699,34 +1718,41 @@ const AS_SHIPPED: &[&str] = &["--disable-infobars", "--disable-field-trial-confi
 #[cfg(test)]
 static PROBED: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
 
-/// What a headless Chrome at `executable` says it is: its user agent and
-/// its client hints, which only asking it tells exactly, and only before
-/// a --user-agent flag empties the hints. The first time, it's started once
-/// to ask.
-async fn headless_identity(
-    executable: &Path,
-    extra: &[String],
-    timeout: Duration,
-) -> Result<(String, Value)> {
-    // By the file as it is now, so a Chrome updated in place is asked
-    // again, and by the switches it's started with.
-    type Key = (PathBuf, Option<std::time::SystemTime>, u64, Vec<String>);
-    type Answer = Arc<tokio::sync::OnceCell<Result<(String, Value)>>>;
-    // One probe for each key at a time, whose outcome every launch waiting
-    // on it takes: each asking on its own started a Chrome apiece at the
-    // moment a fresh machine is slowest to start one, and two at once on
-    // a new Windows runner both sat over 30 seconds on their first
-    // Target.createTarget. An answer is kept; a failure goes to those
-    // already waiting and no further, so the next launch asks again.
-    static KNOWN: Mutex<Option<HashMap<Key, Answer>>> = Mutex::new(None);
+/// By the file as it is now, so a Chrome updated in place is asked again,
+/// and by the switches it's started with.
+type Key = (PathBuf, Option<std::time::SystemTime>, u64, Vec<String>);
+type Answer = Arc<tokio::sync::OnceCell<Result<(String, Value, bool)>>>;
+
+/// One probe for each key at a time, whose outcome every launch waiting
+/// on it takes: each asking on its own started a Chrome apiece at the
+/// moment a fresh machine is slowest to start one, and two at once on a
+/// new Windows runner both sat over 30 seconds on their first
+/// Target.createTarget. An answer is kept; a failure goes to those
+/// already waiting and no further, so the next launch asks again.
+static KNOWN: Mutex<Option<HashMap<Key, Answer>>> = Mutex::new(None);
+
+fn identity_key(executable: &Path, extra: &[String]) -> Key {
     let meta = std::fs::metadata(executable).ok();
-    let key: Key = (
+    (
         executable.to_path_buf(),
         meta.as_ref().and_then(|m| m.modified().ok()),
         meta.as_ref().map_or(0, |m| m.len()),
         // Switches can change what Chrome says it is.
         extra.to_vec(),
-    );
+    )
+}
+
+/// What a headless Chrome at `executable` says it is: its user agent and
+/// its client hints, which only asking it tells exactly, and only before
+/// a --user-agent flag empties the hints; and whether that's what an
+/// earlier program was told. The first time on a machine, it's started
+/// once to ask.
+async fn headless_identity(
+    executable: &Path,
+    extra: &[String],
+    timeout: Duration,
+) -> Result<(String, Value, bool)> {
+    let key = identity_key(executable, extra);
     let answer = KNOWN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1748,16 +1774,42 @@ async fn headless_identity(
     outcome
 }
 
-/// [`probe_identity`], again with a new Chrome if the first sat on its
-/// first page: on a busy Mac runner one now and then never answers, and
-/// the next does. A second such wait is a launch that failed, whichever
-/// call inside it ran out of time.
+/// What an earlier program was told, or [`probe_identity`], again with a
+/// new Chrome if the first sat on its first page: on a busy Mac runner
+/// one now and then never answers, and the next does. A second such wait
+/// is a launch that failed, whichever call inside it ran out of time.
 async fn ask_identity(
     executable: &Path,
     extra: &[String],
     timeout: Duration,
-) -> Result<(String, Value)> {
-    again_if_stuck(|| probe_identity(executable, extra, timeout)).await
+) -> Result<(String, Value, bool)> {
+    let file = crate::identity::file();
+    let key = crate::identity::key(executable, extra);
+    if let Some((agent, hints)) = file
+        .as_deref()
+        .and_then(|f| crate::identity::recall(f, &key))
+    {
+        return Ok((agent, hints, true));
+    }
+    let (agent, hints) = again_if_stuck(|| probe_identity(executable, extra, timeout)).await?;
+    // Kept only with the full version a launch checks it against: one
+    // without would fail that check, and every launch would start twice.
+    if let Some(file) = &file
+        && hints["fullVersion"].as_str().is_some_and(|v| !v.is_empty())
+    {
+        crate::identity::remember(file, &key, &agent, &hints);
+    }
+    Ok((agent, hints, false))
+}
+
+/// Drops what's known of the Chrome at `executable`, here and on disk.
+fn forget_identity(executable: &Path, extra: &[String]) {
+    if let Some(known) = KNOWN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        known.remove(&identity_key(executable, extra));
+    }
+    if let Some(file) = crate::identity::file() {
+        crate::identity::forget(&file, &crate::identity::key(executable, extra));
+    }
 }
 
 async fn again_if_stuck<T, F: Future<Output = Result<T>>>(probe: impl Fn() -> F) -> Result<T> {
@@ -2474,6 +2526,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(probes(&extra), 1);
+    }
+
+    /// A headless launch takes what an earlier program was told instead
+    /// of starting a Chrome to ask, unless the Chrome that then starts is
+    /// another version: then it asks, and launches again.
+    #[tokio::test]
+    async fn a_kept_identity_spares_the_probe_unless_chrome_changed() {
+        let executable = match launch::find_chrome() {
+            Ok(path) => path,
+            Err(e) if std::env::var_os("NETWEIR_REQUIRE_CHROME").is_some() => panic!("{e}"),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let dir = std::env::temp_dir().join(format!("netweir-kept-{}", std::process::id()));
+        let file = dir.join("chrome-identity.json");
+        crate::identity::FILE.with(|f| *f.borrow_mut() = Some(file.clone()));
+        let switch = fresh_switch();
+        // The switches the probe is started with, as launch has them.
+        let mut extra = switch.clone();
+        extra.extend(launch::env_switches());
+        let key = crate::identity::key(&executable, &extra);
+        let options = || LaunchOptions {
+            executable: Some(executable.clone()),
+            args: switch.clone(),
+            ..LaunchOptions::default()
+        };
+        let asked = || {
+            PROBED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|p| p.contains(&switch[0]))
+                .count()
+        };
+        // An old version's answer: asked again, and what it says is kept.
+        crate::identity::remember(
+            &file,
+            &key,
+            "Mozilla/5.0 (X11) AppleWebKit/537.36 HeadlessChrome/1.0.0.0 Safari/537.36",
+            &json!({"platform": "Linux", "fullVersion": "1.0.0.0"}),
+        );
+        let browser = Browser::launch(options()).await.unwrap();
+        assert_eq!(asked(), 1);
+        let (_, hints) = crate::identity::recall(&file, &key).unwrap();
+        let full = hints["fullVersion"].as_str().unwrap();
+        assert!(
+            browser.inner.version.ends_with(&format!("/{full}")),
+            "{full}"
+        );
+        let agent = browser.inner.agent.clone().unwrap_or_default();
+        assert!(!agent.contains("X11"), "{agent}");
+        browser.close().await.unwrap();
+        // The next program asks nothing.
+        forget_from_memory(&executable, &extra);
+        let browser = Browser::launch(options()).await.unwrap();
+        assert_eq!(asked(), 1);
+        browser.close().await.unwrap();
+        crate::identity::FILE.with(|f| *f.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// As a new program would start: nothing known in memory.
+    fn forget_from_memory(executable: &Path, extra: &[String]) {
+        if let Some(known) = KNOWN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            known.remove(&identity_key(executable, extra));
+        }
     }
 
     /// A "Chrome" in `dir` that runs `script`, run once before it's

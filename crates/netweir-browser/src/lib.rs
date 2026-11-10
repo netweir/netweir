@@ -11,6 +11,7 @@ mod environment;
 mod events;
 mod firefox;
 mod frame;
+mod identity;
 mod launch;
 mod lifeline;
 mod network;

@@ -1072,7 +1072,11 @@ Netweir avoids these giveaways:
 - Headless Chrome calls itself `HeadlessChrome` in its user agent. Netweir
   sends the normal user agent instead, with the client hints Chrome
   reports for itself, in the request headers, in the page, and in its
-  workers and service workers.
+  workers and service workers. Chrome only says what those are before
+  the user agent is changed, so the first headless launch on a machine
+  starts a Chrome of its own to ask. The answer is kept in
+  `~/.netweir/chrome-identity.json` for the next program, and asked again
+  when Chrome or the operating system is updated.
 - It never turns on the DevTools domains whose side effects page scripts
   can notice, and its own scripts run where the page can't see them.
 - Clicks, keys, hovering and scrolling are real input events, not
