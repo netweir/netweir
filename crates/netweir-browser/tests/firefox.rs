@@ -90,6 +90,21 @@ async fn a_firefox_that_exits_fails_the_launch_at_once() {
     let fake = dir.join("firefox");
     std::fs::write(&fake, "#!/bin/sh\necho boom >&2\nexit 1\n").unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Run once before it's timed: macOS checks a new executable the first
+    // time it runs, which took 48 seconds once with the other tests
+    // running. Linux won't run a file another test's fork still holds open
+    // for writing, so "Text file busy" is waited out.
+    for _ in 0..100 {
+        match std::process::Command::new(&fake).output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            ran => {
+                ran.unwrap();
+                break;
+            }
+        }
+    }
     let started = Instant::now();
     let err = Browser::launch(LaunchOptions {
         executable: Some(fake),
