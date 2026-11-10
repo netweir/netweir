@@ -15,6 +15,11 @@ Chrome for Testing and the Firefox that `netweir install` put in
 ~/.netweir. Playwright's Firefox is its own patched build (it can't drive
 a stock one), so that row uses it.
 
+Puppeteer shows one page at a time: the others are background tabs at
+800 by 600, which draw nothing. Netweir's pages are each a window at 1280
+by 807, drawn in full as a person's would be. puppeteer-chrome-visible
+gives Puppeteer's pages the same, so it's the row to compare CPU with.
+
 A browser is many processes, so CPU and memory are the whole tree's:
 psutil samples the tool's process and every descendant five times a
 second. CPU is each process's last-seen total, summed, so the last fifth
@@ -154,9 +159,19 @@ TOOLS = {
     "playwright-chrome": lambda todo: run_playwright(todo, "chrome"),
     "playwright-firefox": lambda todo: run_playwright(todo, "firefox"),
 }
+
+
+def puppeteer(browser: str, executable: str | None, *more: str) -> list[str]:
+    render = os.path.join(PUPPETEER, "render.js")
+    return ["node", render, browser, executable, str(PAGES_AT_ONCE), *more]
+
+
 PROGRAMS = {
-    "puppeteer-chrome": lambda: ["node", os.path.join(PUPPETEER, "render.js"), "chrome", CHROME],
-    "puppeteer-firefox": lambda: ["node", os.path.join(PUPPETEER, "render.js"), "firefox", FIREFOX],
+    "puppeteer-chrome": lambda: puppeteer("chrome", CHROME),
+    "puppeteer-firefox": lambda: puppeteer("firefox", FIREFOX),
+    # Puppeteer's pages but the front one are background tabs, which draw
+    # nothing; this row draws every page in full, as netweir's are.
+    "puppeteer-chrome-visible": lambda: puppeteer("chrome", CHROME, "visible"),
 }
 
 
@@ -177,10 +192,7 @@ def available(name: str) -> bool:
 def measure(name: str, todo: list[str], names: dict[str, str]) -> dict:
     import psutil
 
-    if name in PROGRAMS:
-        command = [*PROGRAMS[name](), str(PAGES_AT_ONCE)]
-    else:
-        command = [sys.executable, __file__, "--tool", name]
+    command = PROGRAMS[name]() if name in PROGRAMS else [sys.executable, __file__, "--tool", name]
     started = time.perf_counter()
     proc = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
