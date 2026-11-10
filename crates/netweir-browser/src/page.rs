@@ -2149,7 +2149,12 @@ impl Page {
     /// two taps.
     pub(crate) async fn mouse_double(&self, x: f64, y: f64) -> Result<()> {
         if self.is_firefox() && !self.touches() {
-            let pauses = [BUTTON_HOLD, DOUBLE_GAP, BUTTON_HOLD].map(crate::events::pause);
+            // Firefox hears a double click only if the second release comes
+            // within 640 ms of the first, and a busy machine spends much of
+            // that handing the events to the page: the gap and the second
+            // hold are kept near the low ends of their ranges (#299).
+            let low = |(least, _): (Duration, Duration)| (least, least + Duration::from_millis(20));
+            let pauses = [BUTTON_HOLD, low(DOUBLE_GAP), low(BUTTON_HOLD)].map(crate::events::pause);
             return bidi::mouse_double(self, pauses).await.map(drop);
         }
         self.mouse_press_count(x, y, 1).await?;
