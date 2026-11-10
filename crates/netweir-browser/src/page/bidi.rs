@@ -1725,6 +1725,15 @@ pub(super) async fn to_front(page: &Page) -> Result<()> {
     Ok(())
 }
 
+/// Brings the page forward only if it's hidden: what a wait needs.
+pub(super) async fn to_view(page: &Page) -> Result<()> {
+    let shown = call(page, "return document.visibilityState;", true).await?;
+    if shown == "visible" {
+        return Ok(());
+    }
+    to_front(page).await
+}
+
 /// Waits until none of the page's dialogs is open. Chrome runs nothing in
 /// a page's own world while it has one open, and Firefox would: a script
 /// would see the page from before its dialog was answered.

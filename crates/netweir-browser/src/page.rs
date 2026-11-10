@@ -993,6 +993,19 @@ impl Page {
         self.inner.target == id || self.state().children.iter().any(|(_, frame)| frame == id)
     }
 
+    /// Makes sure the page is showing, for a wait that only needs it
+    /// drawn, not typed or clicked in. On Chrome that's `to_front`. Firefox
+    /// gives one window the focus at a time, and a page in a window of its
+    /// own shows without it, so a wait there brings the page forward only
+    /// if it's hidden: pages a crawl runs side by side don't take turns
+    /// at the focus, a person's pause each.
+    pub(crate) async fn to_view(&self) -> Result<()> {
+        if self.is_firefox() {
+            return bidi::to_view(self).await;
+        }
+        self.to_front().await
+    }
+
     /// Brings the page's tab in front of a popup it opened (or of its
     /// opener, for a popup), as a person switches to the tab they're
     /// about to use: in a tab behind, Chrome runs no animation frames and
@@ -1409,7 +1422,7 @@ impl Page {
         let deadline = Instant::now() + self.timeout(timeout);
         // A page's script that navigates may wait on a frame, or check
         // that it's seen, first.
-        self.to_front().await?;
+        self.to_view().await?;
         self.until(
             || format!("{event} of a navigation away from {}", after.url),
             deadline.saturating_duration_since(Instant::now()),
@@ -1435,7 +1448,7 @@ impl Page {
             (state.loader.clone(), state.url.clone())
         };
         // As wait_for_navigation.
-        self.to_front().await?;
+        self.to_view().await?;
         self.until(
             || format!("{event} of the page at {url}"),
             deadline.saturating_duration_since(Instant::now()),

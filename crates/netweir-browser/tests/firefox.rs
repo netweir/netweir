@@ -430,6 +430,41 @@ async fn every_firefox_page_is_visible() {
     }
 }
 
+/// Waiting needs a page shown, not focused, and every Firefox page shows
+/// in its own window: two pages waited on in turn don't take turns at
+/// the focus, with a person's pause each time.
+#[tokio::test]
+async fn firefox_pages_waited_on_in_turn_wait_without_a_pause() {
+    let Some(executable) = common::firefox() else {
+        return;
+    };
+    let pause = Duration::from_secs(3);
+    let browser = common::launch_firefox(
+        executable,
+        LaunchOptions {
+            dialog_pause: (pause, pause),
+            ..LaunchOptions::default()
+        },
+    )
+    .await;
+    let server = common::serve(vec![("/", common::html("<p id=here>here</p>"))]);
+    let url = format!("{}/", server.url);
+    let (a, b) = (
+        browser.new_page().await.unwrap(),
+        browser.new_page().await.unwrap(),
+    );
+    for page in [&a, &b] {
+        page.goto(&url, netweir_browser::WaitUntil::Load, None)
+            .await
+            .unwrap();
+    }
+    let started = Instant::now();
+    for page in [&a, &b, &a, &b] {
+        page.wait_for("#here", "visible", None).await.unwrap();
+    }
+    assert!(started.elapsed() < pause, "took {:?}", started.elapsed());
+}
+
 #[tokio::test]
 async fn a_kept_profile_keeps_firefox_s_cookies() {
     let Some(executable) = common::firefox() else {

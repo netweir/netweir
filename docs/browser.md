@@ -629,6 +629,12 @@ again (`click`, `fill`, `press`, `hover`, `drag`, `scroll`, `check`,
 `wait_for_navigation`, `wait_for_load`), Netweir brings its tab back to
 the front first, and pauses a moment, as you would.
 
+Firefox puts every page in a window of its own, so every page is showing,
+but only one window has the focus at a time. Acting on a page gives it
+the focus first, with the same pause. Waiting on one doesn't need the
+focus, only a page that's showing, so pages you wait on side by side
+don't take turns at it, and don't pause.
+
 Reading it doesn't: `evaluate`, `content`, `parse`, `title` and
 `screenshot` work on a tab behind and leave it there, so reading a
 popup and its opener in turn doesn't flip between them. A tab behind
