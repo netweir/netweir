@@ -1,0 +1,8 @@
+{
+  "name": "bench-crawlee-node",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "crawlee": "^3.18.2"
+  }
+}

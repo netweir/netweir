@@ -1,5 +1,6 @@
-"""A whole crawl, timed: netweir against Scrapy, Scrapling, a plain
-httpx + selectolax script and self-hosted Firecrawl.
+"""A whole crawl, timed: netweir against Scrapy, Scrapling, Crawlee (for
+Python and for Node.js), Crawl4AI, spider-rs, Colly, a plain httpx +
+selectolax script and self-hosted Firecrawl.
 
     uv run python bench/crawl.py                     # every crawler it can reach
     uv run python bench/crawl.py --only netweir      # just one
@@ -14,7 +15,20 @@ Each runs in its own process, so its CPU time and peak memory are its own.
 Install what you want to compare against (Scrapling needs Python 3.13 or
 older for now):
 
-    uv pip install scrapy "scrapling[fetchers]" httpx selectolax
+    uv pip install scrapy "scrapling[fetchers]" httpx selectolax \
+        "crawlee[parsel]" crawl4ai
+
+The ones that aren't Python are small programs in bench/others. Build them
+once (each is skipped until it's built):
+
+    (cd bench/others/spider && cargo build --release)
+    (cd bench/others/colly && go build -o bench-colly .)
+    (cd bench/others/crawlee-node && npm install crawlee)
+
+Not every tool can be held to every limit, and where one can't, its runner
+says what it does instead: Crawlee has no per-site limit; spider-rs and
+Crawl4AI keep the total near 100 by crawling a few sites at a time, and
+Crawl4AI's per-site limit is its own 20, not 8.
 
 Firecrawl runs only if its API answers on localhost:3002. Start it from its
 own checkout, with USE_DB_AUTHENTICATION=false and ALLOW_LOCAL_WEBHOOKS=true
@@ -296,6 +310,104 @@ def run_httpx(port: int) -> int:
     return asyncio.run(crawl())
 
 
+def run_crawlee(port: int) -> int:
+    from crawlee import ConcurrencySettings
+    from crawlee.crawlers import ParselCrawler, ParselCrawlingContext
+    from crawlee.storage_clients import MemoryStorageClient
+
+    count = [0]
+    # Crawlee scales its pool with the machine's load; pinning the bounds
+    # holds it at the same 100 the others get. It has no per-site limit.
+    crawler = ParselCrawler(
+        concurrency_settings=ConcurrencySettings(
+            min_concurrency=CONCURRENCY,
+            desired_concurrency=CONCURRENCY,
+            max_concurrency=CONCURRENCY,
+        ),
+        max_request_retries=0,
+        storage_client=MemoryStorageClient(),
+        configure_logging=False,
+    )
+
+    @crawler.router.default_handler
+    async def parse(context: ParselCrawlingContext) -> None:
+        count[0] += 1
+        _ = (
+            context.selector.css("h1.title::text").get(),
+            context.selector.css("p.price::text").get(),
+        )
+        await context.enqueue_links(selector="a.next")
+
+    asyncio.run(crawler.run(start_urls(port)))
+    return count[0]
+
+
+def run_crawl4ai(port: int) -> int:
+    os.environ["CRAWL4AI_NO_CLOUD_NOTICE"] = "1"
+    from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig, HTTPCrawlerConfig
+    from crawl4ai.async_crawler_strategy import AsyncHTTPCrawlerStrategy
+    from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
+    from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
+
+    schema = {
+        "name": "page",
+        "baseSelector": "body",
+        "fields": [
+            {"name": "title", "selector": "h1.title", "type": "text"},
+            {"name": "price", "selector": "p.price", "type": "text"},
+        ],
+    }
+
+    async def crawl() -> int:
+        # Its HTTP strategy, not a browser: the same job the others do.
+        strategy = AsyncHTTPCrawlerStrategy(browser_config=HTTPCrawlerConfig())
+        async with AsyncWebCrawler(crawler_strategy=strategy, verbose=False) as crawler:
+            # A deep crawl goes level by level through Crawl4AI's default
+            # dispatcher, which takes no limit from us and runs up to 20
+            # pages at once; so CONCURRENCY // 20 sites at a time keeps the
+            # whole crawl at CONCURRENCY in flight. Its per-site limit is
+            # that 20, not PER_SITE.
+            gate = asyncio.Semaphore(max(CONCURRENCY // 20, 1))
+
+            async def site(url: str) -> int:
+                config = CrawlerRunConfig(
+                    deep_crawl_strategy=BFSDeepCrawlStrategy(max_depth=PAGES),
+                    extraction_strategy=JsonCssExtractionStrategy(schema),
+                    cache_mode=CacheMode.BYPASS,
+                    verbose=False,
+                )
+                async with gate:
+                    results = await crawler.arun(url, config=config)
+                return [r.url for r in results if r.success]
+
+            fetched = [
+                u for urls in await asyncio.gather(*map(site, start_urls(port))) for u in urls
+            ]
+            # It fetches each front page twice, once as the start and once
+            # from page 33's link; the items are the pages, counted once.
+            if len(fetched) != len(set(fetched)):
+                print(f"{len(fetched) - len(set(fetched))} pages fetched twice", file=sys.stderr)
+            return len(set(fetched))
+
+    return asyncio.run(crawl())
+
+
+# The ones that aren't Python: a program each under bench/others, given the
+# port and the limits, printing the item count. Build them first (see the
+# module's docstring).
+OTHERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "others")
+PROGRAMS = {
+    "spider-rs": [os.path.join(OTHERS, "spider", "target", "release", "bench-spider")],
+    "colly": [os.path.join(OTHERS, "colly", "bench-colly")],
+    "crawlee-node": ["node", os.path.join(OTHERS, "crawlee-node", "crawl.js")],
+}
+ARGS = {
+    "spider-rs": [SITES, CONCURRENCY, PER_SITE],
+    "colly": [SITES, CONCURRENCY, PER_SITE],
+    "crawlee-node": [SITES, CONCURRENCY],
+}
+
+
 FIRECRAWL = "http://localhost:3002/v2"
 FIRECRAWL_DIR = os.environ.get("FIRECRAWL_DIR", "firecrawl")
 
@@ -455,6 +567,8 @@ CRAWLERS = {
     "scrapy": run_scrapy,
     "scrapling": run_scrapling,
     "httpx+selectolax": run_httpx,
+    "crawlee": run_crawlee,
+    "crawl4ai": run_crawl4ai,
 }
 NEEDS = {
     "netweir": "netweir",
@@ -462,6 +576,8 @@ NEEDS = {
     "scrapy": "scrapy",
     "scrapling": "scrapling.spiders",
     "httpx+selectolax": "httpx",
+    "crawlee": "crawlee.crawlers",
+    "crawl4ai": "crawl4ai",
 }
 
 
@@ -469,12 +585,12 @@ NEEDS = {
 
 
 def measure(name: str, port: int) -> dict:
+    if name in PROGRAMS:
+        command = [*PROGRAMS[name], str(port), *map(str, ARGS[name])]
+    else:
+        command = [sys.executable, __file__, "--crawler", name, "--port", str(port)]
     started = time.perf_counter()
-    proc = subprocess.Popen(
-        [sys.executable, __file__, "--crawler", name, "--port", str(port)],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
     _, status, usage = os.wait4(proc.pid, 0)
     wall = time.perf_counter() - started
     out = proc.stdout.read().strip().splitlines()
@@ -495,6 +611,12 @@ def measure(name: str, port: int) -> dict:
 
 
 def available(name: str) -> bool:
+    if name in PROGRAMS:
+        program = PROGRAMS[name][-1]
+        return os.path.exists(program) and (
+            name != "crawlee-node"
+            or os.path.isdir(os.path.join(os.path.dirname(program), "node_modules", "crawlee"))
+        )
     if name == "firecrawl":
         try:
             urllib.request.urlopen("http://localhost:3002/", timeout=5).close()
@@ -515,7 +637,7 @@ def main() -> None:
     ap.add_argument("--crawler", help=argparse.SUPPRESS)
     ap.add_argument("--port", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--serve", help=argparse.SUPPRESS)
-    ap.add_argument("--only", action="append", choices=[*CRAWLERS, "firecrawl"])
+    ap.add_argument("--only", action="append", choices=[*CRAWLERS, *PROGRAMS, "firecrawl"])
     ap.add_argument("--json", action="store_true", help="print the results as JSON")
     args = ap.parse_args()
     if args.crawler:
@@ -534,7 +656,7 @@ def main() -> None:
             time.sleep(0.05)
         with open(port_file) as f:
             port, *site_ports = map(int, f.read().split())
-        names = args.only or [*CRAWLERS, "firecrawl"]
+        names = args.only or [*CRAWLERS, *PROGRAMS, "firecrawl"]
         results = []
         for name in names:
             if not available(name):
