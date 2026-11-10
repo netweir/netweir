@@ -295,6 +295,31 @@
       return visible(el) ? "visible" : "hidden";
     },
 
+    // The element's state once it's one of `wanted`, looked at every
+    // frame, or whatever it is after `ms`. A document on its way out ends
+    // the wait at once: Firefox never answers a call whose document goes
+    // while it waits, and the next document is asked anew.
+    async stateIn(selector, wanted, ms) {
+      const until = performance.now() + ms;
+      let leave;
+      const leaving = new Promise((resolve) => {
+        leave = () => resolve(true);
+      });
+      // Capture, on the window, so the page can't stop it on the way.
+      addEventListener("pagehide", leave, true);
+      try {
+        let now = this.state(selector);
+        while (!wanted.includes(now) && performance.now() < until) {
+          // A document going runs no more frames or timers.
+          if (await Promise.race([leaving, frame()])) return now;
+          now = this.state(selector);
+        }
+        return now;
+      } finally {
+        removeEventListener("pagehide", leave, true);
+      }
+    },
+
     // Focuses the element and selects what's in it, so typing replaces it.
     focus(selector) {
       const el = find(selector);

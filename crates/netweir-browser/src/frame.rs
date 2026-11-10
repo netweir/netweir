@@ -893,27 +893,34 @@ impl Frame {
         // Whatever draws it may wait on the page's next frame, which a
         // tab behind never gets.
         self.page.to_view().await?;
-        let call = format!("__netweir.state({})", Value::from(selector));
-        let mut pause = Duration::from_millis(20);
+        let wanted = match state {
+            "attached" => json!(["hidden", "visible"]),
+            "visible" => json!(["visible"]),
+            "hidden" => json!(["hidden", "detached"]),
+            _ => json!(["detached"]),
+        };
+        // The page looks every frame, so the wait ends on the frame that
+        // shows the change. It answers at least once a second, so a
+        // navigation that replaces the document is waited past here.
         loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let call = format!(
+                "__netweir.stateIn({}, {wanted}, {})",
+                Value::from(selector),
+                left.min(Duration::from_secs(1)).as_millis()
+            );
             let now = self.helper(&call).await?;
-            let now = now.as_str().unwrap_or("detached");
-            let done = match state {
-                "attached" => now != "detached",
-                "visible" => now == "visible",
-                "hidden" => now != "visible",
-                _ => now == "detached",
-            };
-            if done {
+            if wanted
+                .as_array()
+                .is_some_and(|w| w.contains(&now.as_str().map_or(json!("detached"), Value::from)))
+            {
                 return Ok(());
             }
-            if Instant::now() + pause >= deadline {
+            if Instant::now() >= deadline {
                 return Err(Error::Timeout(format!(
                     "waiting for {selector} to be {state}"
                 )));
             }
-            tokio::time::sleep(pause).await;
-            pause = (pause * 2).min(Duration::from_millis(200));
         }
     }
 
