@@ -581,22 +581,35 @@ the best possible text from a newspaper, test both on your own pages.
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
 crawler fetches all 10,000 pages and pulls a title and price from each,
-with the same limits (100 requests in flight, 8 per site):
+with the same limits (100 requests in flight, 8 per site, no robots.txt,
+no throttling):
 
 | | Pages a second | CPU per page | Peak memory |
 |---|---|---|---|
-| Netweir | 1,876 | 0.23 ms | 83 MB |
-| Scrapy 2.19 | 734 | 1.3 ms | 116 MB |
-| httpx + selectolax | 211 | 3.2 ms | 174 MB |
-| Scrapling 0.5 | 188 | 0.7 ms | 66 MB |
-| Firecrawl, self-hosted | 17 | 146 ms | about 4 GB |
+| Colly 2.3 (Go) | 1,833 | 0.45 ms | 102 MB |
+| Netweir | 1,782 | 0.21 ms | 89 MB |
+| Crawlee for Python 1.11 | 1,464 | 0.78 ms | 256 MB |
+| spider-rs 2.53 (Rust) | 1,246 | 0.26 ms | 303 MB |
+| Scrapy 2.20 | 929 | 1.0 ms | 115 MB |
+| Crawlee for Node.js 3.18 | 210 | 2.0 ms | 1,004 MB |
+| httpx + selectolax | 203 | 3.4 ms | 207 MB |
+| Scrapling 0.5 | 182 | 0.8 ms | 73 MB |
+| Crawl4AI 0.9 | 76 | 5.5 ms | 136 MB |
+| Firecrawl, self-hosted | 17 | 137 ms | about 3.8 GB |
 
 With 100 requests in flight and 50 ms per answer, 2,000 pages a second is
-the most any crawler could do here, so Netweir is waiting on the server,
-not on itself. Scrapling is held back by its HTTP session's default of 10
-connections, which it doesn't let you change; that is how it ships.
+the most any crawler could do here. Colly and Netweir both come close, and
+Colly is about 3% faster; Netweir spends under half Colly's CPU on each
+page, the least of any crawler here. Scrapling is held back by its HTTP session's
+default of 10 connections, which it doesn't let you change; that is how it
+ships.
 
-Firecrawl (v2.11.645, from its own `docker-compose.yaml`, on its defaults)
+Not every tool can be held to every limit. Crawlee has no per-site limit.
+spider-rs and Crawl4AI keep the total near 100 by crawling a few sites at a
+time, and Crawl4AI's per-site limit is its own 20, not 8. Crawl4AI fetches
+each front page twice; the table counts pages once.
+
+Firecrawl (v2.11.717, from its own `docker-compose.yaml`, on its defaults)
 gets one crawl job per site with 8 pages at a time. It renders each page in
 its Playwright service, which its compose file limits to 2 CPUs, and that
 is where its time goes. Its CPU and memory are summed across its containers;
@@ -604,9 +617,43 @@ about 2.7 GB of that memory is in use before the crawl starts. It can't be
 told to skip robots.txt (that's an enterprise feature), so it fetches one
 more file per site than the others.
 
-Medians of three runs, all crawlers in one session on one M2 Max, Python
-3.12; run it yourself with `uv run python bench/crawl.py` once the others
-are installed (the docstring says how to start Firecrawl).
+Medians of three runs, all crawlers in one session on one M2 Max (macOS
+26.7, Python 3.13, Node 22, Go 1.27, November 2026); Firecrawl ran in its
+own session and gave 17 or 18 pages a second each time. Run it yourself
+with `uv run python bench/crawl.py` once the others are installed (the
+docstring says how to build the ones that aren't Python, and how to start
+Firecrawl).
+
+Some pages need a browser. `bench/browser.py` renders the 30 items of
+test.netweir.com's client-rendered shop three times over, four pages at a
+time in one headless browser, and checks every name against the site's
+answer key. Netweir, Playwright and Puppeteer get the same Chrome for
+Testing 154 and Firefox 159 where they can take them:
+
+| | Pages a second | CPU, whole run | Peak memory |
+|---|---|---|---|
+| Puppeteer 25.16, Chrome | 23.8 | 6.7 s | 1,856 MB |
+| Puppeteer, Chrome, every page drawn | 21.5 | 9.8 s | 1,963 MB |
+| Playwright 1.65, Chrome | 19.3 | 9.5 s | 2,203 MB |
+| Netweir, Chrome | 18.7 | 11.0 s | 2,884 MB |
+| Puppeteer, Firefox | 15.8 | 12.5 s | 3,243 MB |
+| Playwright, Firefox | 15.2 | 14.6 s | 2,689 MB |
+| Netweir, Firefox | 13.9 | 20.1 s | 3,856 MB |
+
+Here Netweir is the slowest of the three, in both browsers. Part of that
+is a choice: Netweir's pages are each a window at 1280 by 807, drawn in
+full the way a person's would be, and it waits a moment, as a person
+does, when it turns to a page. Puppeteer shows one page at a time and
+leaves the other three as background tabs that draw nothing; given the
+same drawn windows it uses 9.8 s of CPU, close to Netweir's 11.0. Without
+the pause (`dialog_pause=(0, 0)`) Netweir's Chrome does 21.1 pages a
+second, and its Firefox without stealth or the pause 15.4. Playwright drives its own patched
+Firefox, as it can't drive a stock one.
+
+CPU and memory are the whole browser's, every process summed, and shared
+memory is counted once per process, so they compare tools fairly but
+aren't exact. Medians of three runs, every page right in every run, on
+the same M2 Max; `uv run python bench/browser.py` runs it.
 
 Pages you don't control can be built to be slow to parse. Pass a timeout and
 Netweir gives up instead of hanging:
