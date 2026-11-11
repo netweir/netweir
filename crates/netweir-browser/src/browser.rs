@@ -525,7 +525,20 @@ impl Browser {
         // Chrome's Preload pages setting, turned off above, leaves
         // <link rel=prerender> fetching all the same; this holds that back
         // as Chrome's own experiment does for some of its users.
-        let mut args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
+        let args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
+        // Every window kept its address bar's popup and reload button
+        // ready as web pages, in a renderer of their own: about 120 MB a
+        // window, and a page has a window each. Chrome draws them natively
+        // without these, as it did before; no page can tell. Puppeteer
+        // turns off the same three.
+        let mut args = launch::disable_features(
+            args,
+            &[
+                "WebUIOmniboxPopup",
+                "WebUIOmniboxAimPopup",
+                "WebUIReloadButton",
+            ],
+        );
         args.push("about:blank".into());
         let started = launch::start(&executable, &args)?;
         let said = started.said.clone();
