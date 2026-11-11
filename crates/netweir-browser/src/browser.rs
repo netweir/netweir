@@ -592,7 +592,32 @@ impl Browser {
             let _ = browser.close().await;
             return Box::pin(Browser::launch(given)).await;
         }
+        // The page Chrome starts on is one nobody uses, in a window and a
+        // renderer of its own: about 120 MB. A headless Chrome runs on
+        // with no pages at all. One on the screen is left its page, since
+        // on Windows and Linux closing its last window quits it.
+        if options.headless
+            && let Ok(browser) = &launched
+        {
+            browser.close_start_pages().await;
+        }
         launched
+    }
+
+    /// Closes every page open now. Left open, one costs memory only, so a
+    /// failure is let be.
+    async fn close_start_pages(&self) {
+        let Ok(targets) = self.inner.call("", "Target.getTargets", json!({})).await else {
+            return;
+        };
+        for t in targets["targetInfos"].as_array().into_iter().flatten() {
+            if t["type"] == "page" {
+                let _ = self
+                    .inner
+                    .call("", "Target.closeTarget", json!({"targetId": t["targetId"]}))
+                    .await;
+            }
+        }
     }
 
     async fn launch_firefox(options: LaunchOptions) -> Result<Browser> {

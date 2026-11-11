@@ -24,6 +24,46 @@ async fn closing_the_browser_ends_chrome_and_removes_its_profile() {
 }
 
 #[tokio::test]
+async fn a_headless_chrome_keeps_no_start_page_and_lives_without_pages() {
+    let Some(executable) = chrome() else { return };
+    let browser = common::launch(LaunchOptions {
+        executable: Some(executable),
+        ..LaunchOptions::default()
+    })
+    .await;
+    let pages = || async {
+        let targets = browser
+            .call_for_tests("Target.getTargets", serde_json::json!({}))
+            .await
+            .unwrap();
+        targets["targetInfos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["type"] == "page")
+            .map(|t| t["url"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+    };
+    // Chrome closes a page after saying it will.
+    let mut left = pages().await;
+    for _ in 0..50 {
+        if left.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        left = pages().await;
+    }
+    assert_eq!(left, Vec::<String>::new());
+    // With its last page closed, Chrome is still there for the next.
+    let page = browser.new_page().await.unwrap();
+    page.close().await.unwrap();
+    let page = browser.new_page().await.unwrap();
+    assert_eq!(page.evaluate("1 + 1").await.unwrap(), 2);
+    assert_eq!(pages().await.len(), 1);
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_missing_executable_says_where_it_looked() {
     let err = Browser::launch(LaunchOptions {
         executable: Some("/nonexistent/chrome".into()),
