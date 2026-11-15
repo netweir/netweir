@@ -632,34 +632,35 @@ Testing 154 and Firefox 159 where they can take them:
 
 | | Pages a second | CPU, whole run | Peak memory |
 |---|---|---|---|
-| Puppeteer 25.16, Chrome | 25.1 | 6.9 s | 1,871 MB |
-| Playwright 1.65, Chrome | 17.9 | 9.7 s | 2,205 MB |
-| Netweir, Chrome | 16.5 | 9.8 s | 1,898 MB |
-| Puppeteer, Firefox | 14.8 | 12.7 s | 3,230 MB |
-| Playwright, Firefox | 14.8 | 14.9 s | 2,698 MB |
-| Netweir, Firefox | 13.4 | 20.2 s | 3,881 MB |
+| Puppeteer 25.16, Chrome | 26.7 | 6.6 s | 1,850 MB |
+| Playwright 1.65, Chrome | 22.4 | 9.2 s | 2,195 MB |
+| Netweir, Chrome | 17.4 | 9.7 s | 1,732 MB |
+| Puppeteer, Firefox | 16.4 | 12.8 s | 3,262 MB |
+| Playwright, Firefox | 16.4 | 14.9 s | 2,690 MB |
+| Netweir, Firefox | 12.9 | 21.1 s | 3,801 MB |
 
-At defaults Netweir is the slowest of the three, in both browsers. Part
-of that is a choice: Netweir's pages are each a window at 1280 by 807,
-drawn in full the way a person's would be, and it waits a moment, as a
-person does, when it turns to a page. Puppeteer shows one page at a time
+At defaults Netweir is the slowest of the three in both browsers, though
+in Chrome it peaks at the least memory. Part of that is a choice:
+Netweir's pages are each a window at 1280 by 807, drawn in full the way a
+person's would be, and it waits a moment, as a person does, when it turns
+to a page. Puppeteer shows one page at a time
 and leaves the other three as background tabs that draw nothing. With the
 same settings for both, every page drawn and Netweir's pause off
 (`dialog_pause=(0, 0)`):
 
 | Chrome, same settings | Pages a second | CPU, whole run | Peak memory |
 |---|---|---|---|
-| Puppeteer, every page drawn | 21.1 | 9.7 s | 1,968 MB |
-| Netweir, no pause | 20.4 | 9.5 s | 1,869 MB |
+| Puppeteer, every page drawn | 24.8 | 9.8 s | 1,972 MB |
+| Netweir, no pause | 21.2 | 9.3 s | 1,739 MB |
 
-There Netweir is 3% slower, on less CPU and memory. In Firefox, Netweir
-without stealth or the pause does 14.1 pages a second. Playwright drives
+There Netweir is 15% slower, on less CPU and memory. In Firefox, Netweir
+without stealth or the pause does 15.2 pages a second. Playwright drives
 its own patched Firefox, as it can't drive a stock one.
 
 The pages come from the live site, so speed moves between runs more than
-CPU or memory does: Puppeteer's Chrome ranged from 19.2 to 25.4 pages a
-second, Netweir's from 16.1 to 18.6. CPU and memory are the whole
-browser's, every process summed, and shared memory is counted once per
+CPU or memory does: Netweir's Chrome ranged from 11.8 to 17.7 pages a
+second, Playwright's Firefox from 12.9 to 17.1. CPU and memory are the
+whole browser's, every process summed, and shared memory is counted once per
 process, so they compare tools fairly but aren't exact. Medians of three
 runs, every page right in every run, on the same M2 Max; `uv run python
 bench/browser.py` runs it.
