@@ -356,17 +356,41 @@ fn replace(file: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// already there, in whatever form Chrome reads, are gathered into one
 /// switch with them, since Chrome reads only the last. It goes before a
 /// bare `--`, after which Chrome reads no switches.
-pub(crate) fn enable_features(mut args: Vec<String>, features: &[&str]) -> Vec<String> {
-    let mut enabled: Vec<String> = features.iter().map(|f| f.to_string()).collect();
-    for list in take_switches(&mut args, "enable-features") {
-        enabled.extend(
+pub(crate) fn enable_features(args: Vec<String>, features: &[&str]) -> Vec<String> {
+    join_features(args, "enable-features", features)
+}
+
+/// `args` with `features` added to Chrome's `--disable-features`, gathered
+/// as `enable_features` gathers. One the caller turned on stays on.
+pub(crate) fn disable_features(args: Vec<String>, features: &[&str]) -> Vec<String> {
+    let theirs: Vec<String> = args[..switch_end(&args)]
+        .iter()
+        .filter_map(|a| switch_in(a))
+        .filter(|(n, _)| n == "enable-features")
+        .flat_map(|(_, v)| v.split(',').map(str::to_string).collect::<Vec<_>>())
+        .collect();
+    let ours: Vec<&str> = features
+        .iter()
+        .copied()
+        .filter(|f| !theirs.iter().any(|t| t == f))
+        .collect();
+    if ours.is_empty() && last_switch(&args, "disable-features").is_none() {
+        return args;
+    }
+    join_features(args, "disable-features", &ours)
+}
+
+fn join_features(mut args: Vec<String>, switch: &str, features: &[&str]) -> Vec<String> {
+    let mut joined: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+    for list in take_switches(&mut args, switch) {
+        joined.extend(
             list.split(',')
                 .filter(|f| !f.is_empty())
                 .map(str::to_string),
         );
     }
     let end = switch_end(&args);
-    args.insert(end, format!("--enable-features={}", enabled.join(",")));
+    args.insert(end, format!("--{switch}={}", joined.join(",")));
     args
 }
 
@@ -1328,6 +1352,32 @@ mod tests {
         assert_eq!(
             enable_features(strings(&["-enable-features=A", "--", "page"]), &["Ours"]),
             ["--enable-features=Ours,A", "--", "page"]
+        );
+    }
+
+    #[test]
+    fn features_turned_off_join_those_already_and_yield_to_the_callers() {
+        let args = disable_features(
+            strings(&[
+                "--disable-features=A",
+                "--enable-features=Theirs,B",
+                "--disable-features=C",
+            ]),
+            &["Ours", "Theirs"],
+        );
+        // One the caller turned on stays on.
+        assert_eq!(
+            args,
+            ["--enable-features=Theirs,B", "--disable-features=Ours,A,C"]
+        );
+        assert_eq!(
+            disable_features(strings(&["--", "page"]), &["Ours"]),
+            ["--disable-features=Ours", "--", "page"]
+        );
+        // Nothing to add, nothing written.
+        assert_eq!(
+            disable_features(strings(&["--enable-features=Ours"]), &["Ours"]),
+            ["--enable-features=Ours"]
         );
     }
 

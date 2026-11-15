@@ -525,7 +525,20 @@ impl Browser {
         // Chrome's Preload pages setting, turned off above, leaves
         // <link rel=prerender> fetching all the same; this holds that back
         // as Chrome's own experiment does for some of its users.
-        let mut args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
+        let args = launch::enable_features(args, &["NoStatePrefetchHoldback"]);
+        // Every window kept its address bar's popup and reload button
+        // ready as web pages, in a renderer of their own: about 120 MB a
+        // window, and a page has a window each. Chrome draws them natively
+        // without these, as it did before; no page can tell. Puppeteer
+        // turns off the same three.
+        let mut args = launch::disable_features(
+            args,
+            &[
+                "WebUIOmniboxPopup",
+                "WebUIOmniboxAimPopup",
+                "WebUIReloadButton",
+            ],
+        );
         args.push("about:blank".into());
         let started = launch::start(&executable, &args)?;
         let said = started.said.clone();
@@ -592,7 +605,32 @@ impl Browser {
             let _ = browser.close().await;
             return Box::pin(Browser::launch(given)).await;
         }
+        // The page Chrome starts on is one nobody uses, in a window and a
+        // renderer of its own: about 120 MB. A headless Chrome runs on
+        // with no pages at all. One on the screen is left its page, since
+        // on Windows and Linux closing its last window quits it.
+        if options.headless
+            && let Ok(browser) = &launched
+        {
+            browser.close_start_pages().await;
+        }
         launched
+    }
+
+    /// Closes every page open now. Left open, one costs memory only, so a
+    /// failure is let be.
+    async fn close_start_pages(&self) {
+        let Ok(targets) = self.inner.call("", "Target.getTargets", json!({})).await else {
+            return;
+        };
+        for t in targets["targetInfos"].as_array().into_iter().flatten() {
+            if t["type"] == "page" {
+                let _ = self
+                    .inner
+                    .call("", "Target.closeTarget", json!({"targetId": t["targetId"]}))
+                    .await;
+            }
+        }
     }
 
     async fn launch_firefox(options: LaunchOptions) -> Result<Browser> {
