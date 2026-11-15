@@ -2070,7 +2070,6 @@ impl<'a> Cx<'a> {
         if multiple {
             return options.iter().any(|n| marked(&n));
         }
-        // The last one marked selected wins, else the first that isn't disabled.
         // The last one marked selected wins. With none, a one-line select
         // shows its first option that isn't disabled; a list box shows none.
         let selected = options.iter().rev().find(marked).or_else(|| {
