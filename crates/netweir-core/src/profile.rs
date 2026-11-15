@@ -16,6 +16,10 @@ use wreq::{Emulation, Group};
 /// Profiles shipped with netweir, by name.
 const BUILT_IN: &[(&str, &str)] = &[
     (
+        "chrome-157-macos",
+        include_str!("../../../profiles/chrome-157-macos.toml"),
+    ),
+    (
         "chrome-156-macos",
         include_str!("../../../profiles/chrome-156-macos.toml"),
     ),
@@ -26,6 +30,10 @@ const BUILT_IN: &[(&str, &str)] = &[
     (
         "chrome-154-macos",
         include_str!("../../../profiles/chrome-154-macos.toml"),
+    ),
+    (
+        "firefox-160-macos",
+        include_str!("../../../profiles/firefox-160-macos.toml"),
     ),
     (
         "firefox-159-macos",
@@ -46,12 +54,12 @@ const BUILT_IN: &[(&str, &str)] = &[
 ];
 
 /// What `profile="chrome"` means today.
-pub const DEFAULT: &str = "chrome-156-macos";
+pub const DEFAULT: &str = "chrome-157-macos";
 
 /// The newest profile of each browser, by its short name.
 const LATEST: &[(&str, &str)] = &[
     ("chrome", DEFAULT),
-    ("firefox", "firefox-159-macos"),
+    ("firefox", "firefox-160-macos"),
     ("safari", "safari-27-macos"),
 ];
 
@@ -586,11 +594,12 @@ mod tests {
         }
     }
 
-    /// Where each browser puts Authorization, as recorded from Chrome 155
-    /// and 156 and Firefox 158 and 159 (profiles/*.auth*.capture.json): Chrome straight
-    /// after Host, Connection, Content-Length and Cache-Control, Firefox
-    /// straight before Connection, in every kind of request. Earlier
-    /// versions order their headers the same way.
+    /// Where each browser puts Authorization, as recorded from Chrome 155,
+    /// 156 and 157 and Firefox 158, 159 and 160
+    /// (profiles/*.auth*.capture.json): Chrome straight after Host,
+    /// Connection, Content-Length and Cache-Control, Firefox straight
+    /// before Connection, in every kind of request. Earlier versions order
+    /// their headers the same way.
     #[test]
     fn authorization_holds_the_place_its_browser_gives_it() {
         for (name, _) in BUILT_IN {
@@ -661,12 +670,12 @@ mod tests {
     #[test]
     fn unknown_names_list_the_known_ones() {
         let err = Profile::named("netscape").unwrap_err();
-        assert!(err.0.contains("chrome-156-macos"), "{err}");
+        assert!(err.0.contains("chrome-157-macos"), "{err}");
     }
 
     #[test]
     fn typos_in_a_profile_are_errors() {
-        let src = include_str!("../../../profiles/chrome-156-macos.toml").replace(
+        let src = include_str!("../../../profiles/chrome-157-macos.toml").replace(
             r#"key_shares = ["X25519MLKEM768""#,
             r#"key_shares = ["X25519MLKEM769""#,
         );
@@ -676,7 +685,7 @@ mod tests {
             "{}
 speed = 11
 ",
-            include_str!("../../../profiles/chrome-156-macos.toml")
+            include_str!("../../../profiles/chrome-157-macos.toml")
         );
         assert!(Profile::from_toml(&extra).is_err());
     }
@@ -689,6 +698,8 @@ speed = 11
         assert!(brands.contains("\"Google Chrome\";v=\"155\""), "{brands}");
         let brands = Profile::chrome_brands("156").unwrap();
         assert!(brands.contains("\"Google Chrome\";v=\"156\""), "{brands}");
+        let brands = Profile::chrome_brands("157").unwrap();
+        assert!(brands.contains("\"Google Chrome\";v=\"157\""), "{brands}");
         assert_eq!(Profile::chrome_brands("1"), None);
     }
 }
