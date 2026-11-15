@@ -4,6 +4,8 @@
 use netweir_html::tokenizer::{Attrs, Doctype, Sink, Tag, TextMode, Tokenizer, preprocess};
 use serde_json::{Value, json};
 
+mod summary;
+
 #[derive(Default)]
 struct Collect {
     tokens: Vec<Value>,
@@ -210,6 +212,14 @@ fn html5lib_tokenizer_tests() {
         "tokenizer: {passed} passed, {} failed, {skipped} skipped (lone surrogates)",
         failures.len()
     );
+    summary::write(&summary::Counts {
+        suite: "html5lib-tokenizer",
+        passed,
+        failed: failures.len(),
+        skipped,
+        skipped_because: "lone surrogates, which a Rust string can't hold",
+        data: std::path::Path::new(dir).parent().unwrap(),
+    });
     assert!(
         failures.is_empty(),
         "{} failures:\n{}",
