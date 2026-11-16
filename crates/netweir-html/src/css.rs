@@ -6,7 +6,8 @@
 //! element a query runs from, and ids and classes compare exactly except
 //! in a quirks-mode document.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use crate::dom::{AttrNs, Data, Document, NodeId, Ns, Quirks};
 use crate::pattern::Pattern;
@@ -1451,6 +1452,20 @@ struct Cx<'a> {
     page: Option<Page>,
     /// Steps left for `pattern` matches in this query, shared by all of them.
     pattern_budget: Cell<u32>,
+    /// Each element's place among its siblings, worked out for a whole
+    /// parent the first time `:nth-*` needs one, so a query over a parent
+    /// with n children counts them once rather than n times.
+    places: RefCell<HashMap<NodeId, Place>>,
+}
+
+/// An element's position among its parent's element children, counting
+/// from 1, and among those of its own type.
+#[derive(Clone, Copy)]
+struct Place {
+    index: u32,
+    count: u32,
+    type_index: u32,
+    type_count: u32,
 }
 
 /// HTML attributes whose values selectors compare without case, unless the
@@ -1518,7 +1533,53 @@ impl<'a> Cx<'a> {
             scope,
             page,
             pattern_budget: Cell::new(crate::pattern::SELECT_STEP_LIMIT),
+            places: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// `el`'s place among its siblings, or None if it has no parent.
+    fn place(&self, el: NodeId) -> Option<Place> {
+        if let Some(&p) = self.places.borrow().get(&el) {
+            return Some(p);
+        }
+        let doc = self.doc;
+        let parent = doc.parent(el)?;
+        let kids: Vec<NodeId> = doc
+            .children(parent)
+            .filter(|&k| doc.element(k).is_some())
+            .collect();
+        // One entry per element type among the children: an example of it,
+        // and how many there are so far.
+        let mut types: Vec<(NodeId, u32)> = Vec::new();
+        let mut of_type = Vec::with_capacity(kids.len());
+        for &k in &kids {
+            let e = doc.element(k).unwrap();
+            let t = match types
+                .iter()
+                .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
+            {
+                Some(t) => t,
+                None => {
+                    types.push((k, 0));
+                    types.len() - 1
+                }
+            };
+            types[t].1 += 1;
+            of_type.push((t, types[t].1));
+        }
+        let mut places = self.places.borrow_mut();
+        for (i, (&k, &(t, type_index))) in kids.iter().zip(&of_type).enumerate() {
+            places.insert(
+                k,
+                Place {
+                    index: i as u32 + 1,
+                    count: kids.len() as u32,
+                    type_index,
+                    type_count: types[t].1,
+                },
+            );
+        }
+        places.get(&el).copied()
     }
 
     fn parent_element(&self, n: NodeId) -> Option<NodeId> {
@@ -2203,6 +2264,21 @@ impl<'a> Cx<'a> {
                 };
                 if !same(el) {
                     return false;
+                }
+                // With a > 0 the walk below could go through every sibling,
+                // for every sibling: take the positions worked out once per
+                // parent instead. `of S` depends on S, so it still walks.
+                if of.is_none()
+                    && *a > 0
+                    && let Some(pl) = self.place(el)
+                {
+                    let (index, count) = if *of_type {
+                        (pl.type_index, pl.type_count)
+                    } else {
+                        (pl.index, pl.count)
+                    };
+                    let index = if *last { count - index + 1 } else { index };
+                    return nth_matches(*a as i64, *b as i64, index as i64);
                 }
                 let mut index = 1i64;
                 let mut at = if *last {

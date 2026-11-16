@@ -132,6 +132,38 @@ fn child_index_pseudo_classes() {
     assert_eq!(page("li:nth-child(0)"), Vec::<String>::new());
 }
 
+/// With a step above zero, positions come from a count made once per
+/// parent; the answers have to be the ones the sibling walk gives.
+#[test]
+fn stepped_child_index_counts_mixed_siblings() {
+    let html = "<div><p id=1></p>text<span id=2></span><!-- c --><p id=3></p>\
+                <b id=4></b><p id=5></p><span id=6></span></div>\
+                <svg><g id=7></g><rect id=8></rect><g id=9></g></svg>";
+    assert_eq!(
+        select(html, "div > :nth-child(2n+1)"),
+        ["p#1", "p#3", "p#5"]
+    );
+    assert_eq!(
+        select(html, "div > :nth-last-child(2n+1)"),
+        ["span#2", "b#4", "span#6"]
+    );
+    assert_eq!(
+        select(html, "div > :nth-of-type(2n+1)"),
+        ["p#1", "span#2", "b#4", "p#5"]
+    );
+    assert_eq!(
+        select(html, "div > :nth-last-of-type(n+2)"),
+        ["p#1", "span#2", "p#3"]
+    );
+    assert_eq!(select(html, "svg > :nth-of-type(2n+1)"), ["g#7", "rect#8"]);
+    assert_eq!(select(html, "svg > :nth-last-child(2n+1)"), ["g#7", "g#9"]);
+    // The same counts serve a second use in the same query.
+    assert_eq!(
+        select(html, ":is(p:nth-child(2n+1), p:nth-child(2n+1))"),
+        ["p#1", "p#3", "p#5"]
+    );
+}
+
 #[test]
 fn logical_pseudo_classes() {
     assert_eq!(page(":is(h1, li.sold)"), ["h1", "li#27"]);
