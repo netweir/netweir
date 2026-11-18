@@ -1020,10 +1020,10 @@ impl TreeBuilder {
             ..e
         }));
         // Same name and attributes, so the same signature.
-        if let Some(&sig) = self.sigs.get(id as usize) {
-            if sig != 0 {
-                self.set_signature(new, sig);
-            }
+        if let Some(&sig) = self.sigs.get(id as usize)
+            && sig != 0
+        {
+            self.set_signature(new, sig);
         }
         new
     }
