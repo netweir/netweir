@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::dom::{AttrNs, Data, Document, NodeId, Ns, Quirks};
 use crate::pattern::Pattern;
@@ -1213,6 +1214,36 @@ impl SelectorList {
         self.iter_with(doc, scope, options).collect()
     }
 
+    /// [`SelectorList::select_with`] within [`MatchOptions::budget`]: an
+    /// error once it has run out, rather than the matches found so far.
+    pub fn try_select_with(
+        &self,
+        doc: &Document,
+        scope: NodeId,
+        options: &MatchOptions<'_>,
+    ) -> Result<Vec<NodeId>, MatchTimeout> {
+        let mut select = self.iter_with(doc, scope, options);
+        select.cx.deadline = deadline(options);
+        let found = select.by_ref().collect();
+        timeout(&select.cx, options)?;
+        Ok(found)
+    }
+
+    /// [`SelectorList::matches_with`] within [`MatchOptions::budget`].
+    pub fn try_matches_with(
+        &self,
+        doc: &Document,
+        el: NodeId,
+        scope: Option<NodeId>,
+        options: &MatchOptions<'_>,
+    ) -> Result<bool, MatchTimeout> {
+        let mut cx = Cx::new(doc, scope, Page::new(doc, options.url));
+        cx.deadline = deadline(options);
+        let found = self.0.iter().any(|c| cx.complex(c, el, el));
+        timeout(&cx, options)?;
+        Ok(found)
+    }
+
     fn iter_with<'a>(
         &'a self,
         doc: &'a Document,
@@ -1307,6 +1338,9 @@ impl Iterator for Select<'_> {
         // A walk by the tree's own links, in document order: down to the
         // first child, else along to the next sibling, else back up.
         while let Some(n) = self.at {
+            if self.cx.timed_out.get() {
+                return None;
+            }
             let element = doc.element(n).is_some();
             self.at = match doc.first_child(n).filter(|_| element) {
                 Some(child) => Some(child),
@@ -1348,6 +1382,43 @@ fn push_children_reversed(doc: &Document, n: NodeId, stack: &mut Vec<NodeId>) {
 pub struct MatchOptions<'a> {
     /// The document's URL, for `:target`, `:target-within` and `:local-link`.
     pub url: Option<&'a str>,
+    /// Give up after this long. Most selectors cost a walk of the tree,
+    /// but some cost more on some pages: a descendant combinator over a
+    /// very deep tree, `:has()` of more than one compound. A crawler
+    /// matching pages it doesn't control should set one. Only
+    /// [`SelectorList::try_select_with`] and
+    /// [`SelectorList::try_matches_with`] read it; the clock is read every
+    /// 1,024 compounds matched.
+    pub budget: Option<Duration>,
+}
+
+/// A query that ran past [`MatchOptions::budget`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchTimeout {
+    pub budget: Duration,
+}
+
+impl std::fmt::Display for MatchTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "matching took longer than {:?}", self.budget)
+    }
+}
+
+impl std::error::Error for MatchTimeout {}
+
+/// When a query with `options` gives up: never for a budget past what
+/// the clock can count.
+fn deadline(options: &MatchOptions<'_>) -> Option<Instant> {
+    options.budget.and_then(|b| Instant::now().checked_add(b))
+}
+
+fn timeout(cx: &Cx<'_>, options: &MatchOptions<'_>) -> Result<(), MatchTimeout> {
+    if cx.timed_out.get() {
+        return Err(MatchTimeout {
+            budget: options.budget.unwrap_or_default(),
+        });
+    }
+    Ok(())
 }
 
 /// The document's URL worked out once per query.
@@ -1452,6 +1523,11 @@ struct Cx<'a> {
     page: Option<Page>,
     /// Steps left for `pattern` matches in this query, shared by all of them.
     pattern_budget: Cell<u32>,
+    /// When to give up, for the `try_` queries.
+    deadline: Option<Instant>,
+    /// Compounds matched, to read the clock every so often.
+    steps: Cell<u32>,
+    timed_out: Cell<bool>,
     /// Each element's place among its siblings, worked out for a whole
     /// parent the first time `:nth-*` needs one, so a query over a parent
     /// with n children counts them once rather than n times.
@@ -1598,6 +1674,9 @@ impl<'a> Cx<'a> {
             scope,
             page,
             pattern_budget: Cell::new(crate::pattern::SELECT_STEP_LIMIT),
+            deadline: None,
+            steps: Cell::new(0),
+            timed_out: Cell::new(false),
             places: RefCell::new(HashMap::new()),
             of_places: RefCell::default(),
             has_seen: RefCell::default(),
@@ -1810,7 +1889,27 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Whether the budget has run out. Once it has, every compound fails,
+    /// so whatever is matching unwinds quickly. Out of line, so a query
+    /// without a budget pays one test of `deadline` per compound.
+    #[cold]
+    #[inline(never)]
+    fn out_of_time(&self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        let steps = self.steps.get().wrapping_add(1);
+        self.steps.set(steps);
+        if steps.is_multiple_of(1024) && Instant::now() >= deadline {
+            self.timed_out.set(true);
+        }
+        self.timed_out.get()
+    }
+
     fn compound(&self, compound: &Compound, el: NodeId, anchor: NodeId) -> bool {
+        if self.deadline.is_some() && self.out_of_time() {
+            return false;
+        }
         if matches!(compound.0.as_slice(), [Simple::Anchor]) {
             return el == anchor;
         }

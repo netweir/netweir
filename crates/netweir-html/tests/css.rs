@@ -1,7 +1,7 @@
 //! CSS selectors: every feature Netweir's own tests use, the rest of what
 //! lexbor offered, and where browsers and lexbor part ways, the browsers.
 
-use netweir_html::css::{MatchOptions, SelectorList};
+use netweir_html::css::{MatchOptions, MatchTimeout, SelectorList};
 use netweir_html::{Document, Kind, NodeId, parse};
 
 const PAGE: &str = r#"<!DOCTYPE html><html><head><title>Shop</title></head><body>
@@ -361,6 +361,37 @@ fn a_chain_that_cant_match_gives_up_soon() {
     );
 }
 
+/// Some selectors still cost more than a walk on some pages, such as a
+/// :has() of two compounds over a deep tree; a budget stops them.
+#[test]
+fn a_budget_stops_a_long_query() {
+    let doc = parse(&"<div>".repeat(20_000), false);
+    let slow = SelectorList::parse("div:has(p div)").unwrap();
+    let tight = MatchOptions {
+        budget: Some(std::time::Duration::from_micros(50)),
+        ..MatchOptions::default()
+    };
+    let budget = tight.budget.unwrap();
+    assert_eq!(
+        slow.try_select_with(&doc, 0, &tight),
+        Err(MatchTimeout { budget })
+    );
+    let first = SelectorList::parse("div").unwrap().select(&doc, 0)[0];
+    assert_eq!(
+        slow.try_matches_with(&doc, first, None, &tight),
+        Err(MatchTimeout { budget })
+    );
+    // Within the budget, or with one too big for the clock, the answer is
+    // the one without.
+    let fast = SelectorList::parse("div:has(> div)").unwrap();
+    let roomy = MatchOptions {
+        budget: Some(std::time::Duration::MAX),
+        ..MatchOptions::default()
+    };
+    assert_eq!(fast.try_select_with(&doc, 0, &roomy).unwrap().len(), 19_999);
+    assert_eq!(fast.try_matches_with(&doc, first, None, &roomy), Ok(true));
+}
+
 /// Places the parser was looser than CSS (parsec-html/parsec#37). Lexbor
 /// reads comments the same way, and rejects `+ 5`, but accepts `2 n`,
 /// `#1a` and `:has()` inside `:has()`.
@@ -466,7 +497,14 @@ fn select_at(html: &str, css: &str, url: &str) -> Vec<String> {
     let list = SelectorList::parse(css).unwrap_or_else(|e| panic!("{css}: {e}"));
     names(
         &doc,
-        &list.select_with(&doc, doc.root(), &MatchOptions { url: Some(url) }),
+        &list.select_with(
+            &doc,
+            doc.root(),
+            &MatchOptions {
+                url: Some(url),
+                ..MatchOptions::default()
+            },
+        ),
     )
 }
 
