@@ -1,5 +1,5 @@
-//! html5lib-tests' tokenizer suite. Parse errors aren't checked: the
-//! tokenizer recovers from them as the spec says but doesn't report them.
+//! html5lib-tests' tokenizer suite: the tokens, and then the parse errors
+//! with their line and column.
 
 use netweir_html::tokenizer::{Attrs, Doctype, Sink, Tag, TextMode, Tokenizer, preprocess};
 use serde_json::{Value, json};
@@ -10,6 +10,7 @@ mod summary;
 struct Collect {
     tokens: Vec<Value>,
     text: String,
+    errors: Vec<(&'static str, usize)>,
 }
 
 impl Collect {
@@ -67,6 +68,42 @@ impl Sink for Collect {
     fn eof(&mut self) {
         self.flush();
     }
+    fn error(&mut self, code: &'static str, at: usize) {
+        self.errors.push((code, at));
+    }
+}
+
+/// The 1-based line and column of byte `at` of `input`, the column in
+/// UTF-16 code units as the suite counts them (U+100000 is two).
+fn line_col(input: &str, at: usize) -> (u64, u64) {
+    let before = &input[..at];
+    let line = before.matches('\n').count() + 1;
+    let start = before.rfind('\n').map_or(0, |i| i + 1);
+    (
+        line as u64,
+        before[start..].encode_utf16().count() as u64 + 1,
+    )
+}
+
+/// Tests whose errors another test contradicts: domjs.test's `<?` then
+/// a CR is, once preprocessed, test3.test's `<?` then an LF, which
+/// expects the error the processing instructions change brought in
+/// (`invalid-first-character-of-processing-instruction-target`, after the
+/// `?`) where these still expect the one from before it.
+const CONTRADICTED: &[&str] = &[
+    "CR in bogus comment state",
+    "CRLF in bogus comment state",
+    "CRLFLF in bogus comment state",
+];
+
+/// What the suite's README asks for: each error's code, line and column.
+/// Compared as sets, since an error found by looking ahead may be
+/// reported before one the spec's character-at-a-time reading finds
+/// first.
+fn sorted_errors(errors: impl Iterator<Item = (u64, u64, String)>) -> Vec<(u64, u64, String)> {
+    let mut errors: Vec<_> = errors.collect();
+    errors.sort();
+    errors
 }
 
 /// `\uXXXX` escapes in a doubleEscaped test, or None for a lone surrogate,
@@ -144,6 +181,7 @@ fn html5lib_tokenizer_tests() {
     );
     let (mut passed, mut skipped) = (0, 0);
     let mut failures = Vec::new();
+    let (mut errors_passed, mut error_failures, mut contradicted) = (0, Vec::new(), 0);
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -205,12 +243,62 @@ fn html5lib_tokenizer_tests() {
                         Value::Array(got)
                     ));
                 }
+                // Again, reporting errors, which takes the slow path
+                // through tags: the tokens are the same, and so must be
+                // the errors.
+                let mut sink = Collect::default();
+                let mut tokenizer = Tokenizer::new(&input);
+                tokenizer.report_errors();
+                if let Some(mode) = state(&name) {
+                    tokenizer.set_text_mode(mode);
+                }
+                if let Some(last) = test.get("lastStartTag").and_then(Value::as_str) {
+                    tokenizer.set_last_start_tag(last);
+                }
+                tokenizer.run(&mut sink);
+                let want = sorted_errors(test.get("errors").and_then(Value::as_array).map_or(
+                    Vec::new().into_iter(),
+                    |e| {
+                        e.iter()
+                            .map(|e| {
+                                (
+                                    e["line"].as_u64().unwrap(),
+                                    e["col"].as_u64().unwrap(),
+                                    e["code"].as_str().unwrap().to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                    },
+                ));
+                let got_errors = sorted_errors(sink.errors.iter().map(|&(code, at)| {
+                    let (line, col) = line_col(&input, at);
+                    (line, col, code.to_string())
+                }));
+                if want == got_errors && merged(&sink.tokens) == expected {
+                    errors_passed += 1;
+                } else if path.ends_with("domjs.test")
+                    && CONTRADICTED.contains(&test["description"].as_str().unwrap())
+                {
+                    contradicted += 1;
+                } else {
+                    error_failures.push(format!(
+                        "{} / {} [{name}]\n  input:    {input:?}\n  expected: {want:?}\n  got:      {got_errors:?}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        test["description"],
+                    ));
+                }
             }
         }
     }
     eprintln!(
         "tokenizer: {passed} passed, {} failed, {skipped} skipped (lone surrogates)",
         failures.len()
+    );
+    eprintln!(
+        "tokenizer errors: {errors_passed} passed, {} failed, {contradicted} skipped \
+         (another test expects otherwise), {skipped} skipped (lone surrogates)",
+        error_failures.len()
     );
     summary::write(&summary::Counts {
         suite: "html5lib-tokenizer",
@@ -225,5 +313,11 @@ fn html5lib_tokenizer_tests() {
         "{} failures:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+    assert!(
+        error_failures.is_empty(),
+        "{} error failures:\n{}",
+        error_failures.len(),
+        error_failures.join("\n")
     );
 }

@@ -1,14 +1,34 @@
 //! Every input the conformance suites have, for tests that check a
 //! property of the parse rather than the tree each case expects.
 
+#![allow(dead_code)]
+
 use netweir_html::Ns;
 
 /// A tree-construction case's input: its `#data`, and its context
-/// element when it's a fragment case.
+/// element when it's a fragment case; and the errors it lists.
 pub struct TreeInput {
+    pub file: String,
     pub data: String,
     pub fragment: Option<(Ns, String)>,
+    /// From `#script-on` or `#script-off`, when it has one.
+    pub scripting: Option<bool>,
+    /// The `#errors` lines, in whichever of the formats the files use.
+    pub errors: Vec<String>,
+    /// The `#new-errors` lines: `(line:column) code`.
+    pub new_errors: Vec<String>,
 }
+
+const HEADERS: &[&str] = &[
+    "#data",
+    "#errors",
+    "#new-errors",
+    "#document-fragment",
+    "#document",
+    "#script-on",
+    "#script-off",
+    "#description",
+];
 
 pub fn tree_inputs() -> Vec<TreeInput> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tree-construction");
@@ -21,23 +41,51 @@ pub fn tree_inputs() -> Vec<TreeInput> {
     let mut out = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
-        // `#data` runs to the `#errors` line after it; a fragment case
-        // names its context after `#document-fragment`.
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        // `#data` runs to the `#errors` line after it; the sections up
+        // to `#document` follow, each a header line and then its lines.
         for case in text.split("#data\n").skip(1) {
-            let Some((data, rest)) = case.split_once("\n#errors") else {
+            let Some((data, rest)) = case
+                .strip_prefix("#errors\n")
+                .map(|rest| ("", rest))
+                .or_else(|| case.split_once("\n#errors\n"))
+            else {
                 continue;
             };
-            let fragment = rest
-                .split_once("#document-fragment\n")
-                .and_then(|(_, f)| f.lines().next())
-                .map(|context| match context.trim().split_once(' ') {
-                    Some(("svg", n)) => (Ns::Svg, n.to_string()),
-                    Some(("math", n)) => (Ns::MathMl, n.to_string()),
-                    _ => (Ns::Html, context.trim().to_string()),
-                });
+            let mut section = "#errors";
+            let (mut errors, mut new_errors) = (Vec::new(), Vec::new());
+            let (mut fragment, mut scripting) = (None, None);
+            for line in rest.lines() {
+                if HEADERS.contains(&line) {
+                    section = line;
+                    match line {
+                        "#script-on" => scripting = Some(true),
+                        "#script-off" => scripting = Some(false),
+                        "#document" => break,
+                        _ => {}
+                    }
+                    continue;
+                }
+                match section {
+                    "#errors" if !line.trim().is_empty() => errors.push(line.to_string()),
+                    "#new-errors" if !line.trim().is_empty() => new_errors.push(line.to_string()),
+                    "#document-fragment" if fragment.is_none() => {
+                        fragment = Some(match line.trim().split_once(' ') {
+                            Some(("svg", n)) => (Ns::Svg, n.to_string()),
+                            Some(("math", n)) => (Ns::MathMl, n.to_string()),
+                            _ => (Ns::Html, line.trim().to_string()),
+                        });
+                    }
+                    _ => {}
+                }
+            }
             out.push(TreeInput {
+                file: file.clone(),
                 data: data.to_string(),
                 fragment,
+                scripting,
+                errors,
+                new_errors,
             });
         }
     }

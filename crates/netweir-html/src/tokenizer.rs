@@ -3,8 +3,8 @@
 //! It reads the whole input at once rather than as a stream, so it looks
 //! ahead instead of keeping the spec's temporary buffer, and it hands text
 //! to the sink in runs, borrowed from the input wherever nothing in the run
-//! had to change. Parse errors are recovered from as the spec says, and not
-//! reported.
+//! had to change. Parse errors are recovered from as the spec says, and
+//! reported to the sink by name once [`Tokenizer::report_errors`] asks.
 
 use std::borrow::Cow;
 
@@ -52,6 +52,16 @@ pub trait Sink {
     /// positions leaves it as this, which costs nothing.
     fn position(&mut self, start: usize, end: usize) {
         let _ = (start, end);
+    }
+    /// A parse error, by the HTML Standard's name for it (such as
+    /// `unexpected-null-character`), at a byte offset into the input: the
+    /// character the tokenizer was looking at when it found the error, or
+    /// the input's length at its end. Only called after
+    /// [`Tokenizer::report_errors`], and not in order of offset: errors in
+    /// the input stream itself (a control character, a noncharacter) all
+    /// come first.
+    fn error(&mut self, code: &'static str, at: usize) {
+        let _ = (code, at);
     }
 }
 
@@ -266,6 +276,9 @@ pub struct Tokenizer<'a> {
 
     pi_target: String,
     pi_data: String,
+    /// Where the target ended: the suite places an end of file inside a
+    /// processing instruction there.
+    pi_target_end: usize,
 
     doctype_name: Option<String>,
     public_id: Option<String>,
@@ -275,6 +288,12 @@ pub struct Tokenizer<'a> {
     /// Whether plain tags take [`Tokenizer::fast_tag`]; off only in the
     /// test that checks it against the state machine.
     fast: bool,
+    /// Whether to tell the sink about parse errors, and those the fast
+    /// path found in the tag it's reading: they're reported only if it
+    /// reads the whole tag, since the state machine finds them again when
+    /// it gives up.
+    errors: bool,
+    fast_errors: Vec<(&'static str, usize)>,
 
     /// Where the token being read started (its `<`), and the character
     /// reference being read (its `&`), for [`Sink::position`].
@@ -313,11 +332,14 @@ impl<'a> Tokenizer<'a> {
             comment: String::new(),
             pi_target: String::new(),
             pi_data: String::new(),
+            pi_target_end: 0,
             doctype_name: None,
             public_id: None,
             system_id: None,
             force_quirks: false,
             fast: true,
+            errors: false,
+            fast_errors: Vec::new(),
             token_start: 0,
             ref_start: 0,
             deadline: None,
@@ -338,6 +360,47 @@ impl<'a> Tokenizer<'a> {
     /// How far into the input it got.
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    /// Reports each parse error to the sink's [`Sink::error`]. It costs a
+    /// pass over the input, for the errors in it as a stream.
+    pub fn report_errors(&mut self) {
+        self.errors = true;
+    }
+
+    #[inline]
+    fn error<S: Sink>(&self, sink: &mut S, code: &'static str, at: usize) {
+        if self.errors {
+            report(sink, code, at);
+        }
+    }
+
+    /// The errors in the input as a stream: control characters other than
+    /// whitespace and NUL, and noncharacters. (A surrogate can't be in a
+    /// `str`.)
+    fn stream_errors<S: Sink>(&self, sink: &mut S, from: usize) {
+        let bytes = self.input.as_bytes();
+        for (i, &b) in bytes.iter().enumerate().skip(from) {
+            // Only these bytes start such a character: C0 controls and
+            // DEL, C1 controls (C2 80 to C2 9F), and the three- and
+            // four-byte forms noncharacters take; the rest are skipped
+            // without decoding.
+            if !(b < 0x20 || b == 0x7F || b == 0xC2 || b == 0xEF || b >= 0xF0) {
+                continue;
+            }
+            let Some(c) = self.input.get(i..).and_then(|s| s.chars().next()) else {
+                continue;
+            };
+            let n = c as u32;
+            let code = if matches!(n, 0x01..=0x08 | 0x0B | 0x0E..=0x1F | 0x7F..=0x9F) {
+                "control-character-in-input-stream"
+            } else if noncharacter(n) {
+                "noncharacter-in-input-stream"
+            } else {
+                continue;
+            };
+            sink.error(code, i);
+        }
     }
 
     pub fn set_text_mode(&mut self, mode: TextMode) {
@@ -435,7 +498,7 @@ impl<'a> Tokenizer<'a> {
     /// On leaving the attribute name state, the name ending at `end` in
     /// the input: the spec drops an attribute whose name the tag already
     /// has.
-    fn end_attr_name(&mut self, end: usize) {
+    fn end_attr_name<S: Sink>(&mut self, sink: &mut S, end: usize) {
         let Some(mut c) = self.current else { return };
         c.at[1] = end as u32;
         let name = match self.attr_name_input.take() {
@@ -457,7 +520,33 @@ impl<'a> Tokenizer<'a> {
             .attrs
             .iter()
             .any(|a| a.name.get(self.input, &self.attr_buf) == this);
+        if c.duplicate {
+            self.error(sink, "duplicate-attribute", end);
+        }
         self.current = Some(c);
+    }
+
+    /// Reports each of `chars` in `start..end` of the input, a run of an
+    /// attribute's name or unquoted value that may not hold them.
+    #[cold]
+    fn misplaced<S: Sink>(
+        &self,
+        sink: &mut S,
+        start: usize,
+        end: usize,
+        chars: &[u8],
+        place: &str,
+    ) {
+        let code = if place == "attribute-name" {
+            "unexpected-character-in-attribute-name"
+        } else {
+            "unexpected-character-in-unquoted-attribute-value"
+        };
+        for (i, b) in self.input.as_bytes()[start..end].iter().enumerate() {
+            if chars.contains(b) {
+                sink.error(code, start + i);
+            }
+        }
     }
 
     /// The value so far, from the input, into the buffer: something in
@@ -524,6 +613,15 @@ impl<'a> Tokenizer<'a> {
         };
         sink.position(self.token_start, self.pos);
         if self.end_tag {
+            // `pos` is past the `>`.
+            if self.errors {
+                if !tag.attrs.is_empty() {
+                    report(sink, "end-tag-with-attributes", self.pos - 1);
+                }
+                if tag.self_closing {
+                    report(sink, "end-tag-with-trailing-solidus", self.pos - 1);
+                }
+            }
             sink.end_tag(&tag);
             self.state = State::Data;
         } else {
@@ -549,9 +647,16 @@ impl<'a> Tokenizer<'a> {
     /// machine, from the same place, and returns false. It takes the
     /// same steps the states would, so a tag reads the same either way.
     fn fast_tag<S: Sink>(&mut self, sink: &mut S) -> bool {
-        if !self.fast {
-            return false;
+        // A copy for each, so a parse that isn't collecting errors doesn't
+        // ask whether it is at every attribute.
+        match (self.fast, self.errors) {
+            (false, _) => false,
+            (true, false) => self.fast_tag_as::<S, false>(sink),
+            (true, true) => self.fast_tag_as::<S, true>(sink),
         }
+    }
+
+    fn fast_tag_as<S: Sink, const ERRORS: bool>(&mut self, sink: &mut S) -> bool {
         let bytes = self.input.as_bytes();
         let len = bytes.len();
         let mut p = self.pos;
@@ -564,6 +669,9 @@ impl<'a> Tokenizer<'a> {
         }
         let name = (name_start, p);
         let mut self_closing = false;
+        if ERRORS {
+            self.fast_errors.clear();
+        }
         loop {
             while p < len && is_space(bytes[p]) {
                 p += 1;
@@ -606,6 +714,14 @@ impl<'a> Tokenizer<'a> {
                                     let v = (p, p + i);
                                     p += i + 1;
                                     written = p;
+                                    if ERRORS
+                                        && bytes.get(p).is_some_and(|&b| {
+                                            !is_space(b) && b != b'>' && b != b'/'
+                                        })
+                                    {
+                                        self.fast_errors
+                                            .push(("missing-whitespace-between-attributes", p));
+                                    }
                                     v
                                 }
                                 _ => return self.bail(),
@@ -651,6 +767,13 @@ impl<'a> Tokenizer<'a> {
                     },
                     at: [a as u32, written as u32],
                 });
+            } else if ERRORS {
+                self.fast_errors.push(("duplicate-attribute", attr_name.1));
+            }
+        }
+        if ERRORS {
+            for &(code, at) in &self.fast_errors {
+                report(sink, code, at);
             }
         }
         self.name_input = Some(name);
@@ -705,6 +828,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn quirky_doctype_eof<S: Sink>(&mut self, sink: &mut S) {
+        self.error(sink, "eof-in-doctype", self.input.len());
         self.force_quirks = true;
         self.emit_doctype(sink);
         sink.eof();
@@ -797,11 +921,19 @@ impl<'a> Tokenizer<'a> {
                 self.out(sink, true, "&");
                 self.out(sink, true, &rest[..len]);
             } else {
+                self.error(
+                    sink,
+                    "missing-semicolon-after-character-reference",
+                    self.pos,
+                );
                 self.out(sink, in_attr, value);
             }
             return;
         }
         self.pos += run;
+        if bytes.get(run) == Some(&b';') {
+            self.error(sink, "unknown-named-character-reference", self.pos);
+        }
         self.out(sink, in_attr, "&");
         self.out(sink, in_attr, &rest[..run]);
     }
@@ -822,6 +954,11 @@ impl<'a> Tokenizer<'a> {
             .count();
         if digits == 0 {
             self.pos += start;
+            self.error(
+                sink,
+                "absence-of-digits-in-numeric-character-reference",
+                self.pos,
+            );
             self.out(sink, in_attr, "&");
             self.out(sink, in_attr, &rest[..start]);
             return;
@@ -835,6 +972,15 @@ impl<'a> Tokenizer<'a> {
         self.pos += start + digits;
         if bytes.get(start + digits) == Some(&b';') {
             self.pos += 1;
+        } else {
+            self.error(
+                sink,
+                "missing-semicolon-after-character-reference",
+                self.pos,
+            );
+        }
+        if self.errors {
+            reference_error(sink, code, self.pos);
         }
         let c = match code {
             0 | 0xD800..=0xDFFF | 0x11_0000.. => '\u{FFFD}',
@@ -850,6 +996,9 @@ impl<'a> Tokenizer<'a> {
         let input = self.input;
         let bytes = input.as_bytes();
         let mut steps: u32 = 0;
+        if self.errors && self.pos == 0 {
+            self.stream_errors(sink, 0);
+        }
         loop {
             if let Some(deadline) = self.deadline {
                 steps = steps.wrapping_add(1);
@@ -879,7 +1028,10 @@ impl<'a> Tokenizer<'a> {
                             self.state = State::TagOpen;
                         }
                         b'&' => self.char_ref(sink, false),
-                        _ => emit_text(sink, "\0", self.pos - 1, self.pos),
+                        _ => {
+                            self.error(sink, "unexpected-null-character", self.pos - 1);
+                            emit_text(sink, "\0", self.pos - 1, self.pos);
+                        }
                     }
                 }
                 State::Rcdata | State::Rawtext | State::ScriptData | State::Plaintext => {
@@ -904,7 +1056,10 @@ impl<'a> Tokenizer<'a> {
                     self.pos += i + 1;
                     match rest[i] {
                         b'&' => self.char_ref(sink, false),
-                        0 => emit_text(sink, REPLACEMENT, self.pos - 1, self.pos),
+                        0 => {
+                            self.error(sink, "unexpected-null-character", self.pos - 1);
+                            emit_text(sink, REPLACEMENT, self.pos - 1, self.pos);
+                        }
                         _ => match self.byte() {
                             Some(b'/') => {
                                 self.pos += 1;
@@ -940,11 +1095,13 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::ProcessingInstructionOpen;
                     }
                     None => {
+                        self.error(sink, "eof-before-tag-name", self.pos);
                         emit_text(sink, "<", self.pos - 1, self.pos);
                         sink.eof();
                         return;
                     }
                     Some(_) => {
+                        self.error(sink, "invalid-first-character-of-tag-name", self.pos);
                         emit_text(sink, "<", self.pos - 1, self.pos);
                         self.state = State::Data;
                     }
@@ -957,21 +1114,25 @@ impl<'a> Tokenizer<'a> {
                         }
                     }
                     Some(b'>') => {
+                        self.error(sink, "missing-end-tag-name", self.pos);
                         self.pos += 1;
                         self.state = State::Data;
                     }
                     None => {
+                        self.error(sink, "eof-before-tag-name", self.pos);
                         emit_text(sink, "</", self.pos - 2, self.pos);
                         sink.eof();
                         return;
                     }
                     Some(_) => {
+                        self.error(sink, "invalid-first-character-of-tag-name", self.pos);
                         self.comment.clear();
                         self.state = State::BogusComment;
                     }
                 },
                 State::TagName => match self.byte() {
                     None => {
+                        self.error(sink, "eof-in-tag", self.pos);
                         sink.eof();
                         return;
                     }
@@ -988,6 +1149,7 @@ impl<'a> Tokenizer<'a> {
                         self.emit_tag(sink);
                     }
                     Some(0) => {
+                        self.error(sink, "unexpected-null-character", self.pos);
                         self.pos += 1;
                         self.flush_tag_name();
                         self.tag_name.push_str(REPLACEMENT);
@@ -1022,6 +1184,7 @@ impl<'a> Tokenizer<'a> {
                             emit_text(sink, &input[self.pos..], self.pos, bytes.len());
                         }
                         self.pos = bytes.len();
+                        self.error(sink, "eof-in-script-html-comment-like-text", self.pos);
                         sink.eof();
                         return;
                     };
@@ -1043,7 +1206,10 @@ impl<'a> Tokenizer<'a> {
                             self.state = State::ScriptDataDoubleEscapedLessThan;
                         }
                         b'<' => self.state = State::ScriptDataEscapedLessThan,
-                        _ => emit_text(sink, REPLACEMENT, self.pos - 1, self.pos),
+                        _ => {
+                            self.error(sink, "unexpected-null-character", self.pos - 1);
+                            emit_text(sink, REPLACEMENT, self.pos - 1, self.pos);
+                        }
                     }
                 }
                 State::ScriptDataEscapedDash
@@ -1073,6 +1239,7 @@ impl<'a> Tokenizer<'a> {
                     };
                     match self.byte() {
                         None => {
+                            self.error(sink, "eof-in-script-html-comment-like-text", self.pos);
                             sink.eof();
                             return;
                         }
@@ -1094,6 +1261,7 @@ impl<'a> Tokenizer<'a> {
                             self.state = State::ScriptData;
                         }
                         Some(0) => {
+                            self.error(sink, "unexpected-null-character", self.pos);
                             self.pos += 1;
                             emit_text(sink, REPLACEMENT, self.pos - 1, self.pos);
                             self.state = body;
@@ -1160,6 +1328,11 @@ impl<'a> Tokenizer<'a> {
                     Some(b) if is_space(b) => self.pos += 1,
                     None | Some(b'/' | b'>') => self.state = State::AfterAttributeName,
                     Some(b'=') => {
+                        self.error(
+                            sink,
+                            "unexpected-equals-sign-before-attribute-name",
+                            self.pos,
+                        );
                         self.pos += 1;
                         self.start_attr(self.pos - 1);
                         self.attr_buf.push('=');
@@ -1172,19 +1345,20 @@ impl<'a> Tokenizer<'a> {
                 },
                 State::AttributeName => match self.byte() {
                     None => {
-                        self.end_attr_name(self.pos);
+                        self.end_attr_name(sink, self.pos);
                         self.state = State::AfterAttributeName;
                     }
                     Some(b) if is_space(b) || b == b'/' || b == b'>' => {
-                        self.end_attr_name(self.pos);
+                        self.end_attr_name(sink, self.pos);
                         self.state = State::AfterAttributeName;
                     }
                     Some(b'=') => {
                         self.pos += 1;
-                        self.end_attr_name(self.pos - 1);
+                        self.end_attr_name(sink, self.pos - 1);
                         self.state = State::BeforeAttributeValue;
                     }
                     Some(0) => {
+                        self.error(sink, "unexpected-null-character", self.pos);
                         self.pos += 1;
                         self.flush_attr_name();
                         self.attr_buf.push_str(REPLACEMENT);
@@ -1194,6 +1368,9 @@ impl<'a> Tokenizer<'a> {
                         let end = scan(bytes, start, |b| {
                             is_space(b) || matches!(b, b'/' | b'>' | b'=' | 0)
                         });
+                        if self.errors {
+                            self.misplaced(sink, start, end, b"\"'<", "attribute-name");
+                        }
                         self.push_attr_name(start, end);
                         self.pos = end;
                     }
@@ -1213,6 +1390,7 @@ impl<'a> Tokenizer<'a> {
                         self.emit_tag(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-tag", self.pos);
                         sink.eof();
                         return;
                     }
@@ -1234,6 +1412,7 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::AttributeValueSingleQuoted;
                     }
                     Some(b'>') => {
+                        self.error(sink, "missing-attribute-value", self.pos);
                         self.pos += 1;
                         self.emit_tag(sink);
                     }
@@ -1250,6 +1429,7 @@ impl<'a> Tokenizer<'a> {
                     };
                     let rest = &bytes[self.pos..];
                     let Some(i) = memchr3(quote, b'&', 0, rest) else {
+                        self.error(sink, "eof-in-tag", bytes.len());
                         sink.eof();
                         return;
                     };
@@ -1271,12 +1451,14 @@ impl<'a> Tokenizer<'a> {
                         if rest[i] == b'&' {
                             self.char_ref(sink, true);
                         } else {
+                            self.error(sink, "unexpected-null-character", at);
                             self.attr_buf.push_str(REPLACEMENT);
                         }
                     }
                 }
                 State::AttributeValueUnquoted => match self.byte() {
                     None => {
+                        self.error(sink, "eof-in-tag", self.pos);
                         sink.eof();
                         return;
                     }
@@ -1296,6 +1478,7 @@ impl<'a> Tokenizer<'a> {
                         self.emit_tag(sink);
                     }
                     Some(0) => {
+                        self.error(sink, "unexpected-null-character", self.pos);
                         self.flush_value(self.pos);
                         self.pos += 1;
                         self.attr_buf.push_str(REPLACEMENT);
@@ -1305,6 +1488,9 @@ impl<'a> Tokenizer<'a> {
                         let end = scan(bytes, start, |b| {
                             is_space(b) || matches!(b, b'&' | b'>' | 0)
                         });
+                        if self.errors {
+                            self.misplaced(sink, start, end, b"\"'<=`", "unquoted-attribute-value");
+                        }
                         if self.value_from.is_none() {
                             self.attr_buf.push_str(&input[start..end]);
                         }
@@ -1325,10 +1511,14 @@ impl<'a> Tokenizer<'a> {
                         self.emit_tag(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-tag", self.pos);
                         sink.eof();
                         return;
                     }
-                    Some(_) => self.state = State::BeforeAttributeName,
+                    Some(_) => {
+                        self.error(sink, "missing-whitespace-between-attributes", self.pos);
+                        self.state = State::BeforeAttributeName;
+                    }
                 },
                 State::SelfClosingStartTag => match self.byte() {
                     Some(b'>') => {
@@ -1337,10 +1527,14 @@ impl<'a> Tokenizer<'a> {
                         self.emit_tag(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-tag", self.pos);
                         sink.eof();
                         return;
                     }
-                    Some(_) => self.state = State::BeforeAttributeName,
+                    Some(_) => {
+                        self.error(sink, "unexpected-solidus-in-tag", self.pos);
+                        self.state = State::BeforeAttributeName;
+                    }
                 },
                 State::BogusComment => {
                     let rest = &bytes[self.pos..];
@@ -1356,6 +1550,7 @@ impl<'a> Tokenizer<'a> {
                             self.comment.push_str(&input[self.pos..self.pos + i]);
                             self.pos += i + 1;
                             if rest[i] == 0 {
+                                self.error(sink, "unexpected-null-character", self.pos - 1);
                                 self.comment.push_str(REPLACEMENT);
                             } else {
                                 self.emit_comment(sink);
@@ -1368,10 +1563,18 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::ProcessingInstructionTarget;
                     }
                     None => {
+                        self.error(sink, "eof-in-processing-instruction", self.pos);
                         sink.eof();
                         return;
                     }
-                    Some(_) => self.pi_to_comment(),
+                    Some(_) => {
+                        self.error(
+                            sink,
+                            "invalid-first-character-of-processing-instruction-target",
+                            self.pos,
+                        );
+                        self.pi_to_comment();
+                    }
                 },
                 State::ProcessingInstructionTarget => {
                     let start = self.pos;
@@ -1382,6 +1585,7 @@ impl<'a> Tokenizer<'a> {
                     self.pos = end;
                     match self.byte() {
                         None => {
+                            self.error(sink, "eof-in-processing-instruction", self.pos);
                             sink.eof();
                             return;
                         }
@@ -1390,9 +1594,15 @@ impl<'a> Tokenizer<'a> {
                             if t.eq_ignore_ascii_case(b"xml")
                                 || t.eq_ignore_ascii_case(b"xml-stylesheet")
                             {
+                                self.error(
+                                    sink,
+                                    "disallowed-processing-instruction-target",
+                                    self.pos,
+                                );
                                 self.pi_to_comment();
                             } else {
                                 self.pi_data.clear();
+                                self.pi_target_end = self.pos;
                                 self.state = State::AfterProcessingInstructionTarget;
                             }
                         }
@@ -1407,6 +1617,7 @@ impl<'a> Tokenizer<'a> {
                     let rest = &bytes[self.pos..];
                     let Some(i) = memchr2(b'?', b'>', rest) else {
                         self.pos = bytes.len();
+                        self.error(sink, "eof-in-processing-instruction", self.pi_target_end);
                         sink.eof();
                         return;
                     };
@@ -1424,6 +1635,7 @@ impl<'a> Tokenizer<'a> {
                         self.emit_pi(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-processing-instruction", self.pi_target_end);
                         sink.eof();
                         return;
                     }
@@ -1446,10 +1658,12 @@ impl<'a> Tokenizer<'a> {
                         if sink.cdata_allowed() {
                             self.state = State::CdataSection;
                         } else {
+                            self.error(sink, "cdata-in-html-content", self.pos - 1);
                             self.comment.push_str("[CDATA[");
                             self.state = State::BogusComment;
                         }
                     } else {
+                        self.error(sink, "incorrectly-opened-comment", self.pos);
                         self.state = State::BogusComment;
                     }
                 }
@@ -1459,6 +1673,7 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::CommentStartDash;
                     }
                     Some(b'>') => {
+                        self.error(sink, "abrupt-closing-of-empty-comment", self.pos);
                         self.pos += 1;
                         self.emit_comment(sink);
                     }
@@ -1470,10 +1685,12 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::CommentEnd;
                     }
                     Some(b'>') => {
+                        self.error(sink, "abrupt-closing-of-empty-comment", self.pos);
                         self.pos += 1;
                         self.emit_comment(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-comment", self.pos);
                         self.emit_comment(sink);
                         sink.eof();
                         return;
@@ -1488,6 +1705,7 @@ impl<'a> Tokenizer<'a> {
                     let Some(i) = memchr3(b'<', b'-', 0, rest) else {
                         self.comment.push_str(&input[self.pos..]);
                         self.pos = bytes.len();
+                        self.error(sink, "eof-in-comment", self.pos);
                         self.emit_comment(sink);
                         sink.eof();
                         return;
@@ -1500,7 +1718,10 @@ impl<'a> Tokenizer<'a> {
                             self.state = State::CommentLessThan;
                         }
                         b'-' => self.state = State::CommentEndDash,
-                        _ => self.comment.push_str(REPLACEMENT),
+                        _ => {
+                            self.error(sink, "unexpected-null-character", self.pos - 1);
+                            self.comment.push_str(REPLACEMENT);
+                        }
                     }
                 }
                 State::CommentLessThan => match self.byte() {
@@ -1531,13 +1752,19 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::CommentEndDash;
                     }
                 }
-                State::CommentLessThanBangDashDash => self.state = State::CommentEnd,
+                State::CommentLessThanBangDashDash => {
+                    if !matches!(self.byte(), None | Some(b'>')) {
+                        self.error(sink, "nested-comment", self.pos);
+                    }
+                    self.state = State::CommentEnd;
+                }
                 State::CommentEndDash => match self.byte() {
                     Some(b'-') => {
                         self.pos += 1;
                         self.state = State::CommentEnd;
                     }
                     None => {
+                        self.error(sink, "eof-in-comment", self.pos);
                         self.emit_comment(sink);
                         sink.eof();
                         return;
@@ -1561,6 +1788,7 @@ impl<'a> Tokenizer<'a> {
                         self.comment.push('-');
                     }
                     None => {
+                        self.error(sink, "eof-in-comment", self.pos);
                         self.emit_comment(sink);
                         sink.eof();
                         return;
@@ -1577,10 +1805,12 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::CommentEndDash;
                     }
                     Some(b'>') => {
+                        self.error(sink, "incorrectly-closed-comment", self.pos);
                         self.pos += 1;
                         self.emit_comment(sink);
                     }
                     None => {
+                        self.error(sink, "eof-in-comment", self.pos);
                         self.emit_comment(sink);
                         sink.eof();
                         return;
@@ -1600,11 +1830,17 @@ impl<'a> Tokenizer<'a> {
                         self.quirky_doctype_eof(sink);
                         return;
                     }
-                    Some(_) => self.state = State::BeforeDoctypeName,
+                    Some(b) => {
+                        if b != b'>' {
+                            self.error(sink, "missing-whitespace-before-doctype-name", self.pos);
+                        }
+                        self.state = State::BeforeDoctypeName;
+                    }
                 },
                 State::BeforeDoctypeName => match self.byte() {
                     Some(b) if is_space(b) => self.pos += 1,
                     Some(b'>') => {
+                        self.error(sink, "missing-doctype-name", self.pos);
                         self.pos += 1;
                         self.new_doctype();
                         self.force_quirks = true;
@@ -1635,6 +1871,7 @@ impl<'a> Tokenizer<'a> {
                         return;
                     }
                     Some(0) => {
+                        self.error(sink, "unexpected-null-character", self.pos);
                         self.pos += 1;
                         self.doctype_name.as_mut().unwrap().push_str(REPLACEMENT);
                     }
@@ -1665,6 +1902,11 @@ impl<'a> Tokenizer<'a> {
                             self.pos += 6;
                             self.state = State::AfterDoctypeSystemKeyword;
                         } else {
+                            self.error(
+                                sink,
+                                "invalid-character-sequence-after-doctype-name",
+                                self.pos,
+                            );
                             self.force_quirks = true;
                             self.state = State::BogusDoctype;
                         }
@@ -1694,6 +1936,21 @@ impl<'a> Tokenizer<'a> {
                             };
                         }
                         Some(q @ (b'"' | b'\'')) => {
+                            let missing = match state {
+                                State::AfterDoctypePublicKeyword => {
+                                    Some("missing-whitespace-after-doctype-public-keyword")
+                                }
+                                State::AfterDoctypeSystemKeyword => {
+                                    Some("missing-whitespace-after-doctype-system-keyword")
+                                }
+                                State::AfterDoctypePublicIdentifier => Some(
+                                    "missing-whitespace-between-doctype-public-and-system-identifiers",
+                                ),
+                                _ => None,
+                            };
+                            if let Some(code) = missing {
+                                self.error(sink, code, self.pos);
+                            }
                             self.pos += 1;
                             let public = matches!(
                                 state,
@@ -1718,6 +1975,17 @@ impl<'a> Tokenizer<'a> {
                             }
                         }
                         Some(b'>') => {
+                            match state {
+                                State::AfterDoctypePublicKeyword
+                                | State::BeforeDoctypePublicIdentifier => {
+                                    self.error(sink, "missing-doctype-public-identifier", self.pos);
+                                }
+                                State::AfterDoctypeSystemKeyword
+                                | State::BeforeDoctypeSystemIdentifier => {
+                                    self.error(sink, "missing-doctype-system-identifier", self.pos);
+                                }
+                                _ => {}
+                            }
                             self.pos += 1;
                             if !matches!(
                                 state,
@@ -1733,6 +2001,14 @@ impl<'a> Tokenizer<'a> {
                             return;
                         }
                         Some(_) => {
+                            let code = match state {
+                                State::AfterDoctypePublicKeyword
+                                | State::BeforeDoctypePublicIdentifier => {
+                                    "missing-quote-before-doctype-public-identifier"
+                                }
+                                _ => "missing-quote-before-doctype-system-identifier",
+                            };
+                            self.error(sink, code, self.pos);
                             self.force_quirks = true;
                             self.state = State::BogusDoctype;
                         }
@@ -1772,8 +2048,17 @@ impl<'a> Tokenizer<'a> {
                     id.push_str(&input[self.pos..self.pos + i]);
                     self.pos += i + 1;
                     match rest[i] {
-                        0 => id.push_str(REPLACEMENT),
+                        0 => {
+                            id.push_str(REPLACEMENT);
+                            self.error(sink, "unexpected-null-character", self.pos - 1);
+                        }
                         b'>' => {
+                            let code = if public {
+                                "abrupt-doctype-public-identifier"
+                            } else {
+                                "abrupt-doctype-system-identifier"
+                            };
+                            self.error(sink, code, self.pos - 1);
                             self.force_quirks = true;
                             self.emit_doctype(sink);
                         }
@@ -1796,20 +2081,34 @@ impl<'a> Tokenizer<'a> {
                         self.quirky_doctype_eof(sink);
                         return;
                     }
-                    Some(_) => self.state = State::BogusDoctype,
+                    Some(_) => {
+                        self.error(
+                            sink,
+                            "unexpected-character-after-doctype-system-identifier",
+                            self.pos,
+                        );
+                        self.state = State::BogusDoctype;
+                    }
                 },
-                State::BogusDoctype => match memchr(b'>', &bytes[self.pos..]) {
-                    None => {
+                State::BogusDoctype => {
+                    let skipped = match memchr(b'>', &bytes[self.pos..]) {
+                        None => bytes.len(),
+                        Some(i) => self.pos + i,
+                    };
+                    if self.errors {
+                        for i in memchr::memchr_iter(0, &bytes[self.pos..skipped]) {
+                            sink.error("unexpected-null-character", self.pos + i);
+                        }
+                    }
+                    if skipped == bytes.len() {
                         self.pos = bytes.len();
                         self.emit_doctype(sink);
                         sink.eof();
                         return;
                     }
-                    Some(i) => {
-                        self.pos += i + 1;
-                        self.emit_doctype(sink);
-                    }
-                },
+                    self.pos = skipped + 1;
+                    self.emit_doctype(sink);
+                }
                 State::CdataSection => {
                     let rest = &bytes[self.pos..];
                     match memchr::memmem::find(rest, b"]]>") {
@@ -1818,6 +2117,7 @@ impl<'a> Tokenizer<'a> {
                                 emit_text(sink, &input[self.pos..], self.pos, bytes.len());
                             }
                             self.pos = bytes.len();
+                            self.error(sink, "eof-in-cdata", self.pos);
                             sink.eof();
                             return;
                         }
@@ -1838,6 +2138,35 @@ impl<'a> Tokenizer<'a> {
             }
         }
     }
+}
+
+/// Hands `sink` an error. Out of line, so the checks for errors cost the
+/// state machine as little as they can when they're off.
+#[cold]
+#[inline(never)]
+fn report<S: Sink>(sink: &mut S, code: &'static str, at: usize) {
+    sink.error(code, at);
+}
+
+/// The error a numeric character reference to `code` is, if any.
+#[cold]
+#[inline(never)]
+fn reference_error<S: Sink>(sink: &mut S, code: u32, at: usize) {
+    let problem = match code {
+        0 => "null-character-reference",
+        0x11_0000.. => "character-reference-outside-unicode-range",
+        0xD800..=0xDFFF => "surrogate-character-reference",
+        _ if noncharacter(code) => "noncharacter-character-reference",
+        0x0D | 0x01..=0x08 | 0x0B | 0x0E..=0x1F | 0x7F..=0x9F => "control-character-reference",
+        _ => return,
+    };
+    sink.error(problem, at);
+}
+
+/// Whether `n` is one of Unicode's noncharacters: U+FDD0 to U+FDEF, and
+/// the last two code points of every plane.
+fn noncharacter(n: u32) -> bool {
+    matches!(n, 0xFDD0..=0xFDEF) || (n & 0xFFFE == 0xFFFE && n <= 0x10_FFFF)
 }
 
 /// Hands `sink` a run of text read from `start..end` of the input.
@@ -1969,10 +2298,14 @@ mod tests {
         fn eof(&mut self) {
             self.0.push("EOF".into());
         }
+        fn error(&mut self, code: &'static str, at: usize) {
+            self.0.push(format!("!{code}@{at}"));
+        }
     }
 
     fn tokens(input: &str, fast: bool) -> Vec<String> {
         let mut t = Tokenizer::new(input);
+        t.report_errors();
         t.fast = fast;
         let mut r = Record::default();
         t.run(&mut r);
@@ -1980,7 +2313,7 @@ mod tests {
     }
 
     /// Random tag soup, built from the pieces the fast path decides on,
-    /// tokenizes the same with and without it.
+    /// tokenizes the same with and without it, with the same errors.
     #[test]
     fn the_fast_path_reads_tags_as_the_states_do() {
         const PIECES: &[&str] = &[
