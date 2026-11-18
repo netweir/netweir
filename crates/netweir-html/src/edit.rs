@@ -77,6 +77,17 @@ impl Document {
         self.add(Data::ProcessingInstruction { target, data })
     }
 
+    pub fn create_doctype(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
+        let name = self.push_stable(name);
+        let public_id = self.push_stable(public_id);
+        let system_id = self.push_stable(system_id);
+        self.add(Data::Doctype {
+            name,
+            public_id,
+            system_id,
+        })
+    }
+
     /// Moves `child` to be the last child of `parent`.
     pub fn append(&mut self, parent: NodeId, child: NodeId) -> Result<(), EditError> {
         self.insert_before(parent, child, None)
