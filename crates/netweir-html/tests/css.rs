@@ -628,7 +628,9 @@ fn valid_checks_pattern_as_javascript_reads_it() {
 <input id="alt" pattern="ab|cd" value="abcd">
 <input id="mails" type="email" multiple pattern=".+@x\.test" value="a@x.test, b@x.test">
 <input id="mails-bad" type="email" multiple pattern=".+@x\.test" value="a@x.test,b@y.test">
-<input id="broken" pattern="[" value="anything"><input id="prop" pattern="\p{L}+" value="123">
+<input id="broken" pattern="[" value="anything"><input id="prop" pattern="\p{L}+" value="Zoë">
+<input id="prop-bad" pattern="\p{L}+" value="123"><input id="greek" pattern="[\p{sc=Greek}\s]+" value="Ελένη Παπά">
+<input id="not-letter" pattern="\P{L}+" value="a1"><input id="strings" pattern="\p{RGI_Emoji}" value="x">
 <input id="redos" pattern="(a+)+b" value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
 <input id="num" type="number" pattern="x" value="5"><input id="empty" pattern="x">"#;
     assert_eq!(
@@ -641,6 +643,8 @@ fn valid_checks_pattern_as_javascript_reads_it() {
             "input#and-bad",
             "input#alt",
             "input#mails-bad",
+            "input#prop-bad",
+            "input#not-letter",
             "input#redos"
         ]
     );
@@ -653,6 +657,8 @@ fn valid_checks_pattern_as_javascript_reads_it() {
             "input#mails",
             "input#broken",
             "input#prop",
+            "input#greek",
+            "input#strings",
             "input#num",
             "input#empty"
         ]

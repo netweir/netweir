@@ -10,6 +10,7 @@ mod serialize;
 mod tags;
 pub mod tokenizer;
 mod tree;
+mod unicode;
 
 pub use dom::{AttrNs, Document, Kind, MAX_INPUT, NodeId, Ns, Quirks};
 pub use edit::EditError;
