@@ -269,6 +269,98 @@ fn deeply_nested_selectors_are_errors_not_crashes() {
     assert!(SelectorList::parse(&ok).is_ok());
 }
 
+/// A chain of compounds has no limit, so matching one goes along it in a
+/// loop: a call per compound overflowed a thread's stack at a few
+/// thousand. Nesting is capped at 32, and even at the cap, with a chain
+/// at every level, matching fits a 2 MiB stack, a spawned thread's.
+#[test]
+fn long_chains_match_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            let doc = parse(&("<div>".repeat(20_000) + "<b></b>"), false);
+            let b = SelectorList::parse("b").unwrap().select(&doc, 0)[0];
+            let div = SelectorList::parse("div").unwrap().select(&doc, 0)[1000];
+            let long = SelectorList::parse(&("div ".repeat(20_000) + "b")).unwrap();
+            assert!(long.matches(&doc, b, None));
+            let longer = SelectorList::parse(&("div ".repeat(100_000) + "b")).unwrap();
+            assert!(!longer.matches(&doc, b, None));
+            assert_eq!(longer.select(&doc, 0), []);
+
+            // 32 functions deep: 30 :is(), a :has() and an :nth-child(of).
+            let chain = "div ".repeat(50);
+            let mut css = format!(":nth-child(1 of {chain}b)");
+            css = format!(":has(> {chain}{css})");
+            for _ in 0..30 {
+                css = format!(":is({chain}{css})");
+            }
+            let nested = SelectorList::parse(&format!("{chain}{css}")).unwrap();
+            assert!(nested.matches(&doc, div, None));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// `:has()` of one compound and `:nth-child(of S)` keep what they work
+/// out for the rest of a query: answers come from it alike, and a deep or
+/// long page costs a walk, where it was a walk per element.
+#[test]
+fn has_and_nth_of_answer_from_what_they_kept() {
+    let html = "<div id=a><div id=b><p></p><div id=c><b></b></div></div>\
+                <div id=d><div id=e></div></div></div>";
+    assert_eq!(select(html, "div:has(b)"), ["div#a", "div#b", "div#c"]);
+    assert_eq!(select(html, "div:has(> b)"), ["div#c"]);
+    assert_eq!(select(html, ":has(+ div)"), ["div#b", "p"]);
+    assert_eq!(select(html, ":has(~ div)"), ["div#b", "p"]);
+    assert_eq!(select(html, ":has(~ p)"), Vec::<String>::new());
+    assert_eq!(select(html, "div:has(div b)"), ["div#a", "div#b"]);
+    assert_eq!(select(html, "div:not(:has(b))"), ["div#d", "div#e"]);
+    let list = "<ul><li id=1 class=x><li id=2><li id=3 class=x><li id=4 class=x></ul>";
+    assert_eq!(select(list, "li:nth-child(2 of .x)"), ["li#3"]);
+    assert_eq!(select(list, "li:nth-last-child(1 of .x)"), ["li#4"]);
+    assert_eq!(select(list, "li:nth-child(odd of :not(.x))"), ["li#2"]);
+
+    let deep = parse(&("<div>".repeat(20_000) + "<b></b>"), false);
+    let count = |doc: &Document, css: &str| SelectorList::parse(css).unwrap().select(doc, 0).len();
+    assert_eq!(count(&deep, "div:has(b)"), 20_000);
+    assert_eq!(count(&deep, "div:has(p)"), 0);
+    let long = parse(
+        &format!("<ul>{}<b></b></ul>", "<li class=x></li>".repeat(20_000)),
+        false,
+    );
+    assert_eq!(count(&long, "li:has(~ b)"), 20_000);
+    assert_eq!(count(&long, "li:nth-child(2n of .x)"), 10_000);
+    assert_eq!(count(&long, "li:nth-last-child(-n+100000 of .x)"), 20_000);
+    assert_eq!(count(&long, "li:nth-child(-n+100000)"), 20_000);
+    // Siblings of as many types as there are siblings.
+    let kinds: String = (0..20_000).map(|i| format!("<x-{i}></x-{i}>")).collect();
+    let kinds = parse(&format!("<div>{kinds}</div>"), false);
+    assert_eq!(count(&kinds, "div > :only-of-type"), 20_000);
+    assert_eq!(count(&kinds, "div > :last-of-type"), 20_000);
+    assert_eq!(count(&kinds, "div > :nth-of-type(2)"), 0);
+}
+
+/// A chain that can't match backs up only as far as can help: trying
+/// every choice of ancestors made this take seconds at 30 deep.
+#[test]
+fn a_chain_that_cant_match_gives_up_soon() {
+    let doc = parse(&"<div>".repeat(200), false);
+    let css = String::from("x") + &" div".repeat(12);
+    assert_eq!(SelectorList::parse(&css).unwrap().select(&doc, 0), []);
+    let css = String::from("x ~ div") + &" div".repeat(12);
+    assert_eq!(SelectorList::parse(&css).unwrap().select(&doc, 0), []);
+    // And still finds what's there past a sibling that isn't.
+    assert_eq!(select("<p><i></i><b></b><u></u></p>", "p > i ~ u"), ["u"]);
+    assert_eq!(
+        select(
+            "<a><p><b></b></p><i><u></u></i></a>",
+            "a > i > u, a b, p ~ i u"
+        ),
+        ["b", "u"]
+    );
+}
+
 /// Places the parser was looser than CSS (parsec-html/parsec#37). Lexbor
 /// reads comments the same way, and rejects `+ 5`, but accepts `2 n`,
 /// `#1a` and `:has()` inside `:has()`.
