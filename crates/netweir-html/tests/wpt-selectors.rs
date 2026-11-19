@@ -258,7 +258,10 @@ fn dom_nodes(data: &Value, out: &mut Vec<Outcome>) {
                 "dom/nodes/ParentNode-querySelector-All.html | {} | {shown}",
                 cx.name
             );
-            let options = MatchOptions { url: cx.url };
+            let options = MatchOptions {
+                url: cx.url,
+                ..MatchOptions::default()
+            };
             // querySelector is the same walk stopped at its first match, so
             // querySelectorAll's result covers both.
             let got = SelectorList::parse(selector)
@@ -293,7 +296,10 @@ fn dom_nodes(data: &Value, out: &mut Vec<Outcome>) {
                     "dom/nodes/{file}.html | {list_name} | {} | {shown}",
                     cx.name
                 );
-                let options = MatchOptions { url: cx.url };
+                let options = MatchOptions {
+                    url: cx.url,
+                    ..MatchOptions::default()
+                };
                 let got = SelectorList::parse(selector)
                     .map_err(|e| format!("did not parse: {e}"))
                     .and_then(|list| {
