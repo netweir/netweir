@@ -91,3 +91,59 @@ pub fn tree_inputs() -> Vec<TreeInput> {
     }
     out
 }
+/// Every tokenizer test's input that a Rust string can hold.
+pub fn tokenizer_inputs() -> Vec<String> {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/html5lib-tests/tokenizer"
+    );
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "test"))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for path in files {
+        let suite: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let Some(tests) = suite.get("tests").and_then(|t| t.as_array()) else {
+            continue;
+        };
+        for test in tests {
+            let input = test["input"].as_str().unwrap();
+            if test.get("doubleEscaped").and_then(|d| d.as_bool()) == Some(true) {
+                if let Some(s) = unescape(input) {
+                    out.push(s);
+                }
+            } else {
+                out.push(input.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// A doubleEscaped test's `\uXXXX` escapes, or None for a lone surrogate.
+fn unescape(s: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('u') => {
+                let hex: String = chars.by_ref().take(4).collect();
+                out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap())?);
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    Some(out)
+}

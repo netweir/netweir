@@ -125,7 +125,7 @@ pub struct Document {
     pub(crate) nodes: Vec<Node>,
     /// The input, after preprocessing. Text and attribute values that
     /// didn't need changing point into it rather than being copied.
-    pub(crate) src: Box<str>,
+    pub(crate) src: String,
     pub(crate) buf: String,
     /// Strings with an allocation each: what edits add, and text the
     /// parser had to keep growing away from the end of `buf`. Only the
@@ -167,23 +167,6 @@ pub(crate) struct Positions {
 }
 
 impl Positions {
-    /// The positions of `input`, the original as the tokenizer was going
-    /// to read it before preprocessing, `skipped` bytes into what the
-    /// caller passed.
-    pub(crate) fn new(input: &str, skipped: usize) -> Positions {
-        let mut crlf = Vec::new();
-        for i in memchr::memchr_iter(b'\r', input.as_bytes()) {
-            if input.as_bytes().get(i + 1) == Some(&b'\n') {
-                crlf.push((i - crlf.len()) as u32);
-            }
-        }
-        Positions {
-            crlf,
-            skipped: skipped as u32,
-            ..Positions::default()
-        }
-    }
-
     pub(crate) fn set(list: &mut Vec<[u32; 2]>, i: usize, at: [u32; 2]) {
         if list.len() <= i {
             list.resize(i + 1, UNKNOWN);
@@ -242,7 +225,7 @@ impl Document {
         });
         Document {
             nodes,
-            src: Box::default(),
+            src: String::new(),
             buf: String::with_capacity(capacity / 8),
             extras: Vec::new(),
             attrs: Vec::with_capacity(capacity / 32 + 16),

@@ -181,6 +181,16 @@ fn is_space(c: u8) -> bool {
 }
 
 /// The leading whitespace of `s`, and the rest.
+fn is_space_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\x0C' | '\r' | ' ')
+}
+
+/// The runs of whitespace in `s`, as slices of it.
+fn space_runs(s: &str) -> impl Iterator<Item = &str> {
+    s.split(|c: char| !is_space_char(c))
+        .filter(|r| !r.is_empty())
+}
+
 fn split_space(s: &str) -> (&str, &str) {
     let n = s.bytes().take_while(|&b| is_space(b)).count();
     s.split_at(n)
@@ -599,6 +609,30 @@ impl TreeBuilder {
     fn err(&mut self, code: &'static str) {
         if self.errors {
             self.errors_found.push((code, self.at[0]));
+        }
+    }
+
+    /// A parse error at byte `i` of text `s`: there, when `s` is still a
+    /// slice of the source, so the place doesn't depend on how the text
+    /// was cut into runs; else where the token being handled was.
+    #[cold]
+    fn err_in(&mut self, code: &'static str, s: &str, i: usize) {
+        if self.errors {
+            let at = self
+                .doc
+                .source_offset(s)
+                .map_or(self.at[0], |o| (o + i) as u32);
+            self.errors_found.push((code, at));
+        }
+    }
+
+    /// Where text `s` was written: exactly, when it's a slice of the
+    /// source, even part of a run; else where the token being handled
+    /// was.
+    fn text_at(&self, s: &str) -> [u32; 2] {
+        match self.doc.source_offset(s) {
+            Some(o) => [o as u32, (o + s.len()) as u32],
+            None => self.at,
         }
     }
 
@@ -1638,7 +1672,7 @@ impl TreeBuilder {
             Tok::Text(s) => {
                 let (_, rest) = split_space(s);
                 if !rest.is_empty() {
-                    self.err("expected-doctype-but-got-chars");
+                    self.err_in("expected-doctype-but-got-chars", rest, 0);
                     self.doc.quirks = Quirks::Quirks;
                     self.reprocess(Mode::BeforeHtml, Tok::Text(rest));
                 }
@@ -1843,11 +1877,11 @@ impl TreeBuilder {
     }
 
     fn in_head_noscript_else(&mut self, t: Tok<'_>) {
-        self.err(match t {
-            Tok::Text(_) => "char-in-head-noscript",
-            Tok::Eof => "eof-in-head-noscript",
-            _ => "unexpected-inhead-noscript-tag",
-        });
+        match t {
+            Tok::Text(s) => self.err_in("char-in-head-noscript", s, 0),
+            Tok::Eof => self.err("eof-in-head-noscript"),
+            _ => self.err("unexpected-inhead-noscript-tag"),
+        }
         self.pop();
         self.reprocess(Mode::InHead, t);
     }
@@ -1916,8 +1950,8 @@ impl TreeBuilder {
             return;
         }
         if self.errors {
-            for _ in memchr::memchr_iter(0, s.as_bytes()) {
-                self.err("invalid-codepoint-in-body");
+            for i in memchr::memchr_iter(0, s.as_bytes()) {
+                self.err_in("invalid-codepoint-in-body", s, i);
             }
         }
         for piece in s.split('\0').filter(|p| !p.is_empty()) {
@@ -2576,7 +2610,7 @@ impl TreeBuilder {
     fn in_table(&mut self, t: Tok<'_>) {
         use Tag::*;
         match t {
-            Tok::Text(_)
+            Tok::Text(s)
                 if matches!(
                     self.current().tag,
                     Table | Tbody | Template | Tfoot | Thead | Tr
@@ -2584,7 +2618,7 @@ impl TreeBuilder {
             {
                 self.pending.clear();
                 self.pending_text = false;
-                self.pending_at = self.at;
+                self.pending_at = self.text_at(s);
                 self.original = self.mode;
                 self.reprocess(Mode::InTableText, t);
             }
@@ -2685,8 +2719,8 @@ impl TreeBuilder {
     fn in_table_text(&mut self, t: Tok<'_>) {
         if let Tok::Text(s) = t {
             if self.errors {
-                for _ in memchr::memchr_iter(0, s.as_bytes()) {
-                    self.err("invalid-codepoint-in-table-text");
+                for i in memchr::memchr_iter(0, s.as_bytes()) {
+                    self.err_in("invalid-codepoint-in-table-text", s, i);
                 }
             }
             for piece in s.split('\0') {
@@ -2695,7 +2729,7 @@ impl TreeBuilder {
                 }
                 self.pending.push_str(piece);
             }
-            self.pending_at[1] = self.at[1];
+            self.pending_at[1] = self.text_at(s)[1];
             return;
         }
         // The gathered text was written where its runs were, not where
@@ -3001,7 +3035,7 @@ impl TreeBuilder {
                     self.in_body(Tok::Text(space));
                 }
                 if !rest.is_empty() {
-                    self.err("unexpected-char-after-body");
+                    self.err_in("unexpected-char-after-body", rest, 0);
                     self.reprocess(Mode::InBody, Tok::Text(rest));
                 }
             }
@@ -3040,16 +3074,21 @@ impl TreeBuilder {
     /// modes keep.
     fn chars_dropped(&mut self, s: &str, code: &'static str, but_space: bool) {
         if self.errors {
-            let space = |c: char| matches!(c, '\t' | '\n' | '\x0C' | '\r' | ' ');
-            for _ in s.chars().filter(|&c| !(but_space && space(c))) {
-                self.err(code);
+            for (i, c) in s.char_indices() {
+                if !(but_space && is_space_char(c)) {
+                    self.err_in(code, s, i);
+                }
             }
         }
     }
 
+    /// The frameset modes keep only the whitespace: each run of it goes
+    /// in as the slice it is, so the text node has the place it would
+    /// whichever way the text was cut into runs.
     fn frameset_space(&mut self, s: &str) {
-        let space: String = s.bytes().filter(|&b| is_space(b)).map(char::from).collect();
-        self.insert_text(&space);
+        for space in space_runs(s) {
+            self.insert_text(space);
+        }
     }
 
     fn in_frameset(&mut self, t: Tok<'_>) {
@@ -3120,7 +3159,7 @@ impl TreeBuilder {
                     self.in_body(Tok::Text(space));
                 }
                 if !rest.is_empty() {
-                    self.err("expected-eof-but-got-char");
+                    self.err_in("expected-eof-but-got-char", rest, 0);
                     self.reprocess(Mode::InBody, Tok::Text(rest));
                 }
             }
@@ -3143,9 +3182,8 @@ impl TreeBuilder {
             Tok::Doctype(_) => self.in_body(t),
             Tok::Text(s) => {
                 self.chars_dropped(s, "expected-eof-but-got-char", true);
-                let space: String = s.bytes().filter(|&b| is_space(b)).map(char::from).collect();
-                if !space.is_empty() {
-                    self.in_body(Tok::Text(&space));
+                for space in space_runs(s) {
+                    self.in_body(Tok::Text(space));
                 }
             }
             Tok::Start(s) if s.tag == Tag::Html => self.in_body(t),
@@ -3164,8 +3202,8 @@ impl TreeBuilder {
             Tok::Text(s) => {
                 if s.contains('\0') {
                     if self.errors {
-                        for _ in memchr::memchr_iter(0, s.as_bytes()) {
-                            self.err("invalid-codepoint-in-foreign-content");
+                        for i in memchr::memchr_iter(0, s.as_bytes()) {
+                            self.err_in("invalid-codepoint-in-foreign-content", s, i);
                         }
                     }
                     self.insert_text(&s.replace('\0', "\u{FFFD}"));
@@ -3522,68 +3560,242 @@ pub fn parse_fragment_with(
 }
 
 fn run(html: &str, options: Options, fragment: Option<(Ns, &str)>) -> Result<Document, ParseError> {
-    // Decoding a document drops a byte order mark, so a string that still
-    // starts with one gets the same tree. A fragment, as innerHTML, keeps it.
-    let whole = html;
-    let html = match fragment {
-        None => html.strip_prefix('\u{FEFF}').unwrap_or(html),
-        Some(_) => html,
-    };
-    let skipped = whole.len() - html.len();
-    if html.len() > crate::MAX_INPUT {
-        return Err(ParseError::TooLarge { len: html.len() });
+    // Too large is said before anything is made for it, as the parser
+    // would count it: less a document's byte order mark.
+    let bom = fragment.is_none() && html.starts_with('\u{FEFF}');
+    let len = html.len() - if bom { 3 } else { 0 };
+    if len > crate::MAX_INPUT {
+        return Err(ParseError::TooLarge { len });
     }
-    let start = std::time::Instant::now();
-    let mut builder = TreeBuilder::new(html.len(), options.scripting);
-    builder.doc.scripting = options.scripting;
-    builder.max_depth = options.max_depth;
-    builder.spans = options.spans;
-    builder.errors = options.errors;
-    if options.spans || options.errors {
-        builder.doc.positions = Some(Box::new(Positions::new(html, skipped)));
-    }
-    let input = source(&mut builder, html);
-    let mode = match fragment {
-        Some((ns, context)) => builder.fragment(ns, context),
-        None => None,
-    };
-    let mut tokenizer = Tokenizer::new(input);
-    if let Some(mode) = mode {
-        tokenizer.set_text_mode(mode);
-    }
-    if options.errors {
-        tokenizer.report_errors();
-    }
-    // A budget past what the clock can count is no limit at all.
-    if let Some(deadline) = options.budget.and_then(|b| start.checked_add(b)) {
-        tokenizer.set_deadline(deadline);
-    }
-    tokenizer.run(&mut builder);
-    if tokenizer.timed_out() {
-        return Err(ParseError::Timeout {
-            budget: options.budget.unwrap_or_default(),
-            parsed: tokenizer.position(),
-        });
-    }
-    if fragment.is_some() {
-        builder.finish_fragment();
-    }
-    builder.finish_errors();
-    Ok(builder.doc)
+    let mut parser = Parser::start(options, fragment, html.len());
+    parser.push(html);
+    parser.finish()
 }
 
-/// Gives the document its preprocessed source, and returns it for the
-/// tokenizer to read.
-fn source<'a>(builder: &mut TreeBuilder, html: &str) -> &'a str {
-    builder.doc.src = match tokenizer::preprocess(html) {
-        std::borrow::Cow::Borrowed(s) => s.into(),
-        std::borrow::Cow::Owned(s) => s.into_boxed_str(),
-    };
-    // SAFETY: the source is a boxed str the document never changes or
-    // drops while it's parsed, so its bytes stay where they are while the
-    // tokenizer reads them, even though the builder holding them moves.
-    // The returned reference doesn't outlive the parse functions above.
-    unsafe { &*(builder.doc.src.as_ref() as *const str) }
+/// Parses a document as it arrives, a piece at a time, into the tree
+/// [`parse_with`] would build from the whole: the same for any way of
+/// cutting the input up, with the same spans and errors when asked for.
+///
+/// Each [`Parser::feed`] tokenizes and builds as far as the input allows,
+/// keeping only what it can't decide yet (an unfinished tag, a character
+/// reference cut short, a CR that might be half a CRLF) for the next
+/// piece; [`Parser::finish`] reads the end of the input and hands back the
+/// document. The pieces are `&str`, so one can't end inside a character:
+/// decoding bytes, and finding the encoding, comes first, and is the
+/// encoding crate's.
+///
+/// ```
+/// use netweir_html::{Options, Parser};
+///
+/// let mut parser = Parser::new(Options::default());
+/// for piece in ["<p>He", "llo, <b>wor", "ld</b>"] {
+///     parser.feed(piece);
+/// }
+/// let doc = parser.finish().unwrap();
+/// assert_eq!(doc.text(doc.root()), "Hello, world");
+/// ```
+pub struct Parser {
+    builder: TreeBuilder,
+    /// Reads the document's source as it grows: see [`Parser::tokenize`].
+    tokenizer: Tokenizer<'static>,
+    options: Options,
+    fragment: bool,
+    /// Whether the input's first character has come, which is dropped if
+    /// it's a byte order mark.
+    started: bool,
+    /// Whether the last piece ended in a CR, which waits for the next: a
+    /// CRLF is one LF.
+    cr: bool,
+    /// How much input there has been, less a dropped byte order mark.
+    len: usize,
+    /// How much of the budget the parse has used, which counts only the
+    /// time spent in `feed` and `finish`, not waiting for input.
+    spent: std::time::Duration,
+    too_large: bool,
+}
+
+impl Parser {
+    /// A parser for a whole document, as [`parse_with`] parses one.
+    pub fn new(options: Options) -> Parser {
+        Parser::start(options, None, 0)
+    }
+
+    /// A parser for the contents of an element named `context` in
+    /// namespace `ns`, as [`parse_fragment_with`] parses them.
+    pub fn fragment(ns: Ns, context: &str, options: Options) -> Parser {
+        Parser::start(options, Some((ns, context)), 0)
+    }
+
+    fn start(options: Options, fragment: Option<(Ns, &str)>, capacity: usize) -> Parser {
+        let mut builder = TreeBuilder::new(capacity, options.scripting);
+        builder.doc.src = String::with_capacity(capacity);
+        builder.doc.scripting = options.scripting;
+        builder.max_depth = options.max_depth;
+        builder.spans = options.spans;
+        builder.errors = options.errors;
+        if options.spans || options.errors {
+            builder.doc.positions = Some(Box::default());
+        }
+        let mode = match fragment {
+            Some((ns, context)) => builder.fragment(ns, context),
+            None => None,
+        };
+        let mut tokenizer = Tokenizer::new("");
+        if let Some(mode) = mode {
+            tokenizer.set_text_mode(mode);
+        }
+        if options.errors {
+            tokenizer.report_errors();
+        }
+        Parser {
+            builder,
+            tokenizer,
+            options,
+            fragment: fragment.is_some(),
+            started: false,
+            cr: false,
+            len: 0,
+            spent: std::time::Duration::ZERO,
+            too_large: false,
+        }
+    }
+
+    /// The next piece of the input.
+    pub fn feed(&mut self, chunk: &str) {
+        if self.push(chunk) {
+            self.tokenize(true);
+        }
+    }
+
+    /// The end of the input: the document, or why there's none, as
+    /// [`parse_with`] gives them. A budget counts the time spent in
+    /// [`Parser::feed`] and here, not the time between.
+    pub fn finish(mut self) -> Result<Document, ParseError> {
+        if self.too_large {
+            return Err(ParseError::TooLarge { len: self.len });
+        }
+        if !self.tokenizer.timed_out() {
+            if std::mem::take(&mut self.cr) {
+                self.builder.doc.src.push('\n');
+            }
+            self.tokenize(false);
+        }
+        if self.tokenizer.timed_out() {
+            return Err(ParseError::Timeout {
+                budget: self.options.budget.unwrap_or_default(),
+                parsed: self.tokenizer.position(),
+            });
+        }
+        if self.fragment {
+            self.builder.finish_fragment();
+        }
+        self.builder.finish_errors();
+        let mut doc = self.builder.doc;
+        doc.src.shrink_to_fit();
+        Ok(doc)
+    }
+
+    /// Adds `chunk` to the document's source as the spec's input stream
+    /// preprocessing would have it, CRLF and CR as LF, and says whether
+    /// to go on.
+    fn push(&mut self, chunk: &str) -> bool {
+        let mut chunk = chunk;
+        if !self.started && !chunk.is_empty() {
+            self.started = true;
+            // Decoding a document drops a byte order mark, so a string
+            // that still starts with one gets the same tree. A fragment,
+            // as innerHTML, keeps it.
+            if !self.fragment
+                && let Some(rest) = chunk.strip_prefix('\u{FEFF}')
+            {
+                chunk = rest;
+                if let Some(p) = self.builder.doc.positions.as_deref_mut() {
+                    p.skipped = 3;
+                }
+            }
+        }
+        self.len += chunk.len();
+        if self.too_large || self.len > crate::MAX_INPUT {
+            // Nothing more is kept, nor read.
+            if !self.too_large {
+                self.too_large = true;
+                self.builder.doc.src = String::new();
+            }
+            return false;
+        }
+        if self.tokenizer.timed_out() {
+            return false;
+        }
+        let doc = &mut self.builder.doc;
+        let (src, mut positions) = (&mut doc.src, doc.positions.as_deref_mut());
+        // Where an LF that was a CRLF lands, for mapping back.
+        let mut crlf = |at: usize| {
+            if let Some(p) = positions.as_deref_mut() {
+                p.crlf.push(at as u32);
+            }
+        };
+        let mut rest = chunk;
+        if rest.is_empty() {
+            return true;
+        }
+        if std::mem::take(&mut self.cr) {
+            if let Some(after) = rest.strip_prefix('\n') {
+                crlf(src.len());
+                rest = after;
+            }
+            src.push('\n');
+        }
+        while let Some(i) = memchr::memchr(b'\r', rest.as_bytes()) {
+            src.push_str(&rest[..i]);
+            match rest.as_bytes().get(i + 1) {
+                None => {
+                    self.cr = true;
+                    return true;
+                }
+                Some(b'\n') => {
+                    crlf(src.len());
+                    rest = &rest[i + 2..];
+                }
+                Some(_) => rest = &rest[i + 1..],
+            }
+            src.push('\n');
+        }
+        src.push_str(rest);
+        true
+    }
+
+    /// Tokenizes what the source has that the tokenizer hasn't read; the
+    /// rest of it, at the end, when not `partial`.
+    fn tokenize(&mut self, partial: bool) {
+        let start = std::time::Instant::now();
+        // SAFETY: the source grows only between these calls. While the
+        // tokenizer runs, the tree builder adds to its own buffers and
+        // never to the source, so these bytes stay where they are; and the
+        // tokenizer lets go of the reference as soon as it's done, keeping
+        // its place as offsets, so it never holds one to a source that has
+        // since grown and moved. The reference never leaves the parser.
+        let src: &'static str = unsafe { &*(self.builder.doc.src.as_str() as *const str) };
+        self.tokenizer.extend(src);
+        // What's left of the budget from now; one past what the clock can
+        // count is no limit at all.
+        if let Some(budget) = self.options.budget {
+            match budget.checked_sub(self.spent) {
+                Some(left) => {
+                    if let Some(deadline) = start.checked_add(left) {
+                        self.tokenizer.set_deadline(deadline);
+                    }
+                }
+                None => self.tokenizer.set_deadline(start),
+            }
+        }
+        if partial {
+            self.tokenizer.run_partial(&mut self.builder);
+        } else {
+            self.tokenizer.run(&mut self.builder);
+        }
+        self.tokenizer.detach();
+        self.spent += start.elapsed();
+    }
 }
 
 #[cfg(test)]
@@ -3693,6 +3905,83 @@ mod tests {
         };
         assert!(parse_with("<p>x", endless).is_ok());
     }
+
+    fn in_pieces(pieces: &[&str]) -> Document {
+        let mut parser = Parser::new(Options::default());
+        for piece in pieces {
+            parser.feed(piece);
+        }
+        parser.finish().unwrap()
+    }
+
+    #[test]
+    fn the_tree_grows_as_the_pieces_come() {
+        let mut parser = Parser::new(Options::default());
+        parser.feed("<ul><li>one<li>tw");
+        let early = parser.builder.doc.len();
+        // html, head, body, ul, li, "one", li, and the text so far.
+        assert_eq!(early, 9);
+        parser.feed("o</ul><p a=\"x");
+        // The p waits for the rest of its tag.
+        assert_eq!(parser.builder.doc.len(), early);
+        parser.feed("\">three");
+        assert_eq!(parser.builder.doc.len(), early + 2);
+        let doc = parser.finish().unwrap();
+        assert_eq!(
+            doc.inner_html(doc.root()),
+            "<html><head></head><body><ul><li>one</li><li>two</li></ul>\
+             <p a=\"x\">three</p></body></html>"
+        );
+    }
+
+    #[test]
+    fn a_cr_at_the_end_of_a_piece_waits_for_the_next() {
+        let text = |doc: &Document| doc.text(doc.root());
+        assert_eq!(text(&in_pieces(&["a\r", "\nb"])), "a\nb");
+        assert_eq!(text(&in_pieces(&["a\r", "b"])), "a\nb");
+        assert_eq!(text(&in_pieces(&["a\r", "", "\r\nb\r"])), "a\n\nb\n");
+        // A `<pre>` drops one newline after it, a CRLF as much as an LF.
+        let pre = in_pieces(&["<pre>\r", "\nx</pre>"]);
+        assert_eq!(text(&pre), "x");
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_dropped_from_a_documents_first_piece() {
+        let whole = parse("<p>x", false);
+        let pieces = in_pieces(&["", "\u{FEFF}", "<p>x"]);
+        assert_eq!(pieces.inner_html(0), whole.inner_html(0));
+        let mut fragment = Parser::fragment(Ns::Html, "div", Options::default());
+        fragment.feed("\u{FEFF}x");
+        let fragment = fragment.finish().unwrap();
+        assert!(fragment.inner_html(0).contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn a_budget_and_the_size_limit_hold_for_pieces_too() {
+        let tight = Options {
+            budget: Some(Duration::from_micros(50)),
+            ..Options::default()
+        };
+        let piece = "<div><b>x</b> y</div>".repeat(10_000);
+        let mut parser = Parser::new(tight);
+        for _ in 0..20 {
+            parser.feed(&piece);
+        }
+        match parser.finish() {
+            Err(ParseError::Timeout { parsed, .. }) => assert!(parsed < piece.len() * 20),
+            other => panic!("expected a timeout, got {:?}", other.map(|d| d.len())),
+        }
+        let huge = "x".repeat(crate::MAX_INPUT);
+        let mut parser = Parser::new(Options::default());
+        parser.feed(&huge);
+        parser.feed("xy");
+        assert_eq!(
+            parser.finish().map(|d| d.len()),
+            Err(ParseError::TooLarge {
+                len: crate::MAX_INPUT + 2
+            })
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3712,6 +4001,10 @@ mod hostile {
     /// slow spell on a loaded machine that lands on the large parses only
     /// can't fail it, and quadratic work fails every round.
     fn grows_linearly(make: impl Fn(usize) -> String) {
+        grows_linearly_timed(make, time);
+    }
+
+    fn grows_linearly_timed(make: impl Fn(usize) -> String, time: fn(&str) -> Duration) {
         let (small, large) = (make(5_000), make(20_000));
         let rounds: Vec<_> = (0..5).map(|_| (time(&small), time(&large))).collect();
         assert!(
@@ -3722,6 +4015,42 @@ mod hostile {
             small.len(),
             large.len()
         );
+    }
+
+    /// Parses `html` (ASCII) fed 64 bytes at a time.
+    fn time_in_pieces(html: &str) -> Duration {
+        let start = Instant::now();
+        let mut parser = Parser::new(Options::default());
+        for piece in html.as_bytes().chunks(64) {
+            parser.feed(std::str::from_utf8(piece).unwrap());
+        }
+        std::hint::black_box(parser.finish().unwrap());
+        start.elapsed()
+    }
+
+    /// A token that goes on over many pieces is read once, not again from
+    /// its start with each piece: a long attribute value, a long name, a
+    /// comment, a character reference that's all digits.
+    #[test]
+    fn a_token_over_many_pieces_costs_linear_time() {
+        let long = |open: &'static str, close: &'static str, fill: &'static str| {
+            move |n: usize| format!("{open}{}{close}", fill.repeat(n * 10))
+        };
+        for make in [
+            long("<a href=\"", "\">", "x"),
+            long("<a href=", ">", "x"),
+            long("<a ", ">", "b"),
+            long("<", ">", "a"),
+            long("<!--", "-->", "x"),
+            long("<!DOCTYPE html PUBLIC \"", "\">", "x"),
+            long("<?pi ", "?>", "x"),
+            long("&#", ";", "1"),
+            long("&", ";", "a"),
+            long("<svg><![CDATA[", "]]>", "]"),
+            long("<script>", "</script>", "<"),
+        ] {
+            grows_linearly_timed(make, time_in_pieces);
+        }
     }
 
     /// A selected option's contents are copied into `<selectedcontent>`
