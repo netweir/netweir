@@ -509,9 +509,11 @@ impl<'a> Parser<'a> {
             return error(format!("namespace prefix {name:?} isn't declared"));
         }
         self.skip_space();
+        // The end of the input closes every open block, as CSS reads it, so
+        // `[class` and `[class="x"` are whole.
         let op = match self.peek() {
-            Some(']') => {
-                self.pos += 1;
+            Some(']') | None => {
+                self.eat(']');
                 return Ok(AttrSelector {
                     lower: name.to_ascii_lowercase(),
                     exact: name,
@@ -558,7 +560,7 @@ impl<'a> Parser<'a> {
             };
             self.skip_space();
         }
-        if !self.eat(']') {
+        if !self.eat(']') && !self.at_end() {
             return error("an attribute selector without its ]");
         }
         Ok(AttrSelector {
@@ -576,7 +578,7 @@ impl<'a> Parser<'a> {
         if self.eat('(') {
             let p = self.pseudo_function(&name)?;
             self.skip_space();
-            if !self.eat(')') {
+            if !self.eat(')') && !self.at_end() {
                 return error(format!(":{name}() without its )"));
             }
             return Ok(p);

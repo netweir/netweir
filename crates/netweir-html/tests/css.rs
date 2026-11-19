@@ -243,6 +243,20 @@ fn bad_selectors_are_errors() {
     }
 }
 
+/// CSS closes every open block at the end of the input, so a selector
+/// missing its final `]` or `)` is whole, as `querySelector` reads it.
+#[test]
+fn the_end_of_the_input_closes_open_brackets() {
+    assert_eq!(page("li[data-id"), ["li#17", "li#27", "li#30"]);
+    assert_eq!(page("[data-id=\"17\""), ["li#17"]);
+    assert_eq!(page("[data-id=\"17"), ["li#17"]);
+    assert_eq!(page("li:not(.item"), Vec::<String>::new());
+    assert_eq!(page("li:not([class"), Vec::<String>::new());
+    assert_eq!(page("ul > li:nth-child(2n+1"), ["li#17", "li#30"]);
+    assert!(SelectorList::parse("li[data-id=").is_err());
+    assert!(SelectorList::parse("li:nth-child(").is_err());
+}
+
 /// Each nesting recursed in the parser, so a deep enough selector
 /// overflowed the stack and aborted the process; it's an error instead.
 #[test]
