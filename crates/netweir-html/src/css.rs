@@ -160,6 +160,8 @@ enum Pseudo {
     /// A pseudo-element, `::before` or `::part(x)`: valid in a selector, as
     /// a browser's querySelector has it, and never an element in the tree.
     Element,
+    /// `:heading` (empty) or `:heading(1, 3)`: an h1-h6 of a listed level.
+    Heading(Vec<i64>),
 }
 
 // ---- parsing ---------------------------------------------------------------
@@ -662,6 +664,7 @@ impl<'a> Parser<'a> {
             "last-of-type" => nth(0, 1, true, true),
             "only-of-type" => Pseudo::Only { of_type: true },
             "empty" => Pseudo::Empty,
+            "heading" => Pseudo::Heading(Vec::new()),
             "root" => Pseudo::Root,
             "scope" => Pseudo::Scope,
             "link" | "any-link" => Pseudo::AnyLink,
@@ -758,6 +761,30 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Pseudo::Lang(ranges)
+            }
+            // Selectors 5's draft: a list of integers, not An+B.
+            "heading" => {
+                let mut levels = Vec::new();
+                loop {
+                    self.skip_space();
+                    let start = self.pos;
+                    if matches!(self.peek(), Some('+' | '-')) {
+                        self.pos += 1;
+                    }
+                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        self.pos += 1;
+                    }
+                    let whole = !self.peek().is_some_and(|c| is_name(c) || c == '.');
+                    match self.s[start..self.pos].parse() {
+                        Ok(level) if whole => levels.push(level),
+                        _ => return error(":heading() takes integers, like :heading(1, 3)"),
+                    }
+                    self.skip_space();
+                    if !self.eat(',') {
+                        break;
+                    }
+                }
+                Pseudo::Heading(levels)
             }
             "dir" => {
                 self.skip_space();
@@ -2546,6 +2573,18 @@ impl<'a> Cx<'a> {
                 ranges.iter().any(|range| lang_matches(range, &tag))
             }),
             Pseudo::Dir(rtl) => self.is_rtl(el) == *rtl,
+            Pseudo::Heading(levels) => {
+                let level = match tag {
+                    Tag::H1 => 1,
+                    Tag::H2 => 2,
+                    Tag::H3 => 3,
+                    Tag::H4 => 4,
+                    Tag::H5 => 5,
+                    Tag::H6 => 6,
+                    _ => return false,
+                };
+                levels.is_empty() || levels.contains(&level)
+            }
             Pseudo::Never | Pseudo::Element => false,
         }
     }

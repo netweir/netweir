@@ -279,6 +279,32 @@ fn bad_selectors_are_errors() {
     }
 }
 
+/// Selectors 5's `:heading` is an h1-h6, and `:heading(1, 3)` one of the
+/// listed levels; aria-level and role=heading don't count.
+#[test]
+fn heading_is_an_h1_to_h6_of_a_listed_level() {
+    let html = r#"<h1 id="a"></h1><h2 id="b" aria-level="3"></h2><h6 id="f"></h6><h7 id="g"></h7>
+<p id="p" role="heading" aria-level="1"></p>"#;
+    assert_eq!(select(html, ":heading"), ["h1#a", "h2#b", "h6#f"]);
+    assert_eq!(select(html, ":heading(2, 7)"), ["h2#b"]);
+    assert_eq!(select(html, ":heading( +6 , 0)"), ["h6#f"]);
+    assert_eq!(
+        select(html, ":heading(0), :heading(-1), :heading(99999)"),
+        Vec::<String>::new()
+    );
+    for bad in [
+        ":heading()",
+        ":heading(1.0)",
+        ":heading(n)",
+        ":heading(odd)",
+        ":heading(2n+1)",
+        ":heading(2n, 3n)",
+        ":heading(1,)",
+    ] {
+        assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
+    }
+}
+
 /// A browser's querySelector takes a pseudo-element and finds nothing, since
 /// no element in the tree is one; so does this, where it refused them.
 #[test]
