@@ -1,7 +1,7 @@
 //! CSS selectors: every feature Netweir's own tests use, the rest of what
 //! lexbor offered, and where browsers and lexbor part ways, the browsers.
 
-use netweir_html::css::{MatchOptions, SelectorList};
+use netweir_html::css::{MatchOptions, MatchTimeout, SelectorList};
 use netweir_html::{Document, Kind, NodeId, parse};
 
 const PAGE: &str = r#"<!DOCTYPE html><html><head><title>Shop</title></head><body>
@@ -116,6 +116,104 @@ fn plain_attribute_names_mean_no_namespace() {
     assert_eq!(select(svg, "[*|href]"), ["use", "a"]);
 }
 
+/// `||` and `:nth-col()` by the HTML table model: `colspan`, a `rowspan`
+/// reaching into the next row, `rowspan=0`, a `colgroup` with no `col`s,
+/// and a table inside a cell, whose cells keep their own columns.
+#[test]
+fn table_columns() {
+    let html = r#"<table>
+        <colgroup><col id=c1><col id=c2 span=2></colgroup><colgroup span=2></colgroup>
+        <tr><td id=a><td id=b colspan=2><td id=c rowspan=2><td id=d><table><tr><td id=n></table>
+        <tr><th id=e rowspan=0><td id=f><td id=g><td id=h>
+        <tr><td id=i>
+        </table>"#;
+    // Columns 1-5: a b b c d / e f g c h / e i
+    assert_eq!(select(html, "#c1 || td"), ["td#a"]);
+    assert_eq!(select(html, "#c1 || th"), ["th#e"]);
+    assert_eq!(select(html, "#c2 || *"), ["td#b", "td#f", "td#g", "td#i"]);
+    assert_eq!(
+        select(html, "col||td"),
+        ["td#a", "td#b", "td#f", "td#g", "td#i"]
+    );
+    assert_eq!(select(html, "col:has(|| #f)"), ["col#c2"]);
+    assert_eq!(select(html, ":nth-col(1)"), ["td#a", "td#n", "th#e"]);
+    assert_eq!(select(html, ":nth-col(2)"), ["td#b", "td#f", "td#i"]);
+    assert_eq!(select(html, ":nth-col(4)"), ["td#c"]);
+    assert_eq!(select(html, ":nth-last-col(1)"), ["td#d", "td#n", "td#h"]);
+    assert_eq!(
+        select(html, ":nth-col(n+6), col:nth-col(1)"),
+        Vec::<String>::new()
+    );
+    // A cell running into a column a cell from above still covers, a
+    // table model error: the column stays covered until the later row,
+    // so u can't take it.
+    let clash = "<table><tr><td id=p><td id=q rowspan=3>\
+                 <tr><td id=r colspan=2><td id=s><tr><td id=t><td id=u></table>";
+    assert_eq!(select(clash, ":nth-col(2)"), ["td#q", "td#r"]);
+    assert_eq!(select(clash, ":nth-col(3)"), ["td#s", "td#u"]);
+    // A cell under two cols is tried against the second when the first
+    // doesn't match; a cell under none that matches hands back to the
+    // combinator on its right, which tries an earlier sibling.
+    let four = "<table><col id=x><col id=y><col id=z><col id=w>\
+                <tr><td id=a><td id=b><td id=c><td id=d>\
+                <tr><td id=e colspan=2></table>";
+    assert_eq!(select(four, "#y || td"), ["td#b", "td#e"]);
+    assert_eq!(select(four, "#x || td ~ td"), ["td#b", "td#c", "td#d"]);
+    assert_eq!(select(four, "#y || td + td"), ["td#c"]);
+    // A single bar is still a namespace prefix.
+    assert_eq!(select(html, "|td"), Vec::<String>::new());
+    assert!(SelectorList::parse("col|td").is_err());
+    assert_eq!(
+        SelectorList::parse("col || td:nth-col(2)")
+            .unwrap()
+            .specificity(),
+        (0, 1, 2)
+    );
+}
+
+/// Hostile tables: laying one out and matching `||` follow the cells, not
+/// the table's width or cells times cols. Each of these took minutes, or
+/// hundreds of megabytes, when every column had a slot.
+#[test]
+fn hostile_tables_lay_out_in_linear_time() {
+    let wide = format!(
+        "<table><tr>{}{}</table>",
+        "<td colspan=1000>".repeat(1_000),
+        "<tr><td>".repeat(50_000)
+    );
+    let mega = format!("<table><tr>{}</table>", "<td colspan=1000>".repeat(55_000));
+    let cols = format!(
+        "<table><colgroup>{}</colgroup><tr>{}</table>",
+        "<col>".repeat(30_000),
+        "<td>".repeat(30_000)
+    );
+    // Cells side by side reaching down different distances, then rows
+    // that each have to find the first free column past all of them.
+    let stack = format!(
+        "<table><tr>{}{}</table>",
+        (0..20_000)
+            .map(|i| format!("<td rowspan={}>", 60_000 - i))
+            .collect::<String>(),
+        "<tr><td>".repeat(50_000)
+    );
+    for (html, css, n) in [
+        (&wide, ":nth-col(1)", 50_001),
+        (&mega, ":nth-last-col(1)", 1),
+        (&cols, "col || td", 30_000),
+        (&stack, ":nth-col(20001)", 40_000),
+    ] {
+        let doc = parse(html, false);
+        let list = SelectorList::parse(css).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(list.select(&doc, doc.root()).len(), n, "{css}");
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(3),
+            "{css} took {took:?}"
+        );
+    }
+}
+
 #[test]
 fn child_index_pseudo_classes() {
     assert_eq!(page("li:nth-child(2)"), ["li#27"]);
@@ -196,6 +294,36 @@ fn state_and_structure_pseudo_classes() {
     assert_eq!(page("a:hover, a:focus, a:visited"), Vec::<String>::new());
 }
 
+// :blank is the current draft's: a field a user types text into, with no
+// value; a checkbox's value isn't typed, so it's never :blank.
+#[test]
+fn blank() {
+    let html = r#"<input id=1><input id=2 value=""><input id=3 value=x>
+        <input id=4 type=SEARCH><input id=5 type=number value=7>
+        <input id=6 type=bogus><input id=7 type=checkbox><input id=8 type=hidden>
+        <textarea id=9></textarea><textarea id=10> </textarea>
+        <p id=11></p><svg><input id=12/></svg>"#;
+    assert_eq!(
+        select(html, ":blank"),
+        ["input#1", "input#2", "input#4", "input#6", "textarea#9"]
+    );
+}
+
+// A static document defines no custom elements, so every HTML element with
+// a custom element's name, or with is=, isn't :defined.
+#[test]
+fn defined() {
+    let html = r#"<p id=1></p><my-card id=2></my-card><x-é id=3></x-é>
+        <font-face id=4></font-face><button id=5 is=x-fancy></button>
+        <svg><my-icon id=6></my-icon></svg><a-1 id=7></a-1><notcustom id=8></notcustom>"#;
+    assert_eq!(
+        select(html, ":not(:defined)"),
+        ["my-card#2", "x-é#3", "button#5", "a-1#7"]
+    );
+    assert!(select(html, ":defined").contains(&"font-face#4".to_string()));
+    assert!(select(html, ":defined").contains(&"my-icon#6".to_string()));
+}
+
 #[test]
 fn scope_is_the_element_a_query_runs_from() {
     let doc = parse(PAGE, false);
@@ -226,7 +354,13 @@ fn bad_selectors_are_errors() {
         "a,",
         ", a",
         "a,,b",
-        "a::before",
+        "a::nope",
+        "a::text",
+        "a::attr(href)",
+        "a::before.x",
+        "a::before#x",
+        "a::part()",
+        "a::slotted()",
         "svg|rect",
         "[xlink|href]",
         ":nth-child(x)",
@@ -235,12 +369,101 @@ fn bad_selectors_are_errors() {
         ":has()",
         ":nope",
         ":lexbor-contains('x')",
-        "a || b",
         "[a=b c]",
         "[a!=b]",
     ] {
         assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
     }
+}
+
+/// Selectors 5's `:heading` is an h1-h6, and `:heading(1, 3)` one of the
+/// listed levels; aria-level and role=heading don't count.
+#[test]
+fn heading_is_an_h1_to_h6_of_a_listed_level() {
+    let html = r#"<h1 id="a"></h1><h2 id="b" aria-level="3"></h2><h6 id="f"></h6><h7 id="g"></h7>
+<p id="p" role="heading" aria-level="1"></p>"#;
+    assert_eq!(select(html, ":heading"), ["h1#a", "h2#b", "h6#f"]);
+    assert_eq!(select(html, ":heading(2, 7)"), ["h2#b"]);
+    assert_eq!(select(html, ":heading( +6 , 0)"), ["h6#f"]);
+    assert_eq!(
+        select(html, ":heading(0), :heading(-1), :heading(99999)"),
+        Vec::<String>::new()
+    );
+    for bad in [
+        ":heading()",
+        ":heading(1.0)",
+        ":heading(n)",
+        ":heading(odd)",
+        ":heading(2n+1)",
+        ":heading(2n, 3n)",
+        ":heading(1,)",
+    ] {
+        assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
+    }
+}
+
+/// A browser's querySelector takes a pseudo-element and finds nothing, since
+/// no element in the tree is one; so does this, where it refused them.
+#[test]
+fn pseudo_elements_are_valid_and_match_nothing() {
+    for css in [
+        "li::before",
+        "p::first-line",
+        "a:after",
+        "a:FIRST-LETTER",
+        "::marker",
+        "::placeholder, ::selection",
+        "::part(label icon)",
+        "::slotted(span.x)",
+        "::highlight(found)",
+        "li::before:hover",
+        ":is(li)::after",
+        "::part(x):is(:hover)",
+        "::part(x)::before",
+        "::slotted(li)::before",
+        // Forgiving: the argument is dropped.
+        ":is(::before)",
+    ] {
+        assert_eq!(page(css), Vec::<String>::new(), "{css}");
+    }
+    // One must end the selector, can't go inside a pseudo-class, and only
+    // pseudo-classes that don't read the tree may follow; after
+    // ::slotted(), only another pseudo-element.
+    for bad in [
+        "li::before > a",
+        "::part(x) + ::part(y)",
+        ":not(::before)",
+        "::slotted(::before)",
+        "::part(x):has(li)",
+        "::before:first-child",
+        "li:after:empty",
+        "::slotted(li):hover",
+        "::slotted(li):lang(en)",
+    ] {
+        assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
+    }
+    assert_eq!(page("li::before, li.first"), ["li#17"]);
+    let list = SelectorList::parse("li::before").unwrap();
+    assert_eq!(list.specificity(), (0, 0, 2));
+}
+
+/// CSS closes every open block at the end of the input, so a selector
+/// missing its final `]` or `)` is whole, as `querySelector` reads it.
+#[test]
+fn the_end_of_the_input_closes_open_brackets() {
+    assert_eq!(page("li[data-id"), ["li#17", "li#27", "li#30"]);
+    assert_eq!(page("[data-id=\"17\""), ["li#17"]);
+    assert_eq!(page("[data-id=\"17"), ["li#17"]);
+    assert_eq!(page("li:not(.item"), Vec::<String>::new());
+    assert_eq!(page("li:not([class"), Vec::<String>::new());
+    assert_eq!(page("ul > li:nth-child(2n+1"), ["li#17", "li#30"]);
+    assert_eq!(page(":is(#, li.first"), ["li#17"]);
+    assert!(SelectorList::parse("li[data-id=").is_err());
+    assert!(SelectorList::parse("li:nth-child(").is_err());
+    // A bad forgiving argument whose open block runs to the end swallows the
+    // function's own ) and nothing is left to forgive.
+    assert!(SelectorList::parse(":is(# %=[x)").is_err());
+    assert!(SelectorList::parse(":where(.a, #(x").is_err());
 }
 
 /// Each nesting recursed in the parser, so a deep enough selector
@@ -267,6 +490,129 @@ fn deeply_nested_selectors_are_errors_not_crashes() {
     // Reasonable nesting still works.
     let ok = format!("{}a{}", ":not(".repeat(20), ")".repeat(20));
     assert!(SelectorList::parse(&ok).is_ok());
+}
+
+/// A chain of compounds has no limit, so matching one goes along it in a
+/// loop: a call per compound overflowed a thread's stack at a few
+/// thousand. Nesting is capped at 32, and even at the cap, with a chain
+/// at every level, matching fits a 2 MiB stack, a spawned thread's.
+#[test]
+fn long_chains_match_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            let doc = parse(&("<div>".repeat(20_000) + "<b></b>"), false);
+            let b = SelectorList::parse("b").unwrap().select(&doc, 0)[0];
+            let div = SelectorList::parse("div").unwrap().select(&doc, 0)[1000];
+            let long = SelectorList::parse(&("div ".repeat(20_000) + "b")).unwrap();
+            assert!(long.matches(&doc, b, None));
+            let longer = SelectorList::parse(&("div ".repeat(100_000) + "b")).unwrap();
+            assert!(!longer.matches(&doc, b, None));
+            assert_eq!(longer.select(&doc, 0), []);
+
+            // 32 functions deep: 30 :is(), a :has() and an :nth-child(of).
+            let chain = "div ".repeat(50);
+            let mut css = format!(":nth-child(1 of {chain}b)");
+            css = format!(":has(> {chain}{css})");
+            for _ in 0..30 {
+                css = format!(":is({chain}{css})");
+            }
+            let nested = SelectorList::parse(&format!("{chain}{css}")).unwrap();
+            assert!(nested.matches(&doc, div, None));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// `:has()` of one compound and `:nth-child(of S)` keep what they work
+/// out for the rest of a query: answers come from it alike, and a deep or
+/// long page costs a walk, where it was a walk per element.
+#[test]
+fn has_and_nth_of_answer_from_what_they_kept() {
+    let html = "<div id=a><div id=b><p></p><div id=c><b></b></div></div>\
+                <div id=d><div id=e></div></div></div>";
+    assert_eq!(select(html, "div:has(b)"), ["div#a", "div#b", "div#c"]);
+    assert_eq!(select(html, "div:has(> b)"), ["div#c"]);
+    assert_eq!(select(html, ":has(+ div)"), ["div#b", "p"]);
+    assert_eq!(select(html, ":has(~ div)"), ["div#b", "p"]);
+    assert_eq!(select(html, ":has(~ p)"), Vec::<String>::new());
+    assert_eq!(select(html, "div:has(div b)"), ["div#a", "div#b"]);
+    assert_eq!(select(html, "div:not(:has(b))"), ["div#d", "div#e"]);
+    let list = "<ul><li id=1 class=x><li id=2><li id=3 class=x><li id=4 class=x></ul>";
+    assert_eq!(select(list, "li:nth-child(2 of .x)"), ["li#3"]);
+    assert_eq!(select(list, "li:nth-last-child(1 of .x)"), ["li#4"]);
+    assert_eq!(select(list, "li:nth-child(odd of :not(.x))"), ["li#2"]);
+
+    let deep = parse(&("<div>".repeat(20_000) + "<b></b>"), false);
+    let count = |doc: &Document, css: &str| SelectorList::parse(css).unwrap().select(doc, 0).len();
+    assert_eq!(count(&deep, "div:has(b)"), 20_000);
+    assert_eq!(count(&deep, "div:has(p)"), 0);
+    let long = parse(
+        &format!("<ul>{}<b></b></ul>", "<li class=x></li>".repeat(20_000)),
+        false,
+    );
+    assert_eq!(count(&long, "li:has(~ b)"), 20_000);
+    assert_eq!(count(&long, "li:nth-child(2n of .x)"), 10_000);
+    assert_eq!(count(&long, "li:nth-last-child(-n+100000 of .x)"), 20_000);
+    assert_eq!(count(&long, "li:nth-child(-n+100000)"), 20_000);
+    // Siblings of as many types as there are siblings.
+    let kinds: String = (0..20_000).map(|i| format!("<x-{i}></x-{i}>")).collect();
+    let kinds = parse(&format!("<div>{kinds}</div>"), false);
+    assert_eq!(count(&kinds, "div > :only-of-type"), 20_000);
+    assert_eq!(count(&kinds, "div > :last-of-type"), 20_000);
+    assert_eq!(count(&kinds, "div > :nth-of-type(2)"), 0);
+}
+
+/// A chain that can't match backs up only as far as can help: trying
+/// every choice of ancestors made this take seconds at 30 deep.
+#[test]
+fn a_chain_that_cant_match_gives_up_soon() {
+    let doc = parse(&"<div>".repeat(200), false);
+    let css = String::from("x") + &" div".repeat(12);
+    assert_eq!(SelectorList::parse(&css).unwrap().select(&doc, 0), []);
+    let css = String::from("x ~ div") + &" div".repeat(12);
+    assert_eq!(SelectorList::parse(&css).unwrap().select(&doc, 0), []);
+    // And still finds what's there past a sibling that isn't.
+    assert_eq!(select("<p><i></i><b></b><u></u></p>", "p > i ~ u"), ["u"]);
+    assert_eq!(
+        select(
+            "<a><p><b></b></p><i><u></u></i></a>",
+            "a > i > u, a b, p ~ i u"
+        ),
+        ["b", "u"]
+    );
+}
+
+/// Some selectors still cost more than a walk on some pages, such as a
+/// :has() of two compounds over a deep tree; a budget stops them.
+#[test]
+fn a_budget_stops_a_long_query() {
+    let doc = parse(&"<div>".repeat(20_000), false);
+    let slow = SelectorList::parse("div:has(p div)").unwrap();
+    let tight = MatchOptions {
+        budget: Some(std::time::Duration::from_micros(50)),
+        ..MatchOptions::default()
+    };
+    let budget = tight.budget.unwrap();
+    assert_eq!(
+        slow.try_select_with(&doc, 0, &tight),
+        Err(MatchTimeout { budget })
+    );
+    let first = SelectorList::parse("div").unwrap().select(&doc, 0)[0];
+    assert_eq!(
+        slow.try_matches_with(&doc, first, None, &tight),
+        Err(MatchTimeout { budget })
+    );
+    // Within the budget, or with one too big for the clock, the answer is
+    // the one without.
+    let fast = SelectorList::parse("div:has(> div)").unwrap();
+    let roomy = MatchOptions {
+        budget: Some(std::time::Duration::MAX),
+        ..MatchOptions::default()
+    };
+    assert_eq!(fast.try_select_with(&doc, 0, &roomy).unwrap().len(), 19_999);
+    assert_eq!(fast.try_matches_with(&doc, first, None, &roomy), Ok(true));
 }
 
 /// Places the parser was looser than CSS (parsec-html/parsec#37). Lexbor
@@ -374,7 +720,14 @@ fn select_at(html: &str, css: &str, url: &str) -> Vec<String> {
     let list = SelectorList::parse(css).unwrap_or_else(|e| panic!("{css}: {e}"));
     names(
         &doc,
-        &list.select_with(&doc, doc.root(), &MatchOptions { url: Some(url) }),
+        &list.select_with(
+            &doc,
+            doc.root(),
+            &MatchOptions {
+                url: Some(url),
+                ..MatchOptions::default()
+            },
+        ),
     )
 }
 
@@ -415,7 +768,10 @@ fn lang_matches_the_nearest_language_by_extended_filtering() {
 <p id="latn" lang="de-Latn-CH">a</p><p id="en" lang="EN-gb">b</p><p id="fr" lang="fr">c</p>
 <p id="none">d</p><p id="private" lang="de-x-CH">e</p>
 <div id="outer" lang="de"><p id="inner" lang="en">f</p></div>
-<svg id="svg" xml:lang="fr" lang="de"></svg>"#;
+<svg id="svg" xml:lang="fr" lang="de"></svg>
+<p id="long" lang="de-ninecharacters">g</p><p id="dash" lang="de-">h</p><p id="odd" lang="de_CH">i</p>"#;
+    // A tag that isn't well-formed (a subtag over 8 characters, empty, or
+    // with a character that isn't a letter or digit) is no language.
     assert_eq!(
         select(html, ":lang(de)"),
         ["div#ch", "p#in", "p#latn", "p#private", "div#outer"]
@@ -468,7 +824,11 @@ fn dir_follows_the_dir_attribute_and_the_text_for_auto() {
             "i#i"
         ]
     );
-    assert!(SelectorList::parse(":dir(up)").is_err());
+    // Any identifier parses; only ltr and rtl match anything.
+    assert_eq!(select(html, ":dir(up), :dir(auto)"), Vec::<String>::new());
+    assert!(SelectorList::parse(":dir()").is_err());
+    assert!(SelectorList::parse(":dir('ltr')").is_err());
+    assert!(SelectorList::parse(":dir(ltr, rtl)").is_err());
 }
 
 #[test]
@@ -628,7 +988,9 @@ fn valid_checks_pattern_as_javascript_reads_it() {
 <input id="alt" pattern="ab|cd" value="abcd">
 <input id="mails" type="email" multiple pattern=".+@x\.test" value="a@x.test, b@x.test">
 <input id="mails-bad" type="email" multiple pattern=".+@x\.test" value="a@x.test,b@y.test">
-<input id="broken" pattern="[" value="anything"><input id="prop" pattern="\p{L}+" value="123">
+<input id="broken" pattern="[" value="anything"><input id="prop" pattern="\p{L}+" value="Zoë">
+<input id="prop-bad" pattern="\p{L}+" value="123"><input id="greek" pattern="[\p{sc=Greek}\s]+" value="Ελένη Παπά">
+<input id="not-letter" pattern="\P{L}+" value="a1"><input id="strings" pattern="\p{RGI_Emoji}" value="x">
 <input id="redos" pattern="(a+)+b" value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
 <input id="num" type="number" pattern="x" value="5"><input id="empty" pattern="x">"#;
     assert_eq!(
@@ -641,6 +1003,8 @@ fn valid_checks_pattern_as_javascript_reads_it() {
             "input#and-bad",
             "input#alt",
             "input#mails-bad",
+            "input#prop-bad",
+            "input#not-letter",
             "input#redos"
         ]
     );
@@ -653,6 +1017,8 @@ fn valid_checks_pattern_as_javascript_reads_it() {
             "input#mails",
             "input#broken",
             "input#prop",
+            "input#greek",
+            "input#strings",
             "input#num",
             "input#empty"
         ]

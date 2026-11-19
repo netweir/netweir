@@ -10,9 +10,11 @@ mod serialize;
 mod tags;
 pub mod tokenizer;
 mod tree;
+mod unicode;
 
 pub use dom::{AttrNs, Document, Kind, MAX_INPUT, NodeId, Ns, Quirks};
 pub use edit::EditError;
+pub use serialize::SerializeOptions;
 pub use tree::{
     Options, ParseError, Parser, SyntaxError, parse, parse_fragment, parse_fragment_with,
     parse_with,

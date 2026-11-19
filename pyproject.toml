@@ -79,6 +79,10 @@ include = [
 # extension maturin just built for an older one of its own.
 package = false
 default-groups = ["dev", "mcp"]
+# Limits the lock, not who can install netweir. soupsieve's fixes for
+# its ReDoS and recursion advisories need Python 3.11.5, and without
+# this bs4 (from the bench group and markdownify) keeps 2.10 below it.
+environments = ["python_full_version >= '3.11.5'"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

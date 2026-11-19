@@ -2,12 +2,16 @@
 //! them in a static page: parsed once, matched right to left.
 //!
 //! What browsers do on a page nobody is looking at decides the rest:
-//! `:hover`, `:focus` and the like parse but never match, `:scope` is the
-//! element a query runs from, and ids and classes compare exactly except
-//! in a quirks-mode document.
+//! `:hover`, `:focus` and the like parse but never match, as does a
+//! pseudo-element (`::before`), since no element in a tree is one;
+//! `:scope` is the element a query runs from, and ids and classes compare
+//! exactly except in a quirks-mode document.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::dom::{AttrNs, Data, Document, NodeId, Ns, Quirks};
 use crate::pattern::Pattern;
@@ -52,6 +56,8 @@ enum Combinator {
     Child,
     NextSibling,
     SubsequentSibling,
+    /// `||`: a table cell in a column the `col` on its left covers.
+    Column,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -136,6 +142,11 @@ enum Pseudo {
     ReadWrite,
     ReadOnly,
     PlaceholderShown,
+    /// `:blank`: a field a user types text into that holds none.
+    Blank,
+    /// `:defined`: everything but an HTML custom element, which a static
+    /// document never defines.
+    Defined,
     Target,
     TargetWithin,
     LocalLink,
@@ -151,6 +162,18 @@ enum Pseudo {
     Invalid,
     /// A state no static page is in: `:hover`, `:focus`, `:visited`...
     Never,
+    /// A pseudo-element, `::before` or `::part(x)`: valid in a selector, as
+    /// a browser's querySelector has it, and never an element in the tree.
+    Element,
+    /// `:heading` (empty) or `:heading(1, 3)`: an h1-h6 of a listed level.
+    Heading(Vec<i64>),
+    /// `:nth-col()` and `:nth-last-col()`: a table cell in a column at
+    /// that position.
+    NthCol {
+        a: i32,
+        b: i32,
+        last: bool,
+    },
 }
 
 // ---- parsing ---------------------------------------------------------------
@@ -320,10 +343,16 @@ impl<'a> Parser<'a> {
             match self.complex(false) {
                 Ok(c) => out.push(c),
                 Err(e) if !forgiving => return Err(e),
-                Err(_) => {
-                    // Forgiving: skip to the next comma at this level.
+                Err(e) => {
+                    // Forgiving: skip to the next comma at this level. A
+                    // block the bad argument opens and never closes swallows
+                    // the rest of the input, the function's own `)` with
+                    // it, so nothing is left to forgive: browsers refuse
+                    // `:is(#[x)` while taking `:is(#, .a)`.
                     self.pos = start;
-                    self.skip_to_comma();
+                    if self.skip_to_comma() {
+                        return Err(e);
+                    }
                 }
             }
             self.skip_space();
@@ -337,14 +366,20 @@ impl<'a> Parser<'a> {
         Ok(SelectorList(out))
     }
 
-    fn skip_to_comma(&mut self) {
-        let mut depth = 0;
+    /// Skips to the next `,` or closing bracket at this level. True when
+    /// the input ended inside a block opened on the way.
+    fn skip_to_comma(&mut self) -> bool {
+        // The closers of the blocks open so far: a `)` inside `[` is just
+        // a token.
+        let mut open: Vec<char> = Vec::new();
         while let Some(c) = self.peek() {
             match c {
-                '(' | '[' => depth += 1,
-                ')' | ']' if depth == 0 => return,
-                ')' | ']' => depth -= 1,
-                ',' if depth == 0 => return,
+                '(' => open.push(')'),
+                '[' => open.push(']'),
+                ')' | ']' | ',' if open.is_empty() => return false,
+                ')' | ']' if open.last() == Some(&c) => {
+                    open.pop();
+                }
                 '"' | '\'' => {
                     self.pos += 1;
                     let _ = self.string(c);
@@ -355,6 +390,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
+        !open.is_empty()
     }
 
     /// A complex selector; `relative` for `:has()`, where it may start with
@@ -370,6 +406,10 @@ impl<'a> Parser<'a> {
         }
         loop {
             let compound = self.compound()?;
+            let has_element = compound
+                .0
+                .iter()
+                .any(|s| matches!(s, Simple::Pseudo(Pseudo::Element)));
             if let Some(last) = parts.last_mut() {
                 last.1 = pending;
             }
@@ -377,6 +417,9 @@ impl<'a> Parser<'a> {
             let space = self.skip_space();
             if self.at_end() || matches!(self.peek(), Some(',' | ')')) {
                 break;
+            }
+            if has_element {
+                return error("a pseudo-element must end the selector");
             }
             pending = match self.combinator() {
                 Some(c) => {
@@ -414,6 +457,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Some(Combinator::SubsequentSibling)
             }
+            '|' if self.peek_at(1) == Some('|') => {
+                self.pos += 2;
+                Some(Combinator::Column)
+            }
             _ => None,
         }
     }
@@ -422,7 +469,8 @@ impl<'a> Parser<'a> {
         let mut simple = Vec::new();
         let mut universal = false;
         // A type selector or universal, with an optional namespace prefix.
-        if self.peek() == Some('*') || self.starts_name() || self.peek() == Some('|') {
+        let bar = |p: &Self| p.peek() == Some('|') && p.peek_at(1) != Some('|');
+        if self.peek() == Some('*') || self.starts_name() || bar(self) {
             let star = self.eat('*');
             universal = star;
             let name = if star || self.peek() == Some('|') {
@@ -430,7 +478,7 @@ impl<'a> Parser<'a> {
             } else {
                 self.name()?
             };
-            if self.peek() == Some('|') && self.peek_at(1) != Some('=') {
+            if bar(self) && self.peek_at(1) != Some('=') {
                 self.pos += 1;
                 // Only `*|` (any namespace) and `|` (none) can be used
                 // without @namespace, which a query can't declare.
@@ -451,8 +499,16 @@ impl<'a> Parser<'a> {
                 simple.push(type_selector(name));
             }
         }
+        // After a pseudo-element only pseudo-classes that don't read the
+        // tree, and more pseudo-elements, may follow: `::before:hover`, not
+        // `::before.x` or `::part(x):has(li)`; after `::slotted()` only
+        // pseudo-elements. Some(true) is after `::slotted()`.
+        let mut after_element: Option<bool> = None;
         loop {
             while self.skip_comment() {}
+            if after_element.is_some() && matches!(self.peek(), Some('#' | '.' | '[')) {
+                return error("only a pseudo-class can follow a pseudo-element");
+            }
             match self.peek() {
                 Some('#') => {
                     self.pos += 1;
@@ -477,11 +533,32 @@ impl<'a> Parser<'a> {
                     simple.push(Simple::Attr(self.attr()?));
                 }
                 Some(':') if self.peek_at(1) == Some(':') => {
-                    return error("pseudo-elements can't be selected");
+                    if self.depth > 0 {
+                        return error("a pseudo-element can't go inside a pseudo-class");
+                    }
+                    self.pos += 2;
+                    after_element = Some(self.pseudo_element()?);
+                    simple.push(Simple::Pseudo(Pseudo::Element));
                 }
                 Some(':') => {
                     self.pos += 1;
-                    simple.push(Simple::Pseudo(self.pseudo()?));
+                    let pseudo = self.pseudo()?;
+                    let element = matches!(pseudo, Pseudo::Element);
+                    match after_element {
+                        Some(true) if !element => {
+                            return error("only a pseudo-element can follow ::slotted()");
+                        }
+                        Some(_) if pseudo.reads_the_tree() => {
+                            return error(
+                                "a tree-structural pseudo-class can't follow a pseudo-element",
+                            );
+                        }
+                        _ => {}
+                    }
+                    if element {
+                        after_element = Some(false);
+                    }
+                    simple.push(Simple::Pseudo(pseudo));
                 }
                 _ => break,
             }
@@ -509,9 +586,11 @@ impl<'a> Parser<'a> {
             return error(format!("namespace prefix {name:?} isn't declared"));
         }
         self.skip_space();
+        // The end of the input closes every open block, as CSS reads it, so
+        // `[class` and `[class="x"` are whole.
         let op = match self.peek() {
-            Some(']') => {
-                self.pos += 1;
+            Some(']') | None => {
+                self.eat(']');
                 return Ok(AttrSelector {
                     lower: name.to_ascii_lowercase(),
                     exact: name,
@@ -558,7 +637,7 @@ impl<'a> Parser<'a> {
             };
             self.skip_space();
         }
-        if !self.eat(']') {
+        if !self.eat(']') && !self.at_end() {
             return error("an attribute selector without its ]");
         }
         Ok(AttrSelector {
@@ -571,12 +650,71 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// A pseudo-element, after its `::`: the ones CSS defines, with
+    /// `::part()`, `::slotted()` and `::highlight()` taking their argument.
+    /// Anything else, `::text` included, is an error. True for `::slotted()`,
+    /// which nothing but another pseudo-element may follow.
+    fn pseudo_element(&mut self) -> Result<bool, SelectorError> {
+        let name = self.ident()?.to_ascii_lowercase();
+        if self.eat('(') {
+            self.skip_space();
+            match name.as_str() {
+                "part" => {
+                    self.ident()?;
+                    while self.skip_space() && self.starts_name() {
+                        self.ident()?;
+                    }
+                }
+                "slotted" => {
+                    // Its compound can't hold a pseudo-element either.
+                    self.depth += 1;
+                    let compound = self.compound();
+                    self.depth -= 1;
+                    compound?;
+                }
+                "highlight" => {
+                    self.ident()?;
+                }
+                _ => return error(format!("::{name}() isn't a pseudo-element")),
+            }
+            self.skip_space();
+            if !self.eat(')') && !self.at_end() {
+                return error(format!("::{name}() without its )"));
+            }
+            return Ok(name == "slotted");
+        }
+        match name.as_str() {
+            "before"
+            | "after"
+            | "marker"
+            | "placeholder"
+            | "selection"
+            | "first-line"
+            | "first-letter"
+            | "backdrop"
+            | "file-selector-button"
+            | "cue"
+            | "spelling-error"
+            | "grammar-error"
+            | "target-text"
+            | "details-content"
+            | "checkmark"
+            | "picker-icon"
+            | "scroll-marker"
+            | "scroll-marker-group"
+            | "scroll-button"
+            | "column"
+            | "view-transition" => Ok(false),
+            _ => error(format!("::{name} isn't a pseudo-element")),
+        }
+    }
+
     fn pseudo(&mut self) -> Result<Pseudo, SelectorError> {
         let name = self.ident()?.to_ascii_lowercase();
         if self.eat('(') {
             let p = self.pseudo_function(&name)?;
             self.skip_space();
-            if !self.eat(')') {
+            if !self.eat(')') && !self.at_end() {
                 return error(format!(":{name}() without its )"));
             }
             return Ok(p);
@@ -589,6 +727,7 @@ impl<'a> Parser<'a> {
             "last-of-type" => nth(0, 1, true, true),
             "only-of-type" => Pseudo::Only { of_type: true },
             "empty" => Pseudo::Empty,
+            "heading" => Pseudo::Heading(Vec::new()),
             "root" => Pseudo::Root,
             "scope" => Pseudo::Scope,
             "link" | "any-link" => Pseudo::AnyLink,
@@ -600,6 +739,8 @@ impl<'a> Parser<'a> {
             "read-write" => Pseudo::ReadWrite,
             "read-only" => Pseudo::ReadOnly,
             "placeholder-shown" => Pseudo::PlaceholderShown,
+            "blank" => Pseudo::Blank,
+            "defined" => Pseudo::Defined,
             "target" => Pseudo::Target,
             "target-within" => Pseudo::TargetWithin,
             "local-link" => Pseudo::LocalLink,
@@ -611,6 +752,8 @@ impl<'a> Parser<'a> {
             "invalid" => Pseudo::Invalid,
             "hover" | "active" | "focus" | "focus-visible" | "focus-within" | "visited"
             | "user-invalid" | "user-valid" => Pseudo::Never,
+            // CSS 2's pseudo-elements, still allowed with one colon.
+            "before" | "after" | "first-line" | "first-letter" => Pseudo::Element,
             _ => return error(format!(":{name} isn't supported")),
         })
     }
@@ -662,6 +805,16 @@ impl<'a> Parser<'a> {
                     of,
                 }
             }
+            "nth-col" | "nth-last-col" => {
+                let close = self.close_paren();
+                let (a, b) = an_plus_b(&self.s[self.pos..close])?;
+                self.pos = close;
+                Pseudo::NthCol {
+                    a,
+                    b,
+                    last: name == "nth-last-col",
+                }
+            }
             "lang" => {
                 let mut ranges = Vec::new();
                 loop {
@@ -682,14 +835,39 @@ impl<'a> Parser<'a> {
                 }
                 Pseudo::Lang(ranges)
             }
+            // Selectors 5's draft: a list of integers, not An+B.
+            "heading" => {
+                let mut levels = Vec::new();
+                loop {
+                    self.skip_space();
+                    let start = self.pos;
+                    if matches!(self.peek(), Some('+' | '-')) {
+                        self.pos += 1;
+                    }
+                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        self.pos += 1;
+                    }
+                    let whole = !self.peek().is_some_and(|c| is_name(c) || c == '.');
+                    match self.s[start..self.pos].parse() {
+                        Ok(level) if whole => levels.push(level),
+                        _ => return error(":heading() takes integers, like :heading(1, 3)"),
+                    }
+                    self.skip_space();
+                    if !self.eat(',') {
+                        break;
+                    }
+                }
+                Pseudo::Heading(levels)
+            }
             "dir" => {
                 self.skip_space();
                 let dir = self.ident()?.to_ascii_lowercase();
                 self.skip_space();
+                // Any identifier is allowed; only ltr and rtl ever match.
                 match dir.as_str() {
                     "ltr" => Pseudo::Dir(false),
                     "rtl" => Pseudo::Dir(true),
-                    _ => return error(format!(":dir() takes ltr or rtl, not {dir}")),
+                    _ => Pseudo::Never,
                 }
             }
             _ => return error(format!(":{name}() isn't supported")),
@@ -762,6 +940,13 @@ fn lang_matches(range: &str, tag: &str) -> bool {
     }
     let r: Vec<&str> = range.split('-').collect();
     let t: Vec<&str> = tag.split('-').collect();
+    // A tag that isn't well-formed (BCP 47: subtags of 1 to 8 letters or
+    // digits) is no language, so it matches no range.
+    if t.iter()
+        .any(|s| s.is_empty() || s.len() > 8 || !s.bytes().all(|b| b.is_ascii_alphanumeric()))
+    {
+        return false;
+    }
     if r[0] != "*" && r[0] != t[0] {
         return false;
     }
@@ -813,6 +998,43 @@ fn input_type_state(typ: Option<&str>) -> &'static str {
     typ.and_then(|t| TYPES.iter().find(|k| k.eq_ignore_ascii_case(t)))
         .copied()
         .unwrap_or("text")
+}
+
+/// The `<input>` types a user types text into: the ones `placeholder`
+/// applies to.
+fn text_entry(typ: &str) -> bool {
+    matches!(
+        typ,
+        "text" | "search" | "url" | "tel" | "email" | "password" | "number"
+    )
+}
+
+/// HTML's valid custom element name: a lowercase ASCII letter, then
+/// PCENChars including a hyphen, and not one of the hyphenated names SVG
+/// and MathML already use.
+fn custom_element_name(name: &str) -> bool {
+    const RESERVED: [&str; 8] = [
+        "annotation-xml",
+        "color-profile",
+        "font-face",
+        "font-face-src",
+        "font-face-uri",
+        "font-face-format",
+        "font-face-name",
+        "missing-glyph",
+    ];
+    let pcen = |c: char| {
+        matches!(c,
+            '-' | '.' | '0'..='9' | '_' | 'a'..='z' | '\u{B7}'
+            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{37D}'
+            | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{203F}'..='\u{2040}'
+            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+    };
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name.contains('-')
+        && name.chars().all(pcen)
+        && !RESERVED.contains(&name)
 }
 
 fn readonly_applies(typ: &str) -> bool {
@@ -1199,7 +1421,7 @@ impl SelectorList {
         options: &MatchOptions<'_>,
     ) -> bool {
         let cx = Cx::new(doc, scope, Page::new(doc, options.url));
-        self.0.iter().any(|c| cx.complex(c, 0, el, el))
+        self.0.iter().any(|c| cx.complex(c, el, el))
     }
 
     /// [`SelectorList::select`] with what the document alone can't say,
@@ -1211,6 +1433,36 @@ impl SelectorList {
         options: &MatchOptions<'_>,
     ) -> Vec<NodeId> {
         self.iter_with(doc, scope, options).collect()
+    }
+
+    /// [`SelectorList::select_with`] within [`MatchOptions::budget`]: an
+    /// error once it has run out, rather than the matches found so far.
+    pub fn try_select_with(
+        &self,
+        doc: &Document,
+        scope: NodeId,
+        options: &MatchOptions<'_>,
+    ) -> Result<Vec<NodeId>, MatchTimeout> {
+        let mut select = self.iter_with(doc, scope, options);
+        select.cx.deadline = deadline(options);
+        let found = select.by_ref().collect();
+        timeout(&select.cx, options)?;
+        Ok(found)
+    }
+
+    /// [`SelectorList::matches_with`] within [`MatchOptions::budget`].
+    pub fn try_matches_with(
+        &self,
+        doc: &Document,
+        el: NodeId,
+        scope: Option<NodeId>,
+        options: &MatchOptions<'_>,
+    ) -> Result<bool, MatchTimeout> {
+        let mut cx = Cx::new(doc, scope, Page::new(doc, options.url));
+        cx.deadline = deadline(options);
+        let found = self.0.iter().any(|c| cx.complex(c, el, el));
+        timeout(&cx, options)?;
+        Ok(found)
     }
 
     fn iter_with<'a>(
@@ -1271,6 +1523,23 @@ impl Complex {
     }
 }
 
+impl Pseudo {
+    /// Whether matching reads the tree around the element, which a
+    /// pseudo-element has none of.
+    fn reads_the_tree(&self) -> bool {
+        matches!(
+            self,
+            Pseudo::Nth { .. }
+                | Pseudo::Only { .. }
+                | Pseudo::Empty
+                | Pseudo::Root
+                | Pseudo::Scope
+                | Pseudo::Has(_)
+                | Pseudo::Heading(_)
+        )
+    }
+}
+
 impl Simple {
     fn specificity(&self) -> (u32, u32, u32) {
         match self {
@@ -1285,6 +1554,7 @@ impl Simple {
                     let (a, b, c) = list.specificity();
                     (a, b + 1, c)
                 }
+                Pseudo::Element => (0, 0, 1),
                 _ => (0, 1, 0),
             },
         }
@@ -1307,6 +1577,9 @@ impl Iterator for Select<'_> {
         // A walk by the tree's own links, in document order: down to the
         // first child, else along to the next sibling, else back up.
         while let Some(n) = self.at {
+            if self.cx.timed_out.get() {
+                return None;
+            }
             let element = doc.element(n).is_some();
             self.at = match doc.first_child(n).filter(|_| element) {
                 Some(child) => Some(child),
@@ -1326,7 +1599,7 @@ impl Iterator for Select<'_> {
                     next
                 }
             };
-            if element && self.list.0.iter().any(|c| self.cx.complex(c, 0, n, n)) {
+            if element && self.list.0.iter().any(|c| self.cx.complex(c, n, n)) {
                 return Some(n);
             }
         }
@@ -1348,6 +1621,43 @@ fn push_children_reversed(doc: &Document, n: NodeId, stack: &mut Vec<NodeId>) {
 pub struct MatchOptions<'a> {
     /// The document's URL, for `:target`, `:target-within` and `:local-link`.
     pub url: Option<&'a str>,
+    /// Give up after this long. Most selectors cost a walk of the tree,
+    /// but some cost more on some pages: a descendant combinator over a
+    /// very deep tree, `:has()` of more than one compound. A crawler
+    /// matching pages it doesn't control should set one. Only
+    /// [`SelectorList::try_select_with`] and
+    /// [`SelectorList::try_matches_with`] read it; the clock is read every
+    /// 1,024 compounds matched.
+    pub budget: Option<Duration>,
+}
+
+/// A query that ran past [`MatchOptions::budget`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchTimeout {
+    pub budget: Duration,
+}
+
+impl std::fmt::Display for MatchTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "matching took longer than {:?}", self.budget)
+    }
+}
+
+impl std::error::Error for MatchTimeout {}
+
+/// When a query with `options` gives up: never for a budget past what
+/// the clock can count.
+fn deadline(options: &MatchOptions<'_>) -> Option<Instant> {
+    options.budget.and_then(|b| Instant::now().checked_add(b))
+}
+
+fn timeout(cx: &Cx<'_>, options: &MatchOptions<'_>) -> Result<(), MatchTimeout> {
+    if cx.timed_out.get() {
+        return Err(MatchTimeout {
+            budget: options.budget.unwrap_or_default(),
+        });
+    }
+    Ok(())
 }
 
 /// The document's URL worked out once per query.
@@ -1452,10 +1762,210 @@ struct Cx<'a> {
     page: Option<Page>,
     /// Steps left for `pattern` matches in this query, shared by all of them.
     pattern_budget: Cell<u32>,
+    /// When to give up, for the `try_` queries.
+    deadline: Option<Instant>,
+    /// Compounds matched, to read the clock every so often.
+    steps: Cell<u32>,
+    timed_out: Cell<bool>,
     /// Each element's place among its siblings, worked out for a whole
     /// parent the first time `:nth-*` needs one, so a query over a parent
     /// with n children counts them once rather than n times.
-    places: RefCell<HashMap<NodeId, Place>>,
+    places: RefCell<IdMap<NodeId, Place>>,
+    /// The same for `:nth-child(An+B of S)`, keyed by S as well: each
+    /// element matching S, its place among the siblings that do, and how
+    /// many do.
+    of_places: RefCell<IdMap<(usize, NodeId), (u32, u32)>>,
+    /// For a `:has()` argument of one compound, keyed by it and an
+    /// element: whether the element's subtree (`:has(x)`), or the element
+    /// and its later siblings (`:has(~ x)`), hold a match. Every anchor
+    /// asks the same question of the elements below or after it, so a
+    /// query asks it of each element once.
+    has_seen: RefCell<IdMap<(usize, NodeId), bool>>,
+    /// Each table's columns, worked out the first time `||` or
+    /// `:nth-col()` needs them, so a big table isn't laid out per cell.
+    tables: RefCell<IdMap<NodeId, Rc<Columns>>>,
+}
+
+/// A map keyed by node ids and selectors' addresses, numbers the parser
+/// and the query hand out rather than the page, hashed with a multiply:
+/// SipHash's guard against chosen keys guards nothing here, and made
+/// `div:has(img)` half as slow again.
+type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// How far a failed part of a complex selector says to back up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fail {
+    /// The element didn't match: the part to the left may try another.
+    Sibling,
+    /// A sibling combinator ran out of siblings: back up to the nearest
+    /// descendant combinator, which may try a higher ancestor.
+    Descendant,
+    /// A combinator ran out of ancestors: no higher one can help.
+    Global,
+}
+
+impl Fail {
+    /// What running out of elements to try means for a combinator.
+    fn exhausted(combinator: Combinator) -> Fail {
+        match combinator {
+            Combinator::NextSibling | Combinator::SubsequentSibling => Fail::Descendant,
+            // Another cell may sit under other cols: the part to the right
+            // may try one.
+            Combinator::Column => Fail::Sibling,
+            _ => Fail::Global,
+        }
+    }
+}
+
+/// A table's columns by the HTML table model: the first column and how
+/// many each cell and each `col` covers, and how many there are in all.
+#[derive(Default)]
+struct Columns {
+    cells: HashMap<NodeId, (u32, u32)>,
+    /// In column order, side by side.
+    cols: Vec<(NodeId, u32, u32)>,
+    /// Where each col is in `cols`, so `||` steps to the next in O(1).
+    col_index: HashMap<NodeId, usize>,
+    width: u32,
+}
+
+/// The columns cells from earlier rows of a row group still cover, kept
+/// as runs rather than slots, so time and memory follow the cells and not
+/// the table's width, and a row with nothing reaching into it costs
+/// nothing.
+#[derive(Default)]
+struct Cover {
+    /// The row being laid out, counted from the group's first.
+    row: u32,
+    /// Disjoint runs: first column -> (column after the last, first row
+    /// no longer covered), u32::MAX for rowspan=0.
+    runs: BTreeMap<u32, (u32, u32)>,
+    /// The runs' union as maximal contiguous blocks, first column ->
+    /// column after the last, so finding a free column is one lookup
+    /// however many runs sit side by side.
+    blocks: BTreeMap<u32, u32>,
+    /// Each run's last row, soonest first; an entry whose run has since
+    /// been split or replaced is skipped.
+    ends: BinaryHeap<Reverse<(u32, u32)>>,
+}
+
+impl Cover {
+    /// Drops the runs that stop before `row`.
+    fn advance(&mut self, row: u32) {
+        while let Some(&Reverse((until, start))) = self.ends.peek() {
+            if until > row {
+                break;
+            }
+            self.ends.pop();
+            if let Some(&(end, u)) = self.runs.get(&start)
+                && u == until
+            {
+                self.runs.remove(&start);
+                let (&bs, &be) = self
+                    .blocks
+                    .range(..=start)
+                    .next_back()
+                    .expect("a run's block");
+                self.blocks.remove(&bs);
+                if bs < start {
+                    self.blocks.insert(bs, start);
+                }
+                if end < be {
+                    self.blocks.insert(end, be);
+                }
+            }
+        }
+    }
+
+    /// The first column from `x` that nothing covers.
+    fn free(&self, x: u32) -> u32 {
+        match self.blocks.range(..=x).next_back() {
+            Some((_, &end)) if end > x => end,
+            _ => x,
+        }
+    }
+
+    /// Covers `[start, end)` until row `until`. Where a run already covers
+    /// part of it, a table model error, that part keeps the later row.
+    fn add(&mut self, start: u32, end: u32, until: u32) {
+        let mut over: Vec<(u32, u32, u32)> = Vec::new();
+        if let Some((&rs, &(re, ru))) = self.runs.range(..start).next_back()
+            && re > start
+        {
+            over.push((rs, re, ru));
+        }
+        over.extend(
+            self.runs
+                .range(start..end)
+                .map(|(&rs, &(re, ru))| (rs, re, ru)),
+        );
+        let mut pieces = Vec::new();
+        let mut at = start;
+        for &(rs, re, ru) in &over {
+            self.runs.remove(&rs);
+            if rs < start {
+                pieces.push((rs, start, ru));
+            }
+            let (os, oe) = (rs.max(start), re.min(end));
+            if at < os {
+                pieces.push((at, os, until));
+            }
+            pieces.push((os, oe, ru.max(until)));
+            if re > end {
+                pieces.push((end, re, ru));
+            }
+            at = oe;
+        }
+        if at < end {
+            pieces.push((at, end, until));
+        }
+        for (ps, pe, pu) in pieces {
+            self.runs.insert(ps, (pe, pu));
+            self.ends.push(Reverse((pu, ps)));
+        }
+        // The union grows by [start, end): merge it with the blocks it
+        // touches.
+        let (mut bs, mut be) = (start, end);
+        if let Some((&s, &e)) = self.blocks.range(..=start).next_back()
+            && e >= start
+        {
+            bs = s;
+            be = be.max(e);
+            self.blocks.remove(&s);
+        }
+        while let Some((&s, &e)) = self.blocks.range(bs..=be).next() {
+            self.blocks.remove(&s);
+            be = be.max(e);
+        }
+        self.blocks.insert(bs, be);
+    }
 }
 
 /// An element's position among its parent's element children, counting
@@ -1533,8 +2043,139 @@ impl<'a> Cx<'a> {
             scope,
             page,
             pattern_budget: Cell::new(crate::pattern::SELECT_STEP_LIMIT),
-            places: RefCell::new(HashMap::new()),
+            deadline: None,
+            steps: Cell::new(0),
+            timed_out: Cell::new(false),
+            places: RefCell::default(),
+            of_places: RefCell::default(),
+            has_seen: RefCell::default(),
+            tables: RefCell::default(),
         }
+    }
+
+    fn html_tag_of(&self, n: NodeId) -> Option<Tag> {
+        self.doc
+            .element(n)
+            .filter(|e| e.ns == Ns::Html)
+            .map(|e| e.tag)
+    }
+
+    /// The table a cell belongs to: its row's, the row in the table or in
+    /// one of its row groups.
+    fn table_of_cell(&self, cell: NodeId) -> Option<NodeId> {
+        if !matches!(self.html_tag_of(cell), Some(Tag::Td | Tag::Th)) {
+            return None;
+        }
+        let tr = self
+            .doc
+            .parent(cell)
+            .filter(|&p| self.html_tag_of(p) == Some(Tag::Tr))?;
+        let p = self.doc.parent(tr)?;
+        match self.html_tag_of(p)? {
+            Tag::Table => Some(p),
+            Tag::Thead | Tag::Tbody | Tag::Tfoot => self
+                .doc
+                .parent(p)
+                .filter(|&t| self.html_tag_of(t) == Some(Tag::Table)),
+            _ => None,
+        }
+    }
+
+    /// A cell's table's columns, and the cell's first column and span.
+    fn cell_columns(&self, cell: NodeId) -> Option<(Rc<Columns>, u32, u32)> {
+        let table = self.table_of_cell(cell)?;
+        let columns = self.columns(table);
+        let &(x, n) = columns.cells.get(&cell)?;
+        Some((columns, x, n))
+    }
+
+    fn columns(&self, table: NodeId) -> Rc<Columns> {
+        if let Some(c) = self.tables.borrow().get(&table) {
+            return c.clone();
+        }
+        let c = Rc::new(self.lay_out(table));
+        self.tables.borrow_mut().insert(table, c.clone());
+        c
+    }
+
+    /// A `span`, `colspan` or `rowspan` as the HTML Standard reads it:
+    /// missing, unparsable or zero gives 1, and it stops at `max`.
+    fn span(&self, el: NodeId, name: &str, max: u32) -> u32 {
+        self.attr(el, name)
+            .and_then(parse_non_negative)
+            .filter(|&n| n > 0)
+            .map_or(1, |n| n.min(max))
+    }
+
+    /// The HTML Standard's "forming a table", as far as columns go:
+    /// `colgroup`s before the first row give the `col`s their columns,
+    /// and each cell takes the first column its row leaves free, rows
+    /// above reaching down with `rowspan` included.
+    fn lay_out(&self, table: NodeId) -> Columns {
+        let doc = self.doc;
+        let mut out = Columns::default();
+        let mut col_x = 0;
+        let mut rows_started = false;
+        let mut cover = Cover::default();
+        for child in doc.children(table) {
+            match self.html_tag_of(child) {
+                Some(Tag::Colgroup) if !rows_started => {
+                    let mut has_cols = false;
+                    for c in doc.children(child) {
+                        if self.html_tag_of(c) == Some(Tag::Col) {
+                            has_cols = true;
+                            let n = self.span(c, "span", 1000);
+                            out.col_index.insert(c, out.cols.len());
+                            out.cols.push((c, col_x, n));
+                            col_x += n;
+                        }
+                    }
+                    if !has_cols {
+                        col_x += self.span(child, "span", 1000);
+                    }
+                }
+                Some(Tag::Tr) => {
+                    rows_started = true;
+                    self.lay_out_row(child, &mut cover, &mut out);
+                }
+                Some(Tag::Thead | Tag::Tbody | Tag::Tfoot) => {
+                    rows_started = true;
+                    // Cells don't reach from one row group into another.
+                    cover = Cover::default();
+                    for r in doc.children(child) {
+                        if self.html_tag_of(r) == Some(Tag::Tr) {
+                            self.lay_out_row(r, &mut cover, &mut out);
+                        }
+                    }
+                    cover = Cover::default();
+                }
+                _ => {}
+            }
+        }
+        out.width = out.width.max(col_x);
+        out
+    }
+
+    fn lay_out_row(&self, tr: NodeId, cover: &mut Cover, out: &mut Columns) {
+        let row = cover.row;
+        cover.advance(row);
+        let mut x = 0;
+        for cell in self.doc.children(tr) {
+            if !matches!(self.html_tag_of(cell), Some(Tag::Td | Tag::Th)) {
+                continue;
+            }
+            x = cover.free(x);
+            let span = self.span(cell, "colspan", 1000);
+            let until = match self.attr(cell, "rowspan").and_then(parse_non_negative) {
+                Some(0) => u32::MAX,
+                n => row.saturating_add(n.map_or(1, |n| n.min(65534))),
+            };
+            cover.add(x, x + span, until);
+            out.cells.insert(cell, (x, span));
+            x += span;
+            out.width = out.width.max(x);
+        }
+        cover.row += 1;
     }
 
     /// `el`'s place among its siblings, or None if it has no parent.
@@ -1549,18 +2190,55 @@ impl<'a> Cx<'a> {
             .filter(|&k| doc.element(k).is_some())
             .collect();
         // One entry per element type among the children: an example of it,
-        // and how many there are so far.
+        // and how many there are so far. A few types are found by a scan;
+        // past that by a key that's equal when same_type says so, as a
+        // scan made a parent of n different types cost n²: a known HTML
+        // tag by its number, any other by its name, which is the page's,
+        // so hashed as std does.
         let mut types: Vec<(NodeId, u32)> = Vec::new();
+        let mut keyed = false;
+        let mut by_tag: IdMap<Tag, usize> = IdMap::default();
+        let mut by_name: HashMap<(u8, Tag, &str), usize> = HashMap::new();
+        fn file<'d>(
+            doc: &'d Document,
+            by_tag: &mut IdMap<Tag, usize>,
+            by_name: &mut HashMap<(u8, Tag, &'d str), usize>,
+            e: &'d crate::dom::Element,
+            t: usize,
+        ) {
+            if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.insert(e.tag, t);
+            } else {
+                by_name.insert((e.ns as u8, e.tag, doc.element_name(e)), t);
+            }
+        }
         let mut of_type = Vec::with_capacity(kids.len());
         for &k in &kids {
             let e = doc.element(k).unwrap();
-            let t = match types
-                .iter()
-                .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
-            {
+            let found = if !keyed {
+                types
+                    .iter()
+                    .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
+            } else if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.get(&e.tag).copied()
+            } else {
+                by_name
+                    .get(&(e.ns as u8, e.tag, doc.element_name(e)))
+                    .copied()
+            };
+            let t = match found {
                 Some(t) => t,
                 None => {
                     types.push((k, 0));
+                    if keyed {
+                        file(doc, &mut by_tag, &mut by_name, e, types.len() - 1);
+                    } else if types.len() > 16 {
+                        keyed = true;
+                        for (i, &(rep, _)) in types.iter().enumerate() {
+                            let rep = doc.element(rep).unwrap();
+                            file(doc, &mut by_tag, &mut by_name, rep, i);
+                        }
+                    }
                     types.len() - 1
                 }
             };
@@ -1568,6 +2246,7 @@ impl<'a> Cx<'a> {
             of_type.push((t, types[t].1));
         }
         let mut places = self.places.borrow_mut();
+        places.reserve(kids.len());
         for (i, (&k, &(t, type_index))) in kids.iter().zip(&of_type).enumerate() {
             places.insert(
                 k,
@@ -1580,6 +2259,41 @@ impl<'a> Cx<'a> {
             );
         }
         places.get(&el).copied()
+    }
+
+    /// `el`'s place among its siblings that match `of`, and how many do,
+    /// worked out for the whole parent at once; None if it has no parent
+    /// or doesn't match.
+    fn of_place(&self, of: &SelectorList, el: NodeId) -> Option<(u32, u32)> {
+        let key = std::ptr::from_ref(of) as usize;
+        if let Some(&p) = self.of_places.borrow().get(&(key, el)) {
+            return Some(p);
+        }
+        let doc = self.doc;
+        let parent = doc.parent(el)?;
+        let kids: Vec<NodeId> = doc
+            .children(parent)
+            .filter(|&k| doc.element(k).is_some() && of.0.iter().any(|c| self.complex(c, k, k)))
+            .collect();
+        let mut places = self.of_places.borrow_mut();
+        for (i, &k) in kids.iter().enumerate() {
+            places.insert((key, k), (i as u32 + 1, kids.len() as u32));
+        }
+        places.get(&(key, el)).copied()
+    }
+
+    /// Whether `el` is at an+b among its siblings (of its type), by the
+    /// places worked out for its parent; None if it has no parent.
+    #[inline(never)]
+    fn nth_by_place(&self, el: NodeId, a: i32, b: i32, last: bool, of_type: bool) -> Option<bool> {
+        let pl = self.place(el)?;
+        let (index, count) = if of_type {
+            (pl.type_index, pl.type_count)
+        } else {
+            (pl.index, pl.count)
+        };
+        let index = if last { count - index + 1 } else { index };
+        Some(nth_matches(a as i64, b as i64, index as i64))
     }
 
     fn parent_element(&self, n: NodeId) -> Option<NodeId> {
@@ -1610,49 +2324,156 @@ impl<'a> Cx<'a> {
         None
     }
 
-    /// Does `el` match `c.parts[i..]`? `anchor` is the element a relative
-    /// selector in `:has()` hangs from.
-    fn complex(&self, c: &Complex, i: usize, el: NodeId, anchor: NodeId) -> bool {
-        let (compound, combinator) = &c.parts[i];
-        if !self.compound(compound, el, anchor) {
+    /// Does `el` match `c`? `anchor` is the element a relative selector in
+    /// `:has()` hangs from.
+    ///
+    /// A loop over the parts, not a call per part: a selector can chain as
+    /// many compounds as it likes, and a call each overflowed the stack.
+    /// When a part fails, it backs up only as far as can help, as browsers
+    /// do. If the rest found no ancestor at all, no higher one will do; if
+    /// a sibling failed, the nearest descendant combinator tries the next
+    /// ancestor. Trying every choice instead made `x div div ...` over a
+    /// few dozen nested divs take seconds.
+    fn complex(&self, c: &Complex, el: NodeId, anchor: NodeId) -> bool {
+        // The subject first, here, so a one-part selector costs no more.
+        self.compound(&c.parts[0].0, el, anchor)
+            && (c.parts.len() == 1 || self.complex_rest(c, el, anchor))
+    }
+
+    /// The parts after the subject, which `el` matched.
+    #[inline(never)]
+    fn complex_rest(&self, c: &Complex, el: NodeId, anchor: NodeId) -> bool {
+        let parts = &c.parts;
+        // Two parts, the commonest chain, have no part further left to back
+        // up to: try each element the combinator reaches, and stop.
+        if let [(_, combinator), (left, _)] = parts.as_slice() {
+            let mut at = self.step(*combinator, el);
+            while let Some(p) = at {
+                if self.compound(left, p, anchor) {
+                    return true;
+                }
+                if matches!(combinator, Combinator::Child | Combinator::NextSibling) {
+                    return false;
+                }
+                at = self.next_step(*combinator, el, p);
+            }
             return false;
         }
-        if i + 1 == c.parts.len() {
-            return true;
-        }
-        match combinator {
-            Combinator::None => true,
-            Combinator::Child => self
-                .doc
-                .parent(el)
-                .is_some_and(|p| self.complex(c, i + 1, p, anchor)),
-            Combinator::Descendant => {
-                let mut at = self.doc.parent(el);
-                while let Some(p) = at {
-                    if self.complex(c, i + 1, p, anchor) {
-                        return true;
+        // What each part left of the current one matched, to back up to.
+        let mut inline = [0; 16];
+        let mut spilled;
+        let matched: &mut [NodeId] = if parts.len() <= inline.len() {
+            &mut inline
+        } else {
+            spilled = vec![0; parts.len()];
+            &mut spilled
+        };
+        matched[0] = el;
+        let Some(next) = self.step(parts[0].1, el) else {
+            return false;
+        };
+        let (mut i, mut at) = (1, next);
+        loop {
+            let mut fail = if !self.compound(&parts[i].0, at, anchor) {
+                Fail::Sibling
+            } else if i + 1 == parts.len() {
+                return true;
+            } else {
+                let combinator = parts[i].1;
+                match self.step(combinator, at) {
+                    Some(next) => {
+                        matched[i] = at;
+                        (i, at) = (i + 1, next);
+                        continue;
                     }
-                    at = self.doc.parent(p);
+                    None => Fail::exhausted(combinator),
                 }
-                false
-            }
-            Combinator::NextSibling => self
-                .prev_element(el)
-                .is_some_and(|p| self.complex(c, i + 1, p, anchor)),
-            Combinator::SubsequentSibling => {
-                let mut at = self.prev_element(el);
-                while let Some(p) = at {
-                    if self.complex(c, i + 1, p, anchor) {
-                        return true;
+            };
+            // `at` failed parts[i]; back up to the part left of it.
+            loop {
+                if i == 0 || fail == Fail::Global {
+                    return false;
+                }
+                i -= 1;
+                let combinator = parts[i].1;
+                let retry = match (fail, combinator) {
+                    (_, Combinator::Child) => {
+                        fail = Fail::Descendant;
+                        false
                     }
-                    at = self.prev_element(p);
+                    (_, Combinator::NextSibling)
+                    | (Fail::Descendant, Combinator::SubsequentSibling) => false,
+                    _ => true,
+                };
+                if retry {
+                    if let Some(next) = self.next_step(combinator, matched[i], at) {
+                        (i, at) = (i + 1, next);
+                        break;
+                    }
+                    fail = Fail::exhausted(combinator);
                 }
-                false
+                at = matched[i];
             }
         }
     }
 
+    /// The element a combinator looks at next from `el`: its parent, or
+    /// its previous element sibling.
+    #[inline]
+    fn step(&self, combinator: Combinator, el: NodeId) -> Option<NodeId> {
+        match combinator {
+            Combinator::Child | Combinator::Descendant => self.doc.parent(el),
+            Combinator::NextSibling | Combinator::SubsequentSibling => self.prev_element(el),
+            Combinator::Column => self.col_after(el, None),
+            Combinator::None => None,
+        }
+    }
+
+    /// The element after `prev` that `combinator` reaches from `origin`:
+    /// the next one up or back from `prev`, or for `||`, the next col
+    /// over `origin`'s columns, which `prev` alone can't say.
+    fn next_step(&self, combinator: Combinator, origin: NodeId, prev: NodeId) -> Option<NodeId> {
+        match combinator {
+            Combinator::Column => self.col_after(origin, Some(prev)),
+            _ => self.step(combinator, prev),
+        }
+    }
+
+    /// The cols over any of a cell's columns, in column order: the first,
+    /// or the one after `prev`.
+    fn col_after(&self, cell: NodeId, prev: Option<NodeId>) -> Option<NodeId> {
+        let (t, x, n) = self.cell_columns(cell)?;
+        let i = match prev {
+            None => t.cols.partition_point(|&(_, cx, cn)| cx + cn <= x),
+            Some(p) => t.col_index.get(&p)? + 1,
+        };
+        t.cols
+            .get(i)
+            .filter(|&&(_, cx, _)| cx < x + n)
+            .map(|&(col, ..)| col)
+    }
+
+    /// Whether the budget has run out. Once it has, every compound fails,
+    /// so whatever is matching unwinds quickly. Out of line, so a query
+    /// without a budget pays one test of `deadline` per compound.
+    #[cold]
+    #[inline(never)]
+    fn out_of_time(&self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        let steps = self.steps.get().wrapping_add(1);
+        self.steps.set(steps);
+        if steps.is_multiple_of(1024) && Instant::now() >= deadline {
+            self.timed_out.set(true);
+        }
+        self.timed_out.get()
+    }
+
     fn compound(&self, compound: &Compound, el: NodeId, anchor: NodeId) -> bool {
+        if self.deadline.is_some() && self.out_of_time() {
+            return false;
+        }
         if matches!(compound.0.as_slice(), [Simple::Anchor]) {
             return el == anchor;
         }
@@ -2240,9 +3061,9 @@ impl<'a> Cx<'a> {
         let html = e.ns == Ns::Html;
         let tag = if html { e.tag } else { Tag::Other };
         match p {
-            Pseudo::Not(list) => !list.0.iter().any(|c| self.complex(c, 0, el, anchor)),
+            Pseudo::Not(list) => !list.0.iter().any(|c| self.complex(c, el, anchor)),
             Pseudo::Is(list) | Pseudo::Where(list) => {
-                list.0.iter().any(|c| self.complex(c, 0, el, anchor))
+                list.0.iter().any(|c| self.complex(c, el, anchor))
             }
             Pseudo::Has(list) => list.0.iter().any(|c| self.has(c, el)),
             Pseudo::Nth {
@@ -2256,7 +3077,7 @@ impl<'a> Cx<'a> {
                     if *of_type {
                         same_type(doc, doc.element(other).unwrap(), e)
                     } else if let Some(of) = of {
-                        of.0.iter().any(|c| self.complex(c, 0, other, other))
+                        of.0.iter().any(|c| self.complex(c, other, other))
                     } else {
                         true
                     }
@@ -2264,21 +3085,24 @@ impl<'a> Cx<'a> {
                 if !same(el) {
                     return false;
                 }
-                // With a > 0 the walk below could go through every sibling,
-                // for every sibling: take the positions worked out once per
-                // parent instead. `of S` depends on S, so it still walks.
-                if of.is_none()
-                    && *a > 0
-                    && let Some(pl) = self.place(el)
+                // The walk below could go through every sibling, for every
+                // sibling: take the positions worked out once per parent
+                // instead, for S as well when there's `of S`.
+                if let Some(of) = of
+                    && let Some((index, count)) = self.of_place(of, el)
                 {
-                    let (index, count) = if *of_type {
-                        (pl.type_index, pl.type_count)
-                    } else {
-                        (pl.index, pl.count)
-                    };
                     let index = if *last { count - index + 1 } else { index };
                     return nth_matches(*a as i64, *b as i64, index as i64);
                 }
+                if *a > 0
+                    && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
+                {
+                    return m;
+                }
+                // With a <= 0 the walk stops at b, which is usually soon;
+                // a walk that goes on, past other types or to a large b,
+                // takes the positions too.
+                let mut walked = 0;
                 let mut index = 1i64;
                 let mut at = if *last {
                     self.next_element(el)
@@ -2286,6 +3110,12 @@ impl<'a> Cx<'a> {
                     self.prev_element(el)
                 };
                 while let Some(s) = at {
+                    walked += 1;
+                    if walked > 32
+                        && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
+                    {
+                        return m;
+                    }
                     if same(s) {
                         index += 1;
                         // With a <= 0 the positions that match end at b, so
@@ -2306,19 +3136,23 @@ impl<'a> Cx<'a> {
             Pseudo::Only { of_type } => {
                 let same =
                     |other: NodeId| !*of_type || same_type(doc, doc.element(other).unwrap(), e);
-                let mut at = self.prev_element(el);
-                while let Some(s) = at {
-                    if same(s) {
-                        return false;
+                // Of-type, the walks can pass any number of other types:
+                // one that goes on takes the counts worked out per parent.
+                let mut walked = 0;
+                for step in [Self::prev_element, Self::next_element] {
+                    let mut at = step(self, el);
+                    while let Some(s) = at {
+                        walked += 1;
+                        if walked > 32
+                            && let Some(pl) = self.place(el)
+                        {
+                            return pl.type_count == 1;
+                        }
+                        if same(s) {
+                            return false;
+                        }
+                        at = step(self, s);
                     }
-                    at = self.prev_element(s);
-                }
-                let mut at = self.next_element(el);
-                while let Some(s) = at {
-                    if same(s) {
-                        return false;
-                    }
-                    at = self.next_element(s);
                 }
                 true
             }
@@ -2407,12 +3241,52 @@ impl<'a> Cx<'a> {
                 Tag::Textarea => self.attr(el, "placeholder").is_some() && doc.text(el).is_empty(),
                 _ => false,
             },
+            // The current draft's meaning: :placeholder-shown without the
+            // placeholder, on the fields placeholder applies to.
+            Pseudo::Blank => match tag {
+                Tag::Input => {
+                    text_entry(input_type_state(self.attr(el, "type")))
+                        && self.attr(el, "value").is_none_or(str::is_empty)
+                }
+                Tag::Textarea => doc.text(el).is_empty(),
+                _ => false,
+            },
+            // The DOM gives an HTML element made with a custom element's
+            // name, or with is=, the state "undefined" until a definition
+            // upgrades it, and nothing here defines one.
+            Pseudo::Defined => {
+                !(html
+                    && (self.attr(el, "is").is_some()
+                        || doc.lower_name(el).is_some_and(custom_element_name)))
+            }
             Pseudo::Lang(ranges) => self.lang(el).is_some_and(|tag| {
                 let tag = tag.to_ascii_lowercase();
                 ranges.iter().any(|range| lang_matches(range, &tag))
             }),
             Pseudo::Dir(rtl) => self.is_rtl(el) == *rtl,
-            Pseudo::Never => false,
+            Pseudo::Heading(levels) => {
+                let level = match tag {
+                    Tag::H1 => 1,
+                    Tag::H2 => 2,
+                    Tag::H3 => 3,
+                    Tag::H4 => 4,
+                    Tag::H5 => 5,
+                    Tag::H6 => 6,
+                    _ => return false,
+                };
+                levels.is_empty() || levels.contains(&level)
+            }
+            Pseudo::Never | Pseudo::Element => false,
+            // A cell's columns are a run of positions, so one sum says
+            // whether any of them fits, however many it spans.
+            Pseudo::NthCol { a, b, last } => self.cell_columns(el).is_some_and(|(t, x, n)| {
+                let (lo, hi) = if *last {
+                    (t.width - (x + n) + 1, t.width - x)
+                } else {
+                    (x + 1, x + n)
+                };
+                nth_in_range(*a as i64, *b as i64, lo as i64, hi as i64)
+            }),
         }
     }
 
@@ -2423,6 +3297,24 @@ impl<'a> Cx<'a> {
         // The combinator next to the anchor decides where to look: below
         // it, or among its later siblings and below them.
         let first = c.parts[c.parts.len() - 2].1;
+        // One compound, the usual shape: only the elements the combinator
+        // reaches can match, and the compound doesn't depend on the
+        // anchor, so what lies below or after an element is worth keeping.
+        if let [(compound, _), _] = c.parts.as_slice()
+            && first != Combinator::Column
+        {
+            let key = std::ptr::from_ref(c) as usize;
+            return match first {
+                Combinator::Child => doc
+                    .children(el)
+                    .any(|k| doc.element(k).is_some() && self.compound(compound, k, el)),
+                Combinator::NextSibling => self
+                    .next_element(el)
+                    .is_some_and(|s| self.compound(compound, s, el)),
+                Combinator::SubsequentSibling => self.later_holds(key, compound, el),
+                _ => self.below_holds(key, compound, el),
+            };
+        }
         let mut stack: Vec<NodeId> = Vec::new();
         match first {
             Combinator::NextSibling | Combinator::SubsequentSibling => {
@@ -2432,18 +3324,94 @@ impl<'a> Cx<'a> {
                     at = self.next_element(s);
                 }
             }
+            // A col's cells are elsewhere in its table.
+            Combinator::Column => {
+                let table = doc.parent(el).and_then(|g| doc.parent(g));
+                if self.html_tag_of(el) == Some(Tag::Col)
+                    && let Some(t) = table.filter(|&t| self.html_tag_of(t) == Some(Tag::Table))
+                {
+                    push_children_reversed(doc, t, &mut stack);
+                }
+            }
             _ => push_children_reversed(doc, el, &mut stack),
         }
         while let Some(n) = stack.pop() {
             if doc.element(n).is_none() {
                 continue;
             }
-            if self.complex(c, 0, n, el) {
+            if self.complex(c, n, el) {
                 return true;
             }
             push_children_reversed(doc, n, &mut stack);
         }
         false
+    }
+
+    /// Whether an element below `el` matches `compound`. A subtree walked
+    /// is remembered as holding a match or not, so in a deep chain each
+    /// element is looked at once, not once per ancestor.
+    fn below_holds(&self, key: usize, compound: &Compound, el: NodeId) -> bool {
+        let doc = self.doc;
+        if self.has_seen.borrow().get(&(key, el)) == Some(&false) {
+            return false;
+        }
+        // A node comes off twice: on the way down, then marked done once
+        // its subtree is through, with nothing in it matching.
+        let mut stack: Vec<(NodeId, bool)> = Vec::new();
+        let at = stack.len();
+        stack.extend(doc.children(el).map(|k| (k, false)));
+        stack[at..].reverse();
+        while let Some((n, done)) = stack.pop() {
+            if done {
+                self.has_seen.borrow_mut().insert((key, n), false);
+                continue;
+            }
+            if doc.element(n).is_none() {
+                continue;
+            }
+            let known = self.has_seen.borrow().get(&(key, n)).copied();
+            if known == Some(false) {
+                continue;
+            }
+            if known == Some(true) || self.compound(compound, n, el) {
+                // n holds a match, and so does everything up to `el`.
+                let mut seen = self.has_seen.borrow_mut();
+                let mut up = Some(n);
+                while let Some(u) = up {
+                    seen.insert((key, u), true);
+                    up = doc.parent(u).filter(|_| u != el);
+                }
+                return true;
+            }
+            stack.push((n, true));
+            let at = stack.len();
+            stack.extend(doc.children(n).map(|k| (k, false)));
+            stack[at..].reverse();
+        }
+        false
+    }
+
+    /// Whether an element after `el` among its siblings matches
+    /// `compound`, remembered for each sibling walked past.
+    fn later_holds(&self, key: usize, compound: &Compound, el: NodeId) -> bool {
+        let mut walked = Vec::new();
+        let mut at = self.next_element(el);
+        let found = loop {
+            let Some(s) = at else { break false };
+            if let Some(&known) = self.has_seen.borrow().get(&(key, s)) {
+                break known;
+            }
+            walked.push(s);
+            if self.compound(compound, s, el) {
+                break true;
+            }
+            at = self.next_element(s);
+        };
+        let mut seen = self.has_seen.borrow_mut();
+        for s in walked {
+            seen.insert((key, s), found);
+        }
+        found
     }
 
     fn form_control(&self, tag: Tag) -> bool {
@@ -2567,6 +3535,23 @@ fn nth_matches(a: i64, b: i64, index: i64) -> bool {
     diff % a == 0 && diff / a >= 0
 }
 
+/// Whether some position from `lo` to `hi` is `a`n+`b` for an n >= 0.
+fn nth_in_range(a: i64, b: i64, lo: i64, hi: i64) -> bool {
+    match a.cmp(&0) {
+        std::cmp::Ordering::Equal => (lo..=hi).contains(&b),
+        // The first matching position at or after lo, if it's by hi.
+        std::cmp::Ordering::Greater => {
+            let from = lo.max(b);
+            from + (b - from).rem_euclid(a) <= hi
+        }
+        // The last matching position at or before hi, if it's from lo.
+        std::cmp::Ordering::Less => {
+            let to = hi.min(b);
+            to - (to - b).rem_euclid(-a) >= lo
+        }
+    }
+}
+
 fn value_matches(op: AttrOp, value: &str, want: &str, insensitive: bool) -> bool {
     let eq = |x: &str, y: &str| {
         if insensitive {
@@ -2611,6 +3596,27 @@ fn value_matches(op: AttrOp, value: &str, want: &str, insensitive: bool) -> bool
                 } else {
                     value.contains(want)
                 }
+        }
+    }
+}
+
+#[cfg(test)]
+mod nth_range_tests {
+    #[test]
+    fn nth_in_range_agrees_with_each_position() {
+        for a in -4..=4 {
+            for b in -6..=8 {
+                for lo in 1..=7 {
+                    for hi in lo..=9 {
+                        let each = (lo..=hi).any(|i| super::nth_matches(a, b, i));
+                        assert_eq!(
+                            super::nth_in_range(a, b, lo, hi),
+                            each,
+                            "{a}n+{b} in {lo}..={hi}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

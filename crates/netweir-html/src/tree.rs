@@ -149,6 +149,9 @@ pub(crate) struct TreeBuilder {
     /// there.
     closing_name: String,
     closing: bool,
+    /// Each element's [`signature`](Self::signature), 0 until it's
+    /// worked out.
+    sigs: Vec<u64>,
     /// Whether to collect parse errors ([`Options::errors`]), and those
     /// found so far, by offset into the preprocessed source.
     errors: bool,
@@ -598,6 +601,7 @@ impl TreeBuilder {
             pending_at: [0; 2],
             closing_name: String::new(),
             closing: false,
+            sigs: Vec::new(),
             errors: false,
             errors_found: Vec::new(),
             acknowledged: false,
@@ -1007,7 +1011,8 @@ impl TreeBuilder {
         };
         if x.ns != y.ns
             || x.tag != y.tag
-            || self.doc.element_name(x) != self.doc.element_name(y)
+            || !(matches!((x.name, y.name), (Name::Tag, Name::Tag))
+                || self.doc.element_name(x) == self.doc.element_name(y))
             || x.attrs.end - x.attrs.start != y.attrs.end - y.attrs.start
         {
             return false;
@@ -1024,17 +1029,67 @@ impl TreeBuilder {
             })
     }
 
+    /// A hash of what [`same_element`](Self::same_element) compares, so
+    /// the Noah's Ark check compares one number per entry and the full
+    /// check runs only when two agree. Cached: a long list of formatting
+    /// elements is otherwise compared name by name and attribute by
+    /// attribute on every push.
+    #[inline]
+    fn signature(&mut self, id: NodeId) -> u64 {
+        match self.sigs.get(id as usize) {
+            Some(&s) if s != 0 => s,
+            _ => self.work_out_signature(id),
+        }
+    }
+
+    #[inline(never)]
+    fn work_out_signature(&mut self, id: NodeId) -> u64 {
+        // FNV-1a.
+        fn mix(h: u64, bytes: &[u8]) -> u64 {
+            bytes
+                .iter()
+                .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+        }
+        const SEED: u64 = 0xcbf29ce484222325;
+        let e = self.doc.element(id).expect("an element");
+        let mut h = mix(SEED, &[e.ns as u8, e.tag as u8]);
+        if !matches!(e.name, Name::Tag) {
+            h = mix(h, self.doc.element_name(e).as_bytes());
+        }
+        // Summed, since attribute order doesn't matter to same_element.
+        let mut attrs = 0u64;
+        for a in &self.doc.attrs[e.attrs.start as usize..e.attrs.end as usize] {
+            let one = mix(SEED, self.doc.str(a.name).as_bytes());
+            attrs = attrs.wrapping_add(mix(mix(one, &[0]), self.doc.str(a.value).as_bytes()));
+        }
+        let h = (h ^ attrs).wrapping_mul(0x100000001b3) | 1;
+        self.set_signature(id, h);
+        h
+    }
+
+    fn set_signature(&mut self, id: NodeId, sig: u64) {
+        let i = id as usize;
+        if i >= self.sigs.len() {
+            self.sigs.resize(i * 2 + 1024, 0);
+        }
+        self.sigs[i] = sig;
+    }
+
     fn push_active(&mut self, id: NodeId) {
-        let start = self
-            .active
-            .iter()
-            .rposition(|&e| e == MARKER)
-            .map_or(0, |i| i + 1);
-        let same: Vec<usize> = (start..self.active.len())
-            .filter(|&i| self.same_element(self.active[i], id))
-            .collect();
-        if same.len() >= 3 {
-            self.active.remove(same[0]);
+        let sig = self.signature(id);
+        let (mut same, mut earliest) = (0, 0);
+        for i in (0..self.active.len()).rev() {
+            let e = self.active[i];
+            if e == MARKER {
+                break;
+            }
+            if self.signature(e) == sig && self.same_element(e, id) {
+                same += 1;
+                earliest = i;
+            }
+        }
+        if same >= 3 {
+            self.active.remove(earliest);
         }
         self.active.push(id);
     }
@@ -1077,10 +1132,17 @@ impl TreeBuilder {
 
     fn clone_element(&mut self, id: NodeId) -> NodeId {
         let e = *self.doc.element(id).expect("an element");
-        self.doc.add(Data::Element(Element {
+        let new = self.doc.add(Data::Element(Element {
             contents: NONE,
             ..e
-        }))
+        }));
+        // Same name and attributes, so the same signature.
+        if let Some(&sig) = self.sigs.get(id as usize)
+            && sig != 0
+        {
+            self.set_signature(new, sig);
+        }
+        new
     }
 
     fn create(&mut self, s: &Start<'_>, ns: Ns) -> NodeId {
@@ -3767,7 +3829,9 @@ impl Parser {
     /// Tokenizes what the source has that the tokenizer hasn't read; the
     /// rest of it, at the end, when not `partial`.
     fn tokenize(&mut self, partial: bool) {
-        let start = std::time::Instant::now();
+        // Only with a budget: wasm32-unknown-unknown has no clock, and
+        // reading one there panics.
+        let start = self.options.budget.map(|_| std::time::Instant::now());
         // SAFETY: the source grows only between these calls. While the
         // tokenizer runs, the tree builder adds to its own buffers and
         // never to the source, so these bytes stay where they are; and the
@@ -3778,7 +3842,7 @@ impl Parser {
         self.tokenizer.extend(src);
         // What's left of the budget from now; one past what the clock can
         // count is no limit at all.
-        if let Some(budget) = self.options.budget {
+        if let Some((budget, start)) = self.options.budget.zip(start) {
             match budget.checked_sub(self.spent) {
                 Some(left) => {
                     if let Some(deadline) = start.checked_add(left) {
@@ -3794,7 +3858,9 @@ impl Parser {
             self.tokenizer.run(&mut self.builder);
         }
         self.tokenizer.detach();
-        self.spent += start.elapsed();
+        if let Some(start) = start {
+            self.spent += start.elapsed();
+        }
     }
 }
 
@@ -3802,6 +3868,18 @@ impl Parser {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn noahs_ark_matches_attributes_in_any_order() {
+        // Four alike, written in two orders: the list keeps three, so the
+        // second paragraph reopens three. The one with c=3 isn't alike.
+        let html = "<p><b a=1 c=2><b c=2 a=1><b a=1 c=2><b c=3 a=1><b c=2 a=1></p><p>x";
+        let doc = parse(html, false);
+        let out = doc.outer_html(doc.root());
+        let second = &out[out.rfind("<p>").unwrap()..];
+        assert_eq!(second.matches("<b ").count(), 4, "{out}");
+        assert_eq!(second.matches("c=\"3\"").count(), 1, "{out}");
+    }
 
     #[test]
     fn a_budget_stops_a_long_parse_and_says_how_far_it_got() {

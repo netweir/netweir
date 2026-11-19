@@ -141,6 +141,10 @@ pub struct Document {
     /// asked to keep that, and how to map offsets back to the input, for
     /// spans or errors.
     pub(crate) positions: Option<Box<Positions>>,
+    /// Each template's contents, mapped to the template: no link leads
+    /// back from the contents, and an edit's cycle check has to climb out
+    /// of them. Edits build it the first time they need it.
+    pub(crate) hosts: Option<std::collections::HashMap<NodeId, NodeId>>,
     /// The parse errors, when the parse was asked to collect them.
     pub(crate) errors: Vec<crate::SyntaxError>,
 }
@@ -232,6 +236,7 @@ impl Document {
             quirks: Quirks::No,
             scripting: false,
             positions: None,
+            hosts: None,
             errors: Vec::new(),
         }
     }
