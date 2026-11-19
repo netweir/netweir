@@ -1531,7 +1531,7 @@ struct Cx<'a> {
     /// Each element's place among its siblings, worked out for a whole
     /// parent the first time `:nth-*` needs one, so a query over a parent
     /// with n children counts them once rather than n times.
-    places: RefCell<HashMap<NodeId, Place>>,
+    places: RefCell<IdMap<NodeId, Place>>,
     /// The same for `:nth-child(An+B of S)`, keyed by S as well: each
     /// element matching S, its place among the siblings that do, and how
     /// many do.
@@ -1677,7 +1677,7 @@ impl<'a> Cx<'a> {
             deadline: None,
             steps: Cell::new(0),
             timed_out: Cell::new(false),
-            places: RefCell::new(HashMap::new()),
+            places: RefCell::default(),
             of_places: RefCell::default(),
             has_seen: RefCell::default(),
         }
@@ -1697,38 +1697,52 @@ impl<'a> Cx<'a> {
         // One entry per element type among the children: an example of it,
         // and how many there are so far. A few types are found by a scan;
         // past that by a key that's equal when same_type says so, as a
-        // scan made a parent of n different types cost n². The names are
-        // the page's, so the key is hashed as std does.
-        let key = |e: &crate::dom::Element| {
-            let name = if e.ns == Ns::Html && e.tag != Tag::Other {
-                ""
-            } else {
-                doc.element_name(e)
-            };
-            (e.ns as u8, e.tag, name)
-        };
+        // scan made a parent of n different types cost n²: a known HTML
+        // tag by its number, any other by its name, which is the page's,
+        // so hashed as std does.
         let mut types: Vec<(NodeId, u32)> = Vec::new();
-        let mut by_key: HashMap<(u8, Tag, &str), usize> = HashMap::new();
+        let mut keyed = false;
+        let mut by_tag: IdMap<Tag, usize> = IdMap::default();
+        let mut by_name: HashMap<(u8, Tag, &str), usize> = HashMap::new();
+        fn file<'d>(
+            doc: &'d Document,
+            by_tag: &mut IdMap<Tag, usize>,
+            by_name: &mut HashMap<(u8, Tag, &'d str), usize>,
+            e: &'d crate::dom::Element,
+            t: usize,
+        ) {
+            if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.insert(e.tag, t);
+            } else {
+                by_name.insert((e.ns as u8, e.tag, doc.element_name(e)), t);
+            }
+        }
         let mut of_type = Vec::with_capacity(kids.len());
         for &k in &kids {
             let e = doc.element(k).unwrap();
-            let found = if by_key.is_empty() {
+            let found = if !keyed {
                 types
                     .iter()
                     .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
+            } else if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.get(&e.tag).copied()
             } else {
-                by_key.get(&key(e)).copied()
+                by_name
+                    .get(&(e.ns as u8, e.tag, doc.element_name(e)))
+                    .copied()
             };
             let t = match found {
                 Some(t) => t,
                 None => {
                     types.push((k, 0));
-                    if !by_key.is_empty() {
-                        by_key.insert(key(e), types.len() - 1);
+                    if keyed {
+                        file(doc, &mut by_tag, &mut by_name, e, types.len() - 1);
                     } else if types.len() > 16 {
-                        by_key = (types.iter().enumerate())
-                            .map(|(i, &(rep, _))| (key(doc.element(rep).unwrap()), i))
-                            .collect();
+                        keyed = true;
+                        for (i, &(rep, _)) in types.iter().enumerate() {
+                            let rep = doc.element(rep).unwrap();
+                            file(doc, &mut by_tag, &mut by_name, rep, i);
+                        }
                     }
                     types.len() - 1
                 }
@@ -1737,6 +1751,7 @@ impl<'a> Cx<'a> {
             of_type.push((t, types[t].1));
         }
         let mut places = self.places.borrow_mut();
+        places.reserve(kids.len());
         for (i, (&k, &(t, type_index))) in kids.iter().zip(&of_type).enumerate() {
             places.insert(
                 k,
@@ -1770,6 +1785,20 @@ impl<'a> Cx<'a> {
             places.insert((key, k), (i as u32 + 1, kids.len() as u32));
         }
         places.get(&(key, el)).copied()
+    }
+
+    /// Whether `el` is at an+b among its siblings (of its type), by the
+    /// places worked out for its parent; None if it has no parent.
+    #[inline(never)]
+    fn nth_by_place(&self, el: NodeId, a: i32, b: i32, last: bool, of_type: bool) -> Option<bool> {
+        let pl = self.place(el)?;
+        let (index, count) = if of_type {
+            (pl.type_index, pl.type_count)
+        } else {
+            (pl.index, pl.count)
+        };
+        let index = if last { count - index + 1 } else { index };
+        Some(nth_matches(a as i64, b as i64, index as i64))
     }
 
     fn parent_element(&self, n: NodeId) -> Option<NodeId> {
@@ -1820,6 +1849,21 @@ impl<'a> Cx<'a> {
     #[inline(never)]
     fn complex_rest(&self, c: &Complex, el: NodeId, anchor: NodeId) -> bool {
         let parts = &c.parts;
+        // Two parts, the commonest chain, have no part further left to back
+        // up to: try each element the combinator reaches, and stop.
+        if let [(_, combinator), (left, _)] = parts.as_slice() {
+            let mut at = self.step(*combinator, el);
+            while let Some(p) = at {
+                if self.compound(left, p, anchor) {
+                    return true;
+                }
+                if matches!(combinator, Combinator::Child | Combinator::NextSibling) {
+                    return false;
+                }
+                at = self.step(*combinator, p);
+            }
+            return false;
+        }
         // What each part left of the current one matched, to back up to.
         let mut inline = [0; 16];
         let mut spilled;
@@ -2530,18 +2574,8 @@ impl<'a> Cx<'a> {
                     let index = if *last { count - index + 1 } else { index };
                     return nth_matches(*a as i64, *b as i64, index as i64);
                 }
-                let from_place = || {
-                    let pl = self.place(el)?;
-                    let (index, count) = if *of_type {
-                        (pl.type_index, pl.type_count)
-                    } else {
-                        (pl.index, pl.count)
-                    };
-                    let index = if *last { count - index + 1 } else { index };
-                    Some(nth_matches(*a as i64, *b as i64, index as i64))
-                };
                 if *a > 0
-                    && let Some(m) = from_place()
+                    && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
                 {
                     return m;
                 }
@@ -2558,7 +2592,7 @@ impl<'a> Cx<'a> {
                 while let Some(s) = at {
                     walked += 1;
                     if walked > 32
-                        && let Some(m) = from_place()
+                        && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
                     {
                         return m;
                     }
