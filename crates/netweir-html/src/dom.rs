@@ -140,6 +140,10 @@ pub struct Document {
     /// Where each node and attribute was written, when the parse was
     /// asked to keep that.
     pub(crate) positions: Option<Box<Positions>>,
+    /// Each template's contents, mapped to the template: no link leads
+    /// back from the contents, and an edit's cycle check has to climb out
+    /// of them. Edits build it the first time they need it.
+    pub(crate) hosts: Option<std::collections::HashMap<NodeId, NodeId>>,
 }
 
 /// A node or attribute with no recorded position.
@@ -246,6 +250,7 @@ impl Document {
             quirks: Quirks::No,
             scripting: false,
             positions: None,
+            hosts: None,
         }
     }
 

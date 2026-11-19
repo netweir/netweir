@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::dom::{AttrNs, Data, Document, NodeId, Ns, Quirks};
 use crate::pattern::Pattern;
@@ -1243,7 +1244,7 @@ impl SelectorList {
         options: &MatchOptions<'_>,
     ) -> bool {
         let cx = Cx::new(doc, scope, Page::new(doc, options.url));
-        self.0.iter().any(|c| cx.complex(c, 0, el, el))
+        self.0.iter().any(|c| cx.complex(c, el, el))
     }
 
     /// [`SelectorList::select`] with what the document alone can't say,
@@ -1255,6 +1256,36 @@ impl SelectorList {
         options: &MatchOptions<'_>,
     ) -> Vec<NodeId> {
         self.iter_with(doc, scope, options).collect()
+    }
+
+    /// [`SelectorList::select_with`] within [`MatchOptions::budget`]: an
+    /// error once it has run out, rather than the matches found so far.
+    pub fn try_select_with(
+        &self,
+        doc: &Document,
+        scope: NodeId,
+        options: &MatchOptions<'_>,
+    ) -> Result<Vec<NodeId>, MatchTimeout> {
+        let mut select = self.iter_with(doc, scope, options);
+        select.cx.deadline = deadline(options);
+        let found = select.by_ref().collect();
+        timeout(&select.cx, options)?;
+        Ok(found)
+    }
+
+    /// [`SelectorList::matches_with`] within [`MatchOptions::budget`].
+    pub fn try_matches_with(
+        &self,
+        doc: &Document,
+        el: NodeId,
+        scope: Option<NodeId>,
+        options: &MatchOptions<'_>,
+    ) -> Result<bool, MatchTimeout> {
+        let mut cx = Cx::new(doc, scope, Page::new(doc, options.url));
+        cx.deadline = deadline(options);
+        let found = self.0.iter().any(|c| cx.complex(c, el, el));
+        timeout(&cx, options)?;
+        Ok(found)
     }
 
     fn iter_with<'a>(
@@ -1351,6 +1382,9 @@ impl Iterator for Select<'_> {
         // A walk by the tree's own links, in document order: down to the
         // first child, else along to the next sibling, else back up.
         while let Some(n) = self.at {
+            if self.cx.timed_out.get() {
+                return None;
+            }
             let element = doc.element(n).is_some();
             self.at = match doc.first_child(n).filter(|_| element) {
                 Some(child) => Some(child),
@@ -1370,7 +1404,7 @@ impl Iterator for Select<'_> {
                     next
                 }
             };
-            if element && self.list.0.iter().any(|c| self.cx.complex(c, 0, n, n)) {
+            if element && self.list.0.iter().any(|c| self.cx.complex(c, n, n)) {
                 return Some(n);
             }
         }
@@ -1392,6 +1426,43 @@ fn push_children_reversed(doc: &Document, n: NodeId, stack: &mut Vec<NodeId>) {
 pub struct MatchOptions<'a> {
     /// The document's URL, for `:target`, `:target-within` and `:local-link`.
     pub url: Option<&'a str>,
+    /// Give up after this long. Most selectors cost a walk of the tree,
+    /// but some cost more on some pages: a descendant combinator over a
+    /// very deep tree, `:has()` of more than one compound. A crawler
+    /// matching pages it doesn't control should set one. Only
+    /// [`SelectorList::try_select_with`] and
+    /// [`SelectorList::try_matches_with`] read it; the clock is read every
+    /// 1,024 compounds matched.
+    pub budget: Option<Duration>,
+}
+
+/// A query that ran past [`MatchOptions::budget`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchTimeout {
+    pub budget: Duration,
+}
+
+impl std::fmt::Display for MatchTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "matching took longer than {:?}", self.budget)
+    }
+}
+
+impl std::error::Error for MatchTimeout {}
+
+/// When a query with `options` gives up: never for a budget past what
+/// the clock can count.
+fn deadline(options: &MatchOptions<'_>) -> Option<Instant> {
+    options.budget.and_then(|b| Instant::now().checked_add(b))
+}
+
+fn timeout(cx: &Cx<'_>, options: &MatchOptions<'_>) -> Result<(), MatchTimeout> {
+    if cx.timed_out.get() {
+        return Err(MatchTimeout {
+            budget: options.budget.unwrap_or_default(),
+        });
+    }
+    Ok(())
 }
 
 /// The document's URL worked out once per query.
@@ -1496,10 +1567,80 @@ struct Cx<'a> {
     page: Option<Page>,
     /// Steps left for `pattern` matches in this query, shared by all of them.
     pattern_budget: Cell<u32>,
+    /// When to give up, for the `try_` queries.
+    deadline: Option<Instant>,
+    /// Compounds matched, to read the clock every so often.
+    steps: Cell<u32>,
+    timed_out: Cell<bool>,
     /// Each element's place among its siblings, worked out for a whole
     /// parent the first time `:nth-*` needs one, so a query over a parent
     /// with n children counts them once rather than n times.
-    places: RefCell<HashMap<NodeId, Place>>,
+    places: RefCell<IdMap<NodeId, Place>>,
+    /// The same for `:nth-child(An+B of S)`, keyed by S as well: each
+    /// element matching S, its place among the siblings that do, and how
+    /// many do.
+    of_places: RefCell<IdMap<(usize, NodeId), (u32, u32)>>,
+    /// For a `:has()` argument of one compound, keyed by it and an
+    /// element: whether the element's subtree (`:has(x)`), or the element
+    /// and its later siblings (`:has(~ x)`), hold a match. Every anchor
+    /// asks the same question of the elements below or after it, so a
+    /// query asks it of each element once.
+    has_seen: RefCell<IdMap<(usize, NodeId), bool>>,
+}
+
+/// A map keyed by node ids and selectors' addresses, numbers the parser
+/// and the query hand out rather than the page, hashed with a multiply:
+/// SipHash's guard against chosen keys guards nothing here, and made
+/// `div:has(img)` half as slow again.
+type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// How far a failed part of a complex selector says to back up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fail {
+    /// The element didn't match: the part to the left may try another.
+    Sibling,
+    /// A sibling combinator ran out of siblings: back up to the nearest
+    /// descendant combinator, which may try a higher ancestor.
+    Descendant,
+    /// A combinator ran out of ancestors: no higher one can help.
+    Global,
+}
+
+impl Fail {
+    /// What running out of elements to try means for a combinator.
+    fn exhausted(combinator: Combinator) -> Fail {
+        match combinator {
+            Combinator::NextSibling | Combinator::SubsequentSibling => Fail::Descendant,
+            _ => Fail::Global,
+        }
+    }
 }
 
 /// An element's position among its parent's element children, counting
@@ -1577,7 +1718,12 @@ impl<'a> Cx<'a> {
             scope,
             page,
             pattern_budget: Cell::new(crate::pattern::SELECT_STEP_LIMIT),
-            places: RefCell::new(HashMap::new()),
+            deadline: None,
+            steps: Cell::new(0),
+            timed_out: Cell::new(false),
+            places: RefCell::default(),
+            of_places: RefCell::default(),
+            has_seen: RefCell::default(),
         }
     }
 
@@ -1593,18 +1739,55 @@ impl<'a> Cx<'a> {
             .filter(|&k| doc.element(k).is_some())
             .collect();
         // One entry per element type among the children: an example of it,
-        // and how many there are so far.
+        // and how many there are so far. A few types are found by a scan;
+        // past that by a key that's equal when same_type says so, as a
+        // scan made a parent of n different types cost n²: a known HTML
+        // tag by its number, any other by its name, which is the page's,
+        // so hashed as std does.
         let mut types: Vec<(NodeId, u32)> = Vec::new();
+        let mut keyed = false;
+        let mut by_tag: IdMap<Tag, usize> = IdMap::default();
+        let mut by_name: HashMap<(u8, Tag, &str), usize> = HashMap::new();
+        fn file<'d>(
+            doc: &'d Document,
+            by_tag: &mut IdMap<Tag, usize>,
+            by_name: &mut HashMap<(u8, Tag, &'d str), usize>,
+            e: &'d crate::dom::Element,
+            t: usize,
+        ) {
+            if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.insert(e.tag, t);
+            } else {
+                by_name.insert((e.ns as u8, e.tag, doc.element_name(e)), t);
+            }
+        }
         let mut of_type = Vec::with_capacity(kids.len());
         for &k in &kids {
             let e = doc.element(k).unwrap();
-            let t = match types
-                .iter()
-                .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
-            {
+            let found = if !keyed {
+                types
+                    .iter()
+                    .position(|&(rep, _)| same_type(doc, doc.element(rep).unwrap(), e))
+            } else if e.ns == Ns::Html && e.tag != Tag::Other {
+                by_tag.get(&e.tag).copied()
+            } else {
+                by_name
+                    .get(&(e.ns as u8, e.tag, doc.element_name(e)))
+                    .copied()
+            };
+            let t = match found {
                 Some(t) => t,
                 None => {
                     types.push((k, 0));
+                    if keyed {
+                        file(doc, &mut by_tag, &mut by_name, e, types.len() - 1);
+                    } else if types.len() > 16 {
+                        keyed = true;
+                        for (i, &(rep, _)) in types.iter().enumerate() {
+                            let rep = doc.element(rep).unwrap();
+                            file(doc, &mut by_tag, &mut by_name, rep, i);
+                        }
+                    }
                     types.len() - 1
                 }
             };
@@ -1612,6 +1795,7 @@ impl<'a> Cx<'a> {
             of_type.push((t, types[t].1));
         }
         let mut places = self.places.borrow_mut();
+        places.reserve(kids.len());
         for (i, (&k, &(t, type_index))) in kids.iter().zip(&of_type).enumerate() {
             places.insert(
                 k,
@@ -1624,6 +1808,41 @@ impl<'a> Cx<'a> {
             );
         }
         places.get(&el).copied()
+    }
+
+    /// `el`'s place among its siblings that match `of`, and how many do,
+    /// worked out for the whole parent at once; None if it has no parent
+    /// or doesn't match.
+    fn of_place(&self, of: &SelectorList, el: NodeId) -> Option<(u32, u32)> {
+        let key = std::ptr::from_ref(of) as usize;
+        if let Some(&p) = self.of_places.borrow().get(&(key, el)) {
+            return Some(p);
+        }
+        let doc = self.doc;
+        let parent = doc.parent(el)?;
+        let kids: Vec<NodeId> = doc
+            .children(parent)
+            .filter(|&k| doc.element(k).is_some() && of.0.iter().any(|c| self.complex(c, k, k)))
+            .collect();
+        let mut places = self.of_places.borrow_mut();
+        for (i, &k) in kids.iter().enumerate() {
+            places.insert((key, k), (i as u32 + 1, kids.len() as u32));
+        }
+        places.get(&(key, el)).copied()
+    }
+
+    /// Whether `el` is at an+b among its siblings (of its type), by the
+    /// places worked out for its parent; None if it has no parent.
+    #[inline(never)]
+    fn nth_by_place(&self, el: NodeId, a: i32, b: i32, last: bool, of_type: bool) -> Option<bool> {
+        let pl = self.place(el)?;
+        let (index, count) = if of_type {
+            (pl.type_index, pl.type_count)
+        } else {
+            (pl.index, pl.count)
+        };
+        let index = if last { count - index + 1 } else { index };
+        Some(nth_matches(a as i64, b as i64, index as i64))
     }
 
     fn parent_element(&self, n: NodeId) -> Option<NodeId> {
@@ -1654,49 +1873,131 @@ impl<'a> Cx<'a> {
         None
     }
 
-    /// Does `el` match `c.parts[i..]`? `anchor` is the element a relative
-    /// selector in `:has()` hangs from.
-    fn complex(&self, c: &Complex, i: usize, el: NodeId, anchor: NodeId) -> bool {
-        let (compound, combinator) = &c.parts[i];
-        if !self.compound(compound, el, anchor) {
+    /// Does `el` match `c`? `anchor` is the element a relative selector in
+    /// `:has()` hangs from.
+    ///
+    /// A loop over the parts, not a call per part: a selector can chain as
+    /// many compounds as it likes, and a call each overflowed the stack.
+    /// When a part fails, it backs up only as far as can help, as browsers
+    /// do. If the rest found no ancestor at all, no higher one will do; if
+    /// a sibling failed, the nearest descendant combinator tries the next
+    /// ancestor. Trying every choice instead made `x div div ...` over a
+    /// few dozen nested divs take seconds.
+    fn complex(&self, c: &Complex, el: NodeId, anchor: NodeId) -> bool {
+        // The subject first, here, so a one-part selector costs no more.
+        self.compound(&c.parts[0].0, el, anchor)
+            && (c.parts.len() == 1 || self.complex_rest(c, el, anchor))
+    }
+
+    /// The parts after the subject, which `el` matched.
+    #[inline(never)]
+    fn complex_rest(&self, c: &Complex, el: NodeId, anchor: NodeId) -> bool {
+        let parts = &c.parts;
+        // Two parts, the commonest chain, have no part further left to back
+        // up to: try each element the combinator reaches, and stop.
+        if let [(_, combinator), (left, _)] = parts.as_slice() {
+            let mut at = self.step(*combinator, el);
+            while let Some(p) = at {
+                if self.compound(left, p, anchor) {
+                    return true;
+                }
+                if matches!(combinator, Combinator::Child | Combinator::NextSibling) {
+                    return false;
+                }
+                at = self.step(*combinator, p);
+            }
             return false;
         }
-        if i + 1 == c.parts.len() {
-            return true;
-        }
-        match combinator {
-            Combinator::None => true,
-            Combinator::Child => self
-                .doc
-                .parent(el)
-                .is_some_and(|p| self.complex(c, i + 1, p, anchor)),
-            Combinator::Descendant => {
-                let mut at = self.doc.parent(el);
-                while let Some(p) = at {
-                    if self.complex(c, i + 1, p, anchor) {
-                        return true;
+        // What each part left of the current one matched, to back up to.
+        let mut inline = [0; 16];
+        let mut spilled;
+        let matched: &mut [NodeId] = if parts.len() <= inline.len() {
+            &mut inline
+        } else {
+            spilled = vec![0; parts.len()];
+            &mut spilled
+        };
+        matched[0] = el;
+        let Some(next) = self.step(parts[0].1, el) else {
+            return false;
+        };
+        let (mut i, mut at) = (1, next);
+        loop {
+            let mut fail = if !self.compound(&parts[i].0, at, anchor) {
+                Fail::Sibling
+            } else if i + 1 == parts.len() {
+                return true;
+            } else {
+                let combinator = parts[i].1;
+                match self.step(combinator, at) {
+                    Some(next) => {
+                        matched[i] = at;
+                        (i, at) = (i + 1, next);
+                        continue;
                     }
-                    at = self.doc.parent(p);
+                    None => Fail::exhausted(combinator),
                 }
-                false
-            }
-            Combinator::NextSibling => self
-                .prev_element(el)
-                .is_some_and(|p| self.complex(c, i + 1, p, anchor)),
-            Combinator::SubsequentSibling => {
-                let mut at = self.prev_element(el);
-                while let Some(p) = at {
-                    if self.complex(c, i + 1, p, anchor) {
-                        return true;
+            };
+            // `at` failed parts[i]; back up to the part left of it.
+            loop {
+                if i == 0 || fail == Fail::Global {
+                    return false;
+                }
+                i -= 1;
+                let combinator = parts[i].1;
+                let retry = match (fail, combinator) {
+                    (_, Combinator::Child) => {
+                        fail = Fail::Descendant;
+                        false
                     }
-                    at = self.prev_element(p);
+                    (_, Combinator::NextSibling)
+                    | (Fail::Descendant, Combinator::SubsequentSibling) => false,
+                    _ => true,
+                };
+                if retry {
+                    if let Some(next) = self.step(combinator, at) {
+                        (i, at) = (i + 1, next);
+                        break;
+                    }
+                    fail = Fail::exhausted(combinator);
                 }
-                false
+                at = matched[i];
             }
         }
     }
 
+    /// The element a combinator looks at next from `el`: its parent, or
+    /// its previous element sibling.
+    #[inline]
+    fn step(&self, combinator: Combinator, el: NodeId) -> Option<NodeId> {
+        match combinator {
+            Combinator::Child | Combinator::Descendant => self.doc.parent(el),
+            Combinator::NextSibling | Combinator::SubsequentSibling => self.prev_element(el),
+            Combinator::None => None,
+        }
+    }
+
+    /// Whether the budget has run out. Once it has, every compound fails,
+    /// so whatever is matching unwinds quickly. Out of line, so a query
+    /// without a budget pays one test of `deadline` per compound.
+    #[cold]
+    #[inline(never)]
+    fn out_of_time(&self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        let steps = self.steps.get().wrapping_add(1);
+        self.steps.set(steps);
+        if steps.is_multiple_of(1024) && Instant::now() >= deadline {
+            self.timed_out.set(true);
+        }
+        self.timed_out.get()
+    }
+
     fn compound(&self, compound: &Compound, el: NodeId, anchor: NodeId) -> bool {
+        if self.deadline.is_some() && self.out_of_time() {
+            return false;
+        }
         if matches!(compound.0.as_slice(), [Simple::Anchor]) {
             return el == anchor;
         }
@@ -2284,9 +2585,9 @@ impl<'a> Cx<'a> {
         let html = e.ns == Ns::Html;
         let tag = if html { e.tag } else { Tag::Other };
         match p {
-            Pseudo::Not(list) => !list.0.iter().any(|c| self.complex(c, 0, el, anchor)),
+            Pseudo::Not(list) => !list.0.iter().any(|c| self.complex(c, el, anchor)),
             Pseudo::Is(list) | Pseudo::Where(list) => {
-                list.0.iter().any(|c| self.complex(c, 0, el, anchor))
+                list.0.iter().any(|c| self.complex(c, el, anchor))
             }
             Pseudo::Has(list) => list.0.iter().any(|c| self.has(c, el)),
             Pseudo::Nth {
@@ -2300,7 +2601,7 @@ impl<'a> Cx<'a> {
                     if *of_type {
                         same_type(doc, doc.element(other).unwrap(), e)
                     } else if let Some(of) = of {
-                        of.0.iter().any(|c| self.complex(c, 0, other, other))
+                        of.0.iter().any(|c| self.complex(c, other, other))
                     } else {
                         true
                     }
@@ -2308,21 +2609,24 @@ impl<'a> Cx<'a> {
                 if !same(el) {
                     return false;
                 }
-                // With a > 0 the walk below could go through every sibling,
-                // for every sibling: take the positions worked out once per
-                // parent instead. `of S` depends on S, so it still walks.
-                if of.is_none()
-                    && *a > 0
-                    && let Some(pl) = self.place(el)
+                // The walk below could go through every sibling, for every
+                // sibling: take the positions worked out once per parent
+                // instead, for S as well when there's `of S`.
+                if let Some(of) = of
+                    && let Some((index, count)) = self.of_place(of, el)
                 {
-                    let (index, count) = if *of_type {
-                        (pl.type_index, pl.type_count)
-                    } else {
-                        (pl.index, pl.count)
-                    };
                     let index = if *last { count - index + 1 } else { index };
                     return nth_matches(*a as i64, *b as i64, index as i64);
                 }
+                if *a > 0
+                    && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
+                {
+                    return m;
+                }
+                // With a <= 0 the walk stops at b, which is usually soon;
+                // a walk that goes on, past other types or to a large b,
+                // takes the positions too.
+                let mut walked = 0;
                 let mut index = 1i64;
                 let mut at = if *last {
                     self.next_element(el)
@@ -2330,6 +2634,12 @@ impl<'a> Cx<'a> {
                     self.prev_element(el)
                 };
                 while let Some(s) = at {
+                    walked += 1;
+                    if walked > 32
+                        && let Some(m) = self.nth_by_place(el, *a, *b, *last, *of_type)
+                    {
+                        return m;
+                    }
                     if same(s) {
                         index += 1;
                         // With a <= 0 the positions that match end at b, so
@@ -2350,19 +2660,23 @@ impl<'a> Cx<'a> {
             Pseudo::Only { of_type } => {
                 let same =
                     |other: NodeId| !*of_type || same_type(doc, doc.element(other).unwrap(), e);
-                let mut at = self.prev_element(el);
-                while let Some(s) = at {
-                    if same(s) {
-                        return false;
+                // Of-type, the walks can pass any number of other types:
+                // one that goes on takes the counts worked out per parent.
+                let mut walked = 0;
+                for step in [Self::prev_element, Self::next_element] {
+                    let mut at = step(self, el);
+                    while let Some(s) = at {
+                        walked += 1;
+                        if walked > 32
+                            && let Some(pl) = self.place(el)
+                        {
+                            return pl.type_count == 1;
+                        }
+                        if same(s) {
+                            return false;
+                        }
+                        at = step(self, s);
                     }
-                    at = self.prev_element(s);
-                }
-                let mut at = self.next_element(el);
-                while let Some(s) = at {
-                    if same(s) {
-                        return false;
-                    }
-                    at = self.next_element(s);
                 }
                 true
             }
@@ -2485,6 +2799,22 @@ impl<'a> Cx<'a> {
         // The combinator next to the anchor decides where to look: below
         // it, or among its later siblings and below them.
         let first = c.parts[c.parts.len() - 2].1;
+        // One compound, the usual shape: only the elements the combinator
+        // reaches can match, and the compound doesn't depend on the
+        // anchor, so what lies below or after an element is worth keeping.
+        if let [(compound, _), _] = c.parts.as_slice() {
+            let key = std::ptr::from_ref(c) as usize;
+            return match first {
+                Combinator::Child => doc
+                    .children(el)
+                    .any(|k| doc.element(k).is_some() && self.compound(compound, k, el)),
+                Combinator::NextSibling => self
+                    .next_element(el)
+                    .is_some_and(|s| self.compound(compound, s, el)),
+                Combinator::SubsequentSibling => self.later_holds(key, compound, el),
+                _ => self.below_holds(key, compound, el),
+            };
+        }
         let mut stack: Vec<NodeId> = Vec::new();
         match first {
             Combinator::NextSibling | Combinator::SubsequentSibling => {
@@ -2500,12 +2830,79 @@ impl<'a> Cx<'a> {
             if doc.element(n).is_none() {
                 continue;
             }
-            if self.complex(c, 0, n, el) {
+            if self.complex(c, n, el) {
                 return true;
             }
             push_children_reversed(doc, n, &mut stack);
         }
         false
+    }
+
+    /// Whether an element below `el` matches `compound`. A subtree walked
+    /// is remembered as holding a match or not, so in a deep chain each
+    /// element is looked at once, not once per ancestor.
+    fn below_holds(&self, key: usize, compound: &Compound, el: NodeId) -> bool {
+        let doc = self.doc;
+        if self.has_seen.borrow().get(&(key, el)) == Some(&false) {
+            return false;
+        }
+        // A node comes off twice: on the way down, then marked done once
+        // its subtree is through, with nothing in it matching.
+        let mut stack: Vec<(NodeId, bool)> = Vec::new();
+        let at = stack.len();
+        stack.extend(doc.children(el).map(|k| (k, false)));
+        stack[at..].reverse();
+        while let Some((n, done)) = stack.pop() {
+            if done {
+                self.has_seen.borrow_mut().insert((key, n), false);
+                continue;
+            }
+            if doc.element(n).is_none() {
+                continue;
+            }
+            let known = self.has_seen.borrow().get(&(key, n)).copied();
+            if known == Some(false) {
+                continue;
+            }
+            if known == Some(true) || self.compound(compound, n, el) {
+                // n holds a match, and so does everything up to `el`.
+                let mut seen = self.has_seen.borrow_mut();
+                let mut up = Some(n);
+                while let Some(u) = up {
+                    seen.insert((key, u), true);
+                    up = doc.parent(u).filter(|_| u != el);
+                }
+                return true;
+            }
+            stack.push((n, true));
+            let at = stack.len();
+            stack.extend(doc.children(n).map(|k| (k, false)));
+            stack[at..].reverse();
+        }
+        false
+    }
+
+    /// Whether an element after `el` among its siblings matches
+    /// `compound`, remembered for each sibling walked past.
+    fn later_holds(&self, key: usize, compound: &Compound, el: NodeId) -> bool {
+        let mut walked = Vec::new();
+        let mut at = self.next_element(el);
+        let found = loop {
+            let Some(s) = at else { break false };
+            if let Some(&known) = self.has_seen.borrow().get(&(key, s)) {
+                break known;
+            }
+            walked.push(s);
+            if self.compound(compound, s, el) {
+                break true;
+            }
+            at = self.next_element(s);
+        };
+        let mut seen = self.has_seen.borrow_mut();
+        for s in walked {
+            seen.insert((key, s), found);
+        }
+        found
     }
 
     fn form_control(&self, tag: Tag) -> bool {
