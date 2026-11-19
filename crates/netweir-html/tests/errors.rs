@@ -10,6 +10,7 @@
 use netweir_html::{Document, Options, SyntaxError, parse_fragment_with, parse_with};
 
 mod inputs;
+mod summary;
 
 fn parse(data: &str, case: &inputs::TreeInput, scripting: bool) -> Document {
     let options = Options {
@@ -34,10 +35,11 @@ fn new_error(line: &str) -> Option<(usize, usize, &str)> {
 #[test]
 fn tree_construction_errors() {
     let (mut counted, mut miscounted) = (0, Vec::new());
-    let (mut found, mut missing) = (0, Vec::new());
+    let (mut found, mut missing, mut skipped) = (0, Vec::new(), 0);
     for case in inputs::tree_inputs() {
         // As tests/tree.rs: these need script run during the parse.
         if case.file.starts_with("scripted_") && case.scripting == Some(true) {
+            skipped += 1;
             continue;
         }
         let doc = parse(&case.data, &case, case.scripting.unwrap_or(false));
@@ -84,6 +86,26 @@ fn tree_construction_errors() {
         miscounted.len(),
         missing.len()
     );
+    let data = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/tree-construction"
+    ));
+    summary::write(&summary::Counts {
+        suite: "html5lib-tree-construction-error-counts",
+        passed: counted,
+        failed: miscounted.len(),
+        skipped,
+        skipped_because: "they run script during the parse, which needs a JavaScript engine",
+        data,
+    });
+    summary::write(&summary::Counts {
+        suite: "html5lib-tree-construction-new-errors",
+        passed: found,
+        failed: missing.len(),
+        skipped,
+        skipped_because: "they run script during the parse, which needs a JavaScript engine",
+        data,
+    });
     if std::env::var("ERRORS_BRIEF").is_ok() {
         for m in miscounted.iter().chain(&missing) {
             eprintln!("{m}");
