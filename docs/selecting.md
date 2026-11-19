@@ -37,9 +37,14 @@ doc.css("a::attr(title), .price::text").getall()
   check `required`, `type="email"` and `"url"`, `min`, `max`, `step` and
   `pattern`, but not the limits only typing can break (`maxlength`,
   `minlength`). A `pattern` is read as JavaScript reads it, with the `v`
-  flag, so `\d` and `\w` are ASCII. One that doesn't compile counts as
-  none, as does one using `\p{...}`, which needs Unicode tables Netweir
-  doesn't carry.
+  flag, so `\d` and `\w` are ASCII, and `\p{L}` and the other Unicode
+  property escapes work. One that doesn't compile counts as none, and so
+  does one using a property of strings such as `\p{RGI_Emoji}`.
+- `:blank` is the current Selectors draft's: an `<input>` a user types
+  text into (text, search, url, tel, email, password or number) with no
+  `value`, or a `<textarea>` with no text. `:defined` matches everything
+  but an HTML element with a custom element's name or an `is` attribute,
+  since a parsed page defines no custom elements.
 
 ## XPath
 
