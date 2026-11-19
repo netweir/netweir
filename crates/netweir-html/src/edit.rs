@@ -1,6 +1,13 @@
 //! Changing a parsed document: new nodes, moves, removals and attributes.
 //! A removed node stays in the document's arena, detached, and can be
 //! inserted again.
+//!
+//! A shadow root is edited as a template's contents are: nodes go in and
+//! out of it like any parent, but it's never anyone's child
+//! ([`EditError::NotInsertable`]), and a host can't go into its own shadow
+//! tree ([`EditError::Cycle`]). A host keeps its shadow root when it's
+//! removed, moved or renamed, as an element keeps it in the DOM; a root
+//! is made with [`Document::attach_shadow`] and never taken away.
 
 use crate::dom::{Attr, AttrNs, Data, Document, Element, NONE, Name, NodeId, Ns, Span};
 use crate::tags::Tag;
@@ -15,9 +22,13 @@ pub enum EditError {
     NotAParent,
     /// `before` isn't a child of the parent.
     NotAChild,
-    /// The node is a document or a fragment, such as the root or a
-    /// template's contents, which is never anyone's child.
+    /// The node is a document, a fragment or a shadow root, such as the
+    /// root or a template's contents, which is never anyone's child.
     NotInsertable,
+    /// The element can't have a shadow root: it already has one, or it
+    /// isn't an HTML element that may (`div`, `span`, `section`, a
+    /// custom element...).
+    NotAShadowHost,
 }
 
 impl std::fmt::Display for EditError {
@@ -27,8 +38,9 @@ impl std::fmt::Display for EditError {
             EditError::NotAParent => "only an element, a document or a fragment can have children",
             EditError::NotAChild => "the node to insert before isn't a child of the parent",
             EditError::NotInsertable => {
-                "a document or a fragment can't be inserted, only its children"
+                "a document, fragment or shadow root can't be inserted, only its children"
             }
+            EditError::NotAShadowHost => "the element can't have a shadow root, or has one",
         })
     }
 }
@@ -108,7 +120,7 @@ impl Document {
     ) -> Result<(), EditError> {
         if !matches!(
             self.nodes[parent as usize].data,
-            Data::Element(_) | Data::Document | Data::Fragment
+            Data::Element(_) | Data::Document | Data::Fragment | Data::ShadowRoot { .. }
         ) {
             return Err(EditError::NotAParent);
         }
@@ -116,7 +128,7 @@ impl Document {
         // contents, would otherwise end up under a detached element.
         if matches!(
             self.nodes[child as usize].data,
-            Data::Document | Data::Fragment
+            Data::Document | Data::Fragment | Data::ShadowRoot { .. }
         ) {
             return Err(EditError::NotInsertable);
         }
@@ -126,8 +138,9 @@ impl Document {
             return Err(EditError::NotAChild);
         }
         // Up through the parents, and out of a template's contents to the
-        // template: serializing goes down into them, so a template put in
-        // its own contents would never end.
+        // template and out of a shadow root to its host: serializing goes
+        // down into both, so a template put in its own contents, or a host
+        // in its own shadow tree, would never end.
         let mut at = Some(parent);
         while let Some(a) = at {
             if a == child {
@@ -147,6 +160,9 @@ impl Document {
     /// is built once, then kept as edits add and rename templates, so a
     /// run of inserts into contents stays linear.
     fn host(&mut self, fragment: NodeId) -> Option<NodeId> {
+        if let Data::ShadowRoot { host, .. } = self.nodes[fragment as usize].data {
+            return Some(host);
+        }
         if !matches!(self.nodes[fragment as usize].data, Data::Fragment) {
             return None;
         }
