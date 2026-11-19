@@ -1,10 +1,11 @@
 //! Any input parses without panicking, as a document and as a fragment,
-//! into a tree whose links agree with each other.
+//! into a tree whose links agree with each other; and fed in pieces, into
+//! the same tree.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use netweir_html::{Document, NodeId, Ns, parse, parse_fragment};
+use netweir_html::{Document, NodeId, Ns, Options, Parser, parse, parse_fragment};
 
 const CONTEXTS: &[(Ns, &str)] = &[
     (Ns::Html, "body"),
@@ -48,7 +49,29 @@ fuzz_target!(|data: &[u8]| {
     };
     let html = String::from_utf8_lossy(rest);
     let scripting = first & 1 == 1;
-    check(&parse(&html, scripting));
+    let whole = parse(&html, scripting);
+    check(&whole);
+    // In pieces of a size the first byte picks, each ending on a
+    // character boundary.
+    let size = 1 + (first as usize >> 4);
+    let mut parser = Parser::new(Options {
+        scripting,
+        ..Options::default()
+    });
+    let mut at = 0;
+    while at < html.len() {
+        let mut end = (at + size).min(html.len());
+        while !html.is_char_boundary(end) {
+            end += 1;
+        }
+        parser.feed(&html[at..end]);
+        at = end;
+    }
+    let pieces = parser.finish().unwrap();
+    assert_eq!(
+        pieces.inner_html(pieces.root()),
+        whole.inner_html(whole.root())
+    );
     let (ns, name) = CONTEXTS[(first as usize >> 1) % CONTEXTS.len()];
     check(&parse_fragment(&html, ns, name, scripting));
 });
