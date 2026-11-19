@@ -389,7 +389,8 @@ function extract(rel) {
   }
   const { sandbox, state } = makeSandbox(elements);
   const context = vm.createContext(sandbox);
-  const scripts = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
+  // An end tag may carry spaces or junk before its `>`, as browsers allow.
+  const scripts = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script[^>]*>/gi)];
   try {
     for (const [, attrs, code] of scripts) {
       if (attrs && /\bsrc\s*=/.test(attrs)) {
