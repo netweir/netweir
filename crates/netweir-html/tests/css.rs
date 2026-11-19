@@ -323,8 +323,27 @@ fn pseudo_elements_are_valid_and_match_nothing() {
         ":is(li)::after",
         "::part(x):is(:hover)",
         "::part(x)::before",
+        "::slotted(li)::before",
+        // Forgiving: the argument is dropped.
+        ":is(::before)",
     ] {
         assert_eq!(page(css), Vec::<String>::new(), "{css}");
+    }
+    // One must end the selector, can't go inside a pseudo-class, and only
+    // pseudo-classes that don't read the tree may follow; after
+    // ::slotted(), only another pseudo-element.
+    for bad in [
+        "li::before > a",
+        "::part(x) + ::part(y)",
+        ":not(::before)",
+        "::slotted(::before)",
+        "::part(x):has(li)",
+        "::before:first-child",
+        "li:after:empty",
+        "::slotted(li):hover",
+        "::slotted(li):lang(en)",
+    ] {
+        assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
     }
     assert_eq!(page("li::before, li.first"), ["li#17"]);
     let list = SelectorList::parse("li::before").unwrap();

@@ -394,6 +394,10 @@ impl<'a> Parser<'a> {
         }
         loop {
             let compound = self.compound()?;
+            let has_element = compound
+                .0
+                .iter()
+                .any(|s| matches!(s, Simple::Pseudo(Pseudo::Element)));
             if let Some(last) = parts.last_mut() {
                 last.1 = pending;
             }
@@ -401,6 +405,9 @@ impl<'a> Parser<'a> {
             let space = self.skip_space();
             if self.at_end() || matches!(self.peek(), Some(',' | ')')) {
                 break;
+            }
+            if has_element {
+                return error("a pseudo-element must end the selector");
             }
             pending = match self.combinator() {
                 Some(c) => {
@@ -475,12 +482,14 @@ impl<'a> Parser<'a> {
                 simple.push(type_selector(name));
             }
         }
-        // After a pseudo-element only pseudo-classes (and more
-        // pseudo-elements) may follow: `::before:hover`, not `::before.x`.
-        let mut after_element = false;
+        // After a pseudo-element only pseudo-classes that don't read the
+        // tree, and more pseudo-elements, may follow: `::before:hover`, not
+        // `::before.x` or `::part(x):has(li)`; after `::slotted()` only
+        // pseudo-elements. Some(true) is after `::slotted()`.
+        let mut after_element: Option<bool> = None;
         loop {
             while self.skip_comment() {}
-            if after_element && matches!(self.peek(), Some('#' | '.' | '[')) {
+            if after_element.is_some() && matches!(self.peek(), Some('#' | '.' | '[')) {
                 return error("only a pseudo-class can follow a pseudo-element");
             }
             match self.peek() {
@@ -507,13 +516,32 @@ impl<'a> Parser<'a> {
                     simple.push(Simple::Attr(self.attr()?));
                 }
                 Some(':') if self.peek_at(1) == Some(':') => {
+                    if self.depth > 0 {
+                        return error("a pseudo-element can't go inside a pseudo-class");
+                    }
                     self.pos += 2;
-                    simple.push(Simple::Pseudo(self.pseudo_element()?));
-                    after_element = true;
+                    after_element = Some(self.pseudo_element()?);
+                    simple.push(Simple::Pseudo(Pseudo::Element));
                 }
                 Some(':') => {
                     self.pos += 1;
-                    simple.push(Simple::Pseudo(self.pseudo()?));
+                    let pseudo = self.pseudo()?;
+                    let element = matches!(pseudo, Pseudo::Element);
+                    match after_element {
+                        Some(true) if !element => {
+                            return error("only a pseudo-element can follow ::slotted()");
+                        }
+                        Some(_) if pseudo.reads_the_tree() => {
+                            return error(
+                                "a tree-structural pseudo-class can't follow a pseudo-element",
+                            );
+                        }
+                        _ => {}
+                    }
+                    if element {
+                        after_element = Some(false);
+                    }
+                    simple.push(Simple::Pseudo(pseudo));
                 }
                 _ => break,
             }
@@ -607,8 +635,9 @@ impl<'a> Parser<'a> {
 
     /// A pseudo-element, after its `::`: the ones CSS defines, with
     /// `::part()`, `::slotted()` and `::highlight()` taking their argument.
-    /// Anything else, `::text` included, is an error.
-    fn pseudo_element(&mut self) -> Result<Pseudo, SelectorError> {
+    /// Anything else, `::text` included, is an error. True for `::slotted()`,
+    /// which nothing but another pseudo-element may follow.
+    fn pseudo_element(&mut self) -> Result<bool, SelectorError> {
         let name = self.ident()?.to_ascii_lowercase();
         if self.eat('(') {
             self.skip_space();
@@ -620,7 +649,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "slotted" => {
-                    self.compound()?;
+                    // Its compound can't hold a pseudo-element either.
+                    self.depth += 1;
+                    let compound = self.compound();
+                    self.depth -= 1;
+                    compound?;
                 }
                 "highlight" => {
                     self.ident()?;
@@ -631,7 +664,7 @@ impl<'a> Parser<'a> {
             if !self.eat(')') && !self.at_end() {
                 return error(format!("::{name}() without its )"));
             }
-            return Ok(Pseudo::Element);
+            return Ok(name == "slotted");
         }
         match name.as_str() {
             "before"
@@ -654,7 +687,7 @@ impl<'a> Parser<'a> {
             | "scroll-marker-group"
             | "scroll-button"
             | "column"
-            | "view-transition" => Ok(Pseudo::Element),
+            | "view-transition" => Ok(false),
             _ => error(format!("::{name} isn't a pseudo-element")),
         }
     }
@@ -1430,6 +1463,23 @@ impl Complex {
                 (a + x, b + y, c + z)
             })
         })
+    }
+}
+
+impl Pseudo {
+    /// Whether matching reads the tree around the element, which a
+    /// pseudo-element has none of.
+    fn reads_the_tree(&self) -> bool {
+        matches!(
+            self,
+            Pseudo::Nth { .. }
+                | Pseudo::Only { .. }
+                | Pseudo::Empty
+                | Pseudo::Root
+                | Pseudo::Scope
+                | Pseudo::Has(_)
+                | Pseudo::Heading(_)
+        )
     }
 }
 
