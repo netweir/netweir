@@ -2993,7 +2993,11 @@ impl TreeBuilder {
             self.pop();
             self.reprocess(Mode::InTable, t);
         } else if let Tok::Text(s) = t {
-            self.chars_dropped(s, "unexpected-character-in-colgroup", false);
+            // A token a character: only the others are dropped, and the
+            // whitespace among them still goes in, however the text was
+            // cut into runs.
+            self.chars_dropped(s, "unexpected-character-in-colgroup", true);
+            self.frameset_space(s);
         } else {
             self.err("unexpected-character-in-colgroup");
         }
@@ -4114,6 +4118,31 @@ mod tests {
             "<html><head></head><body><ul><li>one</li><li>two</li></ul>\
              <p a=\"x\">three</p></body></html>"
         );
+    }
+
+    /// Found by fuzzing: in a template's column group, text after a
+    /// character that isn't whitespace was all dropped, its whitespace
+    /// too, so where a piece ended changed the tree.
+    #[test]
+    fn whitespace_after_a_dropped_character_in_a_template_column_group_stays() {
+        let html = "<template><col>A \n<col></template>";
+        let want = "<html><head><template><col> \n<col></template></head><body></body></html>";
+        assert_eq!(parse(html, false).inner_html(0), want);
+        let (a, b) = html.split_at(html.find(' ').unwrap());
+        assert_eq!(in_pieces(&[a, b]).inner_html(0), want);
+        let errors = parse_with(
+            html,
+            Options {
+                errors: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let dropped = errors
+            .errors()
+            .iter()
+            .filter(|e| e.code == "unexpected-character-in-colgroup");
+        assert_eq!(dropped.count(), 1);
     }
 
     #[test]
