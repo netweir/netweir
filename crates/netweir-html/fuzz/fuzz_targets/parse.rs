@@ -26,6 +26,9 @@ const CONTEXTS: &[(Ns, &str)] = &[
 /// Every node reached from the root once, each child's parent being the
 /// node it was reached from.
 fn check(doc: &Document) {
+    // cargo fuzz builds with debug assertions: every invariant, then.
+    #[cfg(debug_assertions)]
+    doc.check_tree();
     let mut seen = vec![false; doc.len()];
     let mut stack: Vec<NodeId> = vec![doc.root()];
     while let Some(node) = stack.pop() {

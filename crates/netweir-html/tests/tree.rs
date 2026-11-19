@@ -107,6 +107,8 @@ fn run(case: &Case, scripting: bool) -> String {
         }
         None => parse(&case.data, scripting),
     };
+    #[cfg(debug_assertions)]
+    doc.check_tree();
     doc.serialize_with(
         doc.root(),
         &SerializeOptions {

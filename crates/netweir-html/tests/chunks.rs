@@ -10,6 +10,8 @@ mod inputs;
 /// links, attributes and spans, then the errors. Two parses that agree on
 /// this built the same tree the same way.
 fn dump(doc: &Document) -> String {
+    #[cfg(debug_assertions)]
+    doc.check_tree();
     let mut out = String::new();
     for id in 0..doc.len() as u32 {
         out += &format!(

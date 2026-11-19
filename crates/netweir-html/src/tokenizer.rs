@@ -1042,7 +1042,20 @@ impl<'a> Tokenizer<'a> {
     /// The input, grown: `input` must start with all the tokenizer has
     /// read, since it keeps its place as offsets into it.
     pub(crate) fn extend(&mut self, input: &'a str) {
-        debug_assert!(input.len() >= self.pos);
+        debug_assert!(input.len() >= self.pos && input.is_char_boundary(self.pos));
+        debug_assert!(self.stream_checked <= input.len() && self.ref_scan <= input.len());
+        // Every place it keeps in the token it's reading is in what it has
+        // read.
+        debug_assert!(
+            [self.token_start, self.ref_start]
+                .into_iter()
+                .chain(self.value_from)
+                .chain(self.name_input.map(|(_, e)| e))
+                .chain(self.attr_name_input.map(|(_, e)| e))
+                .all(|at| at <= self.pos),
+            "a place past the tokenizer's position, {}",
+            self.pos
+        );
         self.input = input;
     }
 

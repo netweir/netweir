@@ -768,11 +768,28 @@ impl TreeBuilder {
 
     /// Counts `o` as opened (`by` 1) or closed (`by` -1).
     fn count(&mut self, o: Open, by: i32) {
+        debug_assert_eq!(
+            self.open_contains(o.id),
+            by < 0,
+            "node {} {} the stack of open elements twice",
+            o.id,
+            if by < 0 { "leaves" } else { "joins" }
+        );
+        debug_assert!(
+            self.element_at(o.id) == Some(o),
+            "the stack's entry for node {} isn't its element",
+            o.id
+        );
         self.mark(o.id, by > 0);
         if by < 0 && self.closing {
             self.closed_by_end_tag(o.id);
         }
         if o.ns == Ns::Html && o.tag != Tag::Other {
+            debug_assert!(
+                by > 0 || self.counts[o.tag as usize] > 0,
+                "{:?} counted below 0",
+                o.tag
+            );
             self.counts[o.tag as usize] = self.counts[o.tag as usize].wrapping_add_signed(by);
             return;
         }
@@ -780,6 +797,7 @@ impl TreeBuilder {
             return;
         };
         let n = &mut self.names[name_key(o.ns == Ns::Html, name)];
+        debug_assert!(by > 0 || *n > 0, "{name} counted below 0");
         *n = n.wrapping_add_signed(by);
     }
 
@@ -1001,6 +1019,55 @@ impl TreeBuilder {
         }
     }
 
+    /// Checks the stack of open elements against what's kept beside it:
+    /// `on_stack` marks exactly the elements on it, `counts` and `names`
+    /// count them, and each entry's namespace and tag are its element's.
+    /// Linear in the stack, and in the document when `all` asks for every
+    /// mark to be checked, so it runs once a piece of input, not once a
+    /// token.
+    #[cfg(debug_assertions)]
+    fn check_stack(&self, all: bool) {
+        let mut counts = [0u32; 256];
+        let mut names = vec![0u32; NAME_SLOTS];
+        for &o in &self.open {
+            assert!(
+                self.open_contains(o.id),
+                "node {} is open but not marked",
+                o.id
+            );
+            assert_eq!(
+                self.element_at(o.id),
+                Some(o),
+                "the stack's entry for {}",
+                o.id
+            );
+            if o.ns == Ns::Html && o.tag != Tag::Other {
+                counts[o.tag as usize] += 1;
+            } else if let Some(e) = self.doc.element(o.id) {
+                names[name_key(o.ns == Ns::Html, self.doc.element_name(e))] += 1;
+            }
+        }
+        assert!(counts == self.counts, "counts disagree with the stack");
+        assert!(names[..] == self.names[..], "names disagree with the stack");
+        if all {
+            let marked = self.on_stack.iter().filter(|&&on| on).count();
+            assert_eq!(marked, self.open.len(), "a node is marked open but isn't");
+        }
+        // Between the markers, HTML elements only, each once.
+        let mut since_marker = std::collections::HashSet::new();
+        for &e in &self.active {
+            if e == MARKER {
+                since_marker.clear();
+                continue;
+            }
+            assert!(
+                self.element_at(e).is_some_and(|o| o.ns == Ns::Html),
+                "{e} in the list"
+            );
+            assert!(since_marker.insert(e), "node {e} in the list twice");
+        }
+    }
+
     fn open_contains(&self, id: NodeId) -> bool {
         self.on_stack.get(id as usize).copied().unwrap_or(false)
     }
@@ -1076,6 +1143,27 @@ impl TreeBuilder {
     }
 
     fn push_active(&mut self, id: NodeId) {
+        debug_assert!(
+            self.element_at(id).is_some_and(|o| o.ns == Ns::Html
+                && matches!(
+                    o.tag,
+                    Tag::A
+                        | Tag::B
+                        | Tag::Big
+                        | Tag::Code
+                        | Tag::Em
+                        | Tag::Font
+                        | Tag::I
+                        | Tag::Nobr
+                        | Tag::S
+                        | Tag::Small
+                        | Tag::Strike
+                        | Tag::Strong
+                        | Tag::Tt
+                        | Tag::U
+                )),
+            "node {id} isn't a formatting element"
+        );
         let sig = self.signature(id);
         let (mut same, mut earliest) = (0, 0);
         for i in (0..self.active.len()).rev() {
@@ -1083,6 +1171,10 @@ impl TreeBuilder {
             if e == MARKER {
                 break;
             }
+            debug_assert!(
+                e != id,
+                "node {id} is in the list of formatting elements twice"
+            );
             if self.signature(e) == sig && self.same_element(e, id) {
                 same += 1;
                 earliest = i;
@@ -1118,6 +1210,8 @@ impl TreeBuilder {
             i -= 1;
         }
         for j in i..self.active.len() {
+            // Only elements past the last marker are reopened.
+            debug_assert!(self.active[j] != MARKER, "a marker reopened");
             let new = self.clone_element(self.active[j]);
             let place = self.place(None);
             self.insert_at(place, new);
@@ -2601,6 +2695,7 @@ impl TreeBuilder {
                 let new = self.clone_element(node.id);
                 self.active[ai] = new;
                 self.open[node_index] = Open { id: new, ..node };
+                debug_assert!(self.open_contains(node.id) && !self.open_contains(new));
                 self.mark(node.id, false);
                 self.mark(new, true);
                 if !bookmark_moved {
@@ -3482,6 +3577,11 @@ impl Sink for TreeBuilder {
     }
 
     fn position(&mut self, start: usize, end: usize) {
+        debug_assert!(
+            start <= end && end <= self.doc.src.len(),
+            "token at {start}..{end}, outside {} bytes of source",
+            self.doc.src.len()
+        );
         self.at = [start as u32, end as u32];
     }
 }
@@ -3726,6 +3826,8 @@ impl Parser {
     pub fn feed(&mut self, chunk: &str) {
         if self.push(chunk) {
             self.tokenize(true);
+            #[cfg(debug_assertions)]
+            self.builder.check_stack(false);
         }
     }
 
@@ -3748,6 +3850,8 @@ impl Parser {
                 parsed: self.tokenizer.position(),
             });
         }
+        #[cfg(debug_assertions)]
+        self.builder.check_stack(true);
         if self.fragment {
             self.builder.finish_fragment();
         }

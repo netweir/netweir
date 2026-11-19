@@ -303,6 +303,8 @@ impl Document {
     pub(crate) fn push_str(&mut self, s: &str) -> Span {
         let start = self.buf.len() as u32;
         self.buf.push_str(s);
+        // Past this, an offset would read as one of the flags.
+        debug_assert!(self.buf.len() < IN_EXTRA as usize, "buffer over 2^30 bytes");
         Span {
             start,
             end: self.buf.len() as u32,
@@ -422,6 +424,31 @@ impl Document {
     /// Inserts `child`, which has no parent, into `parent` before `before`,
     /// or last when `before` is [`NONE`].
     pub(crate) fn insert(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
+        debug_assert!(
+            matches!(
+                self.nodes[parent as usize].data,
+                Data::Element(_) | Data::Document | Data::Fragment
+            ),
+            "node {parent} can't have children"
+        );
+        debug_assert!(
+            !matches!(
+                self.nodes[child as usize].data,
+                Data::Document | Data::Fragment
+            ),
+            "node {child} is a document or a fragment, never a child"
+        );
+        debug_assert!(
+            self.nodes[child as usize].parent == NONE
+                && self.nodes[child as usize].prev == NONE
+                && self.nodes[child as usize].next == NONE,
+            "node {child} is inserted while still linked"
+        );
+        debug_assert!(parent != child, "node {child} inserted into itself");
+        debug_assert!(
+            before == NONE || self.nodes[before as usize].parent == parent,
+            "node {before} isn't a child of {parent}"
+        );
         let prev = if before == NONE {
             self.nodes[parent as usize].last_child
         } else {
@@ -443,6 +470,7 @@ impl Document {
         } else {
             self.nodes[before as usize].prev = child;
         }
+        debug_assert!(self.links_agree(child), "links around node {child}");
     }
 
     pub(crate) fn detach(&mut self, child: NodeId) {
@@ -450,8 +478,13 @@ impl Document {
             parent, prev, next, ..
         } = self.nodes[child as usize];
         if parent == NONE {
+            debug_assert!(
+                prev == NONE && next == NONE,
+                "node {child} has siblings, no parent"
+            );
             return;
         }
+        debug_assert!(self.links_agree(child), "links around node {child}");
         if prev == NONE {
             self.nodes[parent as usize].first_child = next;
         } else {
@@ -466,6 +499,36 @@ impl Document {
         c.parent = NONE;
         c.prev = NONE;
         c.next = NONE;
+        debug_assert!(
+            (prev == NONE || self.links_agree(prev)) && (next == NONE || self.links_agree(next)),
+            "links where node {child} was"
+        );
+    }
+
+    /// Whether `id`'s links and its neighbours' agree: its siblings point
+    /// back at it, and its parent's first and last child are it exactly
+    /// when it has no sibling on that side. Constant time, for the debug
+    /// assertions on every insert and removal; [`Document::check_tree`]
+    /// checks every node.
+    pub(crate) fn links_agree(&self, id: NodeId) -> bool {
+        let n = &self.nodes[id as usize];
+        if n.parent == NONE {
+            return n.prev == NONE && n.next == NONE;
+        }
+        let p = &self.nodes[n.parent as usize];
+        let prev_ok = if n.prev == NONE {
+            p.first_child == id
+        } else {
+            let s = &self.nodes[n.prev as usize];
+            s.next == id && s.parent == n.parent && p.first_child != id
+        };
+        let next_ok = if n.next == NONE {
+            p.last_child == id
+        } else {
+            let s = &self.nodes[n.next as usize];
+            s.prev == id && s.parent == n.parent && p.last_child != id
+        };
+        prev_ok && next_ok
     }
 
     /// Appends text to a text node, copying its old text to the end of the
@@ -480,6 +543,7 @@ impl Document {
         let span =
             if in_source && self.source_offset(text) == Some((span.end & !IN_SOURCE) as usize) {
                 // The next slice of the source: the span just grows.
+                debug_assert!((span.end & !IN_SOURCE) as usize + text.len() <= self.src.len());
                 Span {
                     start: span.start,
                     end: span.end + text.len() as u32,
@@ -505,6 +569,191 @@ impl Document {
                 Span { start: at, end: at }
             };
         self.nodes[id as usize].data = Data::Text(span);
+    }
+
+    /// Checks every invariant of the tree, panicking at the first that
+    /// doesn't hold: every node's links agree with its parent's and its
+    /// siblings', only elements, documents and fragments have children,
+    /// each node is reached from the root at most once (template contents
+    /// included), each template's contents are a fragment of its own
+    /// that's nobody's child, the map of hosts agrees with the templates,
+    /// and every string and recorded position is inside its buffer.
+    ///
+    /// Linear in the document's size, so it's for tests and fuzzing, not
+    /// for every edit; the parser and the edits assert the parts of this
+    /// they touch as they go. Only in builds with debug assertions.
+    #[cfg(debug_assertions)]
+    pub fn check_tree(&self) {
+        let len = self.nodes.len();
+        let span_ok = |s: Span| {
+            if s.start & IN_SOURCE != 0 {
+                let (a, b) = (s.start & !IN_SOURCE, s.end & !IN_SOURCE);
+                s.end & IN_SOURCE != 0
+                    && a <= b
+                    && self.src.is_char_boundary(a as usize)
+                    && self.src.is_char_boundary(b as usize)
+            } else if s.start & IN_EXTRA != 0 {
+                s.start == s.end && ((s.start & !IN_EXTRA) as usize) < self.extras.len()
+            } else {
+                s.start <= s.end
+                    && self.buf.is_char_boundary(s.start as usize)
+                    && self.buf.is_char_boundary(s.end as usize)
+            }
+        };
+        let mut contents_of = vec![NONE; len];
+        for (id, n) in self.nodes.iter().enumerate() {
+            let id = id as NodeId;
+            for link in [n.parent, n.first_child, n.last_child, n.prev, n.next] {
+                assert!(
+                    link == NONE || (link as usize) < len,
+                    "node {id} links past the end"
+                );
+            }
+            assert!(self.links_agree(id), "links around node {id}");
+            assert_eq!(
+                n.first_child == NONE,
+                n.last_child == NONE,
+                "node {id} has a first child or a last, not both"
+            );
+            if n.first_child != NONE {
+                let first = &self.nodes[n.first_child as usize];
+                let last = &self.nodes[n.last_child as usize];
+                assert!(
+                    first.parent == id && first.prev == NONE,
+                    "node {id}'s first child"
+                );
+                assert!(
+                    last.parent == id && last.next == NONE,
+                    "node {id}'s last child"
+                );
+                assert!(
+                    matches!(n.data, Data::Element(_) | Data::Document | Data::Fragment),
+                    "node {id} can't have children"
+                );
+            }
+            match n.data {
+                Data::Document | Data::Fragment => {
+                    assert!(
+                        n.parent == NONE,
+                        "node {id}, a document or fragment, has a parent"
+                    )
+                }
+                Data::Element(e) => {
+                    let name_ok = match e.name {
+                        Name::Tag => true,
+                        Name::Svg(i) => (i as usize) < crate::tree::SVG_TAG_NAMES.len(),
+                        Name::Span(s) => span_ok(s),
+                    };
+                    assert!(name_ok, "node {id}'s name");
+                    assert!(
+                        e.attrs.start <= e.attrs.end && e.attrs.end as usize <= self.attrs.len(),
+                        "node {id}'s attributes"
+                    );
+                    if e.contents != NONE {
+                        let c = e.contents as usize;
+                        assert!(
+                            e.ns == Ns::Html && e.tag == Tag::Template,
+                            "node {id} has contents but isn't a template"
+                        );
+                        assert!(
+                            c < len && matches!(self.nodes[c].data, Data::Fragment),
+                            "node {id}'s contents aren't a fragment"
+                        );
+                        assert!(contents_of[c] == NONE, "two templates have contents {c}");
+                        contents_of[c] = id;
+                    }
+                }
+                Data::Doctype {
+                    name,
+                    public_id,
+                    system_id,
+                } => assert!(
+                    span_ok(name) && span_ok(public_id) && span_ok(system_id),
+                    "node {id}'s strings"
+                ),
+                Data::Text(s) | Data::Comment(s) | Data::Cdata(s) => {
+                    assert!(span_ok(s), "node {id}'s text")
+                }
+                Data::ProcessingInstruction { target, data } => {
+                    assert!(span_ok(target) && span_ok(data), "node {id}'s strings")
+                }
+            }
+        }
+        for (i, a) in self.attrs.iter().enumerate() {
+            assert!(
+                span_ok(a.name) && span_ok(a.value),
+                "attribute {i}'s strings"
+            );
+        }
+        if let Some(hosts) = &self.hosts {
+            for (&contents, &host) in hosts {
+                assert_eq!(
+                    contents_of.get(contents as usize),
+                    Some(&host),
+                    "the hosts map at {contents}"
+                );
+            }
+            let templates = contents_of.iter().filter(|&&h| h != NONE).count();
+            assert_eq!(hosts.len(), templates, "the hosts map misses a template");
+        }
+        // Down from the root, each node once: no cycle, no node in two
+        // places. Siblings are walked by their links, so a loop among
+        // them shows as a node seen twice.
+        let mut seen = vec![false; len];
+        let mut stack = vec![self.root()];
+        while let Some(id) = stack.pop() {
+            assert!(!seen[id as usize], "node {id} reached twice");
+            seen[id as usize] = true;
+            let n = &self.nodes[id as usize];
+            let mut child = n.first_child;
+            while child != NONE {
+                assert!(!seen[child as usize], "a loop among node {id}'s children");
+                assert_eq!(
+                    self.nodes[child as usize].parent, id,
+                    "node {child}'s parent"
+                );
+                stack.push(child);
+                child = self.nodes[child as usize].next;
+                if stack.len() > len {
+                    panic!("a loop among node {id}'s children");
+                }
+            }
+            if let Data::Element(e) = n.data
+                && e.contents != NONE
+            {
+                stack.push(e.contents);
+            }
+        }
+        if let Some(p) = self.positions.as_deref() {
+            let src = self.src.len() as u32;
+            let in_src = |at: &[u32; 2]| *at == UNKNOWN || (at[0] <= at[1] && at[1] <= src);
+            assert!(
+                p.nodes.len() <= len && p.ends.len() <= len,
+                "positions past the nodes"
+            );
+            assert!(
+                p.attrs.len() <= self.attrs.len(),
+                "positions past the attributes"
+            );
+            for (i, at) in p.nodes.iter().chain(&p.ends).chain(&p.attrs).enumerate() {
+                assert!(
+                    in_src(at),
+                    "position {i}, {at:?}, outside {src} bytes of source"
+                );
+            }
+            assert!(p.crlf.windows(2).all(|w| w[0] < w[1]), "CRLFs out of order");
+            assert!(
+                p.crlf.last().is_none_or(|&lf| lf < src),
+                "a CRLF past the source"
+            );
+            let original = p.original(src);
+            for e in &self.errors {
+                assert!(
+                    e.offset <= original,
+                    "{e:?} past the input's {original} bytes"
+                );
+            }
+        }
     }
 
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {

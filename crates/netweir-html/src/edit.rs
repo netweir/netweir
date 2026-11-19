@@ -162,6 +162,12 @@ impl Document {
             })
             .get(&fragment)
             .copied()
+            .inspect(|&t| {
+                debug_assert!(
+                    self.element(t).is_some_and(|e| e.contents == fragment),
+                    "the hosts map says {t} holds {fragment}, which it doesn't"
+                )
+            })
     }
 
     /// Moves every template's contents in under the template element
@@ -445,6 +451,48 @@ mod tests {
         assert_eq!(doc.inner_html(0), "<p>a</p>");
         doc.append(0, second).unwrap();
         assert_eq!(doc.inner_html(0), "<p>a</p><p>b<em>x &amp; y</em></p>");
+    }
+
+    /// Moves, removals, renames and new templates in a pseudo-random
+    /// order, the whole tree checked after each.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn edits_keep_every_invariant() {
+        let mut doc = parse(
+            "<div><p>a<b>b</b></p><template><i>c</i></template><ul><li>d</ul></div>",
+            false,
+        );
+        let mut seed: u32 = 0x2545_f491;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as usize % n
+        };
+        for i in 0..2000 {
+            let n = doc.len();
+            let (a, b) = (next(n) as NodeId, next(n) as NodeId);
+            match next(6) {
+                0 => {
+                    let _ = doc.append(a, b);
+                }
+                1 => {
+                    let before = doc.first_child(a);
+                    let _ = doc.insert_before(a, b, before);
+                }
+                2 => doc.remove(b),
+                3 => doc.rename(a, if i % 2 == 0 { "template" } else { "span" }),
+                4 => {
+                    let t = doc.create_element(Ns::Html, "template");
+                    let _ = doc.append(a, t);
+                }
+                _ => {
+                    let t = doc.create_text("t");
+                    let _ = doc.append(a, t);
+                }
+            }
+            doc.check_tree();
+        }
     }
 
     #[test]
