@@ -482,7 +482,11 @@ fn dir_follows_the_dir_attribute_and_the_text_for_auto() {
             "i#i"
         ]
     );
-    assert!(SelectorList::parse(":dir(up)").is_err());
+    // Any identifier parses; only ltr and rtl match anything.
+    assert_eq!(select(html, ":dir(up), :dir(auto)"), Vec::<String>::new());
+    assert!(SelectorList::parse(":dir()").is_err());
+    assert!(SelectorList::parse(":dir('ltr')").is_err());
+    assert!(SelectorList::parse(":dir(ltr, rtl)").is_err());
 }
 
 #[test]

@@ -688,10 +688,11 @@ impl<'a> Parser<'a> {
                 self.skip_space();
                 let dir = self.ident()?.to_ascii_lowercase();
                 self.skip_space();
+                // Any identifier is allowed; only ltr and rtl ever match.
                 match dir.as_str() {
                     "ltr" => Pseudo::Dir(false),
                     "rtl" => Pseudo::Dir(true),
-                    _ => return error(format!(":dir() takes ltr or rtl, not {dir}")),
+                    _ => Pseudo::Never,
                 }
             }
             _ => return error(format!(":{name}() isn't supported")),
