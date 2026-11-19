@@ -341,8 +341,13 @@ fn the_end_of_the_input_closes_open_brackets() {
     assert_eq!(page("li:not(.item"), Vec::<String>::new());
     assert_eq!(page("li:not([class"), Vec::<String>::new());
     assert_eq!(page("ul > li:nth-child(2n+1"), ["li#17", "li#30"]);
+    assert_eq!(page(":is(#, li.first"), ["li#17"]);
     assert!(SelectorList::parse("li[data-id=").is_err());
     assert!(SelectorList::parse("li:nth-child(").is_err());
+    // A bad forgiving argument whose open block runs to the end swallows the
+    // function's own ) and nothing is left to forgive.
+    assert!(SelectorList::parse(":is(# %=[x)").is_err());
+    assert!(SelectorList::parse(":where(.a, #(x").is_err());
 }
 
 /// Each nesting recursed in the parser, so a deep enough selector

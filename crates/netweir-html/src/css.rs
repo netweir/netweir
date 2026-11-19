@@ -331,10 +331,16 @@ impl<'a> Parser<'a> {
             match self.complex(false) {
                 Ok(c) => out.push(c),
                 Err(e) if !forgiving => return Err(e),
-                Err(_) => {
-                    // Forgiving: skip to the next comma at this level.
+                Err(e) => {
+                    // Forgiving: skip to the next comma at this level. A
+                    // block the bad argument opens and never closes swallows
+                    // the rest of the input, the function's own `)` with
+                    // it, so nothing is left to forgive: browsers refuse
+                    // `:is(#[x)` while taking `:is(#, .a)`.
                     self.pos = start;
-                    self.skip_to_comma();
+                    if self.skip_to_comma() {
+                        return Err(e);
+                    }
                 }
             }
             self.skip_space();
@@ -348,14 +354,20 @@ impl<'a> Parser<'a> {
         Ok(SelectorList(out))
     }
 
-    fn skip_to_comma(&mut self) {
-        let mut depth = 0;
+    /// Skips to the next `,` or closing bracket at this level. True when
+    /// the input ended inside a block opened on the way.
+    fn skip_to_comma(&mut self) -> bool {
+        // The closers of the blocks open so far: a `)` inside `[` is just
+        // a token.
+        let mut open: Vec<char> = Vec::new();
         while let Some(c) = self.peek() {
             match c {
-                '(' | '[' => depth += 1,
-                ')' | ']' if depth == 0 => return,
-                ')' | ']' => depth -= 1,
-                ',' if depth == 0 => return,
+                '(' => open.push(')'),
+                '[' => open.push(']'),
+                ')' | ']' | ',' if open.is_empty() => return false,
+                ')' | ']' if open.last() == Some(&c) => {
+                    open.pop();
+                }
                 '"' | '\'' => {
                     self.pos += 1;
                     let _ = self.string(c);
@@ -366,6 +378,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
+        !open.is_empty()
     }
 
     /// A complex selector; `relative` for `:has()`, where it may start with
