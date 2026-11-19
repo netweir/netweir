@@ -256,7 +256,13 @@ fn bad_selectors_are_errors() {
         "a,",
         ", a",
         "a,,b",
-        "a::before",
+        "a::nope",
+        "a::text",
+        "a::attr(href)",
+        "a::before.x",
+        "a::before#x",
+        "a::part()",
+        "a::slotted()",
         "svg|rect",
         "[xlink|href]",
         ":nth-child(x)",
@@ -271,6 +277,32 @@ fn bad_selectors_are_errors() {
     ] {
         assert!(SelectorList::parse(bad).is_err(), "{bad:?} parsed");
     }
+}
+
+/// A browser's querySelector takes a pseudo-element and finds nothing, since
+/// no element in the tree is one; so does this, where it refused them.
+#[test]
+fn pseudo_elements_are_valid_and_match_nothing() {
+    for css in [
+        "li::before",
+        "p::first-line",
+        "a:after",
+        "a:FIRST-LETTER",
+        "::marker",
+        "::placeholder, ::selection",
+        "::part(label icon)",
+        "::slotted(span.x)",
+        "::highlight(found)",
+        "li::before:hover",
+        ":is(li)::after",
+        "::part(x):is(:hover)",
+        "::part(x)::before",
+    ] {
+        assert_eq!(page(css), Vec::<String>::new(), "{css}");
+    }
+    assert_eq!(page("li::before, li.first"), ["li#17"]);
+    let list = SelectorList::parse("li::before").unwrap();
+    assert_eq!(list.specificity(), (0, 0, 2));
 }
 
 /// CSS closes every open block at the end of the input, so a selector

@@ -2,9 +2,10 @@
 //! them in a static page: parsed once, matched right to left.
 //!
 //! What browsers do on a page nobody is looking at decides the rest:
-//! `:hover`, `:focus` and the like parse but never match, `:scope` is the
-//! element a query runs from, and ids and classes compare exactly except
-//! in a quirks-mode document.
+//! `:hover`, `:focus` and the like parse but never match, as does a
+//! pseudo-element (`::before`), since no element in a tree is one;
+//! `:scope` is the element a query runs from, and ids and classes compare
+//! exactly except in a quirks-mode document.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -156,6 +157,9 @@ enum Pseudo {
     Invalid,
     /// A state no static page is in: `:hover`, `:focus`, `:visited`...
     Never,
+    /// A pseudo-element, `::before` or `::part(x)`: valid in a selector, as
+    /// a browser's querySelector has it, and never an element in the tree.
+    Element,
 }
 
 // ---- parsing ---------------------------------------------------------------
@@ -456,8 +460,14 @@ impl<'a> Parser<'a> {
                 simple.push(type_selector(name));
             }
         }
+        // After a pseudo-element only pseudo-classes (and more
+        // pseudo-elements) may follow: `::before:hover`, not `::before.x`.
+        let mut after_element = false;
         loop {
             while self.skip_comment() {}
+            if after_element && matches!(self.peek(), Some('#' | '.' | '[')) {
+                return error("only a pseudo-class can follow a pseudo-element");
+            }
             match self.peek() {
                 Some('#') => {
                     self.pos += 1;
@@ -482,7 +492,9 @@ impl<'a> Parser<'a> {
                     simple.push(Simple::Attr(self.attr()?));
                 }
                 Some(':') if self.peek_at(1) == Some(':') => {
-                    return error("pseudo-elements can't be selected");
+                    self.pos += 2;
+                    simple.push(Simple::Pseudo(self.pseudo_element()?));
+                    after_element = true;
                 }
                 Some(':') => {
                     self.pos += 1;
@@ -578,6 +590,60 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// A pseudo-element, after its `::`: the ones CSS defines, with
+    /// `::part()`, `::slotted()` and `::highlight()` taking their argument.
+    /// Anything else, `::text` included, is an error.
+    fn pseudo_element(&mut self) -> Result<Pseudo, SelectorError> {
+        let name = self.ident()?.to_ascii_lowercase();
+        if self.eat('(') {
+            self.skip_space();
+            match name.as_str() {
+                "part" => {
+                    self.ident()?;
+                    while self.skip_space() && self.starts_name() {
+                        self.ident()?;
+                    }
+                }
+                "slotted" => {
+                    self.compound()?;
+                }
+                "highlight" => {
+                    self.ident()?;
+                }
+                _ => return error(format!("::{name}() isn't a pseudo-element")),
+            }
+            self.skip_space();
+            if !self.eat(')') && !self.at_end() {
+                return error(format!("::{name}() without its )"));
+            }
+            return Ok(Pseudo::Element);
+        }
+        match name.as_str() {
+            "before"
+            | "after"
+            | "marker"
+            | "placeholder"
+            | "selection"
+            | "first-line"
+            | "first-letter"
+            | "backdrop"
+            | "file-selector-button"
+            | "cue"
+            | "spelling-error"
+            | "grammar-error"
+            | "target-text"
+            | "details-content"
+            | "checkmark"
+            | "picker-icon"
+            | "scroll-marker"
+            | "scroll-marker-group"
+            | "scroll-button"
+            | "column"
+            | "view-transition" => Ok(Pseudo::Element),
+            _ => error(format!("::{name} isn't a pseudo-element")),
+        }
+    }
+
     fn pseudo(&mut self) -> Result<Pseudo, SelectorError> {
         let name = self.ident()?.to_ascii_lowercase();
         if self.eat('(') {
@@ -620,6 +686,8 @@ impl<'a> Parser<'a> {
             "invalid" => Pseudo::Invalid,
             "hover" | "active" | "focus" | "focus-visible" | "focus-within" | "visited"
             | "user-invalid" | "user-valid" => Pseudo::Never,
+            // CSS 2's pseudo-elements, still allowed with one colon.
+            "before" | "after" | "first-line" | "first-letter" => Pseudo::Element,
             _ => return error(format!(":{name} isn't supported")),
         })
     }
@@ -1332,6 +1400,7 @@ impl Simple {
                     let (a, b, c) = list.specificity();
                     (a, b + 1, c)
                 }
+                Pseudo::Element => (0, 0, 1),
                 _ => (0, 1, 0),
             },
         }
@@ -2477,7 +2546,7 @@ impl<'a> Cx<'a> {
                 ranges.iter().any(|range| lang_matches(range, &tag))
             }),
             Pseudo::Dir(rtl) => self.is_rtl(el) == *rtl,
-            Pseudo::Never => false,
+            Pseudo::Never | Pseudo::Element => false,
         }
     }
 
