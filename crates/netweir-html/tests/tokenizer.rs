@@ -308,6 +308,15 @@ fn html5lib_tokenizer_tests() {
         skipped_because: "lone surrogates, which a Rust string can't hold",
         data: std::path::Path::new(dir).parent().unwrap(),
     });
+    summary::write(&summary::Counts {
+        suite: "html5lib-tokenizer-errors",
+        passed: errors_passed,
+        failed: error_failures.len(),
+        skipped: contradicted + skipped,
+        skipped_because: "lone surrogates, which a Rust string can't hold, and \
+                          domjs.test's three cases that test3.test contradicts",
+        data: std::path::Path::new(dir).parent().unwrap(),
+    });
     assert!(
         failures.is_empty(),
         "{} failures:\n{}",
