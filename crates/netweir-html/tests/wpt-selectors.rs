@@ -34,6 +34,23 @@ impl Outcome {
     }
 }
 
+/// Why a case can't run here, going by the selector in its name: what no
+/// spec defines, and what a parsed document can't hold.
+fn skip_reason(name: &str) -> Option<&'static str> {
+    let selector = name.rsplit(" | ").next().unwrap_or(name);
+    if selector.contains("-*") {
+        Some("class prefix selectors (.foo-*) are a tentative proposal in no spec")
+    } else if selector.contains(":host") || selector.contains(":has-slotted") {
+        Some(":host and :has-slotted need shadow trees, which a parser has none of")
+    } else if selector.contains(":state(") {
+        Some(":state() needs custom element states, which live in JavaScript")
+    } else if selector.contains("#no-namespace |") {
+        Some("an element in no namespace can't come from parsed HTML")
+    } else {
+        None
+    }
+}
+
 // ---- documents -------------------------------------------------------------
 
 fn elements(doc: &Document, under: NodeId) -> Vec<NodeId> {
@@ -407,7 +424,30 @@ fn report(
     skipped_because: &str,
     known: &[String],
 ) -> Vec<String> {
-    let failed: Vec<&Outcome> = outcomes.iter().filter(|o| o.failure.is_some()).collect();
+    // Cases nothing here can decide are skipped, tallied by reason.
+    let mut reasons: Vec<(&str, usize)> = Vec::new();
+    let (skipped_cases, outcomes): (Vec<&Outcome>, Vec<&Outcome>) =
+        outcomes.iter().partition(|o| {
+            skip_reason(&o.name).is_some_and(|r| {
+                match reasons.iter_mut().find(|(k, _)| *k == r) {
+                    Some((_, n)) => *n += 1,
+                    None => reasons.push((r, 1)),
+                }
+                true
+            })
+        });
+    let skipped = skipped + skipped_cases.len();
+    let skipped_because = reasons
+        .iter()
+        .map(|(r, n)| format!("{n} cases: {r}"))
+        .chain((!skipped_because.is_empty()).then(|| skipped_because.to_string()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let failed: Vec<&Outcome> = outcomes
+        .iter()
+        .copied()
+        .filter(|o| o.failure.is_some())
+        .collect();
     eprintln!(
         "{suite}: {} passed, {} failed, {skipped} skipped ({skipped_because})",
         outcomes.len() - failed.len(),
@@ -418,7 +458,7 @@ fn report(
         passed: outcomes.len() - failed.len(),
         failed: failed.len(),
         skipped,
-        skipped_because,
+        skipped_because: &skipped_because,
         data: Path::new(DIR),
     });
     let mut problems = Vec::new();
@@ -468,14 +508,9 @@ fn wpt_selectors() {
         }
     }
 
-    problems.extend(report(
-        "wpt-dom-selectors",
-        &dom,
-        0,
-        "the suite's checks of the JavaScript API itself (interfaces, NodeList staleness, \
-         stringifying null) aren't selector tests",
-        &known,
-    ));
+    // The suite's checks of the JavaScript API itself (interfaces, NodeList
+    // staleness, stringifying null) aren't selector tests and aren't counted.
+    problems.extend(report("wpt-dom-selectors", &dom, 0, "", &known));
     problems.extend(report(
         "wpt-css-selectors",
         &css,
