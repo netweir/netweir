@@ -522,7 +522,10 @@ fn lang_matches_the_nearest_language_by_extended_filtering() {
 <p id="latn" lang="de-Latn-CH">a</p><p id="en" lang="EN-gb">b</p><p id="fr" lang="fr">c</p>
 <p id="none">d</p><p id="private" lang="de-x-CH">e</p>
 <div id="outer" lang="de"><p id="inner" lang="en">f</p></div>
-<svg id="svg" xml:lang="fr" lang="de"></svg>"#;
+<svg id="svg" xml:lang="fr" lang="de"></svg>
+<p id="long" lang="de-ninecharacters">g</p><p id="dash" lang="de-">h</p><p id="odd" lang="de_CH">i</p>"#;
+    // A tag that isn't well-formed (a subtag over 8 characters, empty, or
+    // with a character that isn't a letter or digit) is no language.
     assert_eq!(
         select(html, ":lang(de)"),
         ["div#ch", "p#in", "p#latn", "p#private", "div#outer"]

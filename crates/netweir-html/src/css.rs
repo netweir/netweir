@@ -880,6 +880,13 @@ fn lang_matches(range: &str, tag: &str) -> bool {
     }
     let r: Vec<&str> = range.split('-').collect();
     let t: Vec<&str> = tag.split('-').collect();
+    // A tag that isn't well-formed (BCP 47: subtags of 1 to 8 letters or
+    // digits) is no language, so it matches no range.
+    if t.iter()
+        .any(|s| s.is_empty() || s.len() > 8 || !s.bytes().all(|b| b.is_ascii_alphanumeric()))
+    {
+        return false;
+    }
     if r[0] != "*" && r[0] != t[0] {
         return false;
     }
