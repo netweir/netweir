@@ -9,6 +9,7 @@
 //! by name once [`Tokenizer::report_errors`] asks.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use memchr::{memchr, memchr2, memchr3};
 
@@ -115,6 +116,26 @@ struct Text {
     start: u32,
     end: u32,
     input: bool,
+}
+
+/// Whether a tag's `attrs` have one named `name` already; if not, the
+/// caller is about to add it. A few are compared one by one; past that,
+/// their names go in `names`, which then holds all of them.
+fn has_attr(
+    attrs: &[Attr],
+    names: &mut HashSet<String>,
+    input: &str,
+    buf: &str,
+    name: &str,
+) -> bool {
+    const FEW: usize = 32;
+    if attrs.len() < FEW {
+        return attrs.iter().any(|a| a.name.get(input, buf) == name);
+    }
+    if names.is_empty() {
+        names.extend(attrs.iter().map(|a| a.name.get(input, buf).to_owned()));
+    }
+    !names.insert(name.to_owned())
 }
 
 impl Text {
@@ -270,6 +291,10 @@ pub struct Tokenizer<'a> {
     self_closing: bool,
     attr_buf: String,
     attrs: Vec<Attr>,
+    /// The names in `attrs`, once a tag has more than a few: asking each
+    /// new one of all the others made a tag of many attributes cost the
+    /// square of their number.
+    attr_names: HashSet<String>,
     current: Option<Current>,
     attr_name_input: Option<(usize, usize)>,
     /// Where the attribute value being read starts in the input, while it
@@ -344,6 +369,7 @@ impl<'a> Tokenizer<'a> {
             text: String::new(),
             text_from: None,
             attrs: Vec::new(),
+            attr_names: HashSet::new(),
             current: None,
             attr_name_input: None,
             value_from: None,
@@ -462,6 +488,7 @@ impl<'a> Tokenizer<'a> {
         self.self_closing = false;
         self.attr_buf.clear();
         self.attrs.clear();
+        self.attr_names.clear();
         self.current = None;
     }
 
@@ -543,10 +570,13 @@ impl<'a> Tokenizer<'a> {
         c.name = Some(name);
         c.value_start = self.attr_buf.len();
         let this = name.get(self.input, &self.attr_buf);
-        c.duplicate = self
-            .attrs
-            .iter()
-            .any(|a| a.name.get(self.input, &self.attr_buf) == this);
+        c.duplicate = has_attr(
+            &self.attrs,
+            &mut self.attr_names,
+            self.input,
+            &self.attr_buf,
+            this,
+        );
         if c.duplicate {
             self.error(sink, "duplicate-attribute", end);
         }
@@ -699,7 +729,16 @@ impl<'a> Tokenizer<'a> {
         if ERRORS {
             self.fast_errors.clear();
         }
+        let mut read: u32 = 0;
         loop {
+            // A tag can hold millions of attributes: past the budget, the
+            // states take it from the start, and they watch the clock.
+            read = read.wrapping_add(1);
+            if read.is_multiple_of(4096)
+                && self.deadline.is_some_and(|d| std::time::Instant::now() > d)
+            {
+                return self.bail();
+            }
             while p < len && is_space(bytes[p]) {
                 p += 1;
             }
@@ -775,12 +814,13 @@ impl<'a> Tokenizer<'a> {
                 _ => return self.bail(),
             };
             let this = &self.input[attr_name.0..attr_name.1];
-            let input = self.input;
-            if !self
-                .attrs
-                .iter()
-                .any(|x| x.name.get(input, &self.attr_buf) == this)
-            {
+            if !has_attr(
+                &self.attrs,
+                &mut self.attr_names,
+                self.input,
+                &self.attr_buf,
+                this,
+            ) {
                 self.attrs.push(Attr {
                     name: Text {
                         start: attr_name.0 as u32,
@@ -812,6 +852,7 @@ impl<'a> Tokenizer<'a> {
 
     fn bail(&mut self) -> bool {
         self.attrs.clear();
+        self.attr_names.clear();
         false
     }
 
