@@ -214,6 +214,46 @@ pub struct Document {
     /// A bit per node taken out with [`Document::remove`]. A slot is never
     /// reused, so a removed id stays removed. Empty until a remove.
     pub(crate) dead: Vec<u64>,
+    /// For [`Document::line_col`], made the first time it's asked.
+    lines: std::sync::OnceLock<Lines>,
+}
+
+/// Where each line of the source starts, and how many characters come
+/// before every [`Lines::BLOCK`] bytes, so a line and column take a search
+/// and a count of at most a block, not a pass over the source.
+struct Lines {
+    starts: Vec<u32>,
+    chars: Vec<u32>,
+}
+
+impl Lines {
+    const BLOCK: usize = 4096;
+
+    fn new(src: &[u8]) -> Lines {
+        let mut starts = vec![0];
+        starts.extend(memchr::memchr_iter(b'\n', src).map(|i| i as u32 + 1));
+        let mut chars = Vec::with_capacity(src.len() / Lines::BLOCK + 1);
+        let mut before = 0;
+        for block in src.chunks(Lines::BLOCK) {
+            chars.push(before);
+            before += count_chars(block) as u32;
+        }
+        // For the end of a source that fills its last block.
+        chars.push(before);
+        Lines { starts, chars }
+    }
+
+    /// How many characters come before byte `at`.
+    fn chars_before(&self, src: &[u8], at: usize) -> usize {
+        let block = at / Lines::BLOCK;
+        self.chars[block] as usize + count_chars(&src[block * Lines::BLOCK..at])
+    }
+}
+
+/// Characters in UTF-8 `bytes`: every byte but a continuation byte starts
+/// one.
+fn count_chars(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| (b as i8) >= -0x40).count()
 }
 
 /// A node or attribute with no recorded position.
@@ -313,6 +353,7 @@ impl Document {
             manual_slots: std::collections::HashMap::new(),
             errors: Vec::new(),
             dead: Vec::new(),
+            lines: std::sync::OnceLock::new(),
         }
     }
 
@@ -450,8 +491,9 @@ impl Document {
     /// The line and column of a byte offset into the input the parse was
     /// given, as an editor shows them: both start at 1, a line ends at an
     /// LF, a CRLF or a lone CR, and the column counts characters (Unicode
-    /// scalar values), not bytes. Worked out from the source each time,
-    /// so it costs a pass over the text before `offset`.
+    /// scalar values), not bytes. The first call indexes the source's
+    /// lines, a pass over it; each after costs a search and a count of a
+    /// few kilobytes, however long the line.
     pub fn line_col(&self, offset: usize) -> (usize, usize) {
         // Back into the preprocessed source, where every line ends at an
         // LF: past the skipped bytes and the CRs that were dropped.
@@ -472,14 +514,11 @@ impl Document {
             }
         }
         let at = (o - lo.min(o)).min(self.src.len());
-        let bytes = &self.src.as_bytes()[..at];
-        let line = 1 + memchr::memchr_iter(b'\n', bytes).count();
-        let start = memchr::memrchr(b'\n', bytes).map_or(0, |i| i + 1);
-        // Every byte but a UTF-8 continuation byte starts a character.
-        let column = 1 + bytes[start..]
-            .iter()
-            .filter(|&&b| (b as i8) >= -0x40)
-            .count();
+        let src = self.src.as_bytes();
+        let lines = self.lines.get_or_init(|| Lines::new(src));
+        let line = lines.starts.partition_point(|&s| s as usize <= at);
+        let start = lines.starts[line - 1] as usize;
+        let column = 1 + lines.chars_before(src, at) - lines.chars_before(src, start);
         (line, column)
     }
 
@@ -1083,6 +1122,7 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    use super::count_chars;
     use crate::{AttrNs, parse};
 
     /// Names as tokenized, lowercase and without a prefix, from attrs();
@@ -1118,6 +1158,61 @@ mod tests {
         assert_eq!(names(math, true), ["definitionURL"]);
         assert!(doc.outer_html(svg).starts_with(r#"<svg viewBox="0""#));
         assert!(doc.outer_html(math).contains("definitionURL"));
+    }
+
+    /// line_col counted the source up to the offset on every call, so a
+    /// line and column for each of a big page's nodes cost the square of
+    /// its size.
+    #[test]
+    fn line_col_agrees_with_counting_and_costs_little_a_call() {
+        // Every line end, multibyte characters, and lines across blocks.
+        let input = "\u{FEFF}<p>a\r\nb\rc\n\u{e9}\u{20ac}\u{1F600}</p>".repeat(300)
+            + &"\u{e9}".repeat(5_000)
+            + "\n"
+            + &"x".repeat(4_096 * 2 - 1);
+        let doc = crate::parse_with(
+            &input,
+            crate::Options {
+                spans: true,
+                ..crate::Options::default()
+            },
+        )
+        .unwrap();
+        // As it was worked out before: a count over the source each time.
+        let slow = |offset: usize| {
+            let p = doc.positions.as_deref().unwrap();
+            let o = offset.saturating_sub(p.skipped as usize);
+            let lo = (0..p.crlf.len())
+                .take_while(|&k| p.crlf[k] as usize + k + 1 < o)
+                .count();
+            let bytes = &doc.src.as_bytes()[..(o - lo.min(o)).min(doc.src.len())];
+            let start = memchr::memrchr(b'\n', bytes).map_or(0, |i| i + 1);
+            (
+                1 + memchr::memchr_iter(b'\n', bytes).count(),
+                1 + count_chars(&bytes[start..]),
+            )
+        };
+        for at in 0..=input.len() + 2 {
+            assert_eq!(doc.line_col(at), slow(at), "at {at}");
+        }
+
+        // The same calls, near the end of a page eight times longer, take
+        // about as long.
+        let calls = |lines: usize| {
+            let page = parse(&"x\n".repeat(lines), false);
+            let start = std::time::Instant::now();
+            for i in lines - 10_000..lines {
+                assert_eq!(page.line_col(i * 2), (i + 1, 1));
+            }
+            start.elapsed()
+        };
+        let rounds: Vec<_> = (0..5).map(|_| (calls(250_000), calls(2_000_000))).collect();
+        assert!(
+            rounds
+                .iter()
+                .any(|&(a, b)| b < a * 3 + std::time::Duration::from_millis(20)),
+            "{rounds:?}"
+        );
     }
 
     #[test]

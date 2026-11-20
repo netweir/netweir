@@ -93,7 +93,7 @@ impl Open {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
     Default,
     ListItem,
@@ -130,6 +130,11 @@ pub(crate) struct TreeBuilder {
     /// How many HTML elements of each tag are open, so "is there a p in
     /// button scope" is answered without walking the stack when none is.
     counts: [u32; 256],
+    /// How many open foreign elements end the default scope (`mi`,
+    /// `foreignObject`...); `counts` has the HTML ones. With none open but
+    /// the root, `body` and `html`, at the bottom of the stack, are in
+    /// scope, and out of it otherwise.
+    foreign_boundaries: u32,
     /// For each entry of the stack, whether a p is in button scope with
     /// the stack cut off there. Nearly every block start tag asks, and a
     /// p under thousands of open divs made each ask walk them all.
@@ -329,11 +334,10 @@ fn scope_boundary(o: Open, scope: Scope) -> bool {
     }
 }
 
+const HEADINGS: [Tag; 6] = [Tag::H1, Tag::H2, Tag::H3, Tag::H4, Tag::H5, Tag::H6];
+
 fn heading(tag: Tag) -> bool {
-    matches!(
-        tag,
-        Tag::H1 | Tag::H2 | Tag::H3 | Tag::H4 | Tag::H5 | Tag::H6
-    )
+    HEADINGS.contains(&tag)
 }
 
 fn implied(tag: Tag) -> bool {
@@ -604,6 +608,7 @@ impl TreeBuilder {
             selected: HashMap::new(),
             option_select: HashMap::new(),
             counts: [0; 256],
+            foreign_boundaries: 0,
             p_in_scope: Vec::with_capacity(64),
             names: Box::new([0; NAME_SLOTS]),
             on_stack: vec![false; capacity / 24 + 1024],
@@ -806,6 +811,9 @@ impl TreeBuilder {
             self.counts[o.tag as usize] = self.counts[o.tag as usize].wrapping_add_signed(by);
             return;
         }
+        if scope_boundary(o, Scope::Default) {
+            self.foreign_boundaries = self.foreign_boundaries.wrapping_add_signed(by);
+        }
         let Some(name) = self.doc.element(o.id).map(|e| self.doc.element_name(e)) else {
             return;
         };
@@ -881,10 +889,38 @@ impl TreeBuilder {
         self.template_open() || self.context.is_some_and(|c| c.is(Tag::Template))
     }
 
+    /// How many open elements end `scope`, not counting the root `html`.
+    fn boundaries_above_root(&self, scope: Scope) -> u32 {
+        use Tag::*;
+        let base = self.foreign_boundaries
+            + [
+                Applet, Caption, Table, Td, Th, Marquee, Object, Select, Template,
+            ]
+            .iter()
+            .map(|&t| self.open_count(t))
+            .sum::<u32>();
+        match scope {
+            Scope::Default => base,
+            Scope::ListItem => base + self.open_count(Ol) + self.open_count(Ul),
+            Scope::Button => base + self.open_count(Button),
+            Scope::Table => self.open_count(Table) + self.open_count(Template),
+        }
+    }
+
     fn in_scope(&self, tag: Tag, scope: Scope) -> bool {
         if tag != Tag::Other && self.open_count(tag) == 0 {
             return false;
         }
+        // `body` and `html` are at the bottom of the stack, so they're in
+        // scope when nothing above the root ends it, without a walk down
+        // to them. (Other elements are found near the top, as a rule.)
+        if matches!(tag, Tag::Body | Tag::Html) {
+            return self.boundaries_above_root(scope) == 0;
+        }
+        self.in_scope_walk(tag, scope)
+    }
+
+    fn in_scope_walk(&self, tag: Tag, scope: Scope) -> bool {
         let walk = || {
             for &o in self.open.iter().rev() {
                 if o.is(tag) {
@@ -904,9 +940,13 @@ impl TreeBuilder {
         walk()
     }
 
-    fn in_scope_where(&self, f: impl Fn(Tag) -> bool, scope: Scope) -> bool {
+    /// Whether one of `tags` is in scope, as [`Self::in_scope`] for each.
+    fn in_scope_any(&self, tags: &[Tag], scope: Scope) -> bool {
+        if tags.iter().all(|&t| self.open_count(t) == 0) {
+            return false;
+        }
         for &o in self.open.iter().rev() {
-            if o.ns == Ns::Html && f(o.tag) {
+            if o.ns == Ns::Html && tags.contains(&o.tag) {
                 return true;
             }
             if scope_boundary(o, scope) {
@@ -1018,6 +1058,24 @@ impl TreeBuilder {
 
     fn reset_mode(&mut self) {
         use Tag::*;
+        // With none of the elements that decide the mode open but `body`
+        // or `frameset`, the walk would pass everything down to that one.
+        if self.context.is_none()
+            && [
+                Td, Th, Tr, Tbody, Thead, Tfoot, Caption, Colgroup, Table, Template, Head,
+            ]
+            .iter()
+            .all(|&t| self.open_count(t) == 0)
+        {
+            if self.open_count(Body) > 0 {
+                self.mode = Mode::InBody;
+                return;
+            }
+            if self.open_count(Frameset) > 0 {
+                self.mode = Mode::InFrameset;
+                return;
+            }
+        }
         for i in (0..self.open.len()).rev() {
             let last = i == 0;
             let mut node = self.open[i];
@@ -1086,6 +1144,34 @@ impl TreeBuilder {
         }
         assert!(counts == self.counts, "counts disagree with the stack");
         assert!(names[..] == self.names[..], "names disagree with the stack");
+        let foreign = self
+            .open
+            .iter()
+            .filter(|&&o| o.ns != Ns::Html && scope_boundary(o, Scope::Default));
+        assert_eq!(
+            foreign.count() as u32,
+            self.foreign_boundaries,
+            "scope boundaries"
+        );
+        for scope in [Scope::Default, Scope::ListItem, Scope::Button, Scope::Table] {
+            for tag in [
+                Tag::Body,
+                Tag::Html,
+                Tag::Div,
+                Tag::P,
+                Tag::Li,
+                Tag::Td,
+                Tag::H1,
+            ] {
+                if self.open_count(tag) > 0 {
+                    assert_eq!(
+                        self.in_scope(tag, scope),
+                        self.in_scope_walk(tag, scope),
+                        "{tag:?} in {scope:?} scope"
+                    );
+                }
+            }
+        }
         if all {
             let marked = self.on_stack.iter().filter(|&&on| on).count();
             assert_eq!(marked, self.open.len(), "a node is marked open but isn't");
@@ -2614,7 +2700,7 @@ impl TreeBuilder {
                 }
             }
             H1 | H2 | H3 | H4 | H5 | H6 => {
-                if !self.in_scope_where(heading, Scope::Default) {
+                if !self.in_scope_any(&HEADINGS, Scope::Default) {
                     self.err("unexpected-end-tag");
                 } else {
                     self.generate_implied(None);
@@ -2656,29 +2742,15 @@ impl TreeBuilder {
         if !self.errors {
             return;
         }
-        let unclosed = self.open.iter().any(|o| {
-            !(o.ns == Ns::Html
-                && matches!(
-                    o.tag,
-                    Dd | Dt
-                        | Li
-                        | Optgroup
-                        | Option
-                        | P
-                        | Rb
-                        | Rp
-                        | Rt
-                        | Rtc
-                        | Tbody
-                        | Td
-                        | Tfoot
-                        | Th
-                        | Thead
-                        | Tr
-                        | Body
-                        | Html
-                ))
-        });
+        // Counted, not walked: each `</body>` under a deep stack walked it.
+        let may_be_open: u32 = [
+            Dd, Dt, Li, Optgroup, Option, P, Rb, Rp, Rt, Rtc, Tbody, Td, Tfoot, Th, Thead, Tr,
+            Body, Html,
+        ]
+        .iter()
+        .map(|&t| self.open_count(t))
+        .sum();
+        let unclosed = self.open.len() as u32 > may_be_open;
         if unclosed {
             self.err(code);
         }
@@ -3142,7 +3214,7 @@ impl TreeBuilder {
 
     fn table_body_exit(&mut self, t: Tok<'_>) {
         use Tag::*;
-        if self.in_scope_where(|t| matches!(t, Tbody | Thead | Tfoot), Scope::Table) {
+        if self.in_scope_any(&[Tbody, Thead, Tfoot], Scope::Table) {
             self.clear_to_table_body_context();
             self.pop();
             self.reprocess(Mode::InTable, t);
@@ -3232,7 +3304,7 @@ impl TreeBuilder {
                     Caption | Col | Colgroup | Tbody | Td | Tfoot | Th | Thead | Tr
                 ) =>
             {
-                if self.in_scope_where(|t| matches!(t, Td | Th), Scope::Table) {
+                if self.in_scope_any(&[Td, Th], Scope::Table) {
                     self.close_cell();
                     self.process(t);
                 } else {
@@ -4423,6 +4495,34 @@ mod hostile {
         grows_linearly(|n| format!("{}{}", "<span>".repeat(n), "</x>".repeat(n)));
         grows_linearly(|n| format!("{}{}", "<span>".repeat(n), "</p>".repeat(n)));
         grows_linearly(|n| format!("{}{}", "<x-a>".repeat(n), "</x-b>".repeat(n)));
+    }
+
+    /// `</body>` and `</html>` asked whether body was in scope by walking
+    /// the whole stack down to it; a heading end tag looked for any open
+    /// heading the same way; and a `<table>` in a table reset the mode by
+    /// walking down to body.
+    #[test]
+    fn end_tags_under_deep_nesting_cost_linear_time() {
+        for end in ["</body>", "</html>", "</h1>", "<table>", "</body><p>"] {
+            grows_linearly(|n| format!("{}{}", "<div>".repeat(n), end.repeat(n)));
+            grows_linearly_timed(
+                |n| format!("{}{}", "<div>".repeat(n), end.repeat(n)),
+                time_with_errors,
+            );
+        }
+        // Out of scope, behind an element that ends it.
+        grows_linearly(|n| format!("<applet>{}{}", "<div>".repeat(n), "</body>".repeat(n)));
+        grows_linearly(|n| format!("<table><td>{}{}", "<div>".repeat(n), "</td>".repeat(n)));
+    }
+
+    fn time_with_errors(html: &str) -> Duration {
+        let start = Instant::now();
+        let options = Options {
+            errors: true,
+            ..Options::default()
+        };
+        std::hint::black_box(parse_with(html, options).unwrap());
+        start.elapsed()
     }
 
     /// The same, inside SVG, where an end tag is first looked for among
