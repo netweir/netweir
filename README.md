@@ -594,13 +594,13 @@ its users' code would:
 
 | | Seconds per 1,000 pages | Slowest page | Peak RSS | Pages that failed |
 |---|---:|---:|---:|---:|
-| Netweir | 1.02 | 0.167 s | 1,010 MB | 0 |
-| selectolax 1.0 | 1.86 | 0.244 s | 1,242 MB | 0 |
-| lxml 6.1 | 2.78 | 0.442 s | 659 MB | 2 raised `ParserError` |
-| parsel 1.12 | 2.99 | 0.469 s | 965 MB | 0 |
-| Beautiful Soup 4.15 (lxml) | 34.77 | 8.1 s | 1,357 MB | 2 empty |
-| Beautiful Soup 4.15 (html.parser) | 71.66 | 12.4 s | 1,532 MB | 52 empty |
-| html5lib 1.1 | 160.48 | 30 s, the limit | 1,142 MB | 3 timed out |
+| Netweir | 1.01 | 0.174 s | 646 MB | 0 |
+| selectolax 1.0 | 1.87 | 0.249 s | 917 MB | 0 |
+| lxml 6.1 | 2.79 | 0.451 s | 662 MB | 2 raised `ParserError` |
+| parsel 1.12 | 2.99 | 0.485 s | 967 MB | 0 |
+| Beautiful Soup 4.15 (lxml) | 35.07 | 8.2 s | 1,357 MB | 2 empty |
+| Beautiful Soup 4.15 (html.parser) | 71.41 | 12.3 s | 1,532 MB | 52 empty |
+| html5lib 1.1 | 160.34 | 30 s, the limit | 1,142 MB | 3 timed out |
 
 Nothing crashed. What failed were documents: lxml raised "Document is
 empty" on two fragments, Beautiful Soup on lxml gave back nothing for
@@ -611,24 +611,39 @@ brackets:
 
 | | Netweir | selectolax | lxml | parsel |
 |---|---:|---:|---:|---:|
-| 900 fragments, 1.4 MB | 0.051 s (0.014) | 0.415 s (0.062) | 0.032 s (0.001) | 0.049 s (0.001) |
-| 46 real pages, 33 MB | 0.059 s (0.003) | 0.097 s (0.005) | 0.244 s (0.013) | 0.275 s (0.014) |
-| 44 re-encoded pages, 37 MB | 0.064 s (0.003) | 0.129 s (0.008) | 0.313 s (0.017) | 0.296 s (0.015) |
-| 10 giants, 194 MB | 0.847 s (0.167) | 1.221 s (0.244) | 2.196 s (0.442) | 2.363 s (0.469) |
+| 900 fragments, 1.4 MB | 0.029 s (0.002) | 0.416 s (0.061) | 0.030 s (0.001) | 0.048 s (0.001) |
+| 46 real pages, 33 MB | 0.060 s (0.003) | 0.097 s (0.004) | 0.244 s (0.013) | 0.271 s (0.014) |
+| 44 re-encoded pages, 37 MB | 0.066 s (0.003) | 0.127 s (0.008) | 0.313 s (0.017) | 0.295 s (0.015) |
+| 10 giants, 194 MB | 0.854 s (0.174) | 1.221 s (0.249) | 2.204 s (0.451) | 2.376 s (0.485) |
 
-The fragments are lxml's: 36 µs each to Netweir's 57, and parsel, on
-lxml, is level with Netweir. libxml2 is cheap to start, but what it
-builds isn't the tree the HTML Standard describes, and on 930 of the
+The fragments are a photo finish: 32 µs each for Netweir, 33 for lxml.
+And lxml gets there by doing less. libxml2 stops at 256 levels of
+nesting, so of a fragment with 4,428 tables one inside the next it
+builds 262 elements, where the HTML Standard has 17,732. On 930 of the
 1,000 pages its element count differs from the Standard's. Netweir's
 matches Parsec's on every page, once you count each declarative shadow
 root (119 pages have one) the way Parsec's bench does, as its
 `<template>`; selectolax's Lexbor matches on all 1,000. Everywhere else
-Netweir is ahead: 1.6 times selectolax on real pages, 2 times on the
-re-encoded ones, 1.4 times on the giants. Memory goes the other way.
-lxml's peak is two thirds of Netweir's, and Netweir's is about
-selectolax's, whose peak was 996 MB in an earlier set of three runs and
-1,242 MB in this one. Every peak includes the
-132 MB a worker takes to hold the biggest page and do nothing else.
+Netweir is well clear: 1.6 times selectolax on real pages, 1.9 times on
+the re-encoded ones, 1.4 times on the giants.
+
+Memory is the other close race, 646 MB to lxml's 662. Both peaks say
+as much about macOS as about the parser: its allocator keeps a freed
+block of many megabytes resident, ready for the next request, so a
+worker's peak is the page it's on plus what the giants before it left
+behind. Parse the biggest giant on its own and Netweir peaks at 361 MB,
+lxml at 557. selectolax's peak moves around: 917 MB here, 1,242 MB in
+an earlier set of three runs. Every peak includes the 132 MB a worker
+takes to hold the biggest page and do nothing else.
+
+When this bench first ran, the fragments were lxml's, 36 µs to
+Netweir's 57, and Netweir's peak was 1,010 MB. Two things did it. A
+`<p>` left open under a few thousand `<div>`s made every new `<div>`
+walk all of them to ask whether the `<p>` was still in scope: one 18 KB
+fragment took 13.5 ms. Now the answer is kept as the stack grows. And
+counting the 1.3 million elements of the biggest table held the result
+four times over while it grouped and sorted it; now it's held once, and
+a UTF-8 page is no longer copied whole before it's parsed.
 
 Writing this bench turned up a slow path of Netweir's own: a page that
 declares no charset near the top had an encoding detector run over the
@@ -637,7 +652,7 @@ instead of 0.06. Valid UTF-8 now skips the detector, which would have
 said UTF-8 anyway.
 
 Medians of three runs on one M2 Max (macOS 26.7, Python 3.14), each
-library's run started with the load average under 3 (2.05 to 2.94),
+library's run started with the load average under 3 (1.71 to 2.85),
 November 2026. Run it with `uv run --group bench python bench/boss.py
 --parsec PATH`, which needs a Parsec checkout to build the pages; the
 docstring has the rest. CI runs 300 of the pages, giants cut to 2 MB, on
