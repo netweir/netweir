@@ -73,7 +73,7 @@ impl XPath {
             .chain(namespaces.iter().cloned())
             .collect();
         match self.0.evaluate(view, scope.id, vars, &bound, &Parsel) {
-            Ok(value) => Ok(into_hits(value, scope)),
+            Ok(value) => Ok(into_hits(value, scope, view)),
             Err(mut e) => {
                 if e.reason.starts_with("undefined namespace prefix") {
                     e.reason +=
@@ -91,13 +91,15 @@ const DEFAULT_NAMESPACES: [(&str, &str); 2] = [
     ("set", "http://exslt.org/sets"),
 ];
 
-fn into_hits<'a>(value: Value<'a>, scope: Node<'a>) -> Vec<Hit<'a>> {
+fn into_hits<'a>(value: Value<'a>, scope: Node<'a>, view: Doc<'a>) -> Vec<Hit<'a>> {
     match value {
         Value::Nodes(items) => items
             .into_iter()
             .map(|i| match i {
                 Item::Node(n) => Hit::Node(Node::from_raw(scope.doc, n)),
-                Item::Attr { value, .. } => Hit::Value(value.to_string()),
+                Item::Attr { owner, index, .. } => {
+                    Hit::Value(view.attr_at(owner, index).1.to_string())
+                }
             })
             .collect(),
         Value::Str(s) => vec![Hit::Value(s.into_owned())],

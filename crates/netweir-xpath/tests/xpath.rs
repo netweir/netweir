@@ -48,9 +48,12 @@ impl Page {
         }
     }
 
-    fn describe(&self, item: &Item<'_>) -> String {
+    fn describe(&self, item: &Item) -> String {
         match item {
-            Item::Attr { name, value, .. } => format!("@{name}={value}"),
+            Item::Attr { owner, index, .. } => {
+                let (name, value) = self.doc().attr_at(*owner, *index);
+                format!("@{name}={value}")
+            }
             Item::Node(n) => match self.tree.kind(*n) {
                 html::Kind::Element { name, .. } => name.to_string(),
                 html::Kind::Text(t) => format!("#text:{}", t.trim()),
@@ -175,6 +178,11 @@ fn predicates_and_document_order() {
         p.get("//li[. = '3' or . = '1']/text()"),
         names(&["#text:1", "#text:3"])
     );
+    // A number is compared with the position among siblings, a yes or no
+    // isn't, and a later predicate counts only what the earlier kept.
+    assert_eq!(p.get("//li[string-length(.)]/text()"), names(&["#text:1"]));
+    assert_eq!(p.get("//p[not(ancestor::ul)]"), names(&["p", "p"]));
+    assert_eq!(p.get("//*[not(self::ul)][2]/@id"), names(&["@id=b"]));
     // A union comes back in document order without duplicates.
     assert_eq!(
         p.get("//span | //p | //div | //p"),
@@ -329,7 +337,9 @@ impl Extensions for Shout {
             let text = if args.is_empty() {
                 match args.context() {
                     Item::Node(n) => args.doc().attr(n, "id").unwrap_or("").to_string(),
-                    Item::Attr { value, .. } => value.to_string(),
+                    Item::Attr { owner, index, .. } => {
+                        args.doc().attr_at(owner, index).1.to_string()
+                    }
                 }
             } else {
                 args.string(0)?

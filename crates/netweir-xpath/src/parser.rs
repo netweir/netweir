@@ -561,6 +561,27 @@ impl Expr {
         }
     }
 
+    /// True when a predicate made of this can depend on the position: it
+    /// reads position() or last(), or its value may be a number, which a
+    /// predicate compares with the position.
+    pub(crate) fn positional(&self) -> bool {
+        self.reads_position() || self.may_be_number()
+    }
+
+    fn may_be_number(&self) -> bool {
+        match self {
+            Expr::Number(_) | Expr::Negate(_) | Expr::Variable(_) => true,
+            Expr::Binary(op, ..) => matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod),
+            Expr::Memo(e, _) => e.may_be_number(),
+            // Core functions win over extensions, so these never give one.
+            Expr::Call(name, _) => !matches!(
+                name.as_str(),
+                "not" | "boolean" | "true" | "false" | "contains" | "starts-with" | "lang"
+            ),
+            Expr::Literal(_) | Expr::Union(..) | Expr::Path { .. } | Expr::Filter { .. } => false,
+        }
+    }
+
     /// True when working the expression out walks the document beyond the
     /// node itself and its attributes, which is what makes testing a node
     /// twice expensive.

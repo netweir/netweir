@@ -30,7 +30,8 @@ pub struct Index {
     /// One past the last descendant of each node.
     end: Vec<u32>,
     kind: Vec<u8>,
-    tag: Vec<usize>,
+    /// u32, as node ids are: one for every node adds up on a big page.
+    tag: Vec<u32>,
     /// Each node's position, by node id; u32::MAX for one not indexed.
     order: Vec<u32>,
     /// Tag ids of the lowercase names the parser doesn't know.
@@ -102,7 +103,7 @@ impl Index {
                             *names.entry(key).or_insert(next)
                         }
                     }
-                });
+                } as u32);
                 at = match tree.first_child(n) {
                     Some(child) => {
                         ancestors.push(pos);
@@ -174,7 +175,7 @@ impl Index {
 
     /// The tag id at position `at`.
     pub fn tag_at(&self, at: u32) -> usize {
-        self.tag.get(at as usize).copied().unwrap_or(0)
+        self.tag.get(at as usize).map_or(0, |&t| t as usize)
     }
 
     /// The tag id elements named `name` (compared lowercased) carry, if
@@ -216,7 +217,7 @@ impl Index {
     ) {
         let start = if include_self { at } else { at + 1 } as usize;
         for j in start..self.end[at as usize] as usize {
-            if keep(self.kind[j], self.tag[j]) {
+            if keep(self.kind[j], self.tag[j] as usize) {
                 out.push(self.raw[j]);
             }
         }
@@ -238,7 +239,7 @@ impl Index {
         let stop = self.end[at as usize] as usize;
         let mut c = at as usize + 1;
         while c < stop {
-            if keep(self.kind[c], self.tag[c]) {
+            if keep(self.kind[c], self.tag[c] as usize) {
                 out.push(self.raw[c]);
             }
             c = self.end[c] as usize;

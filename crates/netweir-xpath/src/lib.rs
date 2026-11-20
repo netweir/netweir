@@ -121,30 +121,40 @@ impl<'a> Doc<'a> {
             .find(|(_, n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, _, v)| v)
     }
+
+    /// The name (as written, with any prefix) and value of the `index`th
+    /// attribute of `owner`, as an [`Item::Attr`] names it.
+    pub fn attr_at(&self, owner: NodeId, index: u32) -> (&'a str, &'a str) {
+        self.tree
+            .attrs(owner)
+            .nth(index as usize)
+            .map_or(("", ""), |(_, name, value)| (name, value))
+    }
 }
 
 /// A node in XPath's data model: a tree node, or an attribute (which the
-/// tree keeps on its element rather than as a node of its own).
+/// tree keeps on its element rather than as a node of its own). Sixteen
+/// bytes: a node-set can hold every node of a big page, so its name and
+/// value are read from the document ([`Doc::attr_at`]), not kept here.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Item<'a> {
+pub enum Item {
     Node(NodeId),
     Attr {
         owner: NodeId,
         /// Its place among the element's attributes.
         index: u32,
-        /// As written, with any prefix.
-        name: &'a str,
         /// The namespace id (see [`Namespaces`]); 0 for none.
         ns: u32,
-        value: &'a str,
     },
 }
+
+const _: () = assert!(std::mem::size_of::<Item>() == 16);
 
 /// What an expression evaluates to. A node-set is in document order,
 /// without duplicates.
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    Nodes(Vec<Item<'a>>),
+    Nodes(Vec<Item>),
     Str(Cow<'a, str>),
     Num(f64),
     Bool(bool),

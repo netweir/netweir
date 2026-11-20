@@ -19,7 +19,7 @@ use crate::{Doc, Extensions, Item, Value, XML_NS, XValue};
 pub const WORK_LIMIT: u64 = 1 << 30;
 
 struct Context<'a, 'v> {
-    item: Item<'a>,
+    item: Item,
     position: usize,
     size: usize,
     doc: Doc<'a>,
@@ -31,6 +31,8 @@ struct Context<'a, 'v> {
     /// Work done so far, and the most allowed (see [`WORK_LIMIT`]).
     spent: &'v Cell<u64>,
     limit: u64,
+    /// Inside a predicate, where the same node can be tested many times.
+    nested: bool,
 }
 
 /// Values of a run's [`Expr::Memo`] expressions, by slot and node key. Only
@@ -79,6 +81,7 @@ pub(crate) fn run<'a>(
         ext,
         spent: &spent,
         limit,
+        nested: false,
     };
     eval(expr, &ctx)
 }
@@ -103,7 +106,7 @@ impl<'a> Context<'a, '_> {
 
     /// Position in document order. An element's attributes come after the
     /// element and before its children, whose order is higher.
-    fn key(&self, item: &Item<'_>) -> (u32, u32) {
+    fn key(&self, item: &Item) -> (u32, u32) {
         match item {
             Item::Node(n) => (self.order(*n), 0),
             Item::Attr { owner, index, .. } => (self.order(*owner), index + 1),
@@ -123,9 +126,11 @@ impl<'a> Context<'a, '_> {
         }
     }
 
-    fn string_value(&self, item: &Item<'a>) -> Cow<'a, str> {
+    fn string_value(&self, item: &Item) -> Cow<'a, str> {
         let n = match item {
-            Item::Attr { value, .. } => return Cow::Borrowed(value),
+            Item::Attr { owner, index, .. } => {
+                return Cow::Borrowed(self.doc.attr_at(*owner, *index).1);
+            }
             Item::Node(n) => *n,
         };
         let index = self.doc.index;
@@ -180,18 +185,18 @@ impl<'a> Context<'a, '_> {
     }
 
     /// The name with its prefix, as `name()` gives it.
-    fn name(&self, item: &Item<'a>) -> &'a str {
+    fn name(&self, item: &Item) -> &'a str {
         match item {
             Item::Node(n) => match self.pi_target(*n) {
                 Some(target) => target,
                 None => self.qualified_name(*n),
             },
-            Item::Attr { name, .. } => name,
+            Item::Attr { owner, index, .. } => self.doc.attr_at(*owner, *index).0,
         }
     }
 
     /// The name without its prefix, as `local-name()` gives it.
-    fn local_name(&self, item: &Item<'a>) -> &'a str {
+    fn local_name(&self, item: &Item) -> &'a str {
         let name = self.name(item);
         // In HTML a colon is just part of a name (`fb:like`), as in lxml.
         match name.split_once(':') {
@@ -200,7 +205,7 @@ impl<'a> Context<'a, '_> {
         }
     }
 
-    fn namespace_uri(&self, item: &Item<'a>) -> &'a str {
+    fn namespace_uri(&self, item: &Item) -> &'a str {
         let Some(names) = self.doc.names else {
             return "";
         };
@@ -292,7 +297,11 @@ fn eval_here<'a>(expr: &Expr, ctx: &Context<'a, '_>) -> Result<Value<'a>> {
     })
 }
 
-fn in_document_order<'a>(items: Vec<Item<'a>>, ctx: &Context<'a, '_>) -> Vec<Item<'a>> {
+fn in_document_order<'a>(items: Vec<Item>, ctx: &Context<'a, '_>) -> Vec<Item> {
+    // Often they already are, and sorting a copy would double the memory.
+    if items.windows(2).all(|w| ctx.key(&w[0]) < ctx.key(&w[1])) {
+        return items;
+    }
     // A key costs an index lookup, so each is read once.
     let mut keyed: Vec<_> = items.into_iter().map(|i| (ctx.key(&i), i)).collect();
     keyed.sort_unstable_by_key(|(k, _)| *k);
@@ -300,11 +309,7 @@ fn in_document_order<'a>(items: Vec<Item<'a>>, ctx: &Context<'a, '_>) -> Vec<Ite
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
-fn walk<'a>(
-    mut items: Vec<Item<'a>>,
-    steps: &[Step],
-    ctx: &Context<'a, '_>,
-) -> Result<Vec<Item<'a>>> {
+fn walk<'a>(mut items: Vec<Item>, steps: &[Step], ctx: &Context<'a, '_>) -> Result<Vec<Item>> {
     let index = ctx.doc.index;
     let mut candidates = Vec::new();
     let mut scanned = Vec::new();
@@ -423,11 +428,11 @@ fn walk<'a>(
 /// order) at once, in document order: None for the axes that gain nothing
 /// from it.
 fn whole_set<'a>(
-    items: &[Item<'a>],
+    items: &[Item],
     axis: Axis,
     test: &Test<'_>,
     ctx: &Context<'a, '_>,
-) -> Result<Option<Vec<Item<'a>>>> {
+) -> Result<Option<Vec<Item>>> {
     let index = ctx.doc.index;
     let (_, tree_end) = ctx.tree_range();
     let keep = |j: u32| {
@@ -571,10 +576,10 @@ fn whole_set<'a>(
 /// test, grouped by parent so predicate positions count siblings, in
 /// document order. None when the test can't be read from the index.
 fn descendants_by_parent<'a>(
-    items: &[Item<'a>],
+    items: &[Item],
     step: &Step,
     ctx: &Context<'a, '_>,
-) -> Option<Result<Vec<Item<'a>>>> {
+) -> Option<Result<Vec<Item>>> {
     let test = match Test::resolve(&step.test, step.axis, ctx) {
         Ok(test) => test,
         Err(e) => return Some(Err(e)),
@@ -604,8 +609,25 @@ fn descendants_by_parent<'a>(
     if test.exact() {
         found.retain(|&n| test.matches(&Item::Node(n), ctx));
     }
+    // Predicates blind to the position need no sibling groups: the matches
+    // are in document order already. Each is tested once, so outside
+    // another predicate, keeping their answers would only take memory.
+    if !step.predicates.iter().any(Expr::positional) {
+        let mut items: Vec<Item> = found.into_iter().map(Item::Node).collect();
+        for p in &step.predicates {
+            let p = match p {
+                Expr::Memo(inner, _) if !ctx.nested => inner,
+                p => p,
+            };
+            items = match filter(items, p, ctx) {
+                Ok(items) => items,
+                Err(e) => return Some(Err(e)),
+            };
+        }
+        return Some(Ok(items));
+    }
     // Group by parent, keeping each group in document order.
-    let mut groups: Vec<(u32, Vec<Item<'a>>)> = Vec::new();
+    let mut groups: Vec<(u32, Vec<Item>)> = Vec::new();
     let mut slot: HashMap<u32, usize> = HashMap::new();
     for node in found {
         let parent = index.parent_of(ctx.order(node));
@@ -615,7 +637,7 @@ fn descendants_by_parent<'a>(
         });
         groups[at].1.push(Item::Node(node));
     }
-    let run = || -> Result<Vec<Item<'a>>> {
+    let run = || -> Result<Vec<Item>> {
         let mut out = Vec::new();
         for (_, mut group) in groups {
             for p in &step.predicates {
@@ -631,7 +653,7 @@ fn descendants_by_parent<'a>(
 /// `[@name = 'value']`, `['value' = @name]` and `[@name]`: answered from
 /// the element directly, without building its attribute list. None for any
 /// other predicate.
-fn quick_predicate(pred: &Expr, item: &Item<'_>, doc: Doc<'_>) -> Option<bool> {
+fn quick_predicate(pred: &Expr, item: &Item, doc: Doc<'_>) -> Option<bool> {
     let attr_name = |e: &Expr| match e {
         Expr::Path {
             absolute: false,
@@ -670,14 +692,18 @@ fn quick_predicate(pred: &Expr, item: &Item<'_>, doc: Doc<'_>) -> Option<bool> {
 
 /// Keeps the items for which `pred` holds, numbering them in the order
 /// given (axis order inside a step, document order in a filter).
-fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Result<Vec<Item<'a>>> {
+fn filter<'a>(items: Vec<Item>, pred: &Expr, ctx: &Context<'a, '_>) -> Result<Vec<Item>> {
     let size = items.len();
     ctx.spend(size)?;
-    let mut kept = Vec::new();
-    for (i, item) in items.into_iter().enumerate() {
+    // Kept in place: a second set as large would double the memory.
+    let mut kept = items;
+    let mut len = 0;
+    for i in 0..size {
+        let item = kept[i];
         if let Some(keep) = quick_predicate(pred, &item, ctx.doc) {
             if keep {
-                kept.push(item);
+                kept[len] = item;
+                len += 1;
             }
             continue;
         }
@@ -685,6 +711,7 @@ fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Resul
             item,
             position: i + 1,
             size,
+            nested: true,
             ..*ctx
         };
         let keep = match eval(pred, &inner)? {
@@ -692,9 +719,11 @@ fn filter<'a>(items: Vec<Item<'a>>, pred: &Expr, ctx: &Context<'a, '_>) -> Resul
             other => boolean(&other),
         };
         if keep {
-            kept.push(item);
+            kept[len] = item;
+            len += 1;
         }
     }
+    kept.truncate(len);
     Ok(kept)
 }
 
@@ -840,7 +869,7 @@ impl<'t> Test<'t> {
         }
     }
 
-    fn matches(&self, item: &Item<'_>, ctx: &Context<'_, '_>) -> bool {
+    fn matches(&self, item: &Item, ctx: &Context<'_, '_>) -> bool {
         let kind = |n: &NodeId| ctx.kind(*n);
         match (self, item) {
             (Test::Node, _) => true,
@@ -857,7 +886,9 @@ impl<'t> Test<'t> {
                 kind(n) == PI && target.is_none_or(|t| ctx.pi_target(*n) == Some(t))
             }
             (Test::AnyAttribute, Item::Attr { .. }) => true,
-            (Test::AttributeName(name), Item::Attr { name: a, .. }) => a == name,
+            (Test::AttributeName(name), Item::Attr { owner, index, .. }) => {
+                ctx.doc.attr_at(*owner, *index).0 == *name
+            }
             (Test::XmlElement { local, ns, .. }, Item::Node(n)) => {
                 kind(n) == ELEMENT && ctx.tag(*n) == Some(local) && ctx.ns_id(*n) == *ns
             }
@@ -871,29 +902,23 @@ impl<'t> Test<'t> {
     }
 }
 
-fn attributes<'a>(n: NodeId, doc: Doc<'a>) -> impl Iterator<Item = Item<'a>> + 'a {
+fn attributes<'a>(n: NodeId, doc: Doc<'a>) -> impl Iterator<Item = Item> + 'a {
     doc.tree
         .attrs(n)
         .enumerate()
-        .map(move |(i, (ns, name, value))| Item::Attr {
+        .map(move |(i, (ns, _, _))| Item::Attr {
             owner: n,
             index: i as u32,
-            name,
             ns: match ns {
                 html::AttrNs::Host(id) => id,
                 _ => 0,
             },
-            value,
         })
 }
 
 /// The nodes on `axis` from `item`, in axis order (nearest first for
 /// reverse axes), produced lazily.
-fn axis<'a>(
-    item: Item<'a>,
-    axis: Axis,
-    ctx: &Context<'a, '_>,
-) -> Box<dyn Iterator<Item = Item<'a>> + 'a> {
+fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<Item = Item> + 'a> {
     let doc = ctx.doc;
     let (tree, index) = (doc.tree, doc.index);
     let (top, tree_end) = ctx.tree_range();
@@ -1098,7 +1123,7 @@ fn compare<'a>(op: Op, a: Value<'a>, b: Value<'a>, ctx: &Context<'a, '_>) -> boo
 }
 
 /// A node's value as the type it is compared with.
-fn atom_like<'a>(item: &Item<'a>, other: &Value<'_>, ctx: &Context<'a, '_>) -> Value<'a> {
+fn atom_like<'a>(item: &Item, other: &Value<'_>, ctx: &Context<'a, '_>) -> Value<'a> {
     match other {
         Value::Num(_) => Value::Num(parse_number(&ctx.string_value(item))),
         _ => Value::Str(ctx.string_value(item)),
@@ -1140,7 +1165,7 @@ impl<'a> Args<'_, 'a> {
     }
 
     /// The context node.
-    pub fn context(&self) -> Item<'a> {
+    pub fn context(&self) -> Item {
         self.ctx.item
     }
 
@@ -1167,7 +1192,7 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
     let arity = |min: usize, max: usize| arity(name, args.len(), min, max);
     let arg = |i: usize| eval(&args[i], ctx);
     let str_arg = |i: usize| -> Result<String> { Ok(string(&eval(&args[i], ctx)?, ctx)) };
-    let nodes_arg = |i: usize| -> Result<Vec<Item<'a>>> {
+    let nodes_arg = |i: usize| -> Result<Vec<Item>> {
         match eval(&args[i], ctx)? {
             Value::Nodes(n) => Ok(n),
             _ => Err(format!("{name}() needs a node-set argument")),
@@ -1175,7 +1200,7 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
     };
     // The context node as a one-item node-set, for functions whose
     // argument defaults to it.
-    let context_or = |i: usize| -> Result<Vec<Item<'a>>> {
+    let context_or = |i: usize| -> Result<Vec<Item>> {
         if args.len() > i {
             nodes_arg(i)
         } else {
