@@ -551,7 +551,7 @@ impl Response {
     /// The body decoded the way a browser would pick the encoding.
     fn text(&self, py: Python<'_>) -> String {
         let r = self.inner.clone();
-        py.detach(move || r.text())
+        py.detach(move || r.text().into_owned())
     }
 
     /// Decodes and parses the body; returns the document's root node.

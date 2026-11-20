@@ -471,7 +471,7 @@ impl Engine {
                                     item.extract_tracked(root, page.as_ref(), base.as_ref(), &ctx);
                                 done.item = Some(values);
                                 if !notes.is_empty() {
-                                    done.html = Some(text.clone());
+                                    done.html = Some(text.to_string());
                                 }
                                 done.notes = notes;
                             }

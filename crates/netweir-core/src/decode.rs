@@ -2,13 +2,17 @@
 //! mark, then the Content-Type header, then a `<meta>` charset near the
 //! top of the page, then a guess from the bytes themselves.
 
+use std::borrow::Cow;
+
 use encoding_rs::{Encoding, UTF_8};
 
-pub fn decode(body: &[u8], content_type: Option<&str>) -> String {
+/// Borrowed from `body` when that's valid UTF-8 already, so a large page
+/// isn't held twice.
+pub fn decode<'a>(body: &'a [u8], content_type: Option<&str>) -> Cow<'a, str> {
     match encoding_of(body, content_type) {
-        Found::Utf32 { big_endian } => utf32(body, big_endian),
+        Found::Utf32 { big_endian } => Cow::Owned(utf32(body, big_endian)),
         // `decode` strips a BOM and replaces malformed sequences with U+FFFD.
-        Found::Encoding(encoding) => encoding.decode(body).0.into_owned(),
+        Found::Encoding(encoding) => encoding.decode(body).0,
     }
 }
 

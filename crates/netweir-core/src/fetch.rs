@@ -303,8 +303,9 @@ impl Response {
             .map(|(_, v)| v.as_str())
     }
 
-    /// The body as text, in the encoding a browser would pick.
-    pub fn text(&self) -> String {
+    /// The body as text, in the encoding a browser would pick: borrowed
+    /// from the body when that's UTF-8 already.
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
         decode(&self.body, self.header("content-type"))
     }
 

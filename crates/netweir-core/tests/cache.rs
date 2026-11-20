@@ -521,7 +521,10 @@ fn quiet(dir: &Dir) -> CrawlSettings {
 }
 
 fn texts(events: &[Event]) -> Vec<String> {
-    pages(events).iter().map(|(_, r)| r.text()).collect()
+    pages(events)
+        .iter()
+        .map(|(_, r)| r.text().into_owned())
+        .collect()
 }
 
 #[tokio::test]
