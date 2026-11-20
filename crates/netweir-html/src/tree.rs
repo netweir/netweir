@@ -130,6 +130,10 @@ pub(crate) struct TreeBuilder {
     /// How many HTML elements of each tag are open, so "is there a p in
     /// button scope" is answered without walking the stack when none is.
     counts: [u32; 256],
+    /// For each entry of the stack, whether a p is in button scope with
+    /// the stack cut off there. Nearly every block start tag asks, and a
+    /// p under thousands of open divs made each ask walk them all.
+    p_in_scope: Vec<bool>,
     /// How many open elements have each name, for those `counts` doesn't
     /// cover: HTML elements of no known tag, and foreign elements. Keyed
     /// by [`name_key`]: two names can share a slot, which only makes a
@@ -600,6 +604,7 @@ impl TreeBuilder {
             selected: HashMap::new(),
             option_select: HashMap::new(),
             counts: [0; 256],
+            p_in_scope: Vec::with_capacity(64),
             names: Box::new([0; NAME_SLOTS]),
             on_stack: vec![false; capacity / 24 + 1024],
             spans: false,
@@ -818,17 +823,32 @@ impl TreeBuilder {
     fn push_open(&mut self, o: Open) {
         self.count(o, 1);
         self.open.push(o);
+        let below = self.p_in_scope.last().copied().unwrap_or(false);
+        self.p_in_scope
+            .push(o.is(Tag::P) || below && !scope_boundary(o, Scope::Button));
     }
 
     fn remove_open_at(&mut self, i: usize) -> Open {
         let o = self.open.remove(i);
         self.count(o, -1);
+        self.p_in_scope_from(i);
         o
     }
 
     fn insert_open_at(&mut self, i: usize, o: Open) {
         self.count(o, 1);
         self.open.insert(i, o);
+        self.p_in_scope_from(i);
+    }
+
+    /// `p_in_scope` again from entry `i` up, after the stack changed there.
+    fn p_in_scope_from(&mut self, i: usize) {
+        self.p_in_scope.truncate(i);
+        let mut below = self.p_in_scope.last().copied().unwrap_or(false);
+        for &o in &self.open[i..] {
+            below = o.is(Tag::P) || below && !scope_boundary(o, Scope::Button);
+            self.p_in_scope.push(below);
+        }
     }
 
     fn open_count(&self, tag: Tag) -> u32 {
@@ -837,6 +857,7 @@ impl TreeBuilder {
 
     fn pop(&mut self) -> Option<Open> {
         let o = self.open.pop()?;
+        self.p_in_scope.pop();
         self.count(o, -1);
         if o.is(Tag::Option) {
             self.option_popped(o.id);
@@ -864,15 +885,23 @@ impl TreeBuilder {
         if tag != Tag::Other && self.open_count(tag) == 0 {
             return false;
         }
-        for &o in self.open.iter().rev() {
-            if o.is(tag) {
-                return true;
+        let walk = || {
+            for &o in self.open.iter().rev() {
+                if o.is(tag) {
+                    return true;
+                }
+                if scope_boundary(o, scope) {
+                    return false;
+                }
             }
-            if scope_boundary(o, scope) {
-                return false;
-            }
+            false
+        };
+        if tag == Tag::P && scope == Scope::Button {
+            let known = self.p_in_scope.last().copied().unwrap_or(false);
+            debug_assert_eq!(known, walk(), "p_in_scope is out of step");
+            return known;
         }
-        false
+        walk()
     }
 
     fn in_scope_where(&self, f: impl Fn(Tag) -> bool, scope: Scope) -> bool {
