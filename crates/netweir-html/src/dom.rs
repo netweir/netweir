@@ -48,9 +48,11 @@ const IN_SOURCE: u32 = 1 << 31;
 /// `start` is its index in `extras`.
 const IN_EXTRA: u32 = 1 << 30;
 
-/// The most input a document can hold. Spans keep offsets in 30 bits, and
-/// the parse buffer, which only holds copies of what the input says, stays
-/// well under that.
+/// The most input a document can hold. Spans keep offsets in 30 bits.
+/// The parse buffer, which holds the strings the parser had to change,
+/// can outgrow the input (each NUL it replaces is three bytes of U+FFFD),
+/// so a string that would take it past 30 bits goes in a string of its
+/// own instead.
 pub const MAX_INPUT: usize = 1 << 29;
 
 #[derive(Debug, Clone, Copy)]
@@ -376,10 +378,12 @@ impl Document {
     }
 
     pub(crate) fn push_str(&mut self, s: &str) -> Span {
+        // Past this, an offset would read as one of the flags.
+        if self.buf.len() + s.len() >= IN_EXTRA as usize {
+            return self.push_stable(s);
+        }
         let start = self.buf.len() as u32;
         self.buf.push_str(s);
-        // Past this, an offset would read as one of the flags.
-        debug_assert!(self.buf.len() < IN_EXTRA as usize, "buffer over 2^30 bytes");
         Span {
             start,
             end: self.buf.len() as u32,
@@ -635,7 +639,10 @@ impl Document {
                     start: span.start,
                     end: span.end + text.len() as u32,
                 }
-            } else if in_buf && span.end as usize == self.buf.len() {
+            } else if in_buf
+                && span.end as usize == self.buf.len()
+                && self.buf.len() + text.len() < IN_EXTRA as usize
+            {
                 self.buf.push_str(text);
                 Span {
                     start: span.start,
@@ -1083,6 +1090,7 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    use super::{Data, Document, IN_EXTRA, Kind};
     use crate::{AttrNs, parse};
 
     /// Names as tokenized, lowercase and without a prefix, from attrs();
@@ -1130,5 +1138,27 @@ mod tests {
         assert_eq!(doc.outer_html(svg), r#"<svg viewBox="1"></svg>"#);
         assert!(doc.remove_attr(svg, "viewBox"));
         assert_eq!(doc.outer_html(svg), "<svg></svg>");
+    }
+
+    /// The parse buffer can grow past the input (a NUL becomes three
+    /// bytes of U+FFFD), and an offset past 2^30 read as a flag: a string
+    /// written there came back as another one, or panicked.
+    #[test]
+    fn strings_past_two_to_the_thirty_bytes_of_buffer_read_back() {
+        let mut doc = Document::empty();
+        doc.buf = "x".repeat(IN_EXTRA as usize - 4);
+        let near = doc.push_str("abcdefgh");
+        let past = doc.push_str("ijkl");
+        assert_eq!(doc.str(near), "abcdefgh");
+        assert_eq!(doc.str(past), "ijkl");
+        assert!(doc.buf.len() < IN_EXTRA as usize);
+        // A text node at the end of the buffer grows into a string of its
+        // own rather than past the limit.
+        doc.buf.truncate(IN_EXTRA as usize - 4);
+        let at = doc.push_str("ab");
+        let text = doc.add(Data::Text(at));
+        doc.append_text(text, "cdef");
+        assert!(matches!(doc.kind(text), Kind::Text("abcdef")));
+        assert!(doc.buf.len() < IN_EXTRA as usize);
     }
 }

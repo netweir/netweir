@@ -103,6 +103,13 @@ enum Scope {
 
 const MARKER: NodeId = NONE;
 
+/// An element a later tag's attributes are merged into: the names it
+/// has, and where the spare slots after its attributes end.
+struct Merged {
+    names: std::collections::HashSet<String>,
+    room: u32,
+}
+
 pub(crate) struct TreeBuilder {
     pub(crate) doc: Document,
     /// From [`Options::max_depth`].
@@ -123,10 +130,16 @@ pub(crate) struct TreeBuilder {
     skip_newline: bool,
     switch: Option<TextMode>,
     done: bool,
+    /// Set when the end of the input closed a template and is to be read
+    /// again in the mode that leaves: the caller loops on it, so a page of
+    /// nested templates can't nest calls as deep.
+    eof_again: bool,
     /// Each select's selected option, and each option's select, for
     /// `<selectedcontent>`.
     selected: HashMap<NodeId, NodeId>,
     option_select: HashMap<NodeId, NodeId>,
+    /// The `<html>` and `<body>` a later tag of theirs has added to.
+    merged: HashMap<NodeId, Merged>,
     /// How many HTML elements of each tag are open, so "is there a p in
     /// button scope" is answered without walking the stack when none is.
     counts: [u32; 256],
@@ -601,8 +614,10 @@ impl TreeBuilder {
             skip_newline: false,
             switch: None,
             done: false,
+            eof_again: false,
             selected: HashMap::new(),
             option_select: HashMap::new(),
+            merged: HashMap::new(),
             counts: [0; 256],
             p_in_scope: Vec::with_capacity(64),
             names: Box::new([0; NAME_SLOTS]),
@@ -1797,56 +1812,84 @@ impl TreeBuilder {
     }
 
     /// Adds the token's attributes that `id` doesn't already have, as a
-    /// second `<html>` or `<body>` does.
+    /// second `<html>` or `<body>` does. The names it has are kept in a
+    /// set, and its attributes move to the end of the list with room to
+    /// grow: asking every one, or moving them all, on each merge made a
+    /// page of many such tags cost the square of their attributes.
     fn merge_attrs(&mut self, id: NodeId, s: &Start<'_>) {
+        let Some(e) = self.doc.element(id) else {
+            return;
+        };
+        let old = e.attrs;
+        let merged = self.merged.entry(id).or_insert_with(|| Merged {
+            names: self.doc.attrs(id).map(|(_, n, _)| n.to_owned()).collect(),
+            room: old.end,
+        });
+        let mut adds = Vec::new();
         for (i, (n, v)) in s.attrs().enumerate() {
-            if self.doc.attrs(id).any(|(_, name, _)| name == n) {
-                continue;
+            // The token has dropped its own duplicates already.
+            if !merged.names.contains(n) {
+                merged.names.insert(n.to_owned());
+                adds.push((i, n, v));
             }
-            let written = s.attrs.and_then(|t| t.attr_span(i));
-            let name = self.doc.intern(n);
-            let value = self.doc.intern(v);
-            let attr = Attr {
+        }
+        if adds.is_empty() {
+            return;
+        }
+        let len = self.doc.attrs.len() as u32;
+        let (have, more) = (old.end - old.start, adds.len() as u32);
+        let start = if old.end == len || old.end + more <= merged.room {
+            old.start
+        } else {
+            // Moved to the end, with as much room again after them.
+            self.doc
+                .attrs
+                .extend_from_within(old.start as usize..old.end as usize);
+            let empty = Span { start: 0, end: 0 };
+            let spare = Attr {
                 ns: AttrNs::None,
-                name,
-                value,
+                name: empty,
+                value: empty,
             };
-            let len = self.doc.attrs.len() as u32;
-            let Data::Element(e) = &mut self.doc.nodes[id as usize].data else {
-                return;
-            };
-            if e.attrs.end == len {
-                e.attrs.end += 1;
-                self.doc.attrs.push(attr);
-            } else {
-                let old = e.attrs;
-                e.attrs = Span {
-                    start: len,
-                    end: len + (old.end - old.start) + 1,
-                };
-                self.doc
-                    .attrs
-                    .extend_from_within(old.start as usize..old.end as usize);
-                self.doc.attrs.push(attr);
-                // The old ones moved; where they were written goes along.
-                if self.spans
-                    && let Some(p) = self.doc.positions.as_deref_mut()
-                {
-                    for k in 0..(old.end - old.start) as usize {
-                        let at = p.attrs.get(old.start as usize + k).copied();
-                        if let Some(at) = at {
-                            Positions::set(&mut p.attrs, len as usize + k, at);
-                        }
+            let room = have + more;
+            self.doc.attrs.extend((0..room).map(|_| spare));
+            merged.room = len + have + room;
+            // The old ones moved; where they were written goes along.
+            if self.spans
+                && let Some(p) = self.doc.positions.as_deref_mut()
+            {
+                for k in 0..have as usize {
+                    let at = p.attrs.get(old.start as usize + k).copied();
+                    if let Some(at) = at {
+                        Positions::set(&mut p.attrs, len as usize + k, at);
                     }
                 }
             }
+            len
+        };
+        let mut at = start + have;
+        for (i, n, v) in adds {
+            let written = s.attrs.and_then(|t| t.attr_span(i));
+            let attr = Attr {
+                ns: AttrNs::None,
+                name: self.doc.intern(n),
+                value: self.doc.intern(v),
+            };
+            if at as usize == self.doc.attrs.len() {
+                self.doc.attrs.push(attr);
+            } else {
+                self.doc.attrs[at as usize] = attr;
+            }
             if self.spans
                 && let Some(p) = self.doc.positions.as_deref_mut()
-                && let Some(at) = written
+                && let Some(w) = written
             {
-                let index = self.doc.attrs.len() - 1;
-                Positions::set(&mut p.attrs, index, [at.start as u32, at.end as u32]);
+                Positions::set(&mut p.attrs, at as usize, [w.start as u32, w.end as u32]);
             }
+            at += 1;
+        }
+        if let Data::Element(e) = &mut self.doc.nodes[id as usize].data {
+            e.attrs = Span { start, end: at };
         }
     }
 
@@ -3284,7 +3327,7 @@ impl TreeBuilder {
                 self.clear_active_to_marker();
                 self.template_modes.pop();
                 self.reset_mode();
-                self.process(t);
+                self.eof_again = true;
             }
         }
     }
@@ -3671,6 +3714,9 @@ impl Sink for TreeBuilder {
         // Errors at the end are at the end of the input.
         self.at = [self.doc.src.len() as u32; 2];
         self.process(Tok::Eof);
+        while std::mem::take(&mut self.eof_again) {
+            self.process(Tok::Eof);
+        }
     }
 
     fn error(&mut self, code: &'static str, at: usize) {
@@ -3714,7 +3760,8 @@ pub struct Options {
     /// Keep the tree at most this deep, as Chromium does at 512: once more
     /// elements are open than this, a node goes beside the current one
     /// instead of inside it. Only the tree gets flatter; the parse goes on
-    /// as before, and every element is still there. `None` is no limit.
+    /// as before, and every element is still there. `None` is no limit;
+    /// `Some(0)` is taken as `Some(1)`, as the root element holds the rest.
     pub max_depth: Option<usize>,
     /// Whether a `<template shadowrootmode>` attaches a shadow root to the
     /// element it's in, the document's "allow declarative shadow roots".
@@ -3905,7 +3952,7 @@ impl Parser {
         let mut builder = TreeBuilder::new(capacity, options.scripting);
         builder.doc.src = String::with_capacity(capacity);
         builder.doc.scripting = options.scripting;
-        builder.max_depth = options.max_depth;
+        builder.max_depth = options.max_depth.map(|d| d.max(1));
         builder.spans = options.spans;
         builder.errors = options.errors;
         builder.shadow_roots = options
@@ -4177,6 +4224,20 @@ mod tests {
         .unwrap();
         let plain = parse(shallow, false);
         assert_eq!(same.inner_html(same.root()), plain.inner_html(plain.root()));
+        // A limit of none at all still keeps every element, under the root.
+        let at = |max_depth| {
+            let doc = parse_with(
+                shallow,
+                Options {
+                    max_depth: Some(max_depth),
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            doc.inner_html(doc.root())
+        };
+        assert_eq!(at(0), at(1));
+        assert!(at(0).contains("<div></div><p></p>a<b></b>b"), "{}", at(0));
     }
 
     #[test]
@@ -4450,5 +4511,86 @@ mod hostile {
         let doc = parse(&html, false);
         assert!(doc.buf.len() + doc.extras.iter().map(|e| e.len()).sum::<usize>() < 4 * html.len());
         assert!(doc.text(0).ends_with('b'));
+    }
+
+    fn attributes(n: usize) -> String {
+        (0..n).map(|i| format!(" a{i}=1")).collect()
+    }
+
+    /// Each attribute was checked against every one before it for a
+    /// duplicate, and each merge into `<body>` against all it had.
+    #[test]
+    fn many_attributes_cost_linear_time() {
+        grows_linearly(|n| format!("<p{}>", attributes(n)));
+        grows_linearly(|n| format!("<p{}&amp;>", attributes(n)));
+        grows_linearly(|n| format!("<svg{}>", attributes(n)));
+        grows_linearly(|n| format!("<body{0}><body{0}>", attributes(n / 2)));
+        // Text between merges moved all of body's attributes to the end of
+        // the list each time.
+        grows_linearly(|n| {
+            (0..n / 4)
+                .map(|i| format!("<body x{i}=1><p a=1>"))
+                .collect()
+        });
+        let doc = parse("<body a=1><p b=2><body c=3 a=4><i d=5><body e=6>", false);
+        let body = (0..doc.len() as NodeId)
+            .find(|&n| doc.lower_name(n) == Some("body"))
+            .unwrap();
+        let attrs: Vec<_> = doc.attrs(body).map(|(_, n, v)| (n, v)).collect();
+        assert_eq!(attrs, [("a", "1"), ("c", "3"), ("e", "6")]);
+    }
+
+    /// One tag of a million attributes is one step of the tokenizer,
+    /// which read the clock only between steps.
+    #[test]
+    fn a_budget_holds_inside_a_tag_of_many_attributes() {
+        let none = Options {
+            budget: Some(Duration::ZERO),
+            ..Options::default()
+        };
+        for html in [
+            format!("<p{}>", attributes(300_000)),
+            format!("<p{}&amp;>", attributes(300_000)),
+        ] {
+            match parse_with(&html, none) {
+                Err(ParseError::Timeout { parsed, .. }) => assert!(parsed < html.len()),
+                other => panic!("expected a timeout, got {:?}", other.map(|d| d.len())),
+            }
+        }
+    }
+
+    /// The end of the input closed one open template and read the end
+    /// again, a call deeper each time: 40,000 nested templates overflowed
+    /// an 8 MB stack.
+    #[test]
+    fn the_end_of_input_under_deep_templates_keeps_to_a_small_stack() {
+        for unit in [
+            "<template>",
+            "<div><template shadowrootmode=open>",
+            "<table><caption><template>",
+            "<template><tr>",
+            "<template><col>",
+            "<template><td>",
+        ] {
+            let html = unit.repeat(100_000);
+            let sizes = std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    let doc = parse(&html, false);
+                    let fragment = parse_fragment(&html, Ns::Html, "div", false);
+                    let with_errors = Options {
+                        errors: true,
+                        max_depth: Some(512),
+                        ..Options::default()
+                    };
+                    let checked = parse_with(&html, with_errors).unwrap();
+                    (doc.len(), fragment.len(), checked.errors().len())
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            assert!(sizes.0 > 100_000 && sizes.1 > 100_000, "{unit}: {sizes:?}");
+            assert!(sizes.2 >= 100_000, "{unit}: an error for each template");
+        }
     }
 }
