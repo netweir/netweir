@@ -1126,7 +1126,7 @@ mod tests {
         let svg = (0..doc.len() as u32)
             .find(|&n| doc.lower_name(n) == Some("svg"))
             .unwrap();
-        doc.set_attr(svg, "viewBox", "1");
+        doc.set_attr(svg, "viewBox", "1").unwrap();
         assert_eq!(doc.outer_html(svg), r#"<svg viewBox="1"></svg>"#);
         assert!(doc.remove_attr(svg, "viewBox"));
         assert_eq!(doc.outer_html(svg), "<svg></svg>");

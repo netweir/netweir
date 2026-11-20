@@ -1268,7 +1268,8 @@ impl<'v> Builder<'v> {
             let n = out
                 .doc
                 .tree_to_build()
-                .create_element(html::Ns::Xml, &qname);
+                .create_element(html::Ns::Xml, &qname)
+                .expect("an XML name is one an element may have");
             node = Some(n);
             if !ns.is_empty() {
                 let names = out.doc.xml_names_mut();
@@ -1283,7 +1284,10 @@ impl<'v> Builder<'v> {
                 } else {
                     html::AttrNs::Host(out.doc.xml_names_mut().intern(uri))
                 };
-                out.doc.tree_to_build().add_attr(n, attr_ns, key, value);
+                out.doc
+                    .tree_to_build()
+                    .add_attr(n, attr_ns, key, value)
+                    .expect("an XML name is one an attribute may have");
             }
             let names = out.doc.xml_names_mut();
             // A node read alone keeps what the elements it was cut from
@@ -1903,6 +1907,7 @@ fn write(node: Node<'_>, names: &XmlNames, out: &mut String) {
 pub(crate) fn pretty(node: Node<'_>, names: &XmlNames) -> String {
     let mut out = String::new();
     let line = |out: &mut String, depth: usize, text: &str| {
+        let depth = depth.min(crate::document::MAX_PRETTY_INDENT);
         out.extend(std::iter::repeat_n(' ', depth));
         out.push_str(text);
         out.push('\n');

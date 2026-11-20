@@ -188,9 +188,19 @@ impl From<NodeId> for Content<'_> {
     }
 }
 
+/// The tree's refusal, as this crate's. The names are checked before an
+/// edit, so it would take a name the checks let through.
+fn tree_error(e: html::EditError) -> EditError {
+    EditError::Invalid(e.to_string())
+}
+
 fn invalid<T>(why: impl Into<String>) -> Result<T, EditError> {
     Err(EditError::Invalid(why.into()))
 }
+
+/// How many levels deep [`Node::pretty`] indents; a deeper tree's lines
+/// get as many spaces as this, so its output stays in proportion to it.
+pub(crate) const MAX_PRETTY_INDENT: usize = 100;
 
 /// Elements written without an end tag.
 const VOID: [&str; 18] = [
@@ -667,9 +677,11 @@ impl Document {
         }
         self.edit(|| {
             let tree = unsafe { self.tree_mut() };
-            let n = tree.create_element(html::Ns::Html, tag);
+            let n = tree
+                .create_element(html::Ns::Html, tag)
+                .map_err(tree_error)?;
             for (name, value) in attrs {
-                tree.set_attr(n, name, value);
+                tree.set_attr(n, name, value).map_err(tree_error)?;
             }
             self.mark_detached(n);
             Ok(NodeId(n as usize))
@@ -696,9 +708,12 @@ impl Document {
         }
         self.edit(|| {
             let tree = unsafe { self.tree_mut() };
-            let n = tree.create_element(html::Ns::Xml, tag);
+            let n = tree
+                .create_element(html::Ns::Xml, tag)
+                .map_err(tree_error)?;
             for (name, value) in attrs {
-                tree.add_attr(n, html::AttrNs::None, name, value);
+                tree.add_attr(n, html::AttrNs::None, name, value)
+                    .map_err(tree_error)?;
             }
             self.mark_detached(n);
             Ok(NodeId(n as usize))
@@ -879,7 +894,8 @@ unsafe fn strip_prefixes(doc: &Document, n: u32) {
     let tree = unsafe { doc.tree_mut() };
     let qname = tree.lower_name(n).unwrap_or("").to_string();
     if let Some((_, local)) = qname.split_once(':') {
-        tree.rename(n, local);
+        tree.rename(n, local)
+            .expect("part of an XML name is a name");
     }
     let attrs: Vec<(String, String)> = tree
         .attrs_written(n)
@@ -911,7 +927,8 @@ unsafe fn strip_prefixes(doc: &Document, n: u32) {
         .filter(|(_, gone)| !**gone)
         .map(|(((_, value), name), _)| (html::AttrNs::None, name.as_str(), value.as_str()))
         .collect();
-    tree.set_attrs(n, &kept);
+    tree.set_attrs(n, &kept)
+        .expect("parts of XML names are names");
 }
 
 impl fmt::Debug for Document {
@@ -1167,6 +1184,10 @@ impl<'a> Node<'a> {
         out
     }
 
+    /// A loop over a stack, not a call per level, so a deep page can't
+    /// run out of stack; and the indent stops growing at
+    /// [`MAX_PRETTY_INDENT`] levels, so it can't cost the square of the
+    /// depth either.
     fn pretty_into(&self, depth: usize, out: &mut String) {
         // Where whitespace matters, or the content is raw text.
         const AS_IS: [&str; 9] = [
@@ -1180,42 +1201,56 @@ impl<'a> Node<'a> {
             "noframes",
             "plaintext",
         ];
-        let line = |out: &mut String, text: &str| {
-            out.extend(std::iter::repeat_n(' ', depth));
+        let line = |out: &mut String, depth: usize, text: &str| {
+            out.extend(std::iter::repeat_n(' ', depth.min(MAX_PRETTY_INDENT)));
             out.push_str(text);
             out.push('\n');
         };
-        match (self.kind(), self.tag()) {
-            (NodeKind::Document, _) => {
-                for child in self.children() {
-                    child.pretty_into(depth, out);
+        enum Step<'a> {
+            Enter(Node<'a>, usize),
+            Leave(String, usize),
+        }
+        let mut stack = vec![Step::Enter(*self, depth)];
+        let push_children = |stack: &mut Vec<Step<'a>>, n: &Node<'a>, depth: usize| {
+            let children: Vec<Node<'a>> = n.children().collect();
+            stack.extend(children.into_iter().rev().map(|c| Step::Enter(c, depth)));
+        };
+        while let Some(step) = stack.pop() {
+            let (n, depth) = match step {
+                Step::Leave(end, depth) => {
+                    line(out, depth, &end);
+                    continue;
                 }
+                Step::Enter(n, depth) => (n, depth),
+            };
+            match (n.kind(), n.tag()) {
+                (NodeKind::Document, _) => push_children(&mut stack, &n, depth),
+                (NodeKind::Element, Some(tag)) if AS_IS.contains(&tag) => {
+                    line(out, depth, &n.html())
+                }
+                (NodeKind::Element, Some(tag)) => {
+                    let start = n.html_alone();
+                    line(out, depth, &start);
+                    if VOID.contains(&tag) {
+                        continue;
+                    }
+                    // The name as the start tag has it: `tag()` lowercases
+                    // SVG's `foreignObject`.
+                    let name = start[1..]
+                        .split(|c: char| c.is_ascii_whitespace() || c == '>')
+                        .next()
+                        .unwrap_or(tag);
+                    stack.push(Step::Leave(format!("</{name}>"), depth));
+                    push_children(&mut stack, &n, depth + 1);
+                }
+                (NodeKind::Text, _) => {
+                    let text = n.html_alone();
+                    if !text.trim().is_empty() {
+                        line(out, depth, text.trim());
+                    }
+                }
+                _ => line(out, depth, &n.html_alone()),
             }
-            (NodeKind::Element, Some(tag)) if AS_IS.contains(&tag) => line(out, &self.html()),
-            (NodeKind::Element, Some(tag)) => {
-                let start = self.html_alone();
-                line(out, &start);
-                if VOID.contains(&tag) {
-                    return;
-                }
-                for child in self.children() {
-                    child.pretty_into(depth + 1, out);
-                }
-                // The name as the start tag has it: `tag()` lowercases
-                // SVG's `foreignObject`.
-                let name = start[1..]
-                    .split(|c: char| c.is_ascii_whitespace() || c == '>')
-                    .next()
-                    .unwrap_or(tag);
-                line(out, &format!("</{name}>"));
-            }
-            (NodeKind::Text, _) => {
-                let text = self.html_alone();
-                if !text.trim().is_empty() {
-                    line(out, text.trim());
-                }
-            }
-            _ => line(out, &self.html_alone()),
         }
     }
 

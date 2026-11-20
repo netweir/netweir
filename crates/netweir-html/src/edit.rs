@@ -32,6 +32,11 @@ pub enum EditError {
     /// isn't an HTML element that may (`div`, `span`, `section`, a
     /// custom element...).
     NotAShadowHost,
+    /// An element or attribute name the DOM's `createElement` and
+    /// `setAttribute` refuse: empty, or with whitespace, `/`, `>`, `=`, a
+    /// quote, NUL or another control character in it. Written out, such a
+    /// name would make markup that parses as something else.
+    InvalidName,
 }
 
 impl std::fmt::Display for EditError {
@@ -47,17 +52,32 @@ impl std::fmt::Display for EditError {
                 "the node was removed from its document, so it can't be used again"
             }
             EditError::NotAShadowHost => "the element can't have a shadow root, or has one",
+            EditError::InvalidName => {
+                "a name can't be empty or hold whitespace, '/', '>', '=', a quote or a control character"
+            }
         })
     }
 }
 
 impl std::error::Error for EditError {}
 
+/// An element or attribute name, or [`EditError::InvalidName`].
+fn checked(name: &str) -> Result<&str, EditError> {
+    let bad = |c: char| {
+        c.is_ascii_whitespace() || c.is_control() || matches!(c, '/' | '>' | '=' | '"' | '\'')
+    };
+    if name.is_empty() || name.chars().any(bad) {
+        return Err(EditError::InvalidName);
+    }
+    Ok(name)
+}
+
 impl Document {
     /// A new element, not yet in the tree. HTML names are lowercased, as
-    /// `createElement` does.
-    pub fn create_element(&mut self, ns: Ns, name: &str) -> NodeId {
-        let (tag, name) = self.name_element(ns, name);
+    /// `createElement` does, and a name it refuses is
+    /// [`EditError::InvalidName`].
+    pub fn create_element(&mut self, ns: Ns, name: &str) -> Result<NodeId, EditError> {
+        let (tag, name) = self.name_element(ns, checked(name)?);
         let at = self.attrs.len() as u32;
         let contents = if ns == Ns::Html && tag == Tag::Template {
             self.add(Data::Fragment)
@@ -77,7 +97,7 @@ impl Document {
         {
             hosts.insert(contents, id);
         }
-        id
+        Ok(id)
     }
 
     pub fn create_text(&mut self, text: &str) -> NodeId {
@@ -263,13 +283,17 @@ impl Document {
     /// Sets an attribute, replacing the first one of the same qualified name
     /// in any namespace (`xlink:href`), as `setAttribute` does. HTML
     /// elements' attribute names are lowercased; SVG's and MathML's keep the
-    /// case they're given.
+    /// case they're given. A name `setAttribute` refuses is
+    /// [`EditError::InvalidName`].
     /// A node taken out with [`Document::remove`] is left alone.
-    pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
+    pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) -> Result<(), EditError> {
+        let name = checked(name)?;
         if self.is_removed(id) {
-            return;
+            return Ok(());
         }
-        let Some(e) = self.element(id) else { return };
+        let Some(e) = self.element(id) else {
+            return Ok(());
+        };
         let ns = e.ns;
         let given = name;
         let name = stored_attr_name(ns, given);
@@ -290,15 +314,24 @@ impl Document {
             }
             true
         });
+        Ok(())
     }
 
     /// Adds an attribute as given, after the others, without replacing one
     /// of the same name: for building XML, where the caller has already
-    /// checked names.
+    /// checked names. One no attribute may have is
+    /// [`EditError::InvalidName`] all the same.
     /// A node taken out with [`Document::remove`] is left alone.
-    pub fn add_attr(&mut self, id: NodeId, ns: AttrNs, name: &str, value: &str) {
+    pub fn add_attr(
+        &mut self,
+        id: NodeId,
+        ns: AttrNs,
+        name: &str,
+        value: &str,
+    ) -> Result<(), EditError> {
+        let name = checked(name)?;
         if self.is_removed(id) {
-            return;
+            return Ok(());
         }
         let name = self.push_stable(name);
         let value = self.push_stable(value);
@@ -312,22 +345,28 @@ impl Document {
         {
             e.attrs.end += 1;
             self.attrs.push(attr);
-            return;
+            return Ok(());
         }
         self.rewrite_attrs(id, |_, attrs| {
             attrs.push(attr);
             true
         });
+        Ok(())
     }
 
-    /// Replaces all of the element's attributes at once.
+    /// Replaces all of the element's attributes at once, or none of them
+    /// when a name is [`EditError::InvalidName`].
     /// A node taken out with [`Document::remove`] is left alone.
-    pub fn set_attrs(&mut self, id: NodeId, attrs: &[(AttrNs, &str, &str)]) {
-        if self.is_removed(id) {
-            return;
+    pub fn set_attrs(
+        &mut self,
+        id: NodeId,
+        attrs: &[(AttrNs, &str, &str)],
+    ) -> Result<(), EditError> {
+        for &(_, name, _) in attrs {
+            checked(name)?;
         }
-        if self.element(id).is_none() {
-            return;
+        if self.is_removed(id) || self.element(id).is_none() {
+            return Ok(());
         }
         let start = self.attrs.len() as u32;
         for &(ns, name, value) in attrs {
@@ -339,20 +378,23 @@ impl Document {
         if let Data::Element(e) = &mut self.nodes[id as usize].data {
             e.attrs = Span { start, end };
         }
+        Ok(())
     }
 
     /// Renames the element: lowercased for HTML, as given for the rest.
     /// An element renamed to `template` gets empty contents, as a new one
     /// does. A template renamed to anything else gives its contents up as
     /// ordinary children, ahead of any it has, so its markup stays the same
-    /// and nothing in them is lost.
+    /// nothing in them is lost. A name `createElement` refuses is
+    /// [`EditError::InvalidName`].
     /// A node taken out with [`Document::remove`] is left alone.
-    pub fn rename(&mut self, id: NodeId, name: &str) {
+    pub fn rename(&mut self, id: NodeId, name: &str) -> Result<(), EditError> {
+        let name = checked(name)?;
         if self.is_removed(id) {
-            return;
+            return Ok(());
         }
         let Some(e) = self.element(id).copied() else {
-            return;
+            return Ok(());
         };
         let (tag, new) = self.name_element(e.ns, name);
         let template = e.ns == Ns::Html && tag == Tag::Template;
@@ -380,6 +422,7 @@ impl Document {
             e.name = new;
             e.contents = contents;
         }
+        Ok(())
     }
 
     /// The tag and stored name of an element called `name` in `ns`. HTML
@@ -420,10 +463,18 @@ impl Document {
     }
 
     /// Renames the element's `index`th attribute, and sets its namespace.
+    /// A name no attribute may have is [`EditError::InvalidName`].
     /// A node taken out with [`Document::remove`] is left alone.
-    pub fn rename_attr(&mut self, id: NodeId, index: usize, ns: AttrNs, name: &str) {
+    pub fn rename_attr(
+        &mut self,
+        id: NodeId,
+        index: usize,
+        ns: AttrNs,
+        name: &str,
+    ) -> Result<(), EditError> {
+        let name = checked(name)?;
         if self.is_removed(id) {
-            return;
+            return Ok(());
         }
         let name = self.push_stable(name);
         self.rewrite_attrs(id, |_, attrs| match attrs.get_mut(index) {
@@ -434,6 +485,7 @@ impl Document {
             }
             None => false,
         });
+        Ok(())
     }
 
     /// Removes the element's `index`th attribute; false if there's none.
@@ -535,7 +587,7 @@ mod tests {
             let mut c = doc.children(0);
             (c.next().unwrap(), c.next().unwrap())
         };
-        let em = doc.create_element(Ns::Html, "EM");
+        let em = doc.create_element(Ns::Html, "EM").unwrap();
         let t = doc.create_text("x & y");
         doc.append(em, t).unwrap();
         doc.insert_before(first, em, doc.first_child(first))
@@ -578,9 +630,11 @@ mod tests {
                 }
                 2 if i % 2 == 0 => doc.remove(b),
                 2 => doc.detach(b),
-                3 => doc.rename(a, if i % 2 == 0 { "template" } else { "span" }),
+                3 => doc
+                    .rename(a, if i % 2 == 0 { "template" } else { "span" })
+                    .unwrap(),
                 4 => {
-                    let t = doc.create_element(Ns::Html, "template");
+                    let t = doc.create_element(Ns::Html, "template").unwrap();
                     let _ = doc.append(a, t);
                 }
                 _ => {
@@ -598,12 +652,12 @@ mod tests {
         let svg = parsed.children(parsed.root()).next().unwrap();
         let parsed_gradient = parsed.children(svg).next().unwrap();
         let mut doc = parse_fragment("", Ns::Html, "div", false);
-        let made = doc.create_element(Ns::Svg, "linearGradient");
+        let made = doc.create_element(Ns::Svg, "linearGradient").unwrap();
         assert_eq!(doc.lower_name(made), Some("lineargradient"));
         assert_eq!(doc.lower_name(made), parsed.lower_name(parsed_gradient));
         assert_eq!(doc.outer_html(made), parsed.outer_html(parsed_gradient));
         // Another case is another element, kept as written.
-        let shouting = doc.create_element(Ns::Svg, "LINEARGRADIENT");
+        let shouting = doc.create_element(Ns::Svg, "LINEARGRADIENT").unwrap();
         assert_eq!(
             doc.outer_html(shouting),
             "<LINEARGRADIENT></LINEARGRADIENT>"
@@ -617,7 +671,7 @@ mod tests {
         let contents = (0..doc.len() as NodeId)
             .find_map(|n| doc.template_contents(n))
             .unwrap();
-        let loose = doc.create_element(Ns::Html, "div");
+        let loose = doc.create_element(Ns::Html, "div").unwrap();
         let before = doc.inner_html(root);
         assert_eq!(doc.append(loose, root), Err(EditError::NotInsertable));
         assert_eq!(doc.append(loose, contents), Err(EditError::NotInsertable));
@@ -643,13 +697,13 @@ mod tests {
         );
         let svg = doc.children(doc.root()).next().unwrap();
         let used = doc.children(svg).next().unwrap();
-        doc.set_attr(used, "xlink:href", "#b");
+        doc.set_attr(used, "xlink:href", "#b").unwrap();
         assert_eq!(doc.outer_html(used), "<use xlink:href=\"#b\"></use>");
         let attrs: Vec<_> = doc.attrs(used).collect();
         assert_eq!(attrs, [(crate::AttrNs::XLink, "href", "#b")]);
         // A plain href is another attribute: its qualified name isn't xlink:href.
         assert!(!doc.remove_attr(used, "href"));
-        doc.set_attr(used, "href", "#c");
+        doc.set_attr(used, "href", "#c").unwrap();
         let attrs: Vec<_> = doc.attrs(used).collect();
         assert_eq!(
             attrs,
@@ -673,11 +727,11 @@ mod tests {
         );
         let kids: Vec<_> = doc.children(doc.root()).collect();
         let (svg, math, p) = (kids[0], kids[1], kids[2]);
-        doc.set_attr(svg, "dataFoo", "x");
-        doc.set_attr(svg, "viewBox", "0 0 2 2");
-        doc.set_attr(math, "mathVariant", "bold");
-        doc.set_attr(math, "definitionURL", "b");
-        doc.set_attr(p, "DATA-X", "y");
+        doc.set_attr(svg, "dataFoo", "x").unwrap();
+        doc.set_attr(svg, "viewBox", "0 0 2 2").unwrap();
+        doc.set_attr(math, "mathVariant", "bold").unwrap();
+        doc.set_attr(math, "definitionURL", "b").unwrap();
+        doc.set_attr(p, "DATA-X", "y").unwrap();
         assert_eq!(
             doc.outer_html(svg),
             "<svg viewBox=\"0 0 2 2\" dataFoo=\"x\"></svg>"
@@ -688,13 +742,13 @@ mod tests {
         );
         assert_eq!(doc.outer_html(p), "<p data-x=\"y\"></p>");
         // A lowercase viewbox finds the same attribute: never two written alike.
-        doc.set_attr(svg, "viewbox", "0 0 3 3");
+        doc.set_attr(svg, "viewbox", "0 0 3 3").unwrap();
         assert_eq!(
             doc.outer_html(svg),
             "<svg viewBox=\"0 0 3 3\" dataFoo=\"x\"></svg>"
         );
         // And it's set again, not added, when the case matches what was given.
-        doc.set_attr(svg, "dataFoo", "z");
+        doc.set_attr(svg, "dataFoo", "z").unwrap();
         assert_eq!(
             doc.outer_html(svg),
             "<svg viewBox=\"0 0 3 3\" dataFoo=\"z\"></svg>"
@@ -712,35 +766,35 @@ mod tests {
     fn renaming_to_or_from_template_adds_or_gives_up_its_contents() {
         let mut doc = parse_fragment("<template><b>x</b>y</template>", Ns::Html, "div", false);
         let t = doc.first_child(doc.root()).unwrap();
-        doc.rename(t, "div");
+        doc.rename(t, "div").unwrap();
         assert_eq!(doc.template_contents(t), None);
         assert_eq!(doc.outer_html(t), "<div><b>x</b>y</div>");
-        doc.rename(t, "template");
+        doc.rename(t, "template").unwrap();
         let contents = doc.template_contents(t).expect("new contents");
         assert_eq!(doc.first_child(contents), None);
         assert_eq!(doc.outer_html(t), "<template><b>x</b>y</template>");
         // Contents go ahead of children a template already has, as written.
-        let p = doc.create_element(Ns::Html, "p");
+        let p = doc.create_element(Ns::Html, "p").unwrap();
         doc.append(contents, p).unwrap();
-        doc.rename(t, "section");
+        doc.rename(t, "section").unwrap();
         assert_eq!(doc.outer_html(t), "<section><p></p><b>x</b>y</section>");
         // Renaming a template to template leaves its contents be.
-        let u = doc.create_element(Ns::Html, "template");
+        let u = doc.create_element(Ns::Html, "template").unwrap();
         let kept = doc.template_contents(u);
-        doc.rename(u, "TEMPLATE");
+        doc.rename(u, "TEMPLATE").unwrap();
         assert_eq!(doc.template_contents(u), kept);
     }
 
     #[test]
     fn a_renamed_foreign_element_takes_its_new_names_tag() {
         let mut doc = parse_fragment("", Ns::Html, "div", false);
-        let svg_title = doc.create_element(Ns::Svg, "title");
+        let svg_title = doc.create_element(Ns::Svg, "title").unwrap();
         let title_tag = doc.known_tag(svg_title);
         assert!(title_tag.is_some());
-        let n = doc.create_element(Ns::Svg, "rect");
-        doc.rename(n, "title");
+        let n = doc.create_element(Ns::Svg, "rect").unwrap();
+        doc.rename(n, "title").unwrap();
         assert_eq!(doc.known_tag(n), title_tag);
-        doc.rename(n, "rect");
+        doc.rename(n, "rect").unwrap();
         assert_eq!(doc.known_tag(n), None);
     }
 
@@ -772,13 +826,15 @@ mod tests {
             _ => unreachable!(),
         };
         for i in 0..10_000 {
-            let n = doc.create_element(Ns::Html, &format!("custom-{i}"));
-            doc.set_attr(n, "data-long", &"y".repeat(100));
+            let n = doc
+                .create_element(Ns::Html, &format!("custom-{i}"))
+                .unwrap();
+            doc.set_attr(n, "data-long", &"y".repeat(100)).unwrap();
             let t = doc.create_text(&"z".repeat(100));
             doc.append(n, t).unwrap();
             doc.append(0, n).unwrap();
         }
-        doc.set_attr(a, "title", "new");
+        doc.set_attr(a, "title", "new").unwrap();
         assert_eq!(doc.attrs(a).next().unwrap().2.as_ptr(), href);
         assert!(matches!(doc.kind(text), crate::Kind::Text(t) if t.as_ptr() == data));
     }
@@ -788,12 +844,13 @@ mod tests {
         use crate::css::SelectorList;
         use crate::{AttrNs, Document};
         let mut doc = Document::empty();
-        let feed = doc.create_element(Ns::Xml, "Feed");
+        let feed = doc.create_element(Ns::Xml, "Feed").unwrap();
         doc.append(0, feed).unwrap();
-        let entry = doc.create_element(Ns::Xml, "dc:Creator");
-        doc.add_attr(entry, AttrNs::None, "ID", "up");
-        doc.add_attr(entry, AttrNs::None, "id", "lo");
-        doc.add_attr(entry, AttrNs::Host(3), "x:href", "/p");
+        let entry = doc.create_element(Ns::Xml, "dc:Creator").unwrap();
+        doc.add_attr(entry, AttrNs::None, "ID", "up").unwrap();
+        doc.add_attr(entry, AttrNs::None, "id", "lo").unwrap();
+        doc.add_attr(entry, AttrNs::Host(3), "x:href", "/p")
+            .unwrap();
         doc.append(feed, entry).unwrap();
         let cdata = doc.create_cdata("<raw>");
         doc.append(entry, cdata).unwrap();
@@ -808,8 +865,8 @@ mod tests {
             doc.outer_html(entry),
             "<dc:Creator ID=\"up\" id=\"lo\" x:href=\"/p\"><![CDATA[<raw>]]></dc:Creator>"
         );
-        doc.rename(entry, "Creator");
-        doc.rename_attr(entry, 2, AttrNs::None, "href");
+        doc.rename(entry, "Creator").unwrap();
+        doc.rename_attr(entry, 2, AttrNs::None, "href").unwrap();
         assert!(doc.remove_attr_at(entry, 0));
         assert_eq!(
             doc.outer_html(entry),
@@ -848,18 +905,18 @@ mod tests {
         assert_eq!(doc.append(contents, div), Err(EditError::Cycle));
         assert_eq!(doc.insert_before(p, div, None), Err(EditError::Cycle));
         // Through a template made after the first check, two deep.
-        let made = doc.create_element(Ns::Html, "template");
+        let made = doc.create_element(Ns::Html, "template").unwrap();
         doc.append(p, made).unwrap();
         let made_contents = doc.template_contents(made).unwrap();
         assert_eq!(doc.append(made_contents, div), Err(EditError::Cycle));
         // And one renamed into a template.
-        let span = doc.create_element(Ns::Html, "span");
+        let span = doc.create_element(Ns::Html, "span").unwrap();
         doc.append(made_contents, span).unwrap();
-        doc.rename(span, "template");
+        doc.rename(span, "template").unwrap();
         let span_contents = doc.template_contents(span).unwrap();
         assert_eq!(doc.append(span_contents, template), Err(EditError::Cycle));
         // A template renamed away leaves contents nothing reaches.
-        doc.rename(span, "section");
+        doc.rename(span, "section").unwrap();
         doc.append(span_contents, template).unwrap();
         assert_eq!(doc.inner_html(0), "<div></div>");
         doc.append(div, template).unwrap();
@@ -873,8 +930,8 @@ mod tests {
     fn attributes_can_be_set_replaced_and_removed() {
         let mut doc = parse_fragment("<a href=x>a</a><a href=x>b</a>", Ns::Html, "div", false);
         let a = doc.first_child(0).unwrap();
-        doc.set_attr(a, "HREF", "y");
-        doc.set_attr(a, "title", "t");
+        doc.set_attr(a, "HREF", "y").unwrap();
+        doc.set_attr(a, "title", "t").unwrap();
         assert_eq!(doc.outer_html(a), "<a href=\"y\" title=\"t\">a</a>");
         assert!(doc.remove_attr(a, "href"));
         assert!(!doc.remove_attr(a, "href"));
@@ -892,7 +949,7 @@ mod tests {
         let original = doc.first_child(p).unwrap();
         let clone = doc.next_sibling(p).unwrap();
         assert_eq!(doc.outer_html(clone), "<b class=\"x\">t</b>");
-        doc.set_attr(clone, "class", "y");
+        doc.set_attr(clone, "class", "y").unwrap();
         assert_eq!(doc.outer_html(original), "<b class=\"x\">a</b>");
         assert_eq!(doc.outer_html(clone), "<b class=\"y\">t</b>");
     }
@@ -900,8 +957,8 @@ mod tests {
     #[test]
     fn foreign_names_keep_their_case() {
         let mut doc = parse_fragment("<svg></svg>", Ns::Svg, "svg", false);
-        let g = doc.create_element(Ns::Svg, "linearGradient");
-        doc.set_attr(g, "gradientUnits", "u");
+        let g = doc.create_element(Ns::Svg, "linearGradient").unwrap();
+        doc.set_attr(g, "gradientUnits", "u").unwrap();
         doc.append(0, g).unwrap();
         assert!(
             doc.inner_html(0)
@@ -962,15 +1019,15 @@ mod tests {
         let other = doc.next_sibling(p).unwrap();
         doc.remove(p);
         assert_eq!(doc.append(div, p), Err(EditError::Removed));
-        let fresh = doc.create_element(Ns::Html, "span");
+        let fresh = doc.create_element(Ns::Html, "span").unwrap();
         assert_eq!(doc.append(p, fresh), Err(EditError::Removed));
         assert_eq!(
             doc.insert_before(div, fresh, Some(p)),
             Err(EditError::Removed)
         );
         // The setters, which return nothing to fail with, do nothing.
-        doc.set_attr(p, "class", "x");
-        doc.rename(p, "section");
+        doc.set_attr(p, "class", "x").unwrap();
+        doc.rename(p, "section").unwrap();
         assert!(!doc.remove_attr(p, "id"));
         assert_eq!(doc.attrs(p).count(), 0);
         assert!(matches!(
@@ -1053,7 +1110,7 @@ mod tests {
             .unwrap();
         let light = doc.first_child(host).unwrap();
         let shadow = doc.attach_shadow(host, crate::ShadowRoot::open()).unwrap();
-        let slot = doc.create_element(Ns::Html, "slot");
+        let slot = doc.create_element(Ns::Html, "slot").unwrap();
         doc.append(shadow, slot).unwrap();
         assert_eq!(doc.assigned_nodes(slot), [light]);
         doc.remove(host);
@@ -1079,5 +1136,52 @@ mod tests {
         assert_eq!(doc.shadow_root(host), Some(shadow));
         #[cfg(debug_assertions)]
         doc.check_tree();
+    }
+
+    /// Names were taken as given, so one with a space, a quote or a `>`
+    /// in it wrote markup that parses as other elements and attributes.
+    #[test]
+    fn names_createelement_and_setattribute_refuse_are_errors() {
+        use crate::AttrNs;
+        let mut doc = parse("<p id=a>x</p>", false);
+        let p = (0..doc.len() as NodeId)
+            .find(|&n| doc.lower_name(n) == Some("p"))
+            .unwrap();
+        let before = doc.outer_html(doc.root());
+        for bad in [
+            "", "a b", "a\tb", "a\nb", "<script>", "a/b", "a>b", "a=b", "a\"b", "a'b", "a\0b",
+            "a\u{7f}b", "a\u{85}b",
+        ] {
+            let refused = Err(EditError::InvalidName);
+            assert_eq!(
+                doc.create_element(Ns::Html, bad).map(|_| ()),
+                refused,
+                "{bad:?}"
+            );
+            assert_eq!(doc.create_element(Ns::Svg, bad).map(|_| ()), refused);
+            assert_eq!(doc.set_attr(p, bad, "v"), refused, "{bad:?}");
+            assert_eq!(doc.add_attr(p, AttrNs::None, bad, "v"), refused);
+            assert_eq!(
+                doc.set_attrs(p, &[(AttrNs::None, "ok", "v"), (AttrNs::None, bad, "v")]),
+                refused
+            );
+            assert_eq!(doc.rename(p, bad), refused);
+            assert_eq!(doc.rename_attr(p, 0, AttrNs::None, bad), refused);
+        }
+        assert_eq!(doc.outer_html(doc.root()), before, "nothing changed");
+        // What a page can have still goes.
+        let el = doc
+            .create_element(Ns::Html, "my-\u{e9}l\u{e9}ment")
+            .unwrap();
+        doc.set_attr(el, "data-x", "a b \"c\"").unwrap();
+        doc.set_attr(el, "xlink:href", "#").unwrap();
+        doc.set_attr(el, "@click", "go()").unwrap();
+        doc.append(p, el).unwrap();
+        assert_eq!(
+            doc.outer_html(p),
+            "<p id=\"a\">x<my-\u{e9}l\u{e9}ment data-x=\"a b &quot;c&quot;\" xlink:href=\"#\" \
+             @click=\"go()\"></my-\u{e9}l\u{e9}ment></p>"
+        );
+        assert!(EditError::InvalidName.to_string().contains("quote"));
     }
 }

@@ -355,3 +355,20 @@ fn an_edit_while_reading_any_document_fails_instead_of_deadlocking() {
         assert_eq!(got, Err(EditError::Reading));
     }
 }
+
+/// `pretty()` called itself for each level of the tree, and indented each
+/// line by its depth: a deep page overflowed the stack, and its output
+/// grew as the square of the depth.
+#[test]
+fn pretty_keeps_to_a_small_stack_and_a_capped_indent() {
+    let html = "<div>".repeat(50_000);
+    let out = thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || Document::parse(&html).root().pretty())
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(out.len() < 100_000 * 120, "{} bytes", out.len());
+    assert!(out.contains(&format!("\n{}<div>", " ".repeat(100))));
+    assert!(!out.contains(&" ".repeat(101)));
+}

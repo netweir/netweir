@@ -506,10 +506,10 @@ mod tests {
         };
         let root = doc.attach_shadow(host, init).unwrap();
         let (s1, s2) = (
-            doc.create_element(Ns::Html, "slot"),
-            doc.create_element(Ns::Html, "slot"),
+            doc.create_element(Ns::Html, "slot").unwrap(),
+            doc.create_element(Ns::Html, "slot").unwrap(),
         );
-        doc.set_attr(s1, "name", "a");
+        doc.set_attr(s1, "name", "a").unwrap();
         doc.append(root, s1).unwrap();
         doc.append(root, s2).unwrap();
         let (x, y) = (by_id(&doc, "x"), by_id(&doc, "y"));
@@ -571,7 +571,7 @@ mod tests {
         );
         // Shadow roots are never children, and a host can't go into its
         // own shadow tree.
-        let div = doc.create_element(Ns::Html, "div");
+        let div = doc.create_element(Ns::Html, "div").unwrap();
         assert_eq!(doc.append(div, root), Err(EditError::NotInsertable));
         doc.append(root, div).unwrap();
         assert_eq!(doc.append(div, p), Err(EditError::Cycle));

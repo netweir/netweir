@@ -46,7 +46,7 @@ fn void(name: &str) -> bool {
 /// The element a start-tag token makes, attributes sorted by name, as
 /// html5lib's runner sorts them.
 fn element(doc: &mut Document, name: &str, attrs: &Value) -> NodeId {
-    let el = doc.create_element(Ns::Html, name);
+    let el = doc.create_element(Ns::Html, name).unwrap();
     let mut pairs: Vec<(String, String)> = match attrs {
         Value::Object(map) => map
             .iter()
@@ -66,7 +66,7 @@ fn element(doc: &mut Document, name: &str, attrs: &Value) -> NodeId {
     };
     pairs.sort();
     for (k, v) in &pairs {
-        doc.set_attr(el, k, v);
+        doc.set_attr(el, k, v).unwrap();
     }
     el
 }
@@ -106,7 +106,7 @@ fn run(tokens: &[Value], options: &SerializeOptions) -> String {
                     open.truncate(at);
                 } else {
                     // It held everything so far.
-                    let el = doc.create_element(Ns::Html, name);
+                    let el = doc.create_element(Ns::Html, name).unwrap();
                     let kids: Vec<_> = doc.children(root).collect();
                     for k in kids {
                         doc.append(el, k).unwrap();

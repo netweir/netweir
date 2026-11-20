@@ -147,24 +147,25 @@ fn str_list(v: &Value) -> Vec<String> {
 /// namespace too, which this DOM has no way to tell apart.
 fn setup_special_elements(doc: &mut Document, root: NodeId) {
     for name in ["null", "undefined"] {
-        let el = doc.create_element(Ns::Html, name);
+        let el = doc.create_element(Ns::Html, name).unwrap();
         doc.append(root, el).unwrap();
     }
     for group in ["any-namespace", "no-namespace"] {
-        let holder = doc.create_element(Ns::Html, "div");
-        doc.set_attr(holder, "id", group);
+        let holder = doc.create_element(Ns::Html, "div").unwrap();
+        doc.set_attr(holder, "id", group).unwrap();
         for (i, ns) in [Ns::Html, Ns::Html, Ns::Xml, Ns::Xml]
             .into_iter()
             .enumerate()
         {
-            let div = doc.create_element(ns, "div");
-            doc.set_attr(div, "id", &format!("{group}-div{}", i + 1));
+            let div = doc.create_element(ns, "div").unwrap();
+            doc.set_attr(div, "id", &format!("{group}-div{}", i + 1))
+                .unwrap();
             doc.append(holder, div).unwrap();
         }
         doc.append(root, holder).unwrap();
     }
     let span = by_id(doc, "attr-presence-i1").unwrap();
-    doc.add_attr(span, AttrNs::Host(1), "title", "");
+    doc.add_attr(span, AttrNs::Host(1), "title", "").unwrap();
 }
 
 struct Context {

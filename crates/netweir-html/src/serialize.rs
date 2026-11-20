@@ -33,7 +33,12 @@ pub struct SerializeOptions {
     /// ignored: every tag is kept, so no new whitespace ends up inside an
     /// element whose end tag was left out. Author CSS that sets
     /// `white-space` or `display` can make any whitespace matter, which
-    /// no pretty-printer can know.
+    /// no pretty-printer can know. Past 100 levels the indent
+    /// goes no further, so a deep tree's output stays in proportion to it.
+    /// A `pre`, `textarea` or `listing` whose text starts with a newline
+    /// gets one more after its start tag, as the parser drops the first:
+    /// the HTML Standard's serialization leaves that out, so
+    /// `<pre>\n\nx</pre>` comes back as `<pre>x</pre>` without it.
     pub pretty: bool,
     /// The tree dump of html5lib-tests' tree-construction `.dat` files:
     /// `| <html>`, `|   <head>`, each child two spaces in, attributes
@@ -110,11 +115,17 @@ impl Default for SerializeOptions {
     }
 }
 
+/// How many levels deep `pretty` indents. Each level of a tree deeper
+/// than this costs as many spaces as this one, not a level more: a
+/// hundred thousand nested divs made a 17 GB string.
+const MAX_INDENT: u16 = 100;
+
 /// A node to write, with how: these flags, and its indent for `pretty`.
 #[derive(Clone, Copy)]
 struct Item {
     id: NodeId,
-    /// Past 65,535 levels, `pretty` indents no further.
+    /// Past 65,535 levels, it counts no further; [`MAX_INDENT`] caps the
+    /// indent written.
     depth: u16,
     flags: u8,
 }
@@ -322,7 +333,7 @@ fn blank(s: &str) -> bool {
 
 fn newline(depth: u16, out: &mut String) {
     out.push('\n');
-    for _ in 0..depth {
+    for _ in 0..depth.min(MAX_INDENT) {
         out.push_str("  ");
     }
 }
@@ -523,6 +534,9 @@ impl Document {
                     let inner = !PLAIN && flags & INNER != 0;
                     if !inner && !(omit && self.omit_start(id, e, o)) {
                         self.start_tag::<PLAIN>(id, e, o, out);
+                        if !PLAIN && o.pretty && self.drops_first_newline(id, e) {
+                            out.push('\n');
+                        }
                     }
                     if void(e) {
                         continue;
@@ -675,6 +689,17 @@ impl Document {
                 }
             }
         }
+    }
+
+    /// Whether the parser would drop a newline at the start of `e`'s
+    /// text: a `pre`, `textarea` or `listing` whose first child is text
+    /// that starts with one.
+    fn drops_first_newline(&self, id: NodeId, e: &Element) -> bool {
+        e.ns == Ns::Html
+            && matches!(e.tag, Tag::Pre | Tag::Textarea | Tag::Listing)
+            && self
+                .first_child(id)
+                .is_some_and(|c| matches!(self.kind(c), Kind::Text(t) if t.starts_with('\n')))
     }
 
     /// The shadow root of `host` that `o` asks to be written: one marked
@@ -1284,7 +1309,7 @@ mod tests {
             "<!DOCTYPE html>\n<html>\n  <head>\n    <title>T</title>\n  </head>\n  <body>\
              \n    <div>\n      <p>a <b>b</b></p>\n      <ul>\n        <li>x</li>\
              \n        <li>y</li>\n      </ul>\n      <!--c-->\n    </div>\
-             \n    <pre>\n a</pre>\n    <p><span><i>s</i></span></p>\n  </body></html>"
+             \n    <pre>\n\n a</pre>\n    <p><span><i>s</i></span></p>\n  </body></html>"
         );
         // A span among the blocks keeps them all as they are.
         assert_eq!(
@@ -1414,6 +1439,8 @@ mod tests {
 
 #[cfg(test)]
 mod deep {
+    use crate::{SerializeOptions, parse};
+
     /// Serializing recursed once per level and overflowed the stack on deep
     /// pages; Netweir parses on threads with 2 MB stacks.
     #[test]
@@ -1444,5 +1471,56 @@ mod deep {
             out,
             "<html><head></head><body></body></html>".len() + 20_000 * 11
         );
+    }
+
+    /// The parser drops a newline that starts a pre's, a textarea's or a
+    /// listing's text, and the HTML Standard's serialization doesn't put
+    /// one back, so `pretty`, which promises the same page, lost one.
+    /// The standard's own output is left as the standard has it.
+    #[test]
+    fn pretty_keeps_the_newline_a_pre_starts_with() {
+        let pretty = SerializeOptions {
+            pretty: true,
+            ..SerializeOptions::default()
+        };
+        for tag in ["pre", "textarea", "listing"] {
+            let html = format!("<{tag}>\n\nx</{tag}>");
+            let doc = parse(&html, false);
+            let text = |doc: &crate::Document| {
+                let el = (0..doc.len() as crate::NodeId)
+                    .find(|&n| doc.lower_name(n) == Some(tag))
+                    .unwrap();
+                doc.text(el)
+            };
+            let again = parse(&doc.serialize_with(doc.root(), &pretty), false);
+            assert_eq!(text(&again), text(&doc), "{tag}");
+            assert_eq!(text(&doc), "\nx");
+            assert!(
+                doc.outer_html(doc.root())
+                    .contains(&format!("<{tag}>\nx</{tag}>"))
+            );
+        }
+        // Text that doesn't start with one, or isn't first, gets nothing.
+        let doc = parse("<pre>x\n</pre><pre><b>\nb</b></pre>", false);
+        let out = doc.serialize_with(doc.root(), &pretty);
+        assert!(
+            out.contains("<pre>x\n</pre>") && out.contains("<pre><b>\nb</b></pre>"),
+            "{out}"
+        );
+    }
+
+    /// Two spaces a level for every level made 100,000 nested divs a
+    /// 17 GB string.
+    #[test]
+    fn pretty_stops_indenting_past_a_hundred_levels() {
+        let pretty = SerializeOptions {
+            pretty: true,
+            ..SerializeOptions::default()
+        };
+        let doc = parse(&"<div>".repeat(20_000), false);
+        let out = doc.serialize_with(doc.root(), &pretty);
+        assert!(out.len() < 20_000 * 2 * 220, "{} bytes", out.len());
+        assert!(out.contains(&format!("\n{}<div>", " ".repeat(200))));
+        assert!(!out.contains(&" ".repeat(202)));
     }
 }
