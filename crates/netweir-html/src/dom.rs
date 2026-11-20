@@ -287,7 +287,10 @@ pub enum Kind<'a> {
 
 impl Document {
     pub(crate) fn new(root: Data, capacity: usize) -> Document {
-        let mut nodes = Vec::with_capacity(capacity / 24 + 16);
+        // Enough for a dense page, a table cell every dozen bytes: growing
+        // a big page's nodes copies them, briefly holding both. Space never
+        // used is never touched, so it costs no memory.
+        let mut nodes = Vec::with_capacity(capacity / 10 + 16);
         nodes.push(Node {
             parent: NONE,
             first_child: NONE,
