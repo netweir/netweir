@@ -58,7 +58,7 @@ dev = ["pytest>=8", "pytest-asyncio>=1.2", "maturin>=1.15,<2", "ruff>=0.14", "py
 # Apart from dev because the SDK needs pywin32 on Windows, which has no
 # free-threaded build, and `maturin develop` installs dev every time.
 mcp = ["mcp>=2.3"]
-bench =["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10", "trafilatura>=2.3.1", "markdownify>=1.2.3"]
+bench =["selectolax>=0.4", "lxml>=6", "cssselect>=1.3", "beautifulsoup4>=4.13", "parsel>=1.10", "trafilatura>=2.3.1", "markdownify>=1.2.3", "html5lib>=1.1"]
 
 [tool.maturin]
 manifest-path = "crates/netweir-py/Cargo.toml"

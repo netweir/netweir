@@ -578,6 +578,72 @@ the build if either one catches up. It measures speed, not judgement:
 trafilatura has years of tuning on news sites, so if what you need is
 the best possible text from a newspaper, test both on your own pages.
 
+All of that is one clean page at a time. A crawl doesn't come back like
+that, so `bench/boss.py` throws the batch I'd least like to get at every
+parser at once: the final boss from Netweir's parser,
+[Parsec](https://github.com/parsec-html/parsec), 1,000 pages built from a
+seed and the same bytes on every run. 900 are scraps of broken markup a
+few hundred bytes long: misnested tags, NUL bytes, `&amp` with no
+semicolon, tags nested 5,000 deep, a `<script>` left open at the end. 46
+are real pages as their sites served them. 44 are real pages re-encoded:
+Shift_JIS, GBK, EUC-KR, UTF-16, a `<meta>` that lies, a charset only the
+HTTP header knows, UTF-8 full of invalid bytes. The last 10 are giants of
+13 to 28 MB. Each library gets the bytes, in the same order, in a process
+of its own so the peak memory is its own, and finds the encoding the way
+its users' code would:
+
+| | Seconds per 1,000 pages | Slowest page | Peak RSS | Pages that failed |
+|---|---:|---:|---:|---:|
+| Netweir | 1.02 | 0.167 s | 1,010 MB | 0 |
+| selectolax 1.0 | 1.86 | 0.244 s | 1,242 MB | 0 |
+| lxml 6.1 | 2.78 | 0.442 s | 659 MB | 2 raised `ParserError` |
+| parsel 1.12 | 2.99 | 0.469 s | 965 MB | 0 |
+| Beautiful Soup 4.15 (lxml) | 34.77 | 8.1 s | 1,357 MB | 2 empty |
+| Beautiful Soup 4.15 (html.parser) | 71.66 | 12.4 s | 1,532 MB | 52 empty |
+| html5lib 1.1 | 160.48 | 30 s, the limit | 1,142 MB | 3 timed out |
+
+Nothing crashed. What failed were documents: lxml raised "Document is
+empty" on two fragments, Beautiful Soup on lxml gave back nothing for
+the same two, Beautiful Soup's own parser gave back nothing for 52, and
+html5lib hit the 30-second limit on all three giants that are one long
+run of character references. The time per kind of page, slowest page in
+brackets:
+
+| | Netweir | selectolax | lxml | parsel |
+|---|---:|---:|---:|---:|
+| 900 fragments, 1.4 MB | 0.051 s (0.014) | 0.415 s (0.062) | 0.032 s (0.001) | 0.049 s (0.001) |
+| 46 real pages, 33 MB | 0.059 s (0.003) | 0.097 s (0.005) | 0.244 s (0.013) | 0.275 s (0.014) |
+| 44 re-encoded pages, 37 MB | 0.064 s (0.003) | 0.129 s (0.008) | 0.313 s (0.017) | 0.296 s (0.015) |
+| 10 giants, 194 MB | 0.847 s (0.167) | 1.221 s (0.244) | 2.196 s (0.442) | 2.363 s (0.469) |
+
+The fragments are lxml's: 36 µs each to Netweir's 57, and parsel, on
+lxml, is level with Netweir. libxml2 is cheap to start, but what it
+builds isn't the tree the HTML Standard describes, and on 930 of the
+1,000 pages its element count differs from the Standard's. Netweir's
+matches Parsec's on every page, once you count each declarative shadow
+root (119 pages have one) the way Parsec's bench does, as its
+`<template>`; selectolax's Lexbor matches on all 1,000. Everywhere else
+Netweir is ahead: 1.6 times selectolax on real pages, 2 times on the
+re-encoded ones, 1.4 times on the giants. Memory goes the other way.
+lxml's peak is two thirds of Netweir's, and Netweir's is about
+selectolax's, whose peak was 996 MB in an earlier set of three runs and
+1,242 MB in this one. Every peak includes the
+132 MB a worker takes to hold the biggest page and do nothing else.
+
+Writing this bench turned up a slow path of Netweir's own: a page that
+declares no charset near the top had an encoding detector run over the
+whole of it before parsing, which cost the 46 real pages 0.19 s
+instead of 0.06. Valid UTF-8 now skips the detector, which would have
+said UTF-8 anyway.
+
+Medians of three runs on one M2 Max (macOS 26.7, Python 3.14), each
+library's run started with the load average under 3 (2.05 to 2.94),
+November 2026. Run it with `uv run --group bench python bench/boss.py
+--parsec PATH`, which needs a Parsec checkout to build the pages; the
+docstring has the rest. CI runs 300 of the pages, giants cut to 2 MB, on
+every pull request, and fails if Netweir crashes, hangs or raises on a
+page, or another library gets through the batch faster.
+
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
 crawler fetches all 10,000 pages and pulls a title and price from each,

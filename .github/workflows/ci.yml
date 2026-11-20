@@ -307,3 +307,15 @@ jobs:
       - run: uv run python bench/query.py --check
       - run: uv run python bench/items.py --check
       - run: uv run python bench/content.py --check
+      # The final boss, small: 300 of Parsec's seeded pages (broken
+      # fragments, encoding quirks, giants cut to 2 MB) as bytes, each
+      # library in its own process. Fails if Netweir crashes, hangs or
+      # raises on a page, or another library is faster over the batch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: parsec-html/parsec
+          ref: 4d6fe823b25974f3aab19750060231b97df06445
+          path: parsec
+          submodules: true
+          persist-credentials: false
+      - run: uv run python bench/boss.py --smoke --check --parsec parsec
