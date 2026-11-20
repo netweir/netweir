@@ -875,7 +875,8 @@ async fn a_frame_inside_a_frame_from_another_site_is_routed() {
 
 /// A dedicated worker's requests are paused by its frame's session and
 /// reported by its own, which is held until it's set up: a worker that
-/// was never let go would hang here.
+/// was never let go, or a request of its never decided, never answers,
+/// and fails here saying what was routed and heard.
 #[tokio::test]
 async fn a_workers_requests_are_routed_and_heard() {
     let Some(browser) = browser().await else {
@@ -888,12 +889,21 @@ async fn a_workers_requests_are_routed_and_heard() {
     page.goto(&format!("{}/worker", server.url), WaitUntil::Load, None)
         .await
         .unwrap();
-    assert_eq!(page.evaluate("window.said").await.unwrap(), json!("failed"));
+    // Each worker answers once its fetch fails, in a moment. A script a
+    // page runs has no timeout of its own, so one that never answers hung
+    // the whole run (#351); this is far longer than a busy runner takes.
+    let never = Duration::from_secs(60);
+    let said = match tokio::time::timeout(never, page.evaluate("window.said")).await {
+        Ok(said) => said.unwrap(),
+        Err(_) => never_answered("the page's worker", &mut events, &routed, &server),
+    };
+    assert_eq!(said, json!("failed"));
     // And one started by a worker.
-    let said = page
-        .evaluate("new Promise(r => { new Worker('/outer.js').onmessage = e => r(e.data) })")
-        .await
-        .unwrap();
+    let nested = "new Promise(r => { new Worker('/outer.js').onmessage = e => r(e.data) })";
+    let said = match tokio::time::timeout(never, page.evaluate(nested)).await {
+        Ok(said) => said.unwrap(),
+        Err(_) => never_answered("the worker's worker", &mut events, &routed, &server),
+    };
     assert_eq!(said, json!("failed"));
     assert_eq!(times_seen(&server, "/secret-api"), 0);
     let routed = routed.lock().unwrap().clone();
@@ -918,6 +928,27 @@ async fn a_workers_requests_are_routed_and_heard() {
     .await;
     assert_eq!(heard, Ok(2));
     browser.close().await.unwrap();
+}
+
+/// Fails for a worker, `who`, that never said how its fetch went, with
+/// what was routed, what the page's listener heard and what the server saw.
+fn never_answered(
+    who: &str,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<PageEvent>,
+    routed: &std::sync::Mutex<Vec<String>>,
+    server: &common::Server,
+) -> ! {
+    let mut heard = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let PageEvent::Request(r) = event {
+            heard.push(r.url);
+        }
+    }
+    panic!(
+        "{who} never answered: routed {:?}, heard {heard:?}, the server saw {:?}",
+        routed.lock().unwrap(),
+        server.paths()
+    );
 }
 
 /// Chrome holds every kind of target it attaches while it waits for a

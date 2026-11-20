@@ -868,14 +868,17 @@ async fn assert_at_bottom(page: &netweir_browser::Page, rounds: u32) {
 }
 
 /// Where the page is scrolled to and every height that says how far it
-/// can go; `at_bottom` is whether the browser takes it no further.
+/// can go; `at_bottom` is whether the browser takes it no further. The
+/// window's outer size too, for a page that lost height under a scroll
+/// (#351): with the same outer size, the browser's own bars took it; with
+/// a smaller one, the window was resized.
 async fn scroll_state(page: &netweir_browser::Page) -> serde_json::Value {
     page
         .evaluate(
             "(() => { const s = document.scrollingElement, d = document.documentElement, b = document.body; \
              const box = document.querySelector('#box, [style*=contain]'); const before = scrollY; \
              scrollTo(scrollX, 1e9); const after = scrollY; const cs = getComputedStyle(b); \
-             return {at_bottom: before === after, before, after, innerWidth, innerHeight, dpr: devicePixelRatio, \
+             return {at_bottom: before === after, before, after, innerWidth, innerHeight, outerWidth, outerHeight, dpr: devicePixelRatio, \
              scrolling: {scrollHeight: s.scrollHeight, clientHeight: s.clientHeight, clientWidth: s.clientWidth}, \
              html: {scrollHeight: d.scrollHeight, offsetHeight: d.offsetHeight}, \
              body: {scrollHeight: b.scrollHeight, offsetHeight: b.offsetHeight, marginTop: cs.marginTop, marginBottom: cs.marginBottom}, \
