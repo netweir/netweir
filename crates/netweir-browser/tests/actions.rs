@@ -757,23 +757,32 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, WaitUntil::Load, None).await.unwrap();
-    // Two notches from the bottom, so the first round is a moment's work
-    // however slow the machine, and every round after it a long way down:
-    // the time runs out with at least one round done.
-    page.evaluate("scrollTo(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight - 200)")
+    // Two notches from the bottom, so the first round is a moment's work,
+    // and every round after it a long way down.
+    let near_the_bottom = "scrollTo(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight - 200)";
+    // A moment's work is seconds on a loaded runner, so how long one round
+    // takes is measured here first, and the timeout is three of them (3 s
+    // at least): the time runs out with at least one round done.
+    page.evaluate(near_the_bottom).await.unwrap();
+    let started = std::time::Instant::now();
+    let rounds = page
+        .scroll(None, 0.0, None, Some(1), Duration::from_secs(2), None)
         .await
         .unwrap();
+    assert_eq!(rounds, 1, "{}", page.scroll_trace().join("\n"));
+    let round = started.elapsed();
+    let timeout = (round * 3).max(Duration::from_secs(3));
+    page.evaluate(near_the_bottom).await.unwrap();
     let started = std::time::Instant::now();
-    let outcome = page
-        .scroll(
-            None,
-            0.0,
-            None,
-            None,
-            Duration::from_secs(2),
-            Some(Duration::from_secs(3)),
-        )
-        .await;
+    // The page never ends, so without a timeout for the whole of it the
+    // scroll would never return: that fails here rather than hangs.
+    let outcome = tokio::time::timeout(
+        timeout * 4 + Duration::from_secs(30),
+        page.scroll(None, 0.0, None, None, Duration::from_secs(2), Some(timeout)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the {timeout:?} timeout never ended the scroll"));
+    let took = started.elapsed();
     let err = match outcome {
         Ok(rounds) => panic!(
             "finished after {rounds} rounds, though the page never ends: {}",
@@ -783,12 +792,14 @@ async fn timeout_bounds_the_whole_scroll_to_the_bottom() {
     };
     assert!(
         matches!(&err, Error::ScrollTimeout { message, rounds } if message.contains("bottom") && *rounds >= 1),
-        "{err}"
+        "{err} (a round took {round:?}, the timeout was {timeout:?})\n{}",
+        page.scroll_trace().join("\n")
     );
+    // Past the deadline only by the step under way when it came, which
+    // is less than a round, or a few seconds where rounds are quick.
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        started.elapsed()
+        took < timeout + round.max(Duration::from_secs(5)),
+        "{took:?}, for a timeout of {timeout:?} and a round of {round:?}"
     );
     browser.close().await.unwrap();
 }

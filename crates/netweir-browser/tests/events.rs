@@ -1127,10 +1127,8 @@ async fn an_opener_shown_again_when_its_popup_closes_is_used_at_once() {
     let Some(executable) = common::chrome() else {
         return;
     };
-    // A pause long enough to tell from a click.
     let browser = common::launch(netweir_browser::LaunchOptions {
         executable: Some(executable),
-        dialog_pause: (Duration::from_millis(1500), Duration::from_millis(1600)),
         ..Default::default()
     })
     .await;
@@ -1175,12 +1173,16 @@ async fn an_opener_shown_again_when_its_popup_closes_is_used_at_once() {
         assert_eq!(shown, json!(true), "closed by {closed_by}");
         tokio::time::sleep(Duration::from_millis(200)).await;
         let before = page.evaluate("seen.length").await.unwrap();
-        let started = Instant::now();
         page.click("#p", None).await.unwrap();
-        let took = started.elapsed();
+        // Switching tabs is Page.bringToFront and a person's pause after
+        // it, so a click that didn't send it didn't pause: told by what
+        // was sent, not by how long the click took on a busy machine.
         assert!(
-            took < Duration::from_millis(1200),
-            "closed by {closed_by}: the click paused as if switching tabs: {took:?}"
+            !browser
+                .methods_sent()
+                .iter()
+                .any(|m| m == "Page.bringToFront"),
+            "closed by {closed_by}: the click switched tabs"
         );
         assert_eq!(
             page.evaluate("seen.length").await.unwrap(),

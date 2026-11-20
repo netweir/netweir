@@ -320,25 +320,26 @@ async fn typing_clicks_holds_keys_and_uses_shift_as_a_person_does() {
     assert!(downs.iter().all(|e| e["key"] != "é"));
     assert!(of("input").any(|e| e["data"] == "é"));
     // Every key is held, for a person's time: 45 to 180 ms sent. A busy
-    // runner can stall the page for a few hundred ms before it hears the
-    // key up, so the ceiling only catches a key that's never let go.
-    let ups: Vec<&Value> = of("keyup").collect();
-    let printable: Vec<&&Value> = downs
-        .iter()
-        .filter(|e| e["key"].as_str().unwrap().chars().count() == 1)
-        .collect();
-    for down in &printable {
-        let up = ups
+    // runner can stall the page for over a second before it hears the
+    // key up, so there's no ceiling of time: a key that's never let go is
+    // one whose key up doesn't come before the next key goes down.
+    let printable =
+        |e: &Value| e["t"] == "keydown" && e["key"].as_str().unwrap().chars().count() == 1;
+    for (i, down) in log.iter().enumerate().filter(|(_, e)| printable(e)) {
+        let after = &log[i + 1..];
+        let up = after
             .iter()
-            .find(|u| u["code"] == down["code"] && u["at"].as_f64() >= down["at"].as_f64())
-            .unwrap();
-        let held = up["at"].as_f64().unwrap() - down["at"].as_f64().unwrap();
+            .position(|u| u["t"] == "keyup" && u["code"] == down["code"])
+            .unwrap_or_else(|| panic!("{} never let go: {log:?}", down["key"]));
         assert!(
-            (40.0..=1000.0).contains(&held),
-            "{} held {held} ms",
+            !after[..up].iter().any(printable),
+            "{} still down as the next key went down: {log:?}",
             down["key"]
         );
+        let held = after[up]["at"].as_f64().unwrap() - down["at"].as_f64().unwrap();
+        assert!(held >= 40.0, "{} held {held} ms", down["key"]);
     }
+    let printable: Vec<&&Value> = downs.iter().filter(|e| printable(e)).collect();
     // And the gaps between keys vary, not one fixed pace.
     let at: Vec<f64> = printable
         .iter()

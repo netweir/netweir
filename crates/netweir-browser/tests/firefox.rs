@@ -1141,6 +1141,14 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
 /// A double click on Firefox is one: the page hears dblclick, by the time
 /// the click returns. Firefox counts clicks only within one chain of
 /// actions, so two clicks sent apart are two single clicks.
+///
+/// Firefox also forgets a click 640 ms after its release (`CLICK_INTERVAL`
+/// in its remote/shared/webdriver/Actions.sys.mjs), and on a loaded
+/// runner it can take longer than that to hand the page the events in
+/// between (#299). Firefox stamps each release as it makes it, so a
+/// double click that came as two clicks is one Firefox couldn't count
+/// only if the page saw its releases stamped that far apart; then it's
+/// tried again. Two clicks sent in two chains are closer, and fail.
 #[tokio::test]
 async fn a_firefox_double_click_is_heard_as_one() {
     let Some(browser) = firefox_browser().await else {
@@ -1150,21 +1158,42 @@ async fn a_firefox_double_click_is_heard_as_one() {
         "/",
         common::html(
             "<!DOCTYPE html><p id=cell ondblclick=\"this.textContent = 'edited' + (++window.n)\" \
-             onclick=\"window.clicks += 1\">cell</p><script>window.n = 0; window.clicks = 0</script>",
+             onclick=\"window.clicks += 1\" onmouseup=\"window.ups.push(event.timeStamp)\">cell</p>\
+             <script>window.n = 0; window.clicks = 0; window.ups = []</script>",
         ),
     )]);
     let page = browser.new_page().await.unwrap();
     page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
         .await
         .unwrap();
-    for n in 1..=3 {
-        page.dblclick("#cell", None).await.unwrap();
-        assert_eq!(
-            page.evaluate("[document.querySelector('#cell').textContent, window.clicks]")
-                .await
-                .unwrap(),
-            serde_json::json!([format!("edited{n}"), 2 * n])
+    let mut late = Vec::new();
+    let mut heard = 0;
+    while heard < 3 {
+        assert!(
+            late.len() < 10,
+            "Firefox's 640 ms ran out on 10 tries: releases {late:?} ms apart"
         );
+        page.evaluate("void (window.clicks = 0, window.ups = [])")
+            .await
+            .unwrap();
+        page.dblclick("#cell", None).await.unwrap();
+        let said = page
+            .evaluate("[document.querySelector('#cell').textContent, window.clicks, window.ups]")
+            .await
+            .unwrap();
+        assert_eq!(said[1], 2, "{said}");
+        let ups: Vec<f64> = serde_json::from_value(said[2].clone()).unwrap();
+        let apart = ups[1] - ups[0];
+        if said[0] == format!("edited{}", heard + 1) {
+            heard += 1;
+            continue;
+        }
+        // A few ms of slack, for the coarser clock a page is given.
+        assert!(
+            apart >= 630.0,
+            "two clicks {apart} ms apart, well inside Firefox's 640, and no dblclick: {said}"
+        );
+        late.push(apart);
     }
     browser.close().await.unwrap();
 }

@@ -112,6 +112,15 @@ jobs:
       # mdutil fails on it.
       - if: runner.os == 'macOS'
         run: sudo mdutil -i off / /System/Volumes/Data
+      # The runner's Dock fills its 1024 px screen, so each app that
+      # starts or quits resizes its icons and the Dock's height with them,
+      # and a maximized window is as tall as the Dock leaves room for. The
+      # headed Firefox stealth test compares two Firefoxes started seconds
+      # apart; whether the first one's icon had joined the Dock yet made
+      # its window 3 px shorter now and then. A hidden Dock leaves the
+      # same room whatever is running.
+      - if: runner.os == 'macOS'
+        run: defaults write com.apple.dock autohide -bool true && killall Dock
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
