@@ -253,6 +253,23 @@ impl XPath {
                 reason: format!("no value given for ${missing}"),
             });
         }
+        // An index of another document, or one older than a node in it,
+        // would send the walk past its tables.
+        let index = doc.index;
+        let at = index.order(scope);
+        if (scope as usize) >= doc.tree.len()
+            || !index.covers(doc.tree)
+            || at == u32::MAX
+            || index.node_at(at) != scope
+        {
+            return Err(XPathError {
+                query: self.src.clone(),
+                reason: format!(
+                    "node {scope} isn't in the index: it was built for another document, \
+                     or before the node was made, or without the node's tree"
+                ),
+            });
+        }
         eval::run(&self.expr, doc, scope, vars, namespaces, extensions, limit).map_err(|reason| {
             XPathError {
                 query: self.src.clone(),

@@ -532,3 +532,78 @@ fn quadratic_queries_stop_at_the_work_limit() {
     let (got, _) = timed(&small, "//p[following::p][position() < 3]");
     assert!(matches!(got, Ok(Value::Nodes(n)) if n.len() == 2));
 }
+
+/// A scope or an index the evaluator can't use was read past the end of
+/// the index's tables: a panic, not an error.
+#[test]
+fn a_scope_or_index_that_doesnt_fit_is_an_error() {
+    let x = XPath::new("//p").unwrap();
+    let run = |tree: &html::Document, index: &Index, scope: NodeId| {
+        x.evaluate(Doc::html(tree, index), scope, &[], &[], &NoExtensions)
+            .map(|_| ())
+            .map_err(|e| e.reason)
+    };
+    let mut p = Page::new("<div><p>a</p></div>");
+    assert_eq!(run(&p.tree, &p.index, p.tree.root()), Ok(()));
+    // Past the end of the document.
+    let past = p.tree.len() as NodeId + 5;
+    assert!(run(&p.tree, &p.index, past).is_err());
+    // Another document's index.
+    let other = Page::new("<ul><li>1</li><li>2</li><li>3</li></ul>");
+    assert!(run(&other.tree, &p.index, other.tree.root()).is_err());
+    // An index of nothing, or of a subtree run from outside it.
+    let none = Index::build(&p.tree, &[]);
+    assert!(run(&p.tree, &none, p.tree.root()).is_err());
+    let div = (0..p.tree.len() as NodeId)
+        .find(|&n| p.tree.lower_name(n) == Some("div"))
+        .unwrap();
+    let sub = Index::build(&p.tree, &[div]);
+    assert!(run(&p.tree, &sub, p.tree.root()).is_err());
+    assert!(
+        run(&p.tree, &sub, div).is_err(),
+        "its tree's top isn't indexed"
+    );
+    // A node made after the index was.
+    let made = p.tree.create_element(html::Ns::Html, "b");
+    let reason = run(&p.tree, &p.index, made).unwrap_err();
+    assert!(reason.contains("isn't in the index"), "{reason}");
+    assert!(run(&p.tree, &p.index, p.tree.root()).is_err());
+    p.index = Index::build(&p.tree, &[p.tree.root(), made]);
+    assert_eq!(run(&p.tree, &p.index, made), Ok(()));
+}
+
+/// `lang()` climbed to the root on each call, and a string-value's text
+/// went uncounted however long it was, so neither could be stopped.
+#[test]
+fn lang_and_long_text_count_against_the_limit() {
+    let deep = Page::new(&("<html lang=en><body>".to_string() + &"<div>".repeat(20_000)));
+    let within = |page: &Page, q: &str, limit: u64| {
+        XPath::new(q)
+            .unwrap()
+            .evaluate_within(page.doc(), page.tree.root(), &[], &[], &NoExtensions, limit)
+            .map(|_| ())
+            .map_err(|e| e.reason)
+    };
+    let reason = within(&deep, "count(//*[lang('en')])", 1 << 20).unwrap_err();
+    assert!(reason.contains("more than 1048576 steps"), "{reason}");
+    assert_eq!(within(&deep, "count(//*[lang('en')])", 1 << 30), Ok(()));
+    let text = Page::new(&("<div>".repeat(2_000) + &"x".repeat(1_000_000)));
+    let reason = within(&text, "count(//*[contains(., 'zz')])", 1 << 24).unwrap_err();
+    assert!(reason.contains("more than 16777216 steps"), "{reason}");
+    // One read of it is cheap.
+    assert_eq!(within(&text, "string-length(//div[1])", 1 << 20), Ok(()));
+}
+
+/// The default limit let a query that stops at it run for half a minute:
+/// this one, a few hundred million steps on 12,000 elements, ran to the
+/// end at about 23 ns a step.
+#[test]
+fn the_default_limit_stops_within_seconds() {
+    let flat = Page::new(&"<p>x</p>".repeat(12_000));
+    let (got, took) = timed(&flat, "//*[not(//*[not(.)])]");
+    let reason = got.map(|_| ()).unwrap_err();
+    assert!(reason.contains("steps"), "{reason}");
+    if !cfg!(debug_assertions) {
+        assert!(took < Duration::from_secs(10), "{took:?}");
+    }
+}
