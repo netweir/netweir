@@ -11,12 +11,13 @@ use crate::parser::{Axis, Expr, NodeTest, Op, Step};
 use crate::{Doc, Extensions, Item, Value, XML_NS, XValue};
 
 /// How much work one run may do before it gives up: nodes looked at on
-/// axes, predicate tests, and nodes read for string-values. Some queries
-/// are quadratic on any engine (`//p[following::p]`), and a hostile page
-/// can make them run for hours. A unit takes one to ten nanoseconds, so
-/// this is seconds of work: over a hundred times what the slowest query
-/// of the benchmark pages needs.
-pub const WORK_LIMIT: u64 = 1 << 30;
+/// axes and by `lang()`, predicate tests, and nodes and every 16 bytes of
+/// text read for string-values. Some queries are quadratic on any engine
+/// (`//p[following::p]`), and a hostile page can make them run for hours.
+/// A unit takes one to twenty-odd nanoseconds, so this is a few seconds
+/// at most: still over ten times what the slowest query of the benchmark
+/// pages needs.
+pub const WORK_LIMIT: u64 = 1 << 27;
 
 struct Context<'a, 'v> {
     item: Item,
@@ -67,6 +68,11 @@ pub(crate) fn run<'a>(
     while let Some(up) = doc.tree.parent(root) {
         root = up;
     }
+    if doc.index.order(root) == u32::MAX {
+        return Err(format!(
+            "the top of node {scope}'s tree, node {root}, isn't in the index"
+        ));
+    }
     let kept = RefCell::default();
     let spent = Cell::new(0);
     let ctx = Context {
@@ -98,6 +104,12 @@ impl<'a> Context<'a, '_> {
             ));
         }
         Ok(())
+    }
+
+    /// Counts a string-value's text, which [`Context::spend`] then sees.
+    fn charge_text(&self, bytes: usize) {
+        let units = (bytes / 16) as u64;
+        self.spent.set(self.spent.get().saturating_add(units));
     }
 
     fn order(&self, n: NodeId) -> u32 {
@@ -136,7 +148,11 @@ impl<'a> Context<'a, '_> {
         let index = self.doc.index;
         let at = self.order(n);
         match index.kind_at(at) {
-            TEXT | CDATA | COMMENT | PI => Cow::Borrowed(self.data(n)),
+            TEXT | CDATA | COMMENT | PI => {
+                let data = self.data(n);
+                self.charge_text(data.len());
+                Cow::Borrowed(data)
+            }
             _ => {
                 // Every text node below, read off the index's range.
                 let end = index.end_of(at);
@@ -147,6 +163,9 @@ impl<'a> Context<'a, '_> {
                 for j in at + 1..end {
                     if matches!(index.kind_at(j), TEXT | CDATA) {
                         let piece = self.data(index.node_at(j));
+                        // What's done with it (compared, searched) is in
+                        // proportion to its length.
+                        self.charge_text(piece.len());
                         if out.is_empty() {
                             out = Cow::Borrowed(piece);
                         } else {
@@ -1375,13 +1394,21 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
                 Item::Attr { owner, .. } => owner,
             };
             let tree = ctx.doc.tree;
-            let declared = std::iter::successors(Some(node), |&n| tree.parent(n))
-                .find_map(|n| {
-                    ctx.doc
-                        .attr(n, "xml:lang")
-                        .or_else(|| ctx.doc.attr(n, "lang"))
-                })
-                .map(str::to_ascii_lowercase);
+            // A climb per call: counted, as an ancestor axis is.
+            let mut declared = None;
+            let mut at = Some(node);
+            while let Some(n) = at {
+                ctx.spend(1)?;
+                declared = ctx
+                    .doc
+                    .attr(n, "xml:lang")
+                    .or_else(|| ctx.doc.attr(n, "lang"));
+                if declared.is_some() {
+                    break;
+                }
+                at = tree.parent(n);
+            }
+            let declared = declared.map(str::to_ascii_lowercase);
             Value::Bool(declared.is_some_and(|l| l == want || l.starts_with(&format!("{want}-"))))
         }
         "number" => {
