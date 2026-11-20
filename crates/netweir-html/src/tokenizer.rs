@@ -49,7 +49,9 @@ pub trait Sink {
     /// Where the token the next call hands over was written: a byte range
     /// of the tokenizer's (preprocessed) input, from a tag's `<` to past
     /// its `>`, or the characters a text run was read from (a character
-    /// reference's whole `&...;` for what it stands for). Called just
+    /// reference's whole `&...;` for what it stands for, and all of a run
+    /// of text and references gathered up, unless
+    /// [`Tokenizer::keep_positions`] keeps them apart). Called just
     /// before every token, text runs included; a sink that doesn't need
     /// positions leaves it as this, which costs nothing.
     fn position(&mut self, start: usize, end: usize) {
@@ -303,6 +305,13 @@ pub struct Tokenizer<'a> {
     ref_start: usize,
     /// How far [`Tokenizer::ref_ready`] has looked.
     ref_scan: usize,
+    /// Text in the data state with character references in it, decoded
+    /// and gathered into one run from `text_from` of the input, so a page
+    /// of them is a handful of runs for the sink rather than three per
+    /// reference. Off with [`Tokenizer::keep_positions`].
+    gather: bool,
+    text: String,
+    text_from: Option<usize>,
     /// How much of the input has been checked for errors in the stream.
     stream_checked: usize,
 
@@ -331,6 +340,9 @@ impl<'a> Tokenizer<'a> {
             end_tag: false,
             self_closing: false,
             attr_buf: String::new(),
+            gather: true,
+            text: String::new(),
+            text_from: None,
             attrs: Vec::new(),
             current: None,
             attr_name_input: None,
@@ -374,6 +386,13 @@ impl<'a> Tokenizer<'a> {
     /// pass over the input, for the errors in it as a stream.
     pub fn report_errors(&mut self) {
         self.errors = true;
+    }
+
+    /// Hands the sink each character reference as a run of its own, at
+    /// the place it was written, rather than gathered up with the text
+    /// around it: for a sink that keeps where each character came from.
+    pub fn keep_positions(&mut self) {
+        self.gather = false;
     }
 
     #[inline]
@@ -912,8 +931,34 @@ impl<'a> Tokenizer<'a> {
     fn out<S: Sink>(&mut self, sink: &mut S, in_attr: bool, s: &str) {
         if in_attr {
             self.attr_buf.push_str(s);
+        } else if self.text_from.is_some() {
+            self.text.push_str(s);
         } else {
             emit_text(sink, s, self.ref_start, self.pos);
+        }
+    }
+
+    /// The data state's text from `pos` to `end`: on the run being
+    /// gathered, if there is one, else straight to the sink as a slice of
+    /// the input.
+    fn data_text<S: Sink>(&mut self, sink: &mut S, end: usize) {
+        if self.text_from.is_some() {
+            self.text.push_str(&self.input[self.pos..end]);
+        } else {
+            emit_text(sink, &self.input[self.pos..end], self.pos, end);
+        }
+    }
+
+    /// Hands the sink the run gathered by [`Tokenizer::data_text`] and
+    /// character references, read from `text_from` to `end`.
+    fn flush_text<S: Sink>(&mut self, sink: &mut S, end: usize) {
+        // Nothing gathered is no run: an empty one would still take the
+        // place of the newline a <pre> drops.
+        if let Some(from) = self.text_from.take()
+            && !self.text.is_empty()
+        {
+            emit_text(sink, &self.text, from, end);
+            self.text.clear();
         }
     }
 
@@ -930,12 +975,9 @@ impl<'a> Tokenizer<'a> {
 
     fn named_ref<S: Sink>(&mut self, sink: &mut S, in_attr: bool, rest: &'a str) {
         let bytes = rest.as_bytes();
-        let run = bytes
-            .iter()
-            .take_while(|b| b.is_ascii_alphanumeric())
-            .count();
+        let run = alnum_run(bytes);
         if bytes.get(run) == Some(&b';')
-            && let Some(value) = lookup(&rest[..=run])
+            && let Some(value) = lookup(bytes, run + 1)
         {
             self.pos += run + 1;
             self.out(sink, in_attr, value);
@@ -943,8 +985,8 @@ impl<'a> Tokenizer<'a> {
         }
         // Without a semicolon, only the legacy names match, and the
         // longest one wins.
-        for len in (1..=run.min(LONGEST_NAME)).rev() {
-            let Some(value) = lookup(&rest[..len]) else {
+        for len in (1..=run.min(LONGEST_LEGACY)).rev() {
+            let Some(value) = lookup(bytes, len) else {
                 continue;
             };
             let next = bytes.get(len).copied();
@@ -974,16 +1016,21 @@ impl<'a> Tokenizer<'a> {
         let bytes = rest.as_bytes();
         let hex = matches!(bytes.get(1), Some(b'x' | b'X'));
         let start = if hex { 2 } else { 1 };
-        let digits = bytes[start..]
-            .iter()
-            .take_while(|b| {
-                if hex {
-                    b.is_ascii_hexdigit()
-                } else {
-                    b.is_ascii_digit()
-                }
-            })
-            .count();
+        let radix = if hex { 16 } else { 10 };
+        // The digits and their value in one pass, held at 0x110000, past
+        // the last code point, however many there are.
+        let mut code: u32 = 0;
+        let mut digits = 0;
+        for &b in &bytes[start..] {
+            let d = match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' if hex => b - b'a' + 10,
+                b'A'..=b'F' if hex => b - b'A' + 10,
+                _ => break,
+            };
+            code = (code * radix + d as u32).min(0x11_0000);
+            digits += 1;
+        }
         if digits == 0 {
             self.pos += start;
             self.error(
@@ -994,12 +1041,6 @@ impl<'a> Tokenizer<'a> {
             self.out(sink, in_attr, "&");
             self.out(sink, in_attr, &rest[..start]);
             return;
-        }
-        let radix = if hex { 16 } else { 10 };
-        let mut code: u32 = 0;
-        for &b in &bytes[start..start + digits] {
-            let d = (b as char).to_digit(radix).unwrap();
-            code = code.saturating_mul(radix).saturating_add(d).min(0x11_0000);
         }
         self.pos += start + digits;
         if bytes.get(start + digits) == Some(&b';') {
@@ -1019,8 +1060,12 @@ impl<'a> Tokenizer<'a> {
             0x80..=0x9F => c1(code),
             _ => char::from_u32(code).unwrap_or('\u{FFFD}'),
         };
-        let mut buf = [0; 4];
-        self.out(sink, in_attr, c.encode_utf8(&mut buf));
+        if !in_attr && self.text_from.is_some() {
+            self.text.push(c);
+        } else {
+            let mut buf = [0; 4];
+            self.out(sink, in_attr, c.encode_utf8(&mut buf));
+        }
     }
 
     /// Tokenizes the input to the end, handing each token to `sink`.
@@ -1078,12 +1123,14 @@ impl<'a> Tokenizer<'a> {
                 steps = steps.wrapping_add(1);
                 if steps.is_multiple_of(4096) && std::time::Instant::now() > deadline {
                     self.timed_out = true;
+                    self.flush_text(sink, self.pos);
                     return;
                 }
             }
             // With more to come, no state can tell from nothing what the
             // next character is; each picks up from here when it comes.
             if PARTIAL && self.pos >= bytes.len() {
+                self.flush_text(sink, self.pos);
                 return;
             }
             match self.state {
@@ -1091,8 +1138,9 @@ impl<'a> Tokenizer<'a> {
                     let rest = &bytes[self.pos..];
                     let Some(i) = memchr3(b'<', b'&', 0, rest) else {
                         if !rest.is_empty() {
-                            emit_text(sink, &input[self.pos..], self.pos, bytes.len());
+                            self.data_text(sink, bytes.len());
                         }
+                        self.flush_text(sink, bytes.len());
                         self.pos = bytes.len();
                         if PARTIAL {
                             return;
@@ -1100,9 +1148,35 @@ impl<'a> Tokenizer<'a> {
                         sink.eof();
                         return;
                     };
-                    if i > 0 {
-                        emit_text(sink, &input[self.pos..self.pos + i], self.pos, self.pos + i);
+                    if rest[i] == b'&' && self.gather {
+                        // The text before it and what it stands for go on
+                        // the run being gathered.
+                        let at = self.pos + i;
+                        if self.text_from.is_none() {
+                            self.text_from = Some(self.pos);
+                        }
+                        if i > 0 {
+                            self.text.push_str(&input[self.pos..at]);
+                        }
+                        self.pos = at + 1;
+                        if PARTIAL && !self.ref_ready() {
+                            // A reference not all here yet.
+                            self.pos = at;
+                            self.flush_text(sink, at);
+                            return;
+                        }
+                        self.char_ref(sink, false);
+                        // A run's handed over now and then, so a long one
+                        // isn't held twice, here and in the sink.
+                        if self.text.len() >= 1 << 16 {
+                            self.flush_text(sink, self.pos);
+                        }
+                        continue;
                     }
+                    if i > 0 {
+                        self.data_text(sink, self.pos + i);
+                    }
+                    self.flush_text(sink, self.pos + i);
                     self.pos += i + 1;
                     match rest[i] {
                         b'<' => {
@@ -2402,14 +2476,117 @@ fn push_lower(to: &mut String, s: &str) {
     to[at..].make_ascii_lowercase();
 }
 
-/// The longest named character reference, in bytes.
-const LONGEST_NAME: usize = 32;
+/// The longest name without a semicolon, in bytes.
+const LONGEST_LEGACY: usize = 6;
 
-fn lookup(name: &str) -> Option<&'static str> {
-    ENTITIES
-        .binary_search_by(|(n, _)| n.as_bytes().cmp(name.as_bytes()))
-        .ok()
-        .map(|i| ENTITIES[i].1)
+/// Eight bytes of `s` from `at`, little-endian: the first `n` of them,
+/// all 8 when `n` is 8 or more, and zeros after. The tables below are
+/// made with it, at compile time.
+const fn word(s: &[u8], at: usize, n: usize) -> u64 {
+    let mut v = 0;
+    let mut i = 0;
+    while i < 8 && i < n {
+        v |= (s[at + i] as u64) << (8 * i);
+        i += 1;
+    }
+    v
+}
+
+const HASH_BITS: u32 = 13;
+
+/// The slot in [`BY_HASH`] to look for a name from: its length, and its
+/// first and last 8 bytes as [`word`] has them (or all of it, twice).
+const fn name_slot(first: u64, last: u64, n: usize) -> usize {
+    let mixed = (first ^ last.rotate_left(23) ^ n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (mixed >> (64 - HASH_BITS)) as usize
+}
+
+/// Every name's first 8 bytes, as [`word`] has them, so most names are
+/// told apart from the one looked for without comparing their bytes.
+static FIRST_WORDS: [u64; ENTITIES.len()] = {
+    let mut t = [0; ENTITIES.len()];
+    let mut i = 0;
+    while i < t.len() {
+        let name = ENTITIES[i].0.as_bytes();
+        t[i] = word(name, 0, name.len());
+        i += 1;
+    }
+    t
+};
+
+/// [`ENTITIES`] as a hash table, by [`name_slot`] with linear probing:
+/// one more than a name's index in it, or 0 for an empty slot.
+static BY_HASH: [u16; 1 << HASH_BITS] = {
+    let mut t = [0; 1 << HASH_BITS];
+    let mut i = 0;
+    while i < ENTITIES.len() {
+        let name = ENTITIES[i].0.as_bytes();
+        let n = name.len();
+        let last = if n >= 8 {
+            word(name, n - 8, 8)
+        } else {
+            FIRST_WORDS[i]
+        };
+        let mut slot = name_slot(FIRST_WORDS[i], last, n);
+        while t[slot] != 0 {
+            slot = (slot + 1) & (t.len() - 1);
+        }
+        t[slot] = i as u16 + 1;
+        i += 1;
+    }
+    t
+};
+
+/// The value of the named character reference that is the first `n`
+/// bytes of `bytes`, without its `&`.
+fn lookup(bytes: &[u8], n: usize) -> Option<&'static str> {
+    debug_assert!(0 < n && n <= bytes.len());
+    let (first, last) = if bytes.len() >= 8 {
+        // Whole words, the bytes past the name masked off: no loop over
+        // its length.
+        let at = |i: usize| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+        let keep = u64::MAX >> (64 - 8 * n.min(8));
+        (at(0) & keep, at(n.saturating_sub(8)) & keep)
+    } else {
+        let first = word(bytes, 0, n);
+        (first, first)
+    };
+    let mut slot = name_slot(first, last, n);
+    loop {
+        let i = BY_HASH[slot].checked_sub(1)? as usize;
+        let name = ENTITIES[i].0.as_bytes();
+        if FIRST_WORDS[i] == first && name.len() == n && (n <= 8 || name[8..] == bytes[8..n]) {
+            return Some(ENTITIES[i].1);
+        }
+        slot = (slot + 1) & (BY_HASH.len() - 1);
+    }
+}
+
+/// How many ASCII letters and digits `bytes` starts with, looked at 8
+/// bytes at a time.
+fn alnum_run(bytes: &[u8]) -> usize {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = ONES * 0x80;
+    // The high bit of each byte of `x` from `lo` to `hi`, for bytes
+    // below 0x80: neither subtraction borrows across bytes.
+    let within = |x: u64, lo: u8, hi: u8| {
+        ((x | HIGH) - ONES * lo as u64) & (ONES * (0x80 + hi as u64) - (x & !HIGH)) & !x & HIGH
+    };
+    let mut n = 0;
+    while let Some(w) = bytes.get(n..n + 8) {
+        let x = u64::from_le_bytes(w.try_into().unwrap());
+        // Setting 0x20 makes the capitals small and no other byte a letter.
+        let alnum = within(x, b'0', b'9') | within(x | (ONES * 0x20), b'a', b'z');
+        let other = !alnum & HIGH;
+        if other != 0 {
+            return n + other.trailing_zeros() as usize / 8;
+        }
+        n += 8;
+    }
+    n + bytes[n..]
+        .iter()
+        .take_while(|b| b.is_ascii_alphanumeric())
+        .count()
 }
 
 /// The spec's replacements for numeric references to C1 controls, which
@@ -2453,11 +2630,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_longest_name_is_longest_name() {
-        assert_eq!(
-            ENTITIES.iter().map(|(n, _)| n.len()).max(),
-            Some(LONGEST_NAME)
-        );
+    fn every_name_is_found_by_its_hash() {
+        for (name, value) in ENTITIES {
+            // Alone, and with more after it, as in a page.
+            assert_eq!(lookup(name.as_bytes(), name.len()), Some(value), "{name}");
+            let more = format!("{name}abcdefgh;");
+            assert_eq!(lookup(more.as_bytes(), name.len()), Some(value), "{name}");
+            assert!(name.ends_with(';') || name.len() <= LONGEST_LEGACY);
+        }
+        assert_eq!(lookup(b"notit;", 6), None);
+        assert_eq!(lookup(b"quot;", 3), None);
+        assert_eq!(lookup(b"CounterClockwiseContourIntegral", 31), None);
+    }
+
+    #[test]
+    fn alnum_run_counts_letters_and_digits() {
+        for s in [
+            "",
+            "a",
+            "amp;",
+            "AZaz09@[`{/:",
+            "CounterClockwiseContourIntegral;",
+            "abcdefgh",
+            "abcdefghi&",
+            "x\u{e9}y",
+            "0123456789abcdefXYZ\u{80}",
+        ] {
+            let slow = s.bytes().take_while(u8::is_ascii_alphanumeric).count();
+            assert_eq!(alnum_run(s.as_bytes()), slow, "{s:?}");
+        }
+        // Every byte, at each place in a word.
+        for b in 0..=255u8 {
+            for at in 0..8 {
+                let mut v = b"abcdefgh".to_vec();
+                v[at] = b;
+                let want = if b.is_ascii_alphanumeric() { 8 } else { at };
+                assert_eq!(alnum_run(&v), want, "{b:#x} at {at}");
+            }
+        }
     }
 
     /// Every token, as text, for comparing two runs.

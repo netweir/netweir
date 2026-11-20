@@ -1026,6 +1026,7 @@ mod tests {
         doc.remove(template);
         assert!(doc.is_removed(contents) && doc.is_removed(i));
         assert_eq!(doc.template_contents(template), None);
+        #[cfg(debug_assertions)]
         doc.check_tree();
     }
 
@@ -1076,6 +1077,7 @@ mod tests {
         doc.remove(shadow);
         assert!(!doc.is_removed(shadow));
         assert_eq!(doc.shadow_root(host), Some(shadow));
+        #[cfg(debug_assertions)]
         doc.check_tree();
     }
 }

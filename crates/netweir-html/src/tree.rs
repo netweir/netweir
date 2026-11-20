@@ -3896,6 +3896,9 @@ impl Parser {
         if options.errors {
             tokenizer.report_errors();
         }
+        if options.spans || options.errors {
+            tokenizer.keep_positions();
+        }
         Parser {
             builder,
             tokenizer,
@@ -4090,6 +4093,24 @@ mod tests {
         };
         assert!(parse_with(&html, roomy).is_ok());
     }
+    #[test]
+    fn a_long_run_of_references_is_one_text_node() {
+        // Longer than the tokenizer gathers before handing a run over.
+        let html = "<p>".to_owned() + &"&amp;x&#169;&nbsp".repeat(20_000) + "<b>";
+        let with_spans = Options {
+            spans: true,
+            errors: true,
+            ..Options::default()
+        };
+        for doc in [parse(&html, false), parse_with(&html, with_spans).unwrap()] {
+            let p = (0..doc.len() as NodeId)
+                .find(|&n| doc.lower_name(n) == Some("p"))
+                .unwrap();
+            assert_eq!(doc.children(p).count(), 2);
+            assert_eq!(doc.text(p), "&x\u{a9}\u{a0}".repeat(20_000));
+        }
+    }
+
     #[test]
     fn max_depth_keeps_the_tree_shallow_and_every_element() {
         fn deepest(doc: &Document, id: NodeId) -> usize {
