@@ -264,6 +264,11 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn guess(body: &[u8]) -> &'static Encoding {
+    // chardetng answers UTF-8 for valid UTF-8 too, after a pass several
+    // times slower than this check.
+    if std::str::from_utf8(body).is_ok() {
+        return UTF_8;
+    }
     let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
     detector.feed(body, true);
     detector.guess(None, chardetng::Utf8Detection::Allow)
@@ -414,5 +419,25 @@ mod tests {
             decode("café".as_bytes(), Some("text/html; charset=klingon")),
             "café"
         );
+    }
+
+    #[test]
+    fn undeclared_utf8_is_found_without_the_detector_and_as_it_would_say() {
+        let detector = |body: &[u8]| {
+            let mut d = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
+            d.feed(body, true);
+            d.guess(None, chardetng::Utf8Detection::Allow)
+        };
+        let late_meta = format!("<p>{}</p><meta charset=utf-8>Zoë", "x".repeat(2000));
+        for body in [
+            &b""[..],
+            b"<p>plain ASCII",
+            "<p>Zoë € 日本".as_bytes(),
+            late_meta.as_bytes(),
+        ] {
+            assert_eq!(guess(body), UTF_8);
+            assert_eq!(detector(body), UTF_8);
+        }
+        assert_eq!(guess(b"<p>caf\xe9"), detector(b"<p>caf\xe9"));
     }
 }
