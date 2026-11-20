@@ -443,15 +443,28 @@ pub async fn browser() -> Option<TestBrowser> {
         }
         // As Chrome's below, rather than launch_firefox's longer timeout,
         // which is for launching alone: tests rely on the browser's.
+        // And, as `launch` does for Chrome, a launch that ran out of time
+        // gets two more tries: on a Windows runner, four Firefoxes in a
+        // row once never said their port in 30 s, and the next ones did
+        // (#351).
         let turn = turn();
-        let browser = netweir_browser::Browser::launch(netweir_browser::LaunchOptions {
+        let options = netweir_browser::LaunchOptions {
             engine: netweir_browser::Engine::Firefox,
             executable: Some(firefox()?),
             timeout: std::time::Duration::from_secs(30),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        };
+        let mut tries = 0;
+        let browser = loop {
+            match netweir_browser::Browser::launch(options.clone()).await {
+                Err(netweir_browser::Error::Launch(m))
+                    if m.contains("didn't say which port") && tries < 2 =>
+                {
+                    tries += 1;
+                }
+                other => break other.unwrap(),
+            }
+        };
         return Some(TestBrowser {
             browser,
             _turn: turn,

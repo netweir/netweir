@@ -1567,10 +1567,12 @@ pub(super) async fn go_by(
         s.next_kind = Some("historyDifferentDocument");
         (s.navigations, s.started)
     };
-    let what = || {
+    // Which of the three waits ran out, after the rest.
+    let what = |waiting: &str| {
         format!(
             "going {by} through the page's history (Firefox may not have committed a \
-             navigation: the page asked before being left, or the answer was a 204 or a download)"
+             navigation: the page asked before being left, or the answer was a 204 or a download; \
+             waiting {waiting})"
         )
     };
     let traverse = page.call(
@@ -1579,7 +1581,7 @@ pub(super) async fn go_by(
     );
     let traversed = match tokio::time::timeout_at(deadline, traverse).await {
         Ok(r) => r,
-        Err(_) => Err(Error::Timeout(what())),
+        Err(_) => Err(Error::Timeout(what("for Firefox to take the step"))),
     };
     match traversed {
         // Firefox stops waiting for the step after a second of its own,
@@ -1607,9 +1609,11 @@ pub(super) async fn go_by(
     // Another document, which starts a navigation, or the same one at
     // another entry, which only moves within it.
     let moved = page
-        .until(what, left(), |s| {
-            ours(s).is_some() || s.navigations > navigations
-        })
+        .until(
+            || what("for a navigation to start"),
+            left(),
+            |s| ours(s).is_some() || s.navigations > navigations,
+        )
         .await;
     if moved.is_err() {
         // Not left to name a navigation the page starts itself later.
@@ -1663,7 +1667,10 @@ pub(super) async fn go_by(
             return Ok(Some(page.response_for(Some(&loader))));
         }
         if left().is_zero() {
-            return Err(Error::Timeout(what()));
+            return Err(Error::Timeout(what(&format!(
+                "for {} to commit or come back from the back-forward cache",
+                start.url
+            ))));
         }
         tokio::time::sleep(Duration::from_millis(20).min(left())).await;
     }
