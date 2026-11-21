@@ -1091,25 +1091,33 @@ fn recover_mode_reads_nodes_one_at_a_time_too() {
 
 #[test]
 fn many_declarations_and_prefixed_attributes_stay_linear() {
-    let n = 20_000;
-    let decls: Vec<String> = (0..n).map(|i| format!("xmlns:p{i}=\"u{i}\"")).collect();
-    let attrs: Vec<String> = (0..n)
-        .map(|i| format!("p{i}:a{i}=\"1\" p{i}:same=\"{i}\""))
-        .collect();
-    let xml = format!("<a {} {}><b/></a>", decls.join(" "), attrs.join(" "));
-    let start = std::time::Instant::now();
-    let doc = Document::parse_xml_within(&xml, Duration::from_secs(30)).unwrap();
-    // <b> declares everything it inherits when written alone.
-    let b = &xpath(&doc, "/a/b")[0];
-    assert_eq!(b.matches("xmlns:").count(), n);
-    unsafe { doc.remove_namespaces() }.unwrap();
-    // Every p{i}:same became one `same`, the last one's.
-    assert_eq!(xpath(&doc, "/a/@same"), [format!("{}", n - 1)]);
-    assert_eq!(xpath(&doc, "count(/a/@*)"), [format!("{}.0", n + 1)]);
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
+    // Parse, then strip the namespaces, with n declarations and 2n
+    // prefixed attributes, and say how long it took.
+    let run = |n: usize| {
+        let decls: Vec<String> = (0..n).map(|i| format!("xmlns:p{i}=\"u{i}\"")).collect();
+        let attrs: Vec<String> = (0..n)
+            .map(|i| format!("p{i}:a{i}=\"1\" p{i}:same=\"{i}\""))
+            .collect();
+        let xml = format!("<a {} {}><b/></a>", decls.join(" "), attrs.join(" "));
+        let start = std::time::Instant::now();
+        let doc = Document::parse_xml_within(&xml, Duration::from_secs(60)).unwrap();
+        // <b> declares everything it inherits when written alone.
+        let b = &xpath(&doc, "/a/b")[0];
+        assert_eq!(b.matches("xmlns:").count(), n);
+        unsafe { doc.remove_namespaces() }.unwrap();
+        // Every p{i}:same became one `same`, the last one's.
+        assert_eq!(xpath(&doc, "/a/@same"), [format!("{}", n - 1)]);
+        assert_eq!(xpath(&doc, "count(/a/@*)"), [format!("{}.0", n + 1)]);
         start.elapsed()
+    };
+    // Four times the input should take about four times as long; a
+    // quadratic step would take sixteen. A ratio, not a wall-clock limit,
+    // so a slow runner or a coverage build doesn't fail it.
+    let small = run(5_000);
+    let large = run(20_000);
+    assert!(
+        large < small * 8 + Duration::from_millis(200),
+        "5,000 took {small:?} and 20,000 took {large:?}"
     );
 }
 

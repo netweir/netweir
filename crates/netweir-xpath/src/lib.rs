@@ -126,8 +126,7 @@ impl<'a> Doc<'a> {
     /// attribute of `owner`, as an [`Item::Attr`] names it.
     pub fn attr_at(&self, owner: NodeId, index: u32) -> (&'a str, &'a str) {
         self.tree
-            .attrs(owner)
-            .nth(index as usize)
+            .attr_at(owner, index as usize)
             .map_or(("", ""), |(_, name, value)| (name, value))
     }
 }
