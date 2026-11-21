@@ -108,6 +108,10 @@ pub(crate) struct TreeBuilder {
     mode: Mode,
     original: Mode,
     template_modes: Vec<Mode>,
+    /// The end of input closed a template and has to be seen again, in
+    /// the mode reset_mode chose: a loop in eof, not a call, so nested
+    /// templates can't run the stack out.
+    eof_again: bool,
     head: NodeId,
     form: NodeId,
     frameset_ok: bool,
@@ -521,6 +525,7 @@ impl TreeBuilder {
             mode: Mode::Initial,
             original: Mode::Initial,
             template_modes: Vec::new(),
+            eof_again: false,
             head: NONE,
             form: NONE,
             frameset_ok: true,
@@ -2496,7 +2501,7 @@ impl TreeBuilder {
                 self.clear_active_to_marker();
                 self.template_modes.pop();
                 self.reset_mode();
-                self.process(t);
+                self.eof_again = true;
             }
         }
     }
@@ -2794,6 +2799,9 @@ impl Sink for TreeBuilder {
 
     fn eof(&mut self) {
         self.process(Tok::Eof);
+        while std::mem::take(&mut self.eof_again) {
+            self.process(Tok::Eof);
+        }
     }
 
     fn cdata_allowed(&self) -> bool {
