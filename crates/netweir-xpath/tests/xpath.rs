@@ -564,7 +564,7 @@ fn a_scope_or_index_that_doesnt_fit_is_an_error() {
         "its tree's top isn't indexed"
     );
     // A node made after the index was.
-    let made = p.tree.create_element(html::Ns::Html, "b");
+    let made = p.tree.create_element(html::Ns::Html, "b").unwrap();
     let reason = run(&p.tree, &p.index, made).unwrap_err();
     assert!(reason.contains("isn't in the index"), "{reason}");
     assert!(run(&p.tree, &p.index, p.tree.root()).is_err());
