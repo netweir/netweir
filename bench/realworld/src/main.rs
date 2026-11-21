@@ -404,6 +404,8 @@ mod tests {
 
     /// Each allowlist rule turns the difference it names into none, and
     /// leaves a different difference on the same page alone.
+    // One case per rule in allowlist.json, of which there is one so far.
+    #[allow(clippy::single_element_loop)]
     #[test]
     fn the_allowlist_rules_hide_only_their_difference() {
         let rules = rules(concat!(env!("CARGO_MANIFEST_DIR"), "/allowlist.json"));
