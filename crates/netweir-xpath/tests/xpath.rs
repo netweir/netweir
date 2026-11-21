@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use netweir_html::{self as html, NodeId};
 use netweir_xpath::{
-    Args, Doc, Extensions, Index, Item, Namespaces, NoExtensions, Value, XPath, XValue,
+    Args, Doc, Extensions, Index, Item, Namespaces, NoExtensions, Value, XPath, XValue, XmlTree,
 };
 
 const PAGE: &str = r#"<!DOCTYPE html><html lang="en"><head><title>T</title></head><body>
@@ -388,21 +388,14 @@ impl Namespaces for SvgInOne<'_> {
     fn uri(&self, id: u32) -> &str {
         if id == 1 { "urn:svg" } else { "" }
     }
-
-    fn id_of(&self, uri: &str) -> Option<u32> {
-        match uri {
-            "" => Some(0),
-            "urn:svg" => Some(1),
-            _ => None,
-        }
-    }
 }
 
 #[test]
 fn namespaces_come_from_the_host() {
     let p = Page::new(PAGE);
     let names = SvgInOne(&p.tree);
-    let doc = Doc::xml(&p.tree, &p.index, &names);
+    let tree = XmlTree::new(&p.tree, &names);
+    let doc = Doc::new(&tree, &p.index);
     let ns = [("s".to_string(), "urn:svg".to_string())];
     let count = |q: &str| match XPath::new(q)
         .unwrap()

@@ -4,11 +4,9 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-use netweir_html::{self as html, NodeId};
-
 use crate::index::{CDATA, COMMENT, ELEMENT, PI, TEXT};
 use crate::parser::{Axis, Expr, NodeTest, Op, Step};
-use crate::{Doc, Extensions, Item, Value, XML_NS, XValue};
+use crate::{Doc, Extensions, Item, NodeId, Value, XML_NS, XValue};
 
 /// How much work one run may do before it gives up: nodes looked at on
 /// axes and by `lang()`, predicate tests, and nodes and every 16 bytes of
@@ -131,11 +129,7 @@ impl<'a> Context<'a, '_> {
 
     /// A text, comment or processing instruction node's own text.
     fn data(&self, n: NodeId) -> &'a str {
-        match self.doc.tree.kind(n) {
-            html::Kind::Text(t) | html::Kind::Cdata(t) | html::Kind::Comment(t) => t,
-            html::Kind::ProcessingInstruction { data, .. } => data,
-            _ => "",
-        }
+        self.doc.tree.data(n)
     }
 
     fn string_value(&self, item: &Item) -> Cow<'a, str> {
@@ -178,28 +172,15 @@ impl<'a> Context<'a, '_> {
         }
     }
 
-    /// An element's name with its prefix, as written; lowercase in HTML.
-    fn qualified_name(&self, n: NodeId) -> &'a str {
-        self.doc.tree.lower_name(n).unwrap_or("")
-    }
-
-    /// An element's name without an XML prefix.
-    fn tag(&self, n: NodeId) -> Option<&'a str> {
-        let name = self.doc.tree.lower_name(n)?;
-        if self.doc.is_xml() {
-            return Some(name.split_once(':').map_or(name, |(_, local)| local));
-        }
-        Some(name)
-    }
-
-    fn ns_id(&self, n: NodeId) -> u32 {
-        self.doc.names.map_or(0, |names| names.ns_of(n))
-    }
-
     fn pi_target(&self, n: NodeId) -> Option<&'a str> {
-        match self.doc.tree.kind(n) {
-            html::Kind::ProcessingInstruction { target, .. } => Some(target),
-            _ => None,
+        self.doc.tree.pi_target(n)
+    }
+
+    /// The attribute an item is, if it's one.
+    fn attribute(&self, item: &Item) -> Option<crate::Attr<'a>> {
+        match item {
+            Item::Attr { owner, index } => self.doc.tree.attribute(*owner, *index),
+            Item::Node(_) => None,
         }
     }
 
@@ -208,29 +189,27 @@ impl<'a> Context<'a, '_> {
         match item {
             Item::Node(n) => match self.pi_target(*n) {
                 Some(target) => target,
-                None => self.qualified_name(*n),
+                None => self.doc.tree.qualified_name(*n),
             },
-            Item::Attr { owner, index, .. } => self.doc.attr_at(*owner, *index).0,
+            Item::Attr { .. } => self.attribute(item).map_or("", |a| a.qualified_name),
         }
     }
 
     /// The name without its prefix, as `local-name()` gives it.
     fn local_name(&self, item: &Item) -> &'a str {
-        let name = self.name(item);
-        // In HTML a colon is just part of a name (`fb:like`), as in lxml.
-        match name.split_once(':') {
-            Some((_, local)) if self.doc.is_xml() => local,
-            _ => name,
+        match item {
+            Item::Node(n) => match self.pi_target(*n) {
+                Some(target) => target,
+                None => self.doc.tree.local_name(*n),
+            },
+            Item::Attr { .. } => self.attribute(item).map_or("", |a| a.local_name),
         }
     }
 
     fn namespace_uri(&self, item: &Item) -> &'a str {
-        let Some(names) = self.doc.names else {
-            return "";
-        };
         match item {
-            Item::Node(n) => names.uri(names.ns_of(*n)),
-            Item::Attr { ns, .. } => names.uri(*ns),
+            Item::Node(n) => self.doc.tree.namespace_uri(*n),
+            Item::Attr { .. } => self.attribute(item).map_or("", |a| a.namespace_uri),
         }
     }
 
@@ -747,7 +726,7 @@ fn filter<'a>(items: Vec<Item>, pred: &Expr, ctx: &Context<'a, '_>) -> Result<Ve
 }
 
 /// The URI `prefix` is bound to for this run.
-fn namespace<'c>(prefix: &str, ctx: &'c Context<'_, '_>) -> Result<&'c str> {
+fn namespace<'v>(prefix: &str, ctx: &Context<'_, 'v>) -> Result<&'v str> {
     if let Some((_, uri)) = ctx.namespaces.iter().rev().find(|(p, _)| p == prefix) {
         return Ok(uri);
     }
@@ -774,48 +753,43 @@ enum Test<'t> {
     /// them), but SVG and MathML elements can, so compare the text.
     ElementName(&'t str),
     AttributeName(&'t str),
-    /// An XML element by namespace and local name. `id` is the index's id
-    /// for the lowercased name, which the index can check first; the case
-    /// and namespace are checked after.
+    /// An XML element by namespace URI and local name. `id` is the
+    /// index's id for the lowercased name, which the index can check
+    /// first; the case and namespace are checked after.
     XmlElement {
         id: usize,
         local: &'t str,
-        ns: u32,
+        ns: &'t str,
     },
     /// Any XML element in a namespace.
-    XmlElementIn(u32),
+    XmlElementIn(&'t str),
     XmlAttribute {
         local: &'t str,
-        ns: u32,
+        ns: &'t str,
     },
-    XmlAttributeIn(u32),
+    XmlAttributeIn(&'t str),
 }
 
 impl<'t> Test<'t> {
-    fn resolve(test: &'t NodeTest, axis: Axis, ctx: &Context<'_, '_>) -> Result<Test<'t>> {
+    fn resolve(test: &'t NodeTest, axis: Axis, ctx: &Context<'_, 't>) -> Result<Test<'t>> {
         let attr = axis == Axis::Attribute;
         let index = ctx.doc.index;
-        if let Some(names) = ctx.doc.names {
-            // The namespace id a prefix stands for here; None if nothing in
-            // the document is in it.
-            let ns =
-                |prefix: &str| -> Result<Option<u32>> { Ok(names.id_of(namespace(prefix, ctx)?)) };
+        if ctx.doc.is_xml() {
+            // The URI a prefix stands for here.
+            let ns = |prefix: &str| namespace(prefix, ctx);
             return Ok(match test {
-                NodeTest::Name(local) if attr => Test::XmlAttribute { local, ns: 0 },
-                NodeTest::Prefixed(p, local) if attr => match ns(p)? {
-                    Some(ns) => Test::XmlAttribute { local, ns },
-                    None => Test::Never,
-                },
-                NodeTest::AnyIn(p) if attr => ns(p)?.map_or(Test::Never, Test::XmlAttributeIn),
+                NodeTest::Name(local) if attr => Test::XmlAttribute { local, ns: "" },
+                NodeTest::Prefixed(p, local) if attr => Test::XmlAttribute { local, ns: ns(p)? },
+                NodeTest::AnyIn(p) if attr => Test::XmlAttributeIn(ns(p)?),
                 NodeTest::Name(local) => match index.tag_id_named(local) {
-                    Some(id) => Test::XmlElement { id, local, ns: 0 },
+                    Some(id) => Test::XmlElement { id, local, ns: "" },
                     None => Test::Never,
                 },
                 NodeTest::Prefixed(p, local) => match (ns(p)?, index.tag_id_named(local)) {
-                    (Some(ns), Some(id)) => Test::XmlElement { id, local, ns },
+                    (ns, Some(id)) => Test::XmlElement { id, local, ns },
                     _ => Test::Never,
                 },
-                NodeTest::AnyIn(p) => ns(p)?.map_or(Test::Never, Test::XmlElementIn),
+                NodeTest::AnyIn(p) => Test::XmlElementIn(ns(p)?),
                 other => Test::resolve_html(other, attr, ctx),
             });
         }
@@ -897,7 +871,9 @@ impl<'t> Test<'t> {
                 let at = ctx.order(*n);
                 ctx.doc.index.tag_at(at) == *id && ctx.doc.index.kind_at(at) == ELEMENT
             }
-            (Test::ElementName(name), Item::Node(n)) => ctx.tag(*n) == Some(name),
+            (Test::ElementName(name), Item::Node(n)) => {
+                kind(n) == ELEMENT && ctx.doc.tree.local_name(*n) == *name
+            }
             (Test::AnyElement, Item::Node(n)) => kind(n) == ELEMENT,
             (Test::Text, Item::Node(n)) => matches!(kind(n), TEXT | CDATA),
             (Test::Comment, Item::Node(n)) => kind(n) == COMMENT,
@@ -905,34 +881,30 @@ impl<'t> Test<'t> {
                 kind(n) == PI && target.is_none_or(|t| ctx.pi_target(*n) == Some(t))
             }
             (Test::AnyAttribute, Item::Attr { .. }) => true,
-            (Test::AttributeName(name), Item::Attr { owner, index, .. }) => {
+            (Test::AttributeName(name), Item::Attr { owner, index }) => {
                 ctx.doc.attr_at(*owner, *index).0 == *name
             }
             (Test::XmlElement { local, ns, .. }, Item::Node(n)) => {
-                kind(n) == ELEMENT && ctx.tag(*n) == Some(local) && ctx.ns_id(*n) == *ns
+                kind(n) == ELEMENT
+                    && ctx.doc.tree.local_name(*n) == *local
+                    && ctx.doc.tree.namespace_uri(*n) == *ns
             }
-            (Test::XmlElementIn(ns), Item::Node(n)) => kind(n) == ELEMENT && ctx.ns_id(*n) == *ns,
-            (Test::XmlAttribute { local, ns }, i @ Item::Attr { ns: a, .. }) => {
-                a == ns && ctx.local_name(i) == *local
+            (Test::XmlElementIn(ns), Item::Node(n)) => {
+                kind(n) == ELEMENT && ctx.doc.tree.namespace_uri(*n) == *ns
             }
-            (Test::XmlAttributeIn(ns), Item::Attr { ns: a, .. }) => a == ns,
+            (Test::XmlAttribute { local, ns }, i @ Item::Attr { .. }) => ctx
+                .attribute(i)
+                .is_some_and(|a| a.namespace_uri == *ns && a.local_name == *local),
+            (Test::XmlAttributeIn(ns), i @ Item::Attr { .. }) => {
+                ctx.attribute(i).is_some_and(|a| a.namespace_uri == *ns)
+            }
             _ => false,
         }
     }
 }
 
-fn attributes<'a>(n: NodeId, doc: Doc<'a>) -> impl Iterator<Item = Item> + 'a {
-    doc.tree
-        .attrs(n)
-        .enumerate()
-        .map(move |(i, (ns, _, _))| Item::Attr {
-            owner: n,
-            index: i as u32,
-            ns: match ns {
-                html::AttrNs::Host(id) => id,
-                _ => 0,
-            },
-        })
+fn attributes(n: NodeId, doc: Doc<'_>) -> impl Iterator<Item = Item> + use<> {
+    (0..doc.tree.attribute_count(n)).map(move |index| Item::Attr { owner: n, index })
 }
 
 /// The nodes on `axis` from `item`, in axis order (nearest first for
@@ -944,6 +916,8 @@ fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<I
     let node_at = move |j: u32| Item::Node(index.node_at(j));
     let ancestors =
         move |n: NodeId| std::iter::successors(tree.parent(n), move |&p| tree.parent(p));
+    let children =
+        move |n: NodeId| std::iter::successors(tree.first_child(n), move |&c| tree.next_sibling(c));
     // Everything after `n` in document order that isn't its descendant.
     let following = move |n: NodeId| (index.end_of(index.order(n))..tree_end).map(node_at);
     // Everything before `n` that isn't its ancestor, nearest first.
@@ -960,7 +934,7 @@ fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<I
     };
     match item {
         Item::Node(n) => match axis {
-            Axis::Child => Box::new(tree.children(n).map(Item::Node)),
+            Axis::Child => Box::new(children(n).map(Item::Node)),
             Axis::Descendant => Box::new(descendants(n)),
             Axis::DescendantOrSelf => Box::new(std::iter::once(item).chain(descendants(n))),
             Axis::Parent => Box::new(tree.parent(n).map(Item::Node).into_iter()),
@@ -1254,7 +1228,7 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
             let found = wanted
                 .iter()
                 .flat_map(|s| s.split_whitespace())
-                .flat_map(|id| index.with_id(id, |n| doc.attr(n, "id")))
+                .flat_map(|id| index.with_id(id, |n| doc.tree.id(n)))
                 .filter(|&n| (top..end).contains(&ctx.order(n)))
                 .map(Item::Node)
                 .collect();
@@ -1399,10 +1373,7 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
             let mut at = Some(node);
             while let Some(n) = at {
                 ctx.spend(1)?;
-                declared = ctx
-                    .doc
-                    .attr(n, "xml:lang")
-                    .or_else(|| ctx.doc.attr(n, "lang"));
+                declared = tree.lang(n);
                 if declared.is_some() {
                     break;
                 }

@@ -5,21 +5,16 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use netweir_html::{self as html, NodeId};
+use crate::tree::{NodeId, NodeType, TagKey, Tree};
 
 /// The node kinds, as the index stores them: the DOM's nodeType numbers.
-pub const ELEMENT: u8 = 0x01;
-pub const TEXT: u8 = 0x03;
-pub const CDATA: u8 = 0x04;
-pub const PI: u8 = 0x07;
-pub const COMMENT: u8 = 0x08;
-pub const DOCUMENT: u8 = 0x09;
-pub const DOCTYPE: u8 = 0x0A;
-const OTHER: u8 = 0x0B;
-
-/// Tag ids of names the parser doesn't know start here; below it, a known
-/// tag's number plus one.
-const FIRST_NAMED: usize = 1000;
+pub const ELEMENT: u8 = NodeType::Element as u8;
+pub const TEXT: u8 = NodeType::Text as u8;
+pub const CDATA: u8 = NodeType::Cdata as u8;
+pub const PI: u8 = NodeType::ProcessingInstruction as u8;
+pub const COMMENT: u8 = NodeType::Comment as u8;
+pub const DOCUMENT: u8 = NodeType::Document as u8;
+pub const DOCTYPE: u8 = NodeType::Doctype as u8;
 
 /// The index of one version of a tree. Its owner builds it once and keeps
 /// it until the tree changes: every query reads it, none builds it.
@@ -31,51 +26,38 @@ pub struct Index {
     end: Vec<u32>,
     kind: Vec<u8>,
     /// u32, as node ids are: one for every node adds up on a big page.
+    /// 0 for a node that isn't an element.
     tag: Vec<u32>,
     /// Each node's position, by node id; u32::MAX for one not indexed.
     order: Vec<u32>,
-    /// Tag ids of the lowercase names the parser doesn't know.
+    /// Tag ids by lowercase name, from 1.
     names: HashMap<String, usize>,
     /// Positions of the elements carrying each `id`, built on first use.
     ids: OnceLock<HashMap<String, Vec<u32>>>,
 }
 
-fn kind_of(tree: &html::Document, id: u32) -> u8 {
-    match tree.kind(id) {
-        html::Kind::Element { .. } => ELEMENT,
-        html::Kind::Text(_) => TEXT,
-        html::Kind::Cdata(_) => CDATA,
-        html::Kind::ProcessingInstruction { .. } => PI,
-        html::Kind::Comment(_) => COMMENT,
-        html::Kind::Document => DOCUMENT,
-        html::Kind::Doctype { .. } => DOCTYPE,
-        html::Kind::Fragment | html::Kind::ShadowRoot(_) => OTHER,
-    }
-}
-
-/// An element's name for tag ids: lowercase, without an XML prefix.
-fn tag_key(tree: &html::Document, id: u32) -> &str {
-    let name = tree.lower_name(id).unwrap_or("");
-    // Only XML has prefixes: in HTML, <o:p> is an element called "o:p".
-    match tree.kind(id) {
-        html::Kind::Element {
-            ns: html::Ns::Xml, ..
-        } => name.split_once(':').map_or(name, |(_, local)| local),
-        _ => name,
-    }
+/// The tag id of the lowercase name `key`, given the next free one if new.
+fn tag_id(names: &mut HashMap<String, usize>, key: String) -> u32 {
+    let next = names.len() + 1;
+    *names.entry(key).or_insert(next) as u32
 }
 
 impl Index {
     /// Indexes the tree under each of `roots` in turn: the document, then
     /// any subtrees removed from it or built apart from it, so every node
     /// a caller can hold has a position.
-    pub fn build(tree: &html::Document, roots: &[NodeId]) -> Index {
+    ///
+    /// Generic, unlike a query's reading of the tree: building reads every
+    /// node, and a call through `dyn` for each read showed in benchmarks.
+    pub fn build<T: Tree + ?Sized>(tree: &T, roots: &[NodeId]) -> Index {
         let mut raw = Vec::with_capacity(tree.len());
         let mut parent = Vec::with_capacity(tree.len());
         let mut kind = Vec::with_capacity(tree.len());
         let mut tag = Vec::with_capacity(tree.len());
         let mut order = vec![u32::MAX; tree.len()];
         let mut names: HashMap<String, usize> = HashMap::new();
+        // Tag ids by the tree's own tag number, 0 for one not yet seen.
+        let mut known: Vec<u32> = Vec::new();
         for &root in roots {
             // Preorder by the tree's links, keeping each node's parent's
             // position on a stack of the open ancestors.
@@ -86,24 +68,32 @@ impl Index {
                 order[n as usize] = pos;
                 raw.push(n);
                 parent.push(ancestors.last().copied().unwrap_or(u32::MAX));
-                let k = kind_of(tree, n);
+                let k = tree.kind(n) as u8;
                 kind.push(k);
                 // From the lowercase name alone, as tag_id_named works it
                 // out: an XML <title> shares HTML title's id.
                 tag.push(if k != ELEMENT {
                     0
-                } else if let Some(t) = tree.known_tag(n) {
-                    t as usize + 1
                 } else {
-                    let key = tag_key(tree, n).to_ascii_lowercase();
-                    match html::tag_number(&key) {
-                        Some(t) => t as usize + 1,
-                        None => {
-                            let next = FIRST_NAMED + names.len();
-                            *names.entry(key).or_insert(next)
+                    match tree.tag_key(n) {
+                        TagKey::Known(t) => {
+                            let t = t as usize;
+                            match known.get(t) {
+                                Some(&id) if id != 0 => id,
+                                _ => {
+                                    let key = tree.local_name(n).to_ascii_lowercase();
+                                    let id = tag_id(&mut names, key);
+                                    if known.len() <= t {
+                                        known.resize(t + 1, 0);
+                                    }
+                                    known[t] = id;
+                                    id
+                                }
+                            }
                         }
+                        TagKey::Name(name) => tag_id(&mut names, name.to_ascii_lowercase()),
                     }
-                } as u32);
+                });
                 at = match tree.first_child(n) {
                     Some(child) => {
                         ancestors.push(pos);
@@ -151,7 +141,7 @@ impl Index {
 
     /// Whether the index has a place for every node `tree` has, as it does
     /// for the document it was built from until a node is made in it.
-    pub fn covers(&self, tree: &html::Document) -> bool {
+    pub fn covers(&self, tree: &dyn Tree) -> bool {
         self.order.len() == tree.len()
     }
 
@@ -185,14 +175,9 @@ impl Index {
     }
 
     /// The tag id elements named `name` (compared lowercased) carry, if
-    /// any element could: a known tag's always, another name's only when
-    /// some element in the document has it.
+    /// some element in the index has that name.
     pub fn tag_id_named(&self, name: &str) -> Option<usize> {
-        let lower = name.to_ascii_lowercase();
-        match html::tag_number(&lower) {
-            Some(t) => Some(t as usize + 1),
-            None => self.names.get(&lower).copied(),
-        }
+        self.names.get(&name.to_ascii_lowercase()).copied()
     }
 
     /// The elements whose `id` is `id`, in document order. `id_of` reads a

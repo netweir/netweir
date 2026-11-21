@@ -1043,7 +1043,7 @@ impl<'a> Node<'a> {
     }
 
     /// The namespace id of an element (0 for none, and in HTML), for
-    /// comparing with [`XmlNames::id_of`].
+    /// writing out with the declarations, which number URIs the same way.
     pub(crate) fn ns_id(&self) -> u32 {
         self.doc
             .xml_names()

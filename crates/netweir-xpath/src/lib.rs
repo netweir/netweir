@@ -1,15 +1,16 @@
-//! XPath 1.0 over a netweir-html [`Document`], written from the W3C
-//! recommendation: every axis, node test and function of the core
-//! library, with the number, string and boolean rules of sections 3 and 4.
+//! XPath 1.0 over any document tree that implements [`Tree`], written
+//! from the W3C recommendation: every axis, node test and function of the
+//! core library, with the number, string and boolean rules of sections 3
+//! and 4.
 //!
-//! The tree is read as lxml reads an HTML page, which is what scrapers
+//! With the default `html` feature, netweir-html's [`Document`] is a
+//! [`Tree`], read as lxml reads an HTML page, which is what scrapers
 //! expect: element and attribute names are the parser's lowercase ones
 //! (SVG's `clippath`, `viewbox`) in no namespace, so `//div` and `@href`
 //! match, `//DIV` and `@HREF` don't, and a prefixed name (`svg:rect`)
-//! matches nothing. An
-//! XML document built into the same tree brings its namespaces through
-//! [`Namespaces`], and names with a prefix take theirs from the prefixes
-//! a query is run with.
+//! matches nothing. An XML document built into the same tree is read
+//! through [`XmlTree`], which takes its namespaces from the host. In XML,
+//! names with a prefix take theirs from the prefixes a query is run with.
 //!
 //! A query reads the document through an [`Index`], which its owner
 //! builds once per version of the tree. Functions beyond the core library
@@ -23,17 +24,24 @@
 //! inside it is the shadow root, and its host isn't an ancestor.
 
 mod eval;
+#[cfg(feature = "html")]
+mod html;
 mod index;
 mod lexer;
 mod parser;
+mod tree;
 
 use std::borrow::Cow;
 use std::fmt;
 
-use netweir_html::{Document, NodeId};
+#[cfg(feature = "html")]
+use netweir_html::Document;
 
 pub use eval::{Args, WORK_LIMIT};
+#[cfg(feature = "html")]
+pub use html::{Namespaces, XmlTree};
 pub use index::{CDATA, COMMENT, DOCTYPE, DOCUMENT, ELEMENT, Index, PI, TEXT};
+pub use tree::{Attr, NodeId, NodeType, TagKey, Tree};
 
 /// The namespace the `xml` prefix is always bound to.
 pub const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
@@ -60,81 +68,69 @@ pub enum XValue {
     Bool(bool),
 }
 
-/// The namespaces of an XML document built into a netweir-html tree,
-/// which the tree leaves to its host. Ids are the host's; 0 is no
-/// namespace.
-pub trait Namespaces: Sync {
-    /// The namespace id of an element.
-    fn ns_of(&self, element: NodeId) -> u32;
-    /// The URI with id `id`; "" for 0.
-    fn uri(&self, id: u32) -> &str;
-    /// The id of `uri` in this document, None if nothing in it has that
-    /// namespace. "" is 0.
-    fn id_of(&self, uri: &str) -> Option<u32>;
-}
-
-/// The document a query runs over: its tree, the tree's index, and for
-/// an XML document its namespaces.
+/// The document a query runs over: its tree and the tree's index.
 #[derive(Clone, Copy)]
 pub struct Doc<'a> {
-    pub(crate) tree: &'a Document,
+    pub(crate) tree: &'a dyn Tree,
     pub(crate) index: &'a Index,
-    pub(crate) names: Option<&'a dyn Namespaces>,
+    /// The tree's [`Tree::is_xml`], read once rather than on every name.
+    xml: bool,
 }
 
 impl<'a> Doc<'a> {
-    /// An HTML document. `index` must be of `tree` as it is now.
+    /// `index` must be of `tree` as it is now.
+    pub fn new(tree: &'a dyn Tree, index: &'a Index) -> Doc<'a> {
+        Doc {
+            tree,
+            index,
+            xml: tree.is_xml(),
+        }
+    }
+
+    /// An HTML page. `index` must be of `tree` as it is now.
+    #[cfg(feature = "html")]
     pub fn html(tree: &'a Document, index: &'a Index) -> Doc<'a> {
-        Doc {
-            tree,
-            index,
-            names: None,
-        }
+        Doc::new(tree, index)
     }
 
-    /// An XML document, whose elements are [`netweir_html::Ns::Xml`] and
-    /// whose attributes' namespaces are [`netweir_html::AttrNs::Host`] ids.
-    pub fn xml(tree: &'a Document, index: &'a Index, names: &'a dyn Namespaces) -> Doc<'a> {
-        Doc {
-            tree,
-            index,
-            names: Some(names),
-        }
-    }
-
-    pub fn tree(&self) -> &'a Document {
+    pub fn tree(&self) -> &'a dyn Tree {
         self.tree
     }
 
     pub fn is_xml(&self) -> bool {
-        self.names.is_some()
+        self.xml
     }
 
     /// An attribute's value by name: exact in XML, and in HTML compared
     /// ignoring ASCII case, as HTML names are lowercase.
     pub fn attr(&self, node: NodeId, name: &str) -> Option<&'a str> {
-        let mut attrs = self.tree.attrs(node);
-        if self.is_xml() {
-            return attrs.find(|(_, n, _)| *n == name).map(|(_, _, v)| v);
-        }
-        attrs
-            .find(|(_, n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, _, v)| v)
+        let (tree, xml) = (self.tree, self.xml);
+        (0..tree.attribute_count(node))
+            .filter_map(|i| tree.attribute(node, i))
+            .find(|a| {
+                if xml {
+                    a.qualified_name == name
+                } else {
+                    a.qualified_name.eq_ignore_ascii_case(name)
+                }
+            })
+            .map(|a| a.value)
     }
 
     /// The name (as written, with any prefix) and value of the `index`th
     /// attribute of `owner`, as an [`Item::Attr`] names it.
     pub fn attr_at(&self, owner: NodeId, index: u32) -> (&'a str, &'a str) {
         self.tree
-            .attr_at(owner, index as usize)
-            .map_or(("", ""), |(_, name, value)| (name, value))
+            .attribute(owner, index)
+            .map_or(("", ""), |a| (a.qualified_name, a.value))
     }
 }
 
 /// A node in XPath's data model: a tree node, or an attribute (which the
-/// tree keeps on its element rather than as a node of its own). Sixteen
-/// bytes: a node-set can hold every node of a big page, so its name and
-/// value are read from the document ([`Doc::attr_at`]), not kept here.
+/// tree keeps on its element rather than as a node of its own). Twelve
+/// bytes: a node-set can hold every node of a big page, so its name,
+/// namespace and value are read from the tree ([`Tree::attribute`]), not
+/// kept here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Item {
     Node(NodeId),
@@ -142,12 +138,10 @@ pub enum Item {
         owner: NodeId,
         /// Its place among the element's attributes.
         index: u32,
-        /// The namespace id (see [`Namespaces`]); 0 for none.
-        ns: u32,
     },
 }
 
-const _: () = assert!(std::mem::size_of::<Item>() == 16);
+const _: () = assert!(std::mem::size_of::<Item>() == 12);
 
 /// What an expression evaluates to. A node-set is in document order,
 /// without duplicates.

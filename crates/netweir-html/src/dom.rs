@@ -1055,6 +1055,14 @@ impl Document {
         attrs.iter().map(|a| self.attr_parts(a))
     }
 
+    /// How many attributes an element has, in constant time.
+    pub fn attr_count(&self, id: NodeId) -> usize {
+        if self.is_removed(id) {
+            return 0;
+        }
+        self.attrs_of(id).len()
+    }
+
     /// An element's `i`th attribute, as [`Document::attrs`] gives it, in
     /// constant time where `attrs(id).nth(i)` walks every one before it.
     pub fn attr_at(&self, id: NodeId, i: usize) -> Option<(AttrNs, &str, &str)> {

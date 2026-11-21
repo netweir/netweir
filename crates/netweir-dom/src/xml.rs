@@ -127,16 +127,6 @@ impl XmlNames {
         }
     }
 
-    /// The id of `uri` in this document, None if nothing in it has that
-    /// namespace. "" is 0.
-    pub(crate) fn id_of(&self, uri: &str) -> Option<u32> {
-        if uri.is_empty() {
-            Some(0)
-        } else {
-            self.ids.get(uri).copied()
-        }
-    }
-
     /// The namespace id of the element at `raw`.
     pub(crate) fn ns_of(&self, raw: usize) -> u32 {
         self.ns.get(&raw).copied().unwrap_or(0)
@@ -162,10 +152,6 @@ impl netweir_xpath::Namespaces for XmlNames {
 
     fn uri(&self, id: u32) -> &str {
         XmlNames::uri(self, id)
-    }
-
-    fn id_of(&self, uri: &str) -> Option<u32> {
-        XmlNames::id_of(self, uri)
     }
 }
 

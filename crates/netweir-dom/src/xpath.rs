@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use netweir_xpath::{self as xpath, Args, Doc, Extensions, Item, Value};
+use netweir_xpath::{self as xpath, Args, Doc, Extensions, Item, Value, XmlTree};
 
 use crate::cache::{self, Cache};
 use crate::document::Node;
@@ -62,8 +62,9 @@ impl XPath {
     ) -> Result<Vec<Hit<'a>>, XPathError> {
         let doc = scope.doc;
         let (tree, index) = (doc.tree(), doc.index());
-        let view = match doc.xml_names() {
-            Some(names) => Doc::xml(tree, index, names),
+        let xml = doc.xml_names().map(|names| XmlTree::new(tree, names));
+        let view = match &xml {
+            Some(xml) => Doc::new(xml, index),
             None => Doc::html(tree, index),
         };
         // Given ones come later, so they win.
@@ -91,7 +92,7 @@ const DEFAULT_NAMESPACES: [(&str, &str); 2] = [
     ("set", "http://exslt.org/sets"),
 ];
 
-fn into_hits<'a>(value: Value<'a>, scope: Node<'a>, view: Doc<'a>) -> Vec<Hit<'a>> {
+fn into_hits<'a>(value: Value<'_>, scope: Node<'a>, view: Doc<'_>) -> Vec<Hit<'a>> {
     match value {
         Value::Nodes(items) => items
             .into_iter()
