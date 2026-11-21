@@ -140,10 +140,7 @@ impl Signature {
                 return false;
             }
         }
-        if !self.body.is_empty() && !self.body.iter().any(|m| body.contains(&m.to_lowercase())) {
-            return false;
-        }
-        true
+        self.body.is_empty() || self.body.iter().any(|m| body.contains(&m.to_lowercase()))
     }
 }
 
