@@ -77,7 +77,16 @@ impl Document {
     /// `createElement` does, and a name it refuses is
     /// [`EditError::InvalidName`].
     pub fn create_element(&mut self, ns: Ns, name: &str) -> Result<NodeId, EditError> {
-        let (tag, name) = self.name_element(ns, checked(name)?);
+        Ok(self.create_element_as_parsed(ns, checked(name)?))
+    }
+
+    /// A new element, not yet in the tree, with its name taken as given:
+    /// for copying an element from another document, as `importNode`
+    /// does, which never checks names. The parser makes names
+    /// [`Document::create_element`] refuses (`<a"b>` is an element named
+    /// `a"b`), and a copy has to keep them.
+    pub fn create_element_as_parsed(&mut self, ns: Ns, name: &str) -> NodeId {
+        let (tag, name) = self.name_element(ns, name);
         let at = self.attrs.len() as u32;
         let contents = if ns == Ns::Html && tag == Tag::Template {
             self.add(Data::Fragment)
@@ -97,7 +106,7 @@ impl Document {
         {
             hosts.insert(contents, id);
         }
-        Ok(id)
+        id
     }
 
     pub fn create_text(&mut self, text: &str) -> NodeId {
@@ -329,9 +338,18 @@ impl Document {
         name: &str,
         value: &str,
     ) -> Result<(), EditError> {
-        let name = checked(name)?;
+        self.add_attr_as_parsed(id, ns, checked(name)?, value);
+        Ok(())
+    }
+
+    /// Adds an attribute as [`Document::add_attr`] does, with its name taken
+    /// as given: for copying one from another document, as `importNode`
+    /// does. The parser makes attribute names `add_attr` refuses
+    /// (`<p "x"=1>` has one named `"x"`), and a copy has to keep them.
+    /// A node taken out with [`Document::remove`] is left alone.
+    pub fn add_attr_as_parsed(&mut self, id: NodeId, ns: AttrNs, name: &str, value: &str) {
         if self.is_removed(id) {
-            return Ok(());
+            return;
         }
         let name = self.push_stable(name);
         let value = self.push_stable(value);
@@ -345,13 +363,12 @@ impl Document {
         {
             e.attrs.end += 1;
             self.attrs.push(attr);
-            return Ok(());
+            return;
         }
         self.rewrite_attrs(id, |_, attrs| {
             attrs.push(attr);
             true
         });
-        Ok(())
     }
 
     /// Replaces all of the element's attributes at once, or none of them
@@ -1136,6 +1153,34 @@ mod tests {
         assert_eq!(doc.shadow_root(host), Some(shadow));
         #[cfg(debug_assertions)]
         doc.check_tree();
+    }
+
+    /// The parser makes names the checked calls refuse, so copying a
+    /// parsed element into another document needs the calls that keep
+    /// them, as `importNode` does.
+    #[test]
+    fn a_parsed_name_the_checks_refuse_can_still_be_copied() {
+        use crate::AttrNs;
+        let from = parse("<a\"b \"x\"=1>t</a\"b>", false);
+        let el = (0..from.len() as NodeId)
+            .find(|&n| from.lower_name(n) == Some("a\"b"))
+            .unwrap();
+        let (_, attr, value) = from.attrs(el).next().unwrap();
+        assert_eq!((attr, value), ("\"x\"", "1"));
+        let mut to = parse("", false);
+        assert_eq!(
+            to.create_element(Ns::Html, "a\"b"),
+            Err(EditError::InvalidName)
+        );
+        let copy = to.create_element_as_parsed(Ns::Html, "a\"b");
+        to.add_attr_as_parsed(copy, AttrNs::None, attr, value);
+        assert_eq!(to.lower_name(copy), Some("a\"b"));
+        assert_eq!(
+            to.attrs(copy).next().map(|(_, n, v)| (n, v)),
+            Some(("\"x\"", "1"))
+        );
+        #[cfg(debug_assertions)]
+        to.check_tree();
     }
 
     /// Names were taken as given, so one with a space, a quote or a `>`
