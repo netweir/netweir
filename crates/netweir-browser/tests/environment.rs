@@ -757,6 +757,16 @@ async fn offline_fails_requests_and_says_so_everywhere() {
         json!([[false, "failed"], [false, "failed"]])
     );
     page.set_offline(false).await.unwrap();
+    // Chrome answers the change before its network service has it, and
+    // the fetch below failed now and then on Windows CI (#351), so
+    // set_offline waits for an answer from the network service sent
+    // after the change.
+    let sent = browser.methods_sent();
+    let changed = sent
+        .iter()
+        .rposition(|m| m == "Network.emulateNetworkConditionsByRule");
+    let applied = sent.iter().rposition(|m| m == "Storage.getTrustTokens");
+    assert!(applied > changed, "{sent:?}");
     assert_eq!(
         page.evaluate(&net(fetched)).await.unwrap(),
         json!([[true, 200], [true, 200]])
