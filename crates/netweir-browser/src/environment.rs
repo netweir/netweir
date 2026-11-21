@@ -802,6 +802,17 @@ pub(crate) enum Kind {
 /// session answers it "Not supported", and its worker follows the page.
 pub(crate) const NETWORK_STATE: &str = "Network.overrideNetworkState";
 
+/// What answers only once the network service has the network
+/// conditions sent before it. Chrome answers
+/// `Network.emulateNetworkConditionsByRule` as soon as it has passed the
+/// conditions on to the network service, with no answer to wait for, and
+/// a page's requests reach the network service by pipes of their own, so
+/// one could get there first: on Windows CI, a page's fetch just after
+/// going back online failed (#351). This command goes to the network
+/// service by the same pipe as the conditions, behind them, and it reads
+/// nothing a page can see.
+pub(crate) const CONDITIONS_APPLIED: &str = "Storage.getTrustTokens";
+
 /// What turns offline on or off, in a session: requests fail, and
 /// `navigator.onLine` says so. The one without the other is what a page
 /// would see in no real browser (a fetch failing while onLine is true).

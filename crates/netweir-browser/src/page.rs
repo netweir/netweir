@@ -919,6 +919,9 @@ impl Page {
                     }
                 }));
             }
+            if environment.offline == Some(true) {
+                steps.push(call(crate::environment::CONDITIONS_APPLIED, json!({})));
+            }
             if let Some(g) = environment.geolocation {
                 steps.push(call("Emulation.setGeolocationOverride", geolocation(g)));
             }
@@ -3323,7 +3326,10 @@ impl Page {
             };
             self.everywhere(kind, method, params).await?;
         }
-        self.service_workers_offline(offline).await
+        self.service_workers_offline(offline).await?;
+        self.call(crate::environment::CONDITIONS_APPLIED, json!({}))
+            .await
+            .map(drop)
     }
 
     /// Takes the service workers of the page's context that it let go off
