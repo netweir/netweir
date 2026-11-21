@@ -1052,16 +1052,27 @@ impl Document {
         } else {
             self.attrs_of(id)
         };
-        attrs.iter().map(|a| {
-            let name = self.str(a.name);
-            let name = match a.ns {
-                AttrNs::XLink | AttrNs::Xml | AttrNs::Xmlns => {
-                    name.split_once(':').map_or(name, |(_, local)| local)
-                }
-                _ => name,
-            };
-            (a.ns, name, self.str(a.value))
-        })
+        attrs.iter().map(|a| self.attr_parts(a))
+    }
+
+    /// An element's `i`th attribute, as [`Document::attrs`] gives it, in
+    /// constant time where `attrs(id).nth(i)` walks every one before it.
+    pub fn attr_at(&self, id: NodeId, i: usize) -> Option<(AttrNs, &str, &str)> {
+        if self.is_removed(id) {
+            return None;
+        }
+        self.attrs_of(id).get(i).map(|a| self.attr_parts(a))
+    }
+
+    fn attr_parts(&self, a: &Attr) -> (AttrNs, &str, &str) {
+        let name = self.str(a.name);
+        let name = match a.ns {
+            AttrNs::XLink | AttrNs::Xml | AttrNs::Xmlns => {
+                name.split_once(':').map_or(name, |(_, local)| local)
+            }
+            _ => name,
+        };
+        (a.ns, name, self.str(a.value))
     }
 
     /// An element's attributes with their names as written: `xlink:href`
