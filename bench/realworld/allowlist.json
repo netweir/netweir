@@ -1,0 +1,14 @@
+[
+  {
+    "name": "processing-instructions",
+    "reason": "The web-platform-tests tree tests (processing-instructions.dat, which Netweir passes) read <?target data> as a processing instruction; html5ever 0.40 still reads it as a bogus comment, '?target data'. Both dumps keep only the target, so the rest of the page is still compared.",
+    "netweir": [
+      "^(\\| *)<\\?([^ ?\\n]*)(?s:.*?)\\?>$",
+      "$1<?$2>"
+    ],
+    "html5ever": [
+      "^(\\| *)<!-- \\?([^ ?>\\n]*)(?s:.*?) -->$",
+      "$1<?$2>"
+    ]
+  }
+]

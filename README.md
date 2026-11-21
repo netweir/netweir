@@ -659,6 +659,20 @@ docstring has the rest. CI runs 300 of the pages, giants cut to 2 MB, on
 every pull request, and fails if Netweir crashes, hangs or raises on a
 page, or another library gets through the batch faster.
 
+The final boss is a batch I chose. `bench/realworld/run.py` takes pages
+nobody chose for us: 2,709 production URLs (home pages from a Tranco top
+list, spread across more than 600 top-level domains, plus articles,
+docs, forums, shops and legacy-encoded pages picked by hand), fetched with
+robots.txt obeyed and one request at a time per host. Each page is parsed
+as Netweir parses it, then its tree is compared line by line with
+html5ever's. On the first run, on 21 November 2026, 1,731 pages came back
+as HTML (559 MB, in eight encodings and over 60 languages): no panics, no hangs
+and no tree that differed, except two pages with `<?php` and `<?start`
+in them: the web-platform-tests tree tests now read those as processing
+instructions, and html5ever 0.40 still reads them as comments. CI runs a different 300 of the URLs every
+Monday; the list is in `bench/realworld/urls.txt`, and the pages are never
+committed.
+
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
 crawler fetches all 10,000 pages and pulls a title and price from each,

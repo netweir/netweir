@@ -7,3 +7,4 @@ __pycache__/
 *.pyd
 /dist
 /bench/.cache
+/bench/realworld/target

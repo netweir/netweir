@@ -1,0 +1,53 @@
+name: realworld
+
+# Netweir's parser against html5ever on production pages: a 300-URL
+# sample of bench/realworld/urls.txt each week (a different slice each
+# time), the whole list being for a local run. The report is the job
+# summary and an artifact; a person files what it finds.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: URLs to fetch from the list
+        default: "300"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  realworld:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      # Pages fetched in the last week aren't fetched again. Each run saves
+      # a new cache under its own key and starts from the latest one.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            bench/.cache/realworld
+            bench/realworld/target
+          key: realworld-${{ github.run_id }}
+          restore-keys: realworld-
+      - name: Fetch and parse
+        run: python3 bench/realworld/run.py --sample "${SAMPLE:-300}" --minutes 20 --check
+        env:
+          SAMPLE: ${{ inputs.sample }}
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: realworld-report
+          path: |
+            bench/.cache/realworld/report.json
+            bench/.cache/realworld/report.md
