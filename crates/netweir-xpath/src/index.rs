@@ -149,6 +149,12 @@ impl Index {
         }
     }
 
+    /// Whether the index has a place for every node `tree` has, as it does
+    /// for the document it was built from until a node is made in it.
+    pub fn covers(&self, tree: &html::Document) -> bool {
+        self.order.len() == tree.len()
+    }
+
     /// How many nodes are indexed.
     pub fn len(&self) -> usize {
         self.raw.len()

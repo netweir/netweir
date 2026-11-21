@@ -712,12 +712,18 @@ fn a_budget_stops_a_long_query() {
     let budget = tight.budget.unwrap();
     assert_eq!(
         slow.try_select_with(&doc, 0, &tight),
-        Err(MatchTimeout { budget })
+        Err(MatchTimeout {
+            budget,
+            max_steps: None
+        })
     );
     let first = SelectorList::parse("div").unwrap().select(&doc, 0)[0];
     assert_eq!(
         slow.try_matches_with(&doc, first, None, &tight),
-        Err(MatchTimeout { budget })
+        Err(MatchTimeout {
+            budget,
+            max_steps: None
+        })
     );
     // Within the budget, or with one too big for the clock, the answer is
     // the one without.
@@ -728,6 +734,90 @@ fn a_budget_stops_a_long_query() {
     };
     assert_eq!(fast.try_select_with(&doc, 0, &roomy).unwrap().len(), 19_999);
     assert_eq!(fast.try_matches_with(&doc, first, None, &roomy), Ok(true));
+}
+
+/// A step limit stops a query as the budget does, with no clock to read,
+/// so it holds where there's none (wasm32) and stops at the same place on
+/// any machine.
+#[test]
+fn a_step_limit_stops_a_long_query() {
+    let doc = parse(&"<div>".repeat(5_000), false);
+    let slow = SelectorList::parse("div:has(p div)").unwrap();
+    let few = MatchOptions {
+        max_steps: Some(10_000),
+        ..MatchOptions::default()
+    };
+    let stopped = MatchTimeout {
+        budget: std::time::Duration::ZERO,
+        max_steps: Some(10_000),
+    };
+    assert_eq!(slow.try_select_with(&doc, 0, &few), Err(stopped));
+    let first = SelectorList::parse("div").unwrap().select(&doc, 0)[0];
+    assert_eq!(slow.try_matches_with(&doc, first, None, &few), Err(stopped));
+    assert_eq!(stopped.to_string(), "matching took more than 10000 steps");
+    let plenty = MatchOptions {
+        max_steps: Some(u64::MAX),
+        ..MatchOptions::default()
+    };
+    assert_eq!(slow.try_select_with(&doc, 0, &plenty), Ok(vec![]));
+    // A walk of the tree is a few steps an element.
+    let fast = SelectorList::parse("div:has(> div)").unwrap();
+    let walk = MatchOptions {
+        max_steps: Some(100_000),
+        ..MatchOptions::default()
+    };
+    assert_eq!(fast.try_select_with(&doc, 0, &walk).unwrap().len(), 4_999);
+}
+
+/// `:has()` of more than one compound looked at everything below each
+/// element, and each of those climbed to the root: `div:has(div div)`
+/// over 20,000 nested divs took most of a second, and one that matched
+/// nothing took 18 s over 2,000. Now the climb stops at the anchor, an
+/// element under one with no match has none, and siblings are walked one
+/// at a time.
+#[test]
+fn has_of_many_compounds_costs_about_a_walk() {
+    let time = |html: &str, css: &str| {
+        let doc = parse(html, false);
+        let list = SelectorList::parse(css).unwrap();
+        let start = std::time::Instant::now();
+        let found = list.select(&doc, 0).len();
+        (start.elapsed(), found)
+    };
+    for (unit, css, matches_but) in [
+        ("<div>", "div:has(div div)", 2),
+        ("<div>", "div:has(> div div)", 2),
+        ("<div>", "div:has(div div div div)", 4),
+        ("<div>", "div:has(div span)", usize::MAX),
+        ("<p>x</p>", "p:has(+ p ~ p)", 2),
+        ("<p>x</p>", "p:has(~ p b)", usize::MAX),
+    ] {
+        let rounds: Vec<_> = (0..5)
+            .map(|_| {
+                let (small, a) = time(&unit.repeat(5_000), css);
+                let (large, b) = time(&unit.repeat(20_000), css);
+                let want = |n: usize| n.saturating_sub(matches_but);
+                assert_eq!((a, b), (want(5_000), want(20_000)), "{css}");
+                (small, large)
+            })
+            .collect();
+        assert!(
+            rounds
+                .iter()
+                .any(|&(a, b)| b < a * 8 + std::time::Duration::from_millis(20)),
+            "{css}: {rounds:?}"
+        );
+    }
+    // The answers are the ones the long way gives.
+    let html = "<div id=a><div id=b><p></p><div id=c><b></b><i></i></div></div>\
+                <div id=d><span><b></b></span></div></div>";
+    assert_eq!(select(html, "div:has(div b)"), ["div#a", "div#b"]);
+    assert_eq!(select(html, "div:has(> div > b)"), ["div#b"]);
+    assert_eq!(select(html, "div:has(span b)"), ["div#a", "div#d"]);
+    assert_eq!(select(html, "div:has(p ~ div i)"), ["div#a", "div#b"]);
+    assert_eq!(select(html, "p:has(~ div b + i)"), ["p"]);
+    assert_eq!(select(html, ":has(+ div > b)"), ["p"]);
+    assert_eq!(select(html, "div:has(div div)"), ["div#a"]);
 }
 
 /// Places the parser was looser than CSS (parsec-html/parsec#37). Lexbor
@@ -1156,4 +1246,27 @@ fn valid_reads_attributes_as_the_standard_parses_them() {
         select(html, ":valid"),
         ["input#two-mails", "input#step-unit", "select#px"]
     );
+}
+
+/// Each level of `:is()` around a selector of two compounds tried every
+/// ancestor again for the level inside it, so the time doubled with each:
+/// 24 levels, as a stylesheet nests rules, took most of a second over 26
+/// divs. What a selector inside one matches is now kept per element.
+#[test]
+fn nested_is_costs_a_walk_per_level() {
+    let depth = 26;
+    let doc = parse(&"<div>".repeat(depth + 2), false);
+    let count = |css: &str| SelectorList::parse(css).unwrap().select(&doc, 0).len();
+    let nest = |f: &dyn Fn(String) -> String| (0..depth).fold("div".to_string(), |s, _| f(s));
+    let start = std::time::Instant::now();
+    assert_eq!(count(&nest(&|s| format!(":is({s}) div"))), 2);
+    assert_eq!(count(&nest(&|s| format!(":where({s} div)"))), 2);
+    assert_eq!(count(&nest(&|s| format!(":is({s}) > div"))), 2);
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    // Answers kept for one element aren't another's, nor one selector's
+    // another's.
+    let html = "<a><b><i></i></b><u><i></i></u></a>";
+    assert_eq!(select(html, ":is(a b) i, :is(a u) > i"), ["i", "i"]);
+    assert_eq!(select(html, ":is(b i, u i):not(:is(b i))"), ["i"]);
+    assert_eq!(select(html, "a:has(:is(b i))"), ["a"]);
 }

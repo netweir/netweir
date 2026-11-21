@@ -266,25 +266,25 @@ impl Document {
     /// its own children, its fallback content.
     pub fn flattened_assigned_nodes(&self, slot: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        self.flatten_into(slot, &mut out);
-        out
-    }
-
-    fn flatten_into(&self, slot: NodeId, out: &mut Vec<NodeId>) {
         if !self.is_slot(slot) {
-            return;
+            return out;
         }
-        let mut nodes = self.assigned_nodes(slot);
-        if nodes.is_empty() {
-            nodes = self.children(slot).filter(|&c| self.slottable(c)).collect();
-        }
-        for n in nodes {
-            if self.is_slot(n) {
-                self.flatten_into(n, out);
-            } else {
+        // The nodes still to read, last first: a loop, not a call for each
+        // slot, so a long chain of slots assigned slots can't run out of
+        // stack.
+        let mut todo = vec![slot];
+        while let Some(n) = todo.pop() {
+            if !self.is_slot(n) {
                 out.push(n);
+                continue;
             }
+            let mut nodes = self.assigned_nodes(n);
+            if nodes.is_empty() {
+                nodes = self.children(n).filter(|&c| self.slottable(c)).collect();
+            }
+            todo.extend(nodes.into_iter().rev());
         }
+        out
     }
 
     /// A node's children in the flat tree, as rendering sees them: a
@@ -491,6 +491,27 @@ mod tests {
         let outer_root = doc.shadow_root(by_id(&doc, "outer")).unwrap();
         assert!(slotted.matches(&doc, by_id(&doc, "light"), Some(outer_root)));
         assert!(!slotted.matches(&doc, by_id(&doc, "light"), None));
+    }
+
+    /// Flattening called itself for each slot in a chain of slots
+    /// assigned slots, one for each level of nested shadow hosts.
+    #[test]
+    fn a_long_chain_of_slots_flattens_on_a_small_stack() {
+        let n = 20_000;
+        let html = "<div><template shadowrootmode=open>".repeat(n)
+            + "<slot id=deep></slot>"
+            + &"</template><slot></slot></div>".repeat(n - 1)
+            + "</template><p id=light></p></div>";
+        let found = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let doc = parse(&html, false);
+                ids(&doc, &doc.flattened_assigned_nodes(by_id(&doc, "deep")))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(found, ["light"]);
     }
 
     #[test]
