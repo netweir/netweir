@@ -72,9 +72,10 @@ pub trait Tree: Sync {
     /// What [`crate::Index`] keys an element's name tests on.
     fn tag_key(&self, n: NodeId) -> TagKey<'_>;
 
-    /// How many attributes an element has. Namespace declarations aren't
-    /// attributes: in XPath's data model, `xmlns` and `xmlns:*` are
-    /// namespace nodes, so a tree leaves them out of these.
+    /// How many attributes an element has. In XPath's data model,
+    /// `xmlns` and `xmlns:*` are namespace nodes rather than attributes, so
+    /// an XML tree leaves them out of these. An HTML tree keeps them, as
+    /// libxml2's HTML parser does.
     fn attribute_count(&self, n: NodeId) -> u32;
     /// An element's `i`th attribute, in document order. A query reads
     /// attributes by place, so this should take constant time.
