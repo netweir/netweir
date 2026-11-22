@@ -315,9 +315,10 @@ class Page:
 
     @property
     def root(self) -> Node:
-        """The parsed document. Parsed on first use: as XML when the
-        Content-Type says it's XML (``text/xml``, ``application/xml``, RSS,
-        Atom and other ``+xml`` types but XHTML's), as HTML otherwise.
+        """The parsed document. Parsed on first use (in a crawl, an HTML
+        page of 64 KiB or more comes parsed): as XML when the Content-Type says it's XML
+        (``text/xml``, ``application/xml``, RSS, Atom and other ``+xml``
+        types but XHTML's), as HTML otherwise.
         ``netweir.parse(page.text, type="xml")`` reads any page as XML."""
         if self._root is None:
             repaired = None

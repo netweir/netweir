@@ -532,6 +532,8 @@ class Settings:
             queue_idle=self.queue_idle,
             xml_recover=self.xml_recover,
             parse_timeout=self.parse_timeout,
+            # Workers parse the pages their callbacks get.
+            parse_pages=self.workers <= 1,
         )
 
     def _checkpoint_file(self) -> str | None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import dataclasses
 import json
 import logging
 import signal
@@ -1060,3 +1061,86 @@ def test_the_command_runs_in_a_thread_and_leaves_sigterm_alone(base, tmp_path):
     assert results == [0]
     assert _cli.main(argv) == 0
     assert signal.getsignal(signal.SIGTERM) is before
+
+
+GIANT = "<html><body><h1>giant</h1>" + "<div><p>x</p></div>" * 800_000 + "</body></html>"
+
+
+class GiantPages(BaseHTTPRequestHandler):
+    """/giant, 15 MB of HTML, and small pages that are answered just after
+    the giant has been sent."""
+
+    protocol_version = "HTTP/1.1"
+    sent = threading.Event()
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if self.path == "/giant":
+            body = GIANT.encode()
+        else:
+            self.sent.wait(30)
+            time.sleep(0.02)
+            body = f"<html><body><h1>{self.path}</h1></body></html>".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        if self.path == "/giant":
+            self.sent.set()
+
+
+@pytest.fixture
+def giant():
+    GiantPages.sent.clear()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GiantPages)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    server.server_close()
+
+
+OPEN = netweir.Settings(throttle=False, start_delay=0, obey_robots=False, obey_tdmrep=False)
+
+
+def test_a_giant_page_doesnt_hold_up_the_small_pages_behind_it(giant):
+    # The small pages reach the engine while the giant's tree is still
+    # being built. Each should reach its callback then, not once the
+    # giant's parse is over.
+    seen = {}
+
+    class Crawl(netweir.Spider):
+        settings = OPEN
+        start_urls = [f"{giant}/giant"] + [f"{giant}/small/{i}" for i in range(6)]
+
+        def parse(self, page):
+            seen[page.url.removeprefix(giant)] = (time.monotonic(), page.css("h1::text").get())
+
+    Crawl().run()
+    giant_at, title = seen.pop("/giant")
+    assert title == "giant"
+    assert sorted(title for _, title in seen.values()) == [f"/small/{i}" for i in range(6)]
+    # Before, the giant reached Python first and was parsed in its
+    # callback, and the small pages waited for that to finish.
+    assert max(at for at, _ in seen.values()) < giant_at
+
+
+def test_a_page_too_slow_to_parse_ahead_raises_in_its_callback(giant, caplog):
+    """The engine gives up on the giant's tree at parse_timeout, and the
+    callback that reads it gets the ParseTimeout, as it would have."""
+
+    class Crawl(netweir.Spider):
+        settings = dataclasses.replace(OPEN, parse_timeout=0.001)
+        start_urls = [f"{giant}/giant"]
+
+        def parse(self, page):
+            assert page._root is None
+            yield {"title": page.css("h1::text").get()}
+
+    with caplog.at_level("ERROR", logger="netweir"):
+        stats = Crawl().run()
+    assert stats["items"] == 0 and stats["callback_errors"] == 1
+    assert "ParseTimeout" in caplog.text

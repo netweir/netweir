@@ -289,8 +289,22 @@ struct Engine {
     tracks: Mutex<Option<(StoreRef, f64)>>,
     /// Requests whose events Python has but hasn't finished with.
     unacked: Mutex<Vec<u64>>,
-    /// One permit per core: how many rule pages are parsed at once.
+    /// One permit per core: how many pages under LARGE_PAGE are parsed at
+    /// once.
     parsers: Arc<tokio::sync::Semaphore>,
+    /// Half the cores (at least one): how many pages of LARGE_PAGE or more
+    /// are parsed at once, so small pages always have cores to parse on.
+    large_parsers: Arc<tokio::sync::Semaphore>,
+    /// LARGE_PAGES_KIB permits, a large page taking its size in KiB (all
+    /// of them, if it's larger) from when it's read until Python has it.
+    large_bytes: Arc<tokio::sync::Semaphore>,
+    /// Large pages being parsed: each goes to Python in the first batch
+    /// after it's done, so the pages fetched alongside it don't wait.
+    large: tokio::sync::Mutex<Parsing>,
+    /// Whether Python's HTML pages are parsed here, off Python's thread,
+    /// before their callbacks: not when callbacks run in workers, which
+    /// parse the page themselves.
+    parse_pages: bool,
     rules: Mutex<Arc<Vec<Arc<Rule>>>>,
     tags: Mutex<HashMap<u64, Tag>>,
     next_id: AtomicU64,
@@ -301,6 +315,48 @@ struct Engine {
     parse_budget: Duration,
     /// The call steps of pages in Chrome, for Python to run.
     calls: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<netweir_core::StepCall>>,
+}
+
+/// A page of this many bytes or more is parsed apart from the batch it
+/// came in, and reaches Python when it's ready.
+const LARGE_PAGE: usize = 1 << 20;
+
+/// At most this much (in KiB) of large pages' bodies, 64 MiB, is parsed or
+/// waiting for Python at once. A tree takes about seven times its page.
+const LARGE_PAGES_KIB: usize = 64 * 1024;
+
+/// A page parsed on a blocking thread, and what it holds of the large
+/// pages' budget until it reaches Python.
+type Parsed = (
+    Result<Processed, tokio::task::JoinError>,
+    Option<tokio::sync::OwnedSemaphorePermit>,
+);
+
+/// The large pages being parsed, with each task's page.
+#[derive(Default)]
+struct Parsing {
+    tasks: tokio::task::JoinSet<Parsed>,
+    pages: HashMap<tokio::task::Id, (u64, Tag)>,
+}
+
+/// A page of Python's under this many bytes is parsed when its callback
+/// reads it: that takes less time than handing it to another thread.
+const PARSE_AHEAD: usize = 64 << 10;
+
+/// Whether Python's page is worth parsing before its callback: an HTML
+/// page with a 2xx status, which a callback is likely to read, and of
+/// PARSE_AHEAD bytes or more.
+fn parse_ahead(r: &netweir_core::Response) -> bool {
+    if r.body.len() < PARSE_AHEAD || !(200..300).contains(&r.status) {
+        return false;
+    }
+    let mime = r
+        .header("content-type")
+        .and_then(|ct| ct.split(';').next())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    mime == "text/html" || mime == "application/xhtml+xml"
 }
 
 /// The URLs in one part of a navigation item.
@@ -510,6 +566,76 @@ impl Engine {
         done
     }
 
+    /// Parses an HTML page of Python's for its callback, as Page.root
+    /// would. Runs on a blocking thread. A page that fails to parse goes
+    /// without its tree, and Page.root parses it again to raise the error.
+    fn parse_for_python(&self, id: u64, tag: Tag, response: netweir_core::Response) -> Processed {
+        let root = crate::parse_markup(
+            &response.text(),
+            crate::Markup::Html,
+            self.parse_budget,
+            self.xml_recover,
+        )
+        .ok()
+        .map(|(doc, _)| Arc::new(doc));
+        Processed {
+            id,
+            tag,
+            response: Some(response),
+            root,
+            links: Vec::new(),
+            item: None,
+            here: Vec::new(),
+            notes: Notes::default(),
+            html: None,
+            error: None,
+            ignored: None,
+            repaired: None,
+        }
+    }
+
+    /// The task that parses a fetched page, on a blocking thread once a
+    /// parser is free: with the rules, or without them (None) for Python's
+    /// callback. Whether it's large, too.
+    fn parse_task(
+        self: &Arc<Self>,
+        rules: Option<Arc<Vec<Arc<Rule>>>>,
+        id: u64,
+        tag: Tag,
+        response: netweir_core::Response,
+    ) -> (
+        bool,
+        impl std::future::Future<Output = Parsed> + Send + 'static,
+    ) {
+        let size = response.body.len();
+        let large = size >= LARGE_PAGE;
+        let engine = self.clone();
+        let parsers = if large {
+            self.large_parsers.clone()
+        } else {
+            self.parsers.clone()
+        };
+        let budget = large.then(|| self.large_bytes.clone());
+        let task = async move {
+            // The budget first: a page waiting for it holds no parser.
+            let held = match budget {
+                Some(budget) => {
+                    let kib = (size / 1024).clamp(1, LARGE_PAGES_KIB) as u32;
+                    budget.acquire_many_owned(kib).await.ok()
+                }
+                None => None,
+            };
+            let _turn = parsers.acquire_owned().await;
+            let done = tokio::task::spawn_blocking(move || match rules {
+                Some(rules) => engine.process(&rules, id, tag, response),
+                None => engine.parse_for_python(id, tag, response),
+            })
+            .await;
+            (done, held)
+        };
+        (large, task)
+    }
+
     /// The items "here" rules take from the page the rules run on: each
     /// rule's, when the page is of the rule's type (or it names none).
     fn here(
@@ -600,15 +726,31 @@ impl Engine {
 
     /// The next batch of events Python needs to see. Pages that only rules
     /// care about are handled on the way, so an empty batch still means the
-    /// crawl is over.
+    /// crawl is over. A large page comes in the first batch after its parse
+    /// is done, not in the batch it was fetched with.
     async fn next(self: Arc<Self>, max: usize) -> Vec<Out> {
+        let mut large = self.large.lock().await;
         loop {
-            let events = self.core.next_owned(max).await;
-            if events.is_empty() {
-                return Vec::new();
+            // Waits for events, or for a large page to be parsed.
+            let mut finished = Vec::new();
+            let events = tokio::select! {
+                biased;
+                events = self.core.next_owned(max) => events,
+                Some(parsed) = large.tasks.join_next_with_id(), if !large.tasks.is_empty() => {
+                    finished.push(parsed);
+                    Vec::new()
+                }
+            };
+            if events.is_empty() && finished.is_empty() {
+                // Nothing is left to fetch, but large pages are still
+                // being parsed.
+                match large.tasks.join_next_with_id().await {
+                    Some(parsed) => finished.push(parsed),
+                    None => return Vec::new(),
+                }
             }
             let rules = self.rules.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let ids: Vec<u64> = events
+            let mut ids: Vec<u64> = events
                 .iter()
                 .filter_map(|e| match e {
                     Event::Fetched { id, .. }
@@ -621,37 +763,49 @@ impl Engine {
                     | Event::Fatal { .. } => None,
                 })
                 .collect();
+            // Large pages' requests are done once their pages are out.
+            let mut later = std::collections::HashSet::new();
             let mut out = Vec::new();
             let mut work = Vec::new();
             for event in events {
                 match event {
                     // A rules page's Chrome page closes here: rules read the
                     // HTML, not the live page.
-                    Event::Fetched { id, response, page } => match self.tags().remove(&id) {
-                        None => out.push(Out::Fetched {
-                            id,
-                            response,
-                            root: None,
-                            page,
-                        }),
-                        Some(tag) => {
-                            let (engine, rules) = (self.clone(), rules.clone());
-                            let job_tag = tag.clone();
-                            let parsers = self.parsers.clone();
-                            // At most one page per core is being parsed.
-                            work.push((
-                                id,
-                                job_tag,
-                                tokio::spawn(async move {
-                                    let _turn = parsers.acquire_owned().await;
-                                    tokio::task::spawn_blocking(move || {
-                                        engine.process(&rules, id, tag, response)
-                                    })
-                                    .await
-                                }),
-                            ));
+                    Event::Fetched { id, response, page } => {
+                        let (rules, tag) = match self.tags().remove(&id) {
+                            Some(tag) => (Some(rules.clone()), tag),
+                            None if page.is_none()
+                                && self.parse_pages
+                                && parse_ahead(&response) =>
+                            {
+                                let tag = Tag {
+                                    rule: None,
+                                    apply_rules: false,
+                                    to_python: true,
+                                    url: response.url.clone(),
+                                    depth: 0,
+                                };
+                                (None, tag)
+                            }
+                            None => {
+                                out.push(Out::Fetched {
+                                    id,
+                                    response,
+                                    root: None,
+                                    page,
+                                });
+                                continue;
+                            }
+                        };
+                        let (is_large, task) = self.parse_task(rules, id, tag.clone(), response);
+                        if is_large {
+                            let handle = large.tasks.spawn(task);
+                            large.pages.insert(handle.id(), (id, tag));
+                            later.insert(id);
+                        } else {
+                            work.push((id, tag, tokio::spawn(task)));
                         }
-                    },
+                    }
                     Event::Failed { id, error } => match self.tags().remove(&id) {
                         Some(Tag {
                             rule: Some(rule),
@@ -708,72 +862,29 @@ impl Engine {
                     },
                 }
             }
+            ids.retain(|id| !later.contains(id));
             for (id, tag, job) in work {
                 let done = match job.await {
-                    Ok(Ok(done)) => done,
-                    Ok(Err(e)) | Err(e) => {
-                        out.push(Out::PageError {
-                            url: tag.url,
-                            message: format!("processing the page failed: {e}"),
-                        });
-                        // Python still hears the last of its own requests.
-                        if tag.rule.is_none() {
-                            out.push(Out::Handled { id });
-                        }
-                        continue;
-                    }
+                    Ok((done, _)) => done.map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
                 };
-                self.submit_links(&rules, done.links, done.tag.depth + 1);
-                if let Some(message) = done.error {
-                    out.push(Out::PageError {
-                        url: done.tag.url.clone(),
-                        message,
-                    });
-                }
-                if let Some(message) = done.repaired {
-                    out.push(Out::Warning { message });
-                }
-                if let Some(reason) = done.ignored {
-                    out.push(Out::Ignored {
-                        url: done.tag.url.clone(),
-                        reason,
-                    });
-                }
-                if let (Some(values), Some(rule)) = (done.item, done.tag.rule) {
-                    out.push(Out::Item {
-                        rule,
-                        url: done.tag.url.clone(),
-                        values,
-                        notes: done.notes,
-                        html: done.html,
-                    });
-                }
-                for (rule, values) in done.here {
-                    out.push(Out::Item {
-                        rule,
-                        url: done.tag.url.clone(),
-                        values,
-                        notes: Vec::new(),
-                        html: None,
-                    });
-                }
-                match (done.tag.rule, done.response) {
-                    (Some(rule), Some(response)) => out.push(Out::Ruled {
-                        rule,
-                        url: done.tag.url,
-                        response,
-                        root: done.root,
-                        depth: done.tag.depth,
-                    }),
-                    (None, Some(response)) => out.push(Out::Fetched {
-                        id: done.id,
-                        response,
-                        root: done.root,
-                        page: None,
-                    }),
-                    (None, None) => out.push(Out::Handled { id: done.id }),
-                    (Some(_), None) => {}
-                }
+                self.deliver(&rules, id, tag, done, &mut out);
+            }
+            // With the large pages done by now, waited for or not.
+            while let Some(parsed) = large.tasks.try_join_next_with_id() {
+                finished.push(parsed);
+            }
+            for parsed in finished {
+                let (task, done) = match parsed {
+                    Ok((task, (done, _held))) => (task, done.map_err(|e| e.to_string())),
+                    Err(e) => (e.id(), Err(e.to_string())),
+                };
+                let (id, tag) = large
+                    .pages
+                    .remove(&task)
+                    .expect("every large page's task is in pages");
+                ids.push(id);
+                self.deliver(&rules, id, tag, done, &mut out);
             }
             if out.is_empty() {
                 // Only rule pages, whose links are saved by now: done.
@@ -786,6 +897,83 @@ impl Engine {
                     .extend(ids);
                 return out;
             }
+        }
+    }
+
+    /// What Python hears of a parsed page: its items, errors and links
+    /// made into events, and the page itself if Python is to see it.
+    fn deliver(
+        &self,
+        rules: &[Arc<Rule>],
+        id: u64,
+        tag: Tag,
+        done: Result<Processed, String>,
+        out: &mut Vec<Out>,
+    ) {
+        let done = match done {
+            Ok(done) => done,
+            Err(e) => {
+                out.push(Out::PageError {
+                    url: tag.url,
+                    message: format!("processing the page failed: {e}"),
+                });
+                // Python still hears the last of its own requests.
+                if tag.rule.is_none() {
+                    out.push(Out::Handled { id });
+                }
+                return;
+            }
+        };
+        self.submit_links(rules, done.links, done.tag.depth + 1);
+        if let Some(message) = done.error {
+            out.push(Out::PageError {
+                url: done.tag.url.clone(),
+                message,
+            });
+        }
+        if let Some(message) = done.repaired {
+            out.push(Out::Warning { message });
+        }
+        if let Some(reason) = done.ignored {
+            out.push(Out::Ignored {
+                url: done.tag.url.clone(),
+                reason,
+            });
+        }
+        if let (Some(values), Some(rule)) = (done.item, done.tag.rule) {
+            out.push(Out::Item {
+                rule,
+                url: done.tag.url.clone(),
+                values,
+                notes: done.notes,
+                html: done.html,
+            });
+        }
+        for (rule, values) in done.here {
+            out.push(Out::Item {
+                rule,
+                url: done.tag.url.clone(),
+                values,
+                notes: Vec::new(),
+                html: None,
+            });
+        }
+        match (done.tag.rule, done.response) {
+            (Some(rule), Some(response)) => out.push(Out::Ruled {
+                rule,
+                url: done.tag.url,
+                response,
+                root: done.root,
+                depth: done.tag.depth,
+            }),
+            (None, Some(response)) => out.push(Out::Fetched {
+                id: done.id,
+                response,
+                root: done.root,
+                page: None,
+            }),
+            (None, None) => out.push(Out::Handled { id: done.id }),
+            (Some(_), None) => {}
         }
     }
 }
@@ -1056,7 +1244,7 @@ impl Crawler {
         warc=None, har=None, queue=None, queue_key=None, queue_lease=60.0, queue_idle=30.0,
         ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, retry_http_codes=None,
         http_auth=None, saved_logins=Vec::new(),
-        xml_recover=false, parse_timeout=Some(10.0),
+        xml_recover=false, parse_timeout=Some(10.0), parse_pages=true,
         browser_environment=None, browser_worker_header_order=false, browser_steps=None,
         browser_steps_max=Some(120.0), browser_engine="chrome",
     ))]
@@ -1112,6 +1300,7 @@ impl Crawler {
         saved_logins: Vec<AuthPy>,
         xml_recover: bool,
         parse_timeout: Option<f64>,
+        parse_pages: bool,
         browser_environment: Option<Bound<'_, pyo3::types::PyDict>>,
         browser_worker_header_order: bool,
         browser_steps: Option<&str>,
@@ -1288,6 +1477,7 @@ impl Crawler {
             }
         }
         .map_err(|e| PyValueError::new_err(e.message))?;
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
         Ok(Crawler {
             engine: Arc::new(Engine {
                 calls: tokio::sync::Mutex::new(
@@ -1297,9 +1487,11 @@ impl Crawler {
                 core,
                 tracks: Mutex::new(None),
                 unacked: Mutex::new(Vec::new()),
-                parsers: Arc::new(tokio::sync::Semaphore::new(
-                    std::thread::available_parallelism().map_or(4, |n| n.get()),
-                )),
+                parsers: Arc::new(tokio::sync::Semaphore::new(cores)),
+                large_parsers: Arc::new(tokio::sync::Semaphore::new((cores / 2).max(1))),
+                large_bytes: Arc::new(tokio::sync::Semaphore::new(LARGE_PAGES_KIB)),
+                large: tokio::sync::Mutex::new(Parsing::default()),
+                parse_pages,
                 rules: Mutex::new(Arc::new(Vec::new())),
                 tags: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(RULE_IDS),

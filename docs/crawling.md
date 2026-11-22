@@ -30,6 +30,20 @@ A callback receives a `Page` and yields (or returns) items and requests:
 - A **request** is `page.follow(href)`, which resolves `href` against the
   page (and its `<base href>`), or a `netweir.Request`.
 
+The engine builds an HTML page's tree (`text/html` or XHTML, with a 2xx
+status, of 64 KiB or more) before its callback runs, on its own threads,
+so `page.css()` finds it ready and Python carries on with other pages
+meanwhile. Other pages, XML among them, are parsed when the callback
+first reads them: a small page parses faster than it would change
+threads. With `workers`, each worker parses its own pages instead.
+
+Pages reach callbacks as they're ready, not in the order they were
+requested. A page of 1 MiB or more doesn't hold up the pages fetched
+alongside it: it goes to its callback once it's parsed. At most half the
+cores parse those at once, and at most 64 MiB of them are parsed or
+waiting at a time, since a tree takes about seven times its page; a
+bigger page waits its turn and goes alone.
+
 A callback can be an async generator, a generator, a coroutine or a plain
 function. Override `start()` instead of setting `start_urls` when the first
 requests need more than a URL; it can be an async generator, a generator or
