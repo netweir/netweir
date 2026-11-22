@@ -27,8 +27,9 @@ encoding. bench/boss.py builds the pages (see its docstring); --boss
 FOLDER takes another batch of them, such as its --smoke one.
 
 Every run is repeated (--repeats, 3 by default, a different crawler first
-each time), and each waits for the one-minute load average to fall below
-3 unless --now says not to. A crawl still running after --timeout
+each time). Each round of crawlers at a setting waits for the one-minute
+load average to fall below 3, unless --now says not to, and every run
+records the load it started at. A crawl still running after --timeout
 seconds (600) is killed and counted as failed. The results go to bench/results/<date>-<host>/,
 as crawl.json or boss.json (the machine, every version, every run and the
 median, min and max of each figure) and a .md of the tables. raw/ beside
@@ -1232,12 +1233,16 @@ def main() -> None:
         quiet_until = time.time() + MAX_WAIT
         for r in range(args.repeats):
             for level in levels:
+                # Once a round: each crawl adds its own load, which takes a
+                # minute or more to fade from the one-minute average.
+                if not args.now:
+                    wait_for_quiet(quiet_until)
                 # A different crawler goes first each run.
                 for k in range(len(names)):
                     name = names[(k + r) % len(names)]
                     if name == "firecrawl" and level != CONCURRENCY:
                         continue
-                    load = os.getloadavg()[0] if args.now else wait_for_quiet(quiet_until)
+                    load = os.getloadavg()[0]
                     run = run_one(name, port, site_ports, level)
                     raw = folder / "raw" / f"{mode}-{level}-{name}-{r + 1}.json.gz"
                     with gzip.open(raw, "wt") as f:
