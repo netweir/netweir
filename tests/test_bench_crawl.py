@@ -29,6 +29,14 @@ def test_boss_pages_get_the_crawl_at_the_start_of_their_body():
     assert b'href="/p/' in rest
 
 
+def test_a_body_tag_in_a_comment_or_an_attribute_is_passed_over():
+    body = b'<!-- <body> --><body data-x="a>b" class=y>z'
+    out = crawl.boss_page(body, 0, 0)
+    assert out.startswith(b'<!-- <body> --><body data-x="a>b" class=y><h1 ')
+    assert out.endswith(b"</ul>z")
+    assert crawl.boss_page(b"<bodyx>q", 0, 0).startswith(b"<h1 ")
+
+
 def test_boss_pages_without_a_body_get_it_after_the_bom_in_their_encoding():
     body = "﻿<p>текст".encode("utf-16-le")
     out = crawl.boss_page(body, 1, 2)

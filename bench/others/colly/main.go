@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,8 +28,28 @@ type gated struct {
 
 func (g gated) RoundTrip(r *http.Request) (*http.Response, error) {
 	g.gate <- struct{}{}
-	defer func() { <-g.gate }()
-	return g.next.RoundTrip(r)
+	resp, err := g.next.RoundTrip(r)
+	if err != nil {
+		<-g.gate
+		return nil, err
+	}
+	// Colly reads the body after RoundTrip returns: the request is in
+	// flight until the body is closed.
+	resp.Body = &release{ReadCloser: resp.Body, done: func() { <-g.gate }}
+	return resp, nil
+}
+
+// release gives back a slot once, when its body is closed.
+type release struct {
+	io.ReadCloser
+	once sync.Once
+	done func()
+}
+
+func (r *release) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(r.done)
+	return err
 }
 
 func main() {

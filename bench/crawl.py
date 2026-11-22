@@ -28,7 +28,7 @@ FOLDER takes another batch of them, such as its --smoke one.
 
 Every run is repeated (--repeats, 3 by default, a different crawler first
 each time). Each round of crawlers at a setting waits for the one-minute
-load average to fall below 3, unless --now says not to, and every run
+load average to fall below 3 (or --quiet), unless --now says not to, and every run
 records the load it started at. A crawl still running after --timeout
 seconds (600) is killed and counted as failed. The results go to bench/results/<date>-<host>/,
 as crawl.json or boss.json (the machine, every version, every run and the
@@ -103,6 +103,7 @@ import math
 import os
 import platform
 import random
+import re
 import socket
 import statistics
 import subprocess
@@ -122,7 +123,7 @@ CONCURRENCY = 100
 SWEEP = [10, 50, 100, 200, 500]
 PER_SITE = 8
 QUIET = 3.0
-MAX_WAIT = 2 * 60 * 60
+MAX_WAIT = 30 * 60
 TIMEOUT = 600.0
 HERE = Path(__file__).resolve().parent
 BOSS = HERE / ".cache" / "boss" / "1000-20261119-0"
@@ -156,6 +157,9 @@ def answer(site: int, n: int) -> tuple[str, str]:
     return f"Site {site} page {n}", f"£{rng.randint(1, 99)}.99"
 
 
+BODY_TAG = re.compile(r"<body(?=[\s/>])(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.IGNORECASE)
+
+
 def boss_page(body: bytes, site: int, n: int) -> bytes:
     """A final boss page with the crawl's title, price and links in it, at
     the start of its <body>, or after its BOM where it has none, written in
@@ -172,18 +176,15 @@ def boss_page(body: bytes, site: int, n: int) -> bytes:
         encoding, start, step = ("utf-16-le" if body[0] == 0xFF else "utf-16-be"), 2, 2
     else:
         encoding, start, step = "ascii", 3 if body.startswith(b"\xef\xbb\xbf") else 0, 1
-
-    def find(what: str, at: int) -> int:
-        # In UTF-16 a match must start on a character, not halfway in.
-        needle = what.encode(encoding)
-        while (at := lower.find(needle, at)) != -1 and (at - start) % step:
-            at += 1
-        return at
-
-    lower = body.lower()
-    at = find("<body", start)
-    end = find(">", at) if at != -1 else -1
-    cut = end + step if end != -1 else start
+    # Decoded so that each character is one byte (or one UTF-16 unit) of
+    # the page: ASCII markup reads the same in every encoding the pages use.
+    text = body[start:].decode("latin-1" if step == 1 else encoding, errors="replace")
+    cut = start
+    for tag in BODY_TAG.finditer(text):
+        opened = text.rfind("<!--", 0, tag.start())
+        if opened == -1 or text.find("-->", opened + 4) < tag.start():
+            cut = start + tag.end() * step
+            break
     return body[:cut] + part.encode(encoding) + body[cut:]
 
 
@@ -468,21 +469,25 @@ def run_httpx(port: int) -> int:
                 nonlocal count
                 while True:
                     url = await queue.get()
-                    host = httpx.URL(url).host
-                    gate = per_site.setdefault(host, asyncio.Semaphore(PER_SITE))
-                    async with gate:
-                        response = await client.get(url)
-                    tree = LexborHTMLParser(response.text)
-                    title = tree.css_first("h1.title")
-                    price = tree.css_first("p.price")
-                    keep(str(response.url), title and title.text(), price and price.text())
-                    count += 1
-                    for a in tree.css("a.next"):
-                        link = str(response.url.join(a.attributes["href"]))
-                        if link not in seen:
-                            seen.add(link)
-                            queue.put_nowait(link)
-                    queue.task_done()
+                    try:
+                        host = httpx.URL(url).host
+                        gate = per_site.setdefault(host, asyncio.Semaphore(PER_SITE))
+                        async with gate:
+                            response = await client.get(url)
+                        tree = LexborHTMLParser(response.text)
+                        title = tree.css_first("h1.title")
+                        price = tree.css_first("p.price")
+                        keep(str(response.url), title and title.text(), price and price.text())
+                        count += 1
+                        for a in tree.css("a.next"):
+                            link = str(response.url.join(a.attributes["href"]))
+                            if link not in seen:
+                                seen.add(link)
+                                queue.put_nowait(link)
+                    except httpx.HTTPError as e:
+                        print(f"{url}: {e!r}", file=sys.stderr)
+                    finally:
+                        queue.task_done()
 
             workers = [asyncio.create_task(worker()) for _ in range(CONCURRENCY)]
             await queue.join()
@@ -566,7 +571,7 @@ def run_crawl4ai(port: int) -> int:
                 for r in results:
                     if r.success:
                         found = json.loads(r.extracted_content or "[]") or [{}]
-                        keep(r.url, found[0].get("title"), found[0].get("price"))
+                        keep(r.url, found[0].get("title"), found[0].get("price"), batch=True)
                 return [r.url for r in results if r.success]
 
             fetched = [
@@ -731,7 +736,7 @@ def run_firecrawl(site_ports: list[int]) -> dict:
             status = firecrawl(status["next"])
     cpu = (cpu_after - cpu_before) / 1e9 + time.process_time() - parse_started
     result = {
-        "count": sum(1 for i in items if i["title"] and i["price"]),
+        "count": len(items),
         "items": items,
         "wall_s": wall,
         "cpu_s": cpu,
@@ -789,7 +794,10 @@ def run_one(name: str, port: int, site_ports: list[int], concurrency: int) -> di
     server saw, and its output."""
     server_seen(port)  # forget anything before this run
     if name == "firecrawl":
-        out = run_firecrawl(site_ports)
+        try:
+            out = run_firecrawl(site_ports)
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, KeyError) as e:
+            out = {"error": f"{type(e).__name__}: {e}"}
         out.setdefault("items", [])
         out.update(stdout="", stderr="", exit=0 if "error" not in out else 1)
         out["seen"] = server_seen(port)
@@ -810,10 +818,13 @@ def run_one(name: str, port: int, site_ports: list[int], concurrency: int) -> di
             proc = subprocess.Popen(command, stdout=out, stderr=err, env=env, text=True)
             # A crawl still running after TIMEOUT is killed, and counts as failed.
             killer = threading.Timer(TIMEOUT, proc.kill)
+            killer.daemon = True
             killer.start()
-            _, status, usage = os.wait4(proc.pid, 0)
+            try:
+                _, status, usage = os.wait4(proc.pid, 0)
+            finally:
+                killer.cancel()
             wall = time.perf_counter() - started
-            killer.cancel()
             out.seek(0)
             err.seek(0)
             stdout, stderr = out.read(), err.read()
@@ -883,7 +894,8 @@ def figures(run: dict, site_ports: list[int]) -> dict:
             wrong += 1
         t = item.get("t")
         # The last answer for that page written before the item was made.
-        before = [r for r in answered.get(key, []) if t is not None and r[1] <= t]
+        # A crawler that hands pages over a site at a time has no latency per page.
+        before = [] if item.get("batch") else [r for r in answered.get(key, []) if t and r[1] <= t]
         if before:
             arrived, sent = before[-1]
             latency.append(t - arrived)
@@ -1086,7 +1098,8 @@ def markdown(report: dict) -> str:
         "Versions: " + ", ".join(f"{k} {v}" for k, v in sorted(pkgs.items())) + ".",
         "",
         f"{SITES} sites of {PAGES} pages, {LATENCY * 1000:.0f} ms per answer, {PER_SITE} per site."
-        f" Each figure is the median of {report['repeats']} runs; pages/s gives the slowest and"
+        + (f" Each round waited for a load below {report['quiet']}." if report["quiet"] else "")
+        + f" Each figure is the median of {report['repeats']} runs; pages/s gives the slowest and"
         " fastest run in brackets. Wrong, missing and twice are the worst run's.",
         "",
     ]
@@ -1134,7 +1147,7 @@ def markdown(report: dict) -> str:
 
 
 def main() -> None:
-    global CONCURRENCY, PAGES, TIMEOUT
+    global CONCURRENCY, PAGES, TIMEOUT, QUIET
     ap = argparse.ArgumentParser()
     ap.add_argument("--crawler", help=argparse.SUPPRESS)
     ap.add_argument("--port", type=int, help=argparse.SUPPRESS)
@@ -1155,6 +1168,9 @@ def main() -> None:
     ap.add_argument("--parsec", help="a Parsec checkout, to build the final boss pages")
     ap.add_argument("--now", action="store_true", help="don't wait for a quiet machine")
     ap.add_argument(
+        "--quiet", type=float, default=QUIET, help="the one-minute load average to wait for"
+    )
+    ap.add_argument(
         "--timeout", type=float, default=TIMEOUT, help="seconds before a crawl is killed"
     )
     ap.add_argument("--results", type=Path, help="write the results here")
@@ -1163,6 +1179,7 @@ def main() -> None:
     args = ap.parse_args()
     CONCURRENCY = args.concurrency
     TIMEOUT = args.timeout
+    QUIET = args.quiet
     PAGES = args.pages or PAGES
     if args.serve:
         load_pages(args.boss)
@@ -1213,6 +1230,7 @@ def main() -> None:
             "boss": str(args.boss) if args.boss else None,
         },
         "repeats": args.repeats,
+        "quiet": None if args.now else QUIET,
         "levels": levels,
         "runs": [],
     }
@@ -1230,13 +1248,12 @@ def main() -> None:
                 names.append(name)
             else:
                 print(f"  {name:20} not installed, skipped", flush=True)
-        quiet_until = time.time() + MAX_WAIT
         for r in range(args.repeats):
             for level in levels:
                 # Once a round: each crawl adds its own load, which takes a
                 # minute or more to fade from the one-minute average.
                 if not args.now:
-                    wait_for_quiet(quiet_until)
+                    wait_for_quiet(time.time() + MAX_WAIT)
                 # A different crawler goes first each run.
                 for k in range(len(names)):
                     name = names[(k + r) % len(names)]

@@ -17,7 +17,10 @@ const crawler = new CheerioCrawler(
         maxConcurrency: Number(concurrency),
         maxRequestRetries: 0,
         async requestHandler({ request, $, enqueueLinks }) {
-            const [title, price] = [$('h1.title').text(), $('p.price').text()];
+            const [title, price] = ['h1.title', 'p.price'].map((q) => {
+                const found = $(q).first();
+                return found.length ? found.text() : null;
+            });
             const t = (performance.timeOrigin + performance.now()) / 1000;
             found.push(JSON.stringify({ url: request.loadedUrl ?? request.url, title, price, t }));
             items += 1;
