@@ -55,6 +55,41 @@ jobs:
   # Known vulnerabilities in the Rust dependencies, from the RustSec
   # database. Not a required check: a new advisory shouldn't block an
   # unrelated pull request, but it shows red until it's fixed.
+  # The project's history credits people, not tools: no commit on main may
+  # carry an AI co-author or a "generated with" line. Checks the pull
+  # request's commits and description, and in the merge queue the commit
+  # that will land.
+  attribution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: No AI co-author or generated-with lines
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          pattern='co-authored-by:.*(claude|anthropic|openai|chatgpt|copilot|gemini)|generated with \[?claude|noreply@anthropic\.com'
+          if [ "$EVENT" != pull_request ] && [ "$EVENT" != merge_group ]; then
+            exit 0
+          fi
+          bad=0
+          if git log --format='%H%n%B' "$BASE..$HEAD" | grep -Eiq "$pattern"; then
+            echo "::error::a commit message credits an AI tool:"
+            git log --format='%h %s%n%b' "$BASE..$HEAD" | grep -Ei -B2 "$pattern" || true
+            bad=1
+          fi
+          if printf '%s' "$BODY" | grep -Eiq "$pattern"; then
+            echo "::error::the pull request description credits an AI tool; a squash merge would copy it into main"
+            bad=1
+          fi
+          exit "$bad"
+
   advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 10
