@@ -3,10 +3,11 @@
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
-use crate::index::{CDATA, COMMENT, ELEMENT, PI, TEXT};
+use crate::index::{CDATA, COMMENT, ELEMENT, PI, Scopes, TEXT};
 use crate::parser::{Axis, Expr, NodeTest, Op, Step};
-use crate::{Doc, Extensions, Item, NodeId, Value, XML_NS, XValue};
+use crate::{Doc, Extensions, Item, NodeId, Value, XML_DECL, XML_NS, XValue};
 
 /// How much work one run may do before it gives up: nodes looked at on
 /// axes and by `lang()`, predicate tests, and nodes and every 16 bytes of
@@ -26,6 +27,9 @@ struct Context<'a, 'v> {
     vars: &'v [(String, XValue)],
     namespaces: &'v [(String, String)],
     kept: &'v RefCell<Kept>,
+    /// What's in scope at each block of namespace declarations this run
+    /// has needed, worked out once each.
+    in_scope: &'v RefCell<InScope>,
     ext: &'v dyn Extensions,
     /// Work done so far, and the most allowed (see [`WORK_LIMIT`]).
     spent: &'v Cell<u64>,
@@ -36,7 +40,70 @@ struct Context<'a, 'v> {
 
 /// Values of a run's [`Expr::Memo`] expressions, by slot and node key. Only
 /// a number or a yes or no is ever needed from them.
-type Kept = HashMap<(usize, (u32, u32)), Scalar>;
+type Kept = HashMap<(usize, (u32, u64)), Scalar>;
+
+/// The namespaces in scope by block of declarations (see
+/// [`crate::index::Scopes`]): the numbers of the declarations that bind
+/// them, ascending, which is the order the axis gives them in.
+#[derive(Default)]
+struct InScope {
+    lists: HashMap<u32, Rc<[u32]>>,
+    /// How often each block has been climbed past without being worked
+    /// out.
+    passes: Vec<u8>,
+    /// The prefixes seen while working one out, marked with `pass`.
+    seen: Vec<u32>,
+    pass: u32,
+}
+
+/// What's in scope at `block`: its declarations, those of the blocks
+/// `between` it and the next block up, and that one's, which must be in
+/// `lists` unless there's none. Gives the list and the work it took.
+fn gather(
+    scopes: &Scopes,
+    lists: &HashMap<u32, Rc<[u32]>>,
+    seen: &mut [u32],
+    pass: &mut u32,
+    block: u32,
+    between: &[u32],
+) -> (Rc<[u32]>, usize) {
+    *pass = pass.wrapping_add(1);
+    if *pass == 0 {
+        seen.fill(0);
+        *pass = 1;
+    }
+    // A block's declarations are numbered after those above it, and stored
+    // last written first, so going down the numbers meets each prefix's
+    // binding nearest first, and the first written of a node's own first.
+    let mut found = Vec::new();
+    let mut looked = 0;
+    let mut keep = |d: u32| {
+        let decl = &scopes.decls[d as usize];
+        if seen[decl.prefix as usize] != *pass {
+            seen[decl.prefix as usize] = *pass;
+            if !decl.undeclares {
+                found.push(d);
+            }
+        }
+    };
+    let mut top = u32::MAX;
+    for &b in std::iter::once(&block).chain(between) {
+        let at = &scopes.blocks[b as usize];
+        looked += at.len as usize + 1;
+        for d in (at.first..at.first + at.len).rev() {
+            keep(d);
+        }
+        top = at.parent;
+    }
+    if let Some(above) = lists.get(&top) {
+        looked += above.len();
+        for &d in above.iter().rev() {
+            keep(d);
+        }
+    }
+    found.reverse();
+    (found.into(), looked)
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Scalar {
@@ -72,6 +139,7 @@ pub(crate) fn run<'a>(
         ));
     }
     let kept = RefCell::default();
+    let in_scope = RefCell::default();
     let spent = Cell::new(0);
     let ctx = Context {
         item: Item::Node(scope),
@@ -82,6 +150,7 @@ pub(crate) fn run<'a>(
         vars,
         namespaces,
         kept: &kept,
+        in_scope: &in_scope,
         ext,
         spent: &spent,
         limit,
@@ -114,13 +183,75 @@ impl<'a> Context<'a, '_> {
         self.doc.index.order(n)
     }
 
-    /// Position in document order. An element's attributes come after the
-    /// element and before its children, whose order is higher.
-    fn key(&self, item: &Item) -> (u32, u32) {
-        match item {
-            Item::Node(n) => (self.order(*n), 0),
-            Item::Attr { owner, index, .. } => (self.order(*owner), index + 1),
+    /// Position in document order. An element's namespace nodes come
+    /// after the element, then its attributes, and then its children,
+    /// whose order is higher.
+    fn key(&self, item: &Item) -> (u32, u64) {
+        match *item {
+            Item::Node(n) => (self.order(n), 0),
+            Item::Ns { owner, decl } => (
+                self.order(owner),
+                if decl == XML_DECL { 1 } else { decl as u64 + 2 },
+            ),
+            Item::Attr { owner, index } => (self.order(owner), (1 << 33) + index as u64),
         }
+    }
+
+    /// The namespace nodes of the element `n`: `xml`, then the rest in
+    /// scope, as numbers of the declarations that bind them.
+    fn namespaces(&self, n: NodeId) -> Result<Rc<[u32]>> {
+        let (scopes, built) = self.doc.index.scopes(self.doc.tree);
+        if built {
+            self.spend(self.doc.index.len())?;
+        }
+        let block = scopes.block_at(self.order(n));
+        if block == u32::MAX {
+            return Ok(Rc::from([]));
+        }
+        let mut cache = self.in_scope.borrow_mut();
+        let InScope {
+            lists,
+            passes,
+            seen,
+            pass,
+        } = &mut *cache;
+        if let Some(list) = lists.get(&block) {
+            return Ok(list.clone());
+        }
+        if seen.len() < scopes.prefixes {
+            seen.resize(scopes.prefixes, 0);
+        }
+        if passes.len() < scopes.blocks.len() {
+            passes.resize(scopes.blocks.len(), 0);
+        }
+        // The blocks above this one up to one already worked out, nearest
+        // first. One climbed past a second time is worked out itself, so
+        // a long chain of declarations is climbed at most once, and what's
+        // worked out from the one above it costs no more than the
+        // namespace nodes it has.
+        let mut climbed = Vec::new();
+        let mut b = scopes.blocks[block as usize].parent;
+        while b != u32::MAX && !lists.contains_key(&b) {
+            passes[b as usize] = passes[b as usize].saturating_add(1);
+            climbed.push(b);
+            b = scopes.blocks[b as usize].parent;
+        }
+        let again = climbed
+            .iter()
+            .position(|&b| passes[b as usize] > 1)
+            .unwrap_or(climbed.len());
+        let mut looked = 0;
+        for &b in climbed[again..].iter().rev() {
+            let (list, cost) = gather(scopes, lists, seen, pass, b, &[]);
+            looked += cost;
+            lists.insert(b, list);
+        }
+        let (list, cost) = gather(scopes, lists, seen, pass, block, &climbed[..again]);
+        looked += cost;
+        lists.insert(block, list.clone());
+        drop(cache);
+        self.spend(looked)?;
+        Ok(list)
     }
 
     fn kind(&self, n: NodeId) -> u8 {
@@ -137,6 +268,7 @@ impl<'a> Context<'a, '_> {
             Item::Attr { owner, index, .. } => {
                 return Cow::Borrowed(self.doc.attr_at(*owner, *index).1);
             }
+            Item::Ns { decl, .. } => return Cow::Borrowed(self.doc.namespace_at(*decl).1),
             Item::Node(n) => *n,
         };
         let index = self.doc.index;
@@ -180,7 +312,7 @@ impl<'a> Context<'a, '_> {
     fn attribute(&self, item: &Item) -> Option<crate::Attr<'a>> {
         match item {
             Item::Attr { owner, index } => self.doc.tree.attribute(*owner, *index),
-            Item::Node(_) => None,
+            _ => None,
         }
     }
 
@@ -192,6 +324,8 @@ impl<'a> Context<'a, '_> {
                 None => self.doc.tree.qualified_name(*n),
             },
             Item::Attr { .. } => self.attribute(item).map_or("", |a| a.qualified_name),
+            // A namespace node's name is its prefix, "" for the default.
+            Item::Ns { decl, .. } => self.doc.namespace_at(*decl).0,
         }
     }
 
@@ -203,6 +337,7 @@ impl<'a> Context<'a, '_> {
                 None => self.doc.tree.local_name(*n),
             },
             Item::Attr { .. } => self.attribute(item).map_or("", |a| a.local_name),
+            Item::Ns { decl, .. } => self.doc.namespace_at(*decl).0,
         }
     }
 
@@ -210,6 +345,7 @@ impl<'a> Context<'a, '_> {
         match item {
             Item::Node(n) => self.doc.tree.namespace_uri(*n),
             Item::Attr { .. } => self.attribute(item).map_or("", |a| a.namespace_uri),
+            Item::Ns { .. } => "",
         }
     }
 
@@ -388,7 +524,7 @@ fn walk<'a>(mut items: Vec<Item>, steps: &[Step], ctx: &Context<'a, '_>) -> Resu
                 }
                 _ => {
                     let looked = Cell::new(0usize);
-                    let mut on_axis = axis(*item, step.axis, ctx)
+                    let mut on_axis = axis(*item, step.axis, ctx)?
                         .inspect(|_| looked.set(looked.get() + 1))
                         .filter(|c| test.matches(c, ctx));
                     if nth.is_some() {
@@ -483,7 +619,7 @@ fn whole_set<'a>(
                 .iter()
                 .map(|i| match i {
                     Item::Node(n) => index.end_of(ctx.order(*n)),
-                    Item::Attr { owner, .. } => ctx.order(*owner) + 1,
+                    Item::Attr { owner, .. } | Item::Ns { owner, .. } => ctx.order(*owner) + 1,
                 })
                 .min()
             else {
@@ -517,7 +653,7 @@ fn whole_set<'a>(
                 let start = match item {
                     Item::Node(n) if axis == Axis::Ancestor => index.parent_of(ctx.order(*n)),
                     Item::Node(n) => ctx.order(*n),
-                    Item::Attr { owner, .. } => {
+                    Item::Attr { owner, .. } | Item::Ns { owner, .. } => {
                         if axis == Axis::AncestorOrSelf && test.matches(item, ctx) {
                             out.push(*item);
                         }
@@ -748,6 +884,9 @@ enum Test<'t> {
     /// `*` on the axis's principal node type.
     AnyElement,
     AnyAttribute,
+    AnyNamespace,
+    /// A namespace node by prefix.
+    NamespaceName(&'t str),
     ElementId(usize),
     /// A name with capitals: no HTML element has one (the parser lowercases
     /// them), but SVG and MathML elements can, so compare the text.
@@ -772,6 +911,19 @@ enum Test<'t> {
 
 impl<'t> Test<'t> {
     fn resolve(test: &'t NodeTest, axis: Axis, ctx: &Context<'_, 't>) -> Result<Test<'t>> {
+        if axis == Axis::Namespace {
+            // Namespace nodes are named by prefix, and in no namespace.
+            return Ok(match test {
+                NodeTest::Node => Test::Node,
+                NodeTest::Any => Test::AnyNamespace,
+                NodeTest::Name(prefix) => Test::NamespaceName(prefix),
+                NodeTest::Prefixed(p, _) | NodeTest::AnyIn(p) => {
+                    namespace(p, ctx)?;
+                    Test::Never
+                }
+                _ => Test::Never,
+            });
+        }
         let attr = axis == Axis::Attribute;
         let index = ctx.doc.index;
         if ctx.doc.is_xml() {
@@ -881,6 +1033,10 @@ impl<'t> Test<'t> {
                 kind(n) == PI && target.is_none_or(|t| ctx.pi_target(*n) == Some(t))
             }
             (Test::AnyAttribute, Item::Attr { .. }) => true,
+            (Test::AnyNamespace, Item::Ns { .. }) => true,
+            (Test::NamespaceName(prefix), Item::Ns { decl, .. }) => {
+                ctx.doc.namespace_at(*decl).0 == *prefix
+            }
             (Test::AttributeName(name), Item::Attr { owner, index }) => {
                 ctx.doc.attr_at(*owner, *index).0 == *name
             }
@@ -909,7 +1065,11 @@ fn attributes(n: NodeId, doc: Doc<'_>) -> impl Iterator<Item = Item> + use<> {
 
 /// The nodes on `axis` from `item`, in axis order (nearest first for
 /// reverse axes), produced lazily.
-fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<Item = Item> + 'a> {
+fn axis<'a>(
+    item: Item,
+    axis: Axis,
+    ctx: &Context<'a, '_>,
+) -> Result<Box<dyn Iterator<Item = Item> + 'a>> {
     let doc = ctx.doc;
     let (tree, index) = (doc.tree, doc.index);
     let (top, tree_end) = ctx.tree_range();
@@ -932,7 +1092,7 @@ fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<I
         let at = index.order(n);
         (at + 1..index.end_of(at)).map(node_at)
     };
-    match item {
+    Ok(match item {
         Item::Node(n) => match axis {
             Axis::Child => Box::new(children(n).map(Item::Node)),
             Axis::Descendant => Box::new(descendants(n)),
@@ -953,10 +1113,18 @@ fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<I
             Axis::Following => Box::new(following(n)),
             Axis::Preceding => Box::new(preceding(n)),
             Axis::Attribute if ctx.kind(n) == ELEMENT => Box::new(attributes(n, doc)),
+            Axis::Namespace if ctx.kind(n) == ELEMENT => {
+                let list = ctx.namespaces(n)?;
+                Box::new(
+                    std::iter::once(XML_DECL)
+                        .chain((0..list.len()).map(move |k| list[k]))
+                        .map(move |decl| Item::Ns { owner: n, decl }),
+                )
+            }
             Axis::Attribute | Axis::Namespace => Box::new(std::iter::empty()),
             Axis::Itself => Box::new(std::iter::once(item)),
         },
-        Item::Attr { owner, .. } => match axis {
+        Item::Attr { owner, .. } | Item::Ns { owner, .. } => match axis {
             Axis::Parent => Box::new(std::iter::once(Item::Node(owner))),
             Axis::Ancestor => Box::new(
                 std::iter::once(owner)
@@ -975,7 +1143,7 @@ fn axis<'a>(item: Item, axis: Axis, ctx: &Context<'a, '_>) -> Box<dyn Iterator<I
             Axis::Preceding => Box::new(preceding(owner)),
             _ => Box::new(std::iter::empty()),
         },
-    }
+    })
 }
 
 // --- conversions (section 4) ----------------------------------------------
@@ -1365,7 +1533,7 @@ fn call<'a>(name: &str, args: &[Expr], ctx: &Context<'a, '_>) -> Result<Value<'a
             let want = str_arg(0)?.to_ascii_lowercase();
             let node = match ctx.item {
                 Item::Node(n) => n,
-                Item::Attr { owner, .. } => owner,
+                Item::Attr { owner, .. } | Item::Ns { owner, .. } => owner,
             };
             let tree = ctx.doc.tree;
             // A climb per call: counted, as an ancestor axis is.

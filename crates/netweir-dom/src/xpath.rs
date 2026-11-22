@@ -35,9 +35,10 @@ impl XPath {
 
     /// Evaluates with `scope` as the context node. Node-set results come
     /// back in document order: elements, text and comment nodes as
-    /// [`Hit::Node`], attributes as their value. A number, string or
-    /// boolean result is one [`Hit::Value`], formatted as Scrapy's parsel
-    /// formats it (`3.0`, `1`/`0` for true/false).
+    /// [`Hit::Node`], attributes and namespace nodes as their value (a
+    /// namespace node's is its URI). A number, string or boolean result is
+    /// one [`Hit::Value`], formatted as Scrapy's parsel formats it (`3.0`,
+    /// `1`/`0` for true/false).
     pub fn run<'a>(&self, scope: Node<'a>) -> Result<Vec<Hit<'a>>, XPathError> {
         self.run_with(scope, &[])
     }
@@ -101,6 +102,7 @@ fn into_hits<'a>(value: Value<'_>, scope: Node<'a>, view: Doc<'_>) -> Vec<Hit<'a
                 Item::Attr { owner, index, .. } => {
                     Hit::Value(view.attr_at(owner, index).1.to_string())
                 }
+                Item::Ns { decl, .. } => Hit::Value(view.namespace_at(decl).1.to_string()),
             })
             .collect(),
         Value::Str(s) => vec![Hit::Value(s.into_owned())],
@@ -159,7 +161,7 @@ fn has_class<'a>(args: &Args<'_, 'a>) -> Result<Value<'a>, String> {
     args.arity(1, usize::MAX)?;
     let classes = match args.context() {
         Item::Node(n) => args.doc().attr(n, "class").unwrap_or(""),
-        Item::Attr { .. } => "",
+        _ => "",
     };
     let have: Vec<&str> = classes.split_ascii_whitespace().collect();
     let mut all = true;

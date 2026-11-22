@@ -276,6 +276,5 @@ and namespace. The 200,000-URL sitemap is back to 195 MB, and reads in
 
 - CSS type selectors on XML ignore namespaces and case; CSS attribute
   names ignore case.
-- The `namespace::` axis gives nothing.
 - DTD attribute defaults aren't applied (nor are they by lxml as Scrapy
   sets it up).

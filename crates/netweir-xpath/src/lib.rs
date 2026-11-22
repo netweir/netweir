@@ -124,13 +124,31 @@ impl<'a> Doc<'a> {
             .attribute(owner, index)
             .map_or(("", ""), |a| (a.qualified_name, a.value))
     }
+
+    /// The prefix ("" for the default namespace) and URI of the namespace
+    /// node an [`Item::Ns`] with this `decl` names.
+    pub fn namespace_at(&self, decl: u32) -> (&'a str, &'a str) {
+        if decl == XML_DECL {
+            return ("xml", XML_NS);
+        }
+        let (scopes, _) = self.index.scopes(self.tree);
+        scopes
+            .decls
+            .get(decl as usize)
+            .and_then(|d| self.tree.namespace_declaration(d.node, d.index))
+            .unwrap_or(("", ""))
+    }
 }
 
-/// A node in XPath's data model: a tree node, or an attribute (which the
-/// tree keeps on its element rather than as a node of its own). Twelve
-/// bytes: a node-set can hold every node of a big page, so its name,
-/// namespace and value are read from the tree ([`Tree::attribute`]), not
-/// kept here.
+/// The `decl` of an [`Item::Ns`] for the `xml` namespace, which every
+/// element has.
+pub const XML_DECL: u32 = u32::MAX;
+
+/// A node in XPath's data model: a tree node, or an attribute or
+/// namespace node (which the tree keeps on its element rather than as a
+/// node of its own). Twelve bytes: a node-set can hold every node of a big
+/// page, so its name, namespace and value are read from the tree
+/// ([`Tree::attribute`], [`Doc::namespace_at`]), not kept here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Item {
     Node(NodeId),
@@ -138,6 +156,14 @@ pub enum Item {
         owner: NodeId,
         /// Its place among the element's attributes.
         index: u32,
+    },
+    /// A namespace in scope at an element, from `namespace::`.
+    Ns {
+        /// The element: the namespace node's parent.
+        owner: NodeId,
+        /// Which declaration binds it, numbered by the index;
+        /// [`XML_DECL`] for the `xml` namespace.
+        decl: u32,
     },
 }
 

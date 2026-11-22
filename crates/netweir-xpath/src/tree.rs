@@ -81,6 +81,23 @@ pub trait Tree: Sync {
     /// attributes by place, so this should take constant time.
     fn attribute(&self, n: NodeId, i: u32) -> Option<Attr<'_>>;
 
+    /// How many namespaces node `n` declares: an XML element's `xmlns`
+    /// and `xmlns:*` attributes. A root that isn't an element may declare
+    /// the namespaces in scope where its tree was cut from, which its
+    /// elements then inherit. The namespace axis works out what's in scope
+    /// from these. None by default, as an HTML tree has none: its elements
+    /// have only the `xml` namespace, which is always in scope.
+    fn namespace_declaration_count(&self, _n: NodeId) -> u32 {
+        0
+    }
+    /// Node `n`'s `i`th declaration, in the order written: the prefix (""
+    /// for the default namespace) and the URI ("" for `xmlns=""`, which
+    /// takes the binding away). Of two for one prefix on a node, the
+    /// first counts. This should take constant time.
+    fn namespace_declaration(&self, _n: NodeId, _i: u32) -> Option<(&str, &str)> {
+        None
+    }
+
     /// A text, CDATA section, comment or processing instruction's text.
     fn data(&self, n: NodeId) -> &str;
     /// A processing instruction's target.

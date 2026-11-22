@@ -54,6 +54,10 @@ impl Page {
                 let (name, value) = self.doc().attr_at(*owner, *index);
                 format!("@{name}={value}")
             }
+            Item::Ns { decl, .. } => {
+                let (prefix, uri) = self.doc().namespace_at(*decl);
+                format!("ns:{prefix}={uri}")
+            }
             Item::Node(n) => match self.tree.kind(*n) {
                 html::Kind::Element { name, .. } => name.to_string(),
                 html::Kind::Text(t) => format!("#text:{}", t.trim()),
@@ -133,7 +137,11 @@ fn every_axis() {
         ("preceding::*", &["head", "title", "p"]),
         ("attribute::*", &["@id=b"]),
         ("self::p", &["p"]),
-        ("namespace::*", &[]),
+        // Only `xml`, which is always in scope, as lxml has it in HTML.
+        (
+            "namespace::*",
+            &["ns:xml=http://www.w3.org/XML/1998/namespace"],
+        ),
     ] {
         assert_eq!(p.get(&format!("{at_b}/{axis}")), names(want), "{axis}");
     }
@@ -340,6 +348,7 @@ impl Extensions for Shout {
                     Item::Attr { owner, index, .. } => {
                         args.doc().attr_at(owner, index).1.to_string()
                     }
+                    Item::Ns { decl, .. } => args.doc().namespace_at(decl).1.to_string(),
                 }
             } else {
                 args.string(0)?

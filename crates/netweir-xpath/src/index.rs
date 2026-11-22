@@ -34,6 +34,47 @@ pub struct Index {
     names: HashMap<String, usize>,
     /// Positions of the elements carrying each `id`, built on first use.
     ids: OnceLock<HashMap<String, Vec<u32>>>,
+    /// The namespace declarations, built on the namespace axis's first use.
+    scopes: OnceLock<Scopes>,
+}
+
+/// Where a tree declares namespaces, for the namespace axis. Each node
+/// that declares some is a block, and every other node is in the block of
+/// the nearest one above it, so working out what's in scope at a node
+/// climbs only through nodes that declare something.
+pub(crate) struct Scopes {
+    /// The block of the node at each position; u32::MAX for none.
+    block_at: Vec<u32>,
+    pub(crate) blocks: Vec<Block>,
+    /// Every declaration, numbered as the namespace axis orders them.
+    pub(crate) decls: Vec<Decl>,
+    /// How many different prefixes there are.
+    pub(crate) prefixes: usize,
+}
+
+/// A node's declarations: `decls[first..first + len]`, and the block
+/// above it.
+pub(crate) struct Block {
+    pub(crate) first: u32,
+    pub(crate) len: u32,
+    pub(crate) parent: u32,
+}
+
+pub(crate) struct Decl {
+    /// The declaring node, and the declaration's place among its own.
+    pub(crate) node: NodeId,
+    pub(crate) index: u32,
+    /// The prefix, numbered from 0 by [`Scopes`].
+    pub(crate) prefix: u32,
+    /// `xmlns=""` or `xmlns:p=""`, which takes a binding away.
+    pub(crate) undeclares: bool,
+}
+
+impl Scopes {
+    /// The block in effect at position `at`; u32::MAX for none.
+    pub(crate) fn block_at(&self, at: u32) -> u32 {
+        self.block_at.get(at as usize).copied().unwrap_or(u32::MAX)
+    }
 }
 
 /// The tag id of the lowercase name `key`, given the next free one if new.
@@ -136,7 +177,66 @@ impl Index {
             order,
             names,
             ids: OnceLock::new(),
+            scopes: OnceLock::new(),
         }
+    }
+
+    /// The namespace declarations of `tree`, which must be the tree this
+    /// indexes, and whether this call is the one that read them: one pass
+    /// over the nodes, done once per index.
+    pub(crate) fn scopes(&self, tree: &dyn Tree) -> (&Scopes, bool) {
+        let mut built = false;
+        let scopes = self.scopes.get_or_init(|| {
+            built = true;
+            let mut block_at = Vec::with_capacity(self.raw.len());
+            let mut blocks = Vec::new();
+            let mut decls = Vec::new();
+            let mut prefixes: HashMap<&str, u32> = HashMap::new();
+            for (pos, &n) in self.raw.iter().enumerate() {
+                let up = match self.parent[pos] {
+                    u32::MAX => u32::MAX,
+                    p => block_at[p as usize],
+                };
+                let count = tree.namespace_declaration_count(n);
+                if count == 0 {
+                    block_at.push(up);
+                    continue;
+                }
+                let first = decls.len() as u32;
+                // Last written first: the order libxml2, and so lxml, gives
+                // a node's namespaces in.
+                for i in (0..count).rev() {
+                    let Some((prefix, uri)) = tree.namespace_declaration(n, i) else {
+                        continue;
+                    };
+                    // `xml` is always in scope, bound to XML_NS, and never
+                    // declared twice.
+                    if prefix == "xml" {
+                        continue;
+                    }
+                    let next = prefixes.len() as u32;
+                    decls.push(Decl {
+                        node: n,
+                        index: i,
+                        prefix: *prefixes.entry(prefix).or_insert(next),
+                        undeclares: uri.is_empty(),
+                    });
+                }
+                blocks.push(Block {
+                    first,
+                    len: decls.len() as u32 - first,
+                    parent: up,
+                });
+                block_at.push(blocks.len() as u32 - 1);
+            }
+            Scopes {
+                block_at,
+                blocks,
+                decls,
+                prefixes: prefixes.len(),
+            }
+        });
+        (scopes, built)
     }
 
     /// Whether the index has a place for every node `tree` has, as it does

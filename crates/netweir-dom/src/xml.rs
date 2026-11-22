@@ -136,6 +136,16 @@ impl XmlNames {
         self.decls.get(&raw).map_or(&[], |d| d)
     }
 
+    /// What XPath's namespace axis reads as `node`'s declarations: an
+    /// element's own, and for the document an element read alone was cut
+    /// from, those of the elements it was inside.
+    fn declared_at(&self, node: html::NodeId) -> &[(Box<str>, u32)] {
+        match node {
+            0 => &self.outer,
+            n => self.decls_of(n as usize),
+        }
+    }
+
     /// Forgets every node's namespace and declarations. The URIs stay:
     /// strings borrowed from them before must still be valid after.
     pub(crate) fn clear(&mut self) {
@@ -152,6 +162,16 @@ impl netweir_xpath::Namespaces for XmlNames {
 
     fn uri(&self, id: u32) -> &str {
         XmlNames::uri(self, id)
+    }
+
+    fn declaration_count(&self, node: html::NodeId) -> u32 {
+        self.declared_at(node).len() as u32
+    }
+
+    fn declaration(&self, node: html::NodeId, i: u32) -> Option<(&str, u32)> {
+        self.declared_at(node)
+            .get(i as usize)
+            .map(|(prefix, uri)| (&**prefix, *uri))
     }
 }
 

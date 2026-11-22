@@ -123,6 +123,16 @@ pub trait Namespaces: Sync {
     fn ns_of(&self, element: NodeId) -> u32;
     /// The URI with id `id`; "" for 0.
     fn uri(&self, id: u32) -> &str;
+    /// How many namespaces `node` declares (see
+    /// [`Tree::namespace_declaration_count`]).
+    fn declaration_count(&self, _node: NodeId) -> u32 {
+        0
+    }
+    /// `node`'s `i`th declaration: its prefix ("" for the default
+    /// namespace) and the id of its URI (0 for `xmlns=""`).
+    fn declaration(&self, _node: NodeId, _i: u32) -> Option<(&str, u32)> {
+        None
+    }
 }
 
 /// An XML document built into a netweir-html tree: its elements are
@@ -211,6 +221,16 @@ impl Tree for XmlTree<'_> {
                 },
                 value,
             })
+    }
+
+    fn namespace_declaration_count(&self, n: NodeId) -> u32 {
+        self.names.declaration_count(n)
+    }
+
+    fn namespace_declaration(&self, n: NodeId, i: u32) -> Option<(&str, &str)> {
+        self.names
+            .declaration(n, i)
+            .map(|(prefix, id)| (prefix, self.names.uri(id)))
     }
 
     fn data(&self, n: NodeId) -> &str {

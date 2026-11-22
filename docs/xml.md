@@ -334,4 +334,7 @@ and the feed spiders' attributes carry over. The differences:
 - `get()` on a document's root gives the whole document, a processing
   instruction before the root element included; parsel gives the root
   element.
-- XPath's `namespace::` axis finds nothing.
+- XPath's `namespace::` axis gives each namespace node's URI, where
+  parsel gives the text of a `(prefix, uri)` pair. Use `name()` for the
+  prefix. An `xmlns=""` takes the default namespace away, so it leaves no
+  node; lxml gives one with an empty URI.

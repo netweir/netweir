@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use netweir_dom::xml::{XmlOptions, html_entity};
+use netweir_dom::xml::{XML_NS, XmlOptions, html_entity};
 use netweir_dom::{Document, Hit, NodeKind, ParseXmlError, Query, XPath, XmlError, XmlNodes};
 
 const RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -410,6 +410,77 @@ fn an_html_document_rejects_unbound_prefixes_and_matches_none() {
         .run_in(doc.root(), &[], &ns(&[("a", "urn:a")]))
         .unwrap();
     assert!(hits.is_empty());
+}
+
+#[test]
+fn the_namespace_axis_has_the_namespaces_in_scope() {
+    let doc = Document::parse_xml(SOAP).unwrap();
+    let n = [
+        ("s", "http://schemas.xmlsoap.org/soap/envelope/"),
+        ("p", "urn:Prices"),
+    ];
+    let xsi = "http://www.w3.org/2001/XMLSchema-instance";
+    let soap = "http://schemas.xmlsoap.org/soap/envelope/";
+    // `xml`, then the rest in the order lxml gives them, each as its URI.
+    assert_eq!(
+        xpath_in(&doc, "/s:Envelope/namespace::*", &n),
+        [XML_NS, xsi, soap]
+    );
+    assert_eq!(
+        xpath_in(&doc, "//p:Price/namespace::*", &n),
+        [XML_NS, xsi, soap, "urn:Prices"]
+    );
+    assert_eq!(
+        xpath_in(&doc, "name(//p:Price/namespace::*[. = 'urn:Prices'])", &n),
+        [""]
+    );
+    assert_eq!(
+        xpath_in(&doc, "name(//p:Price/namespace::*[3])", &n),
+        ["soap"]
+    );
+    assert_eq!(
+        xpath_in(&doc, "string(//p:Price/namespace::xsi)", &n),
+        [xsi]
+    );
+    assert_eq!(xpath_in(&doc, "count(//namespace::*)", &n), ["18.0"]);
+    assert_eq!(
+        xpath_in(&doc, "count(//*[namespace::*[. = 'urn:Prices']])", &n),
+        ["3.0"]
+    );
+    assert_eq!(
+        xpath_in(&doc, "name(//p:Price/namespace::soap/..)", &n),
+        ["Price"]
+    );
+    assert_eq!(
+        xpath_in(
+            &doc,
+            "//p:Price/namespace::*[. = 'urn:Prices']/following::*/text()",
+            &n
+        ),
+        ["lowercase is another element"]
+    );
+    // A node read alone keeps what the elements it was cut from declared.
+    let urls: Vec<Document> = XmlNodes::new(
+        SITEMAP.into(),
+        "n:url",
+        &ns(&[("n", SM)]),
+        XmlOptions::default(),
+    )
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap();
+    assert_eq!(
+        xpath(&urls[1], "/*/namespace::*"),
+        [
+            XML_NS,
+            "http://www.google.com/schemas/sitemap-image/1.1",
+            SM
+        ]
+    );
+    // HTML has only `xml`, as lxml has it.
+    let page = Document::parse("<p xmlns:a='urn:a'>x</p>");
+    assert_eq!(xpath(&page, "//p/namespace::*"), [XML_NS]);
+    assert_eq!(xpath(&page, "name(//p/namespace::*)"), ["xml"]);
 }
 
 // --- not well-formed -----------------------------------------------------------
