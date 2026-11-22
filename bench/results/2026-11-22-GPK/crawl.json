@@ -1,0 +1,4651 @@
+{
+ "mode": "crawl",
+ "environment": {
+  "date": "2026-11-22T03:11:25+00:00",
+  "host": "GPK",
+  "cpu": "Apple M2 Max",
+  "cores": 12,
+  "memory_gb": 32,
+  "os": "macOS 26.7.2",
+  "arch": "arm64",
+  "load_at_start": [
+   2.48,
+   3.78,
+   4.19
+  ],
+  "netweir_commit": "b089aa4",
+  "python": "3.13.15",
+  "rust": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "go": "go version go1.27.2 darwin/arm64",
+  "node": "v22.14.0",
+  "python_packages": {
+   "netweir": "0.8.0",
+   "scrapy": "2.20.0",
+   "scrapling": "0.5.1",
+   "httpx": "0.28.1",
+   "selectolax": "1.0.2",
+   "crawlee": "1.11.1",
+   "crawl4ai": "0.9.5"
+  },
+  "others": {
+   "crawlee-node": "3.18.2",
+   "colly": "v2.3.0",
+   "spider-rs": "2.53.9"
+  }
+ },
+ "settings": {
+  "sites": 100,
+  "pages_per_site": 100,
+  "latency_ms": 50.0,
+  "per_site": 8,
+  "boss": null
+ },
+ "repeats": 3,
+ "quiet": 4.0,
+ "levels": [
+  10,
+  50,
+  100,
+  200,
+  500
+ ],
+ "runs": [
+  {
+   "crawler": "netweir",
+   "in_flight": 10,
+   "repeat": 1,
+   "load": 2.48,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-netweir-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 191.19169565841455,
+    "wall_s": 52.3035269160755,
+    "cpu_s": 6.3228040000000005,
+    "cpu_ms_per_page": 0.6322804,
+    "cpu_util": 0.12088676180758062,
+    "peak_rss_mb": 83.607552,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 8.3607552,
+    "requests": 10000,
+    "server_ms_p50": 51.145076751708984,
+    "server_ms_p95": 51.68914794921875,
+    "latency_ms_p50": 53.31301689147949,
+    "latency_ms_p95": 56.09297752380371,
+    "client_ms_p50": 2.244234085083008,
+    "client_ms_p95": 4.536867141723633,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 2.1719932556152344,
+    "to_python_ms_p95": 4.459142684936523,
+    "parse_ms_p50": 0.06794929504394531,
+    "parse_ms_p95": 0.18405914306640625
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 10,
+   "repeat": 1,
+   "load": 4.47,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-scrapy-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 174.46012070664722,
+    "wall_s": 57.31968979211524,
+    "cpu_s": 13.288564000000001,
+    "cpu_ms_per_page": 1.3288564,
+    "cpu_util": 0.2318324479458007,
+    "peak_rss_mb": 110.133248,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 11.0133248,
+    "requests": 10000,
+    "server_ms_p50": 50.73904991149902,
+    "server_ms_p95": 51.12600326538086,
+    "latency_ms_p50": 54.85391616821289,
+    "latency_ms_p95": 57.557106018066406,
+    "client_ms_p50": 4.164695739746094,
+    "client_ms_p95": 6.718158721923828,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 10,
+   "repeat": 1,
+   "load": 3.31,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-colly-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 187.358407983008,
+    "wall_s": 53.37363883294165,
+    "cpu_s": 8.539081,
+    "cpu_ms_per_page": 0.8539081000000001,
+    "cpu_util": 0.15998686217979516,
+    "peak_rss_mb": 96.91136,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 9.691136,
+    "requests": 10000,
+    "server_ms_p50": 50.60124397277832,
+    "server_ms_p95": 51.81097984313965,
+    "latency_ms_p50": 51.16724967956543,
+    "latency_ms_p95": 53.04121971130371,
+    "client_ms_p50": 0.3521442413330078,
+    "client_ms_p95": 1.6551017761230469,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 10,
+   "repeat": 1,
+   "load": 4.19,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-spider-rs-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 116.21338167364353,
+    "wall_s": 86.04861037502997,
+    "cpu_s": 4.710887,
+    "cpu_ms_per_page": 0.47108869999999997,
+    "cpu_util": 0.05474681089524055,
+    "peak_rss_mb": 282.034176,
+    "peak_in_flight": 8,
+    "mb_per_in_flight": 35.254272,
+    "requests": 10000,
+    "server_ms_p50": 52.152156829833984,
+    "server_ms_p95": 53.66086959838867,
+    "latency_ms_p50": 52.85000801086426,
+    "latency_ms_p95": 55.87005615234375,
+    "client_ms_p50": 0.7660388946533203,
+    "client_ms_p95": 2.5110244750976562,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 10,
+   "repeat": 1,
+   "load": 67.12,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-crawlee-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 170.1015040116012,
+    "wall_s": 58.78842787491158,
+    "cpu_s": 14.130834,
+    "cpu_ms_per_page": 1.4130834,
+    "cpu_util": 0.24036761163382708,
+    "peak_rss_mb": 179.15904,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 17.915904,
+    "requests": 10000,
+    "server_ms_p50": 50.60100555419922,
+    "server_ms_p95": 52.420854568481445,
+    "latency_ms_p50": 54.24189567565918,
+    "latency_ms_p95": 62.60395050048828,
+    "client_ms_p50": 3.368854522705078,
+    "client_ms_p95": 10.752677917480469,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 50,
+   "repeat": 1,
+   "load": 3.98,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-netweir-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 941.8902571914593,
+    "wall_s": 10.616948124952614,
+    "cpu_s": 4.096912,
+    "cpu_ms_per_page": 0.4096911999999999,
+    "cpu_util": 0.3858841497370776,
+    "peak_rss_mb": 94.306304,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 1.88612608,
+    "requests": 10000,
+    "server_ms_p50": 50.930023193359375,
+    "server_ms_p95": 51.759958267211914,
+    "latency_ms_p50": 55.13501167297363,
+    "latency_ms_p95": 60.098886489868164,
+    "client_ms_p50": 4.311084747314453,
+    "client_ms_p95": 8.678913116455078,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 4.261016845703125,
+    "to_python_ms_p95": 8.625984191894531,
+    "parse_ms_p50": 0.04410743713378906,
+    "parse_ms_p95": 0.07581710815429688
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 50,
+   "repeat": 1,
+   "load": 3.59,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-scrapy-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 747.3085751987522,
+    "wall_s": 13.381353207863867,
+    "cpu_s": 8.388964,
+    "cpu_ms_per_page": 0.8388964,
+    "cpu_util": 0.6269144734233626,
+    "peak_rss_mb": 117.424128,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 2.34848256,
+    "requests": 10000,
+    "server_ms_p50": 50.752878189086914,
+    "server_ms_p95": 51.12814903259277,
+    "latency_ms_p50": 59.47709083557129,
+    "latency_ms_p95": 68.67623329162598,
+    "client_ms_p50": 8.763790130615234,
+    "client_ms_p95": 17.938852310180664,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 50,
+   "repeat": 1,
+   "load": 3.68,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-colly-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 931.5918264434002,
+    "wall_s": 10.734314874978736,
+    "cpu_s": 7.326808999999999,
+    "cpu_ms_per_page": 0.7326809,
+    "cpu_util": 0.6825595378311942,
+    "peak_rss_mb": 98.582528,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 1.9716505599999998,
+    "requests": 10000,
+    "server_ms_p50": 50.263166427612305,
+    "server_ms_p95": 51.19490623474121,
+    "latency_ms_p50": 50.50015449523926,
+    "latency_ms_p95": 52.64997482299805,
+    "client_ms_p50": 0.2009868621826172,
+    "client_ms_p95": 1.6589164733886719,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 50,
+   "repeat": 1,
+   "load": 3.19,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-spider-rs-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 687.8891809992846,
+    "wall_s": 14.537225291831419,
+    "cpu_s": 3.572005,
+    "cpu_ms_per_page": 0.3572005,
+    "cpu_util": 0.24571435939753494,
+    "peak_rss_mb": 297.45152,
+    "peak_in_flight": 48,
+    "mb_per_in_flight": 6.196906666666667,
+    "requests": 10000,
+    "server_ms_p50": 51.09691619873047,
+    "server_ms_p95": 52.47306823730469,
+    "latency_ms_p50": 51.737070083618164,
+    "latency_ms_p95": 55.452823638916016,
+    "client_ms_p50": 0.6561279296875,
+    "client_ms_p95": 3.0889511108398438,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 50,
+   "repeat": 1,
+   "load": 3.87,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-crawlee-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 817.7400052869843,
+    "wall_s": 12.228825709084049,
+    "cpu_s": 9.373631,
+    "cpu_ms_per_page": 0.9373630999999999,
+    "cpu_util": 0.766519306349824,
+    "peak_rss_mb": 313.655296,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 6.273105920000001,
+    "requests": 10000,
+    "server_ms_p50": 50.10104179382324,
+    "server_ms_p95": 50.71687698364258,
+    "latency_ms_p50": 51.728010177612305,
+    "latency_ms_p95": 57.62910842895508,
+    "client_ms_p50": 1.5170574188232422,
+    "client_ms_p95": 7.253170013427734,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 3.58,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-netweir-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1861.7331009633342,
+    "wall_s": 5.371339207980782,
+    "cpu_s": 2.837315,
+    "cpu_ms_per_page": 0.28373149999999997,
+    "cpu_util": 0.5282323253359782,
+    "peak_rss_mb": 96.763904,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 0.96763904,
+    "requests": 10000,
+    "server_ms_p50": 50.421953201293945,
+    "server_ms_p95": 51.306962966918945,
+    "latency_ms_p50": 53.78913879394531,
+    "latency_ms_p95": 59.90481376647949,
+    "client_ms_p50": 3.1728744506835938,
+    "client_ms_p95": 8.878707885742188,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 3.1430721282958984,
+    "to_python_ms_p95": 8.846044540405273,
+    "parse_ms_p50": 0.029087066650390625,
+    "parse_ms_p95": 0.053882598876953125
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 4.0,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-scrapy-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1161.4563790444338,
+    "wall_s": 8.609879957977682,
+    "cpu_s": 8.188753,
+    "cpu_ms_per_page": 0.8188753000000001,
+    "cpu_util": 0.9510879408269244,
+    "peak_rss_mb": 122.30656,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.2230656,
+    "requests": 10000,
+    "server_ms_p50": 50.62508583068848,
+    "server_ms_p95": 51.12099647521973,
+    "latency_ms_p50": 68.59302520751953,
+    "latency_ms_p95": 98.51694107055664,
+    "client_ms_p50": 17.9898738861084,
+    "client_ms_p95": 47.64819145202637,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 4.4,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-colly-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1851.2608909522064,
+    "wall_s": 5.4017237920779735,
+    "cpu_s": 5.117732999999999,
+    "cpu_ms_per_page": 0.5117732999999999,
+    "cpu_util": 0.9474258953235507,
+    "peak_rss_mb": 105.250816,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.05250816,
+    "requests": 10000,
+    "server_ms_p50": 50.195932388305664,
+    "server_ms_p95": 51.10669136047363,
+    "latency_ms_p50": 50.40407180786133,
+    "latency_ms_p95": 52.02078819274902,
+    "client_ms_p50": 0.16617774963378906,
+    "client_ms_p95": 1.0938644409179688,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 5.25,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-spider-rs-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1313.8541247172811,
+    "wall_s": 7.611195042030886,
+    "cpu_s": 2.7799370000000003,
+    "cpu_ms_per_page": 0.2779937,
+    "cpu_util": 0.3652431693904185,
+    "peak_rss_mb": 309.182464,
+    "peak_in_flight": 96,
+    "mb_per_in_flight": 3.2206506666666663,
+    "requests": 10000,
+    "server_ms_p50": 50.73404312133789,
+    "server_ms_p95": 52.13522911071777,
+    "latency_ms_p50": 51.336050033569336,
+    "latency_ms_p95": 55.104970932006836,
+    "client_ms_p50": 0.47779083251953125,
+    "client_ms_p95": 3.1909942626953125,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 5.72,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-crawlee-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1498.6526645322426,
+    "wall_s": 6.672660207841545,
+    "cpu_s": 8.251290000000001,
+    "cpu_ms_per_page": 0.8251290000000001,
+    "cpu_util": 1.236581774432825,
+    "peak_rss_mb": 310.116352,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 3.10116352,
+    "requests": 10000,
+    "server_ms_p50": 50.08578300476074,
+    "server_ms_p95": 50.462961196899414,
+    "latency_ms_p50": 53.16591262817383,
+    "latency_ms_p95": 69.98705863952637,
+    "client_ms_p50": 3.0498504638671875,
+    "client_ms_p95": 19.69623565673828,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 200,
+   "repeat": 1,
+   "load": 3.58,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-netweir-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3526.2840550608303,
+    "wall_s": 2.8358464161865413,
+    "cpu_s": 2.431925,
+    "cpu_ms_per_page": 0.2431925,
+    "cpu_util": 0.857565835060381,
+    "peak_rss_mb": 103.399424,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.51699712,
+    "requests": 10000,
+    "server_ms_p50": 50.331830978393555,
+    "server_ms_p95": 51.13697052001953,
+    "latency_ms_p50": 54.7640323638916,
+    "latency_ms_p95": 62.58392333984375,
+    "client_ms_p50": 4.335165023803711,
+    "client_ms_p95": 11.76595687866211,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 4.308938980102539,
+    "to_python_ms_p95": 11.738777160644531,
+    "parse_ms_p50": 0.025987625122070312,
+    "parse_ms_p95": 0.04029273986816406
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 200,
+   "repeat": 1,
+   "load": 3.85,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-scrapy-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1188.3494457539573,
+    "wall_s": 8.415033166995272,
+    "cpu_s": 8.260063,
+    "cpu_ms_per_page": 0.8260063,
+    "cpu_util": 0.9815841287942771,
+    "peak_rss_mb": 128.466944,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.64233472,
+    "requests": 10000,
+    "server_ms_p50": 50.914764404296875,
+    "server_ms_p95": 51.21207237243652,
+    "latency_ms_p50": 115.53621292114258,
+    "latency_ms_p95": 161.0851287841797,
+    "client_ms_p50": 64.76688385009766,
+    "client_ms_p95": 110.4738712310791,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 200,
+   "repeat": 1,
+   "load": 6.29,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-colly-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3642.5756635054186,
+    "wall_s": 2.745310166152194,
+    "cpu_s": 4.237141,
+    "cpu_ms_per_page": 0.42371410000000004,
+    "cpu_util": 1.5434106689441014,
+    "peak_rss_mb": 118.45632,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.5922816000000001,
+    "requests": 10000,
+    "server_ms_p50": 50.15206336975098,
+    "server_ms_p95": 50.74787139892578,
+    "latency_ms_p50": 50.27890205383301,
+    "latency_ms_p95": 51.53703689575195,
+    "client_ms_p50": 0.10180473327636719,
+    "client_ms_p95": 0.9238719940185547,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 200,
+   "repeat": 1,
+   "load": 6.29,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-spider-rs-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 2919.998856836558,
+    "wall_s": 3.4246588749811053,
+    "cpu_s": 2.612079,
+    "cpu_ms_per_page": 0.2612079,
+    "cpu_util": 0.7627267693966779,
+    "peak_rss_mb": 332.955648,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.66477824,
+    "requests": 10000,
+    "server_ms_p50": 50.63605308532715,
+    "server_ms_p95": 51.78380012512207,
+    "latency_ms_p50": 51.08904838562012,
+    "latency_ms_p95": 52.7949333190918,
+    "client_ms_p50": 0.35881996154785156,
+    "client_ms_p95": 1.4350414276123047,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 200,
+   "repeat": 1,
+   "load": 6.19,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-crawlee-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1656.3807034102517,
+    "wall_s": 6.037259417120367,
+    "cpu_s": 7.886113,
+    "cpu_ms_per_page": 0.7886113,
+    "cpu_util": 1.306240539811273,
+    "peak_rss_mb": 292.962304,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.46481152,
+    "requests": 10000,
+    "server_ms_p50": 50.09102821350098,
+    "server_ms_p95": 50.7359504699707,
+    "latency_ms_p50": 75.0739574432373,
+    "latency_ms_p95": 100.02303123474121,
+    "client_ms_p50": 24.901866912841797,
+    "client_ms_p95": 49.42798614501953,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 500,
+   "repeat": 1,
+   "load": 3.91,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-netweir-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 6851.6922340064875,
+    "wall_s": 1.4594934592023492,
+    "cpu_s": 2.57257,
+    "cpu_ms_per_page": 0.25725699999999996,
+    "cpu_util": 1.7626457890438068,
+    "peak_rss_mb": 153.92768,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.30785536,
+    "requests": 10000,
+    "server_ms_p50": 50.11606216430664,
+    "server_ms_p95": 51.180124282836914,
+    "latency_ms_p50": 107.98096656799316,
+    "latency_ms_p95": 167.67406463623047,
+    "client_ms_p50": 57.24477767944336,
+    "client_ms_p95": 117.61212348937988,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 57.22498893737793,
+    "to_python_ms_p95": 117.5839900970459,
+    "parse_ms_p50": 0.02193450927734375,
+    "parse_ms_p95": 0.034809112548828125
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 500,
+   "repeat": 1,
+   "load": 4.4,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-scrapy-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1246.6397927638357,
+    "wall_s": 8.021563292015344,
+    "cpu_s": 7.9438699999999995,
+    "cpu_ms_per_page": 0.794387,
+    "cpu_util": 0.9903144450542851,
+    "peak_rss_mb": 148.979712,
+    "peak_in_flight": 286,
+    "mb_per_in_flight": 0.5209080839160839,
+    "requests": 10000,
+    "server_ms_p50": 50.73904991149902,
+    "server_ms_p95": 51.13697052001953,
+    "latency_ms_p50": 266.12210273742676,
+    "latency_ms_p95": 342.21482276916504,
+    "client_ms_p50": 215.52205085754395,
+    "client_ms_p95": 291.71109199523926,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 500,
+   "repeat": 1,
+   "load": 4.36,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-colly-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 8562.359811908342,
+    "wall_s": 1.167902332963422,
+    "cpu_s": 2.76506,
+    "cpu_ms_per_page": 0.276506,
+    "cpu_util": 2.3675438621515283,
+    "peak_rss_mb": 126.550016,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.253100032,
+    "requests": 10000,
+    "server_ms_p50": 50.27294158935547,
+    "server_ms_p95": 51.09715461730957,
+    "latency_ms_p50": 50.49896240234375,
+    "latency_ms_p95": 52.0172119140625,
+    "client_ms_p50": 0.17523765563964844,
+    "client_ms_p95": 1.3020038604736328,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 500,
+   "repeat": 1,
+   "load": 4.41,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-spider-rs-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 5844.043376931982,
+    "wall_s": 1.711144041037187,
+    "cpu_s": 2.309904,
+    "cpu_ms_per_page": 0.2309904,
+    "cpu_util": 1.3499179172548692,
+    "peak_rss_mb": 395.804672,
+    "peak_in_flight": 496,
+    "mb_per_in_flight": 0.7979932903225806,
+    "requests": 10000,
+    "server_ms_p50": 50.357818603515625,
+    "server_ms_p95": 51.73778533935547,
+    "latency_ms_p50": 50.70781707763672,
+    "latency_ms_p95": 53.971052169799805,
+    "client_ms_p50": 0.2760887145996094,
+    "client_ms_p95": 3.0241012573242188,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 500,
+   "repeat": 1,
+   "load": 4.41,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-crawlee-1.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1774.10923521072,
+    "wall_s": 5.63663150020875,
+    "cpu_s": 7.52014,
+    "cpu_ms_per_page": 0.752014,
+    "cpu_util": 1.3341549824077543,
+    "peak_rss_mb": 300.138496,
+    "peak_in_flight": 447,
+    "mb_per_in_flight": 0.6714507740492169,
+    "requests": 10000,
+    "server_ms_p50": 50.074100494384766,
+    "server_ms_p95": 50.77099800109863,
+    "latency_ms_p50": 153.81932258605957,
+    "latency_ms_p95": 194.08202171325684,
+    "client_ms_p50": 103.7139892578125,
+    "client_ms_p95": 143.86987686157227,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 10,
+   "repeat": 2,
+   "load": 3.26,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-scrapy-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 171.26046081409137,
+    "wall_s": 58.390593791846186,
+    "cpu_s": 13.313156,
+    "cpu_ms_per_page": 1.3313156,
+    "cpu_util": 0.2280017231449885,
+    "peak_rss_mb": 114.098176,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 11.4098176,
+    "requests": 10000,
+    "server_ms_p50": 50.872087478637695,
+    "server_ms_p95": 51.12910270690918,
+    "latency_ms_p50": 56.07485771179199,
+    "latency_ms_p95": 58.26687812805176,
+    "client_ms_p50": 5.272150039672852,
+    "client_ms_p95": 7.409334182739258,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 10,
+   "repeat": 2,
+   "load": 2.07,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-colly-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 188.5349185409775,
+    "wall_s": 53.040572416968644,
+    "cpu_s": 8.876284,
+    "cpu_ms_per_page": 0.8876284,
+    "cpu_util": 0.16734894808865816,
+    "peak_rss_mb": 95.60064,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 9.560064,
+    "requests": 10000,
+    "server_ms_p50": 50.45890808105469,
+    "server_ms_p95": 51.42927169799805,
+    "latency_ms_p50": 50.92930793762207,
+    "latency_ms_p95": 52.58822441101074,
+    "client_ms_p50": 0.30112266540527344,
+    "client_ms_p95": 1.481771469116211,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 10,
+   "repeat": 2,
+   "load": 1.72,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-spider-rs-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 119.30853734957398,
+    "wall_s": 83.81629866687581,
+    "cpu_s": 4.87932,
+    "cpu_ms_per_page": 0.487932,
+    "cpu_util": 0.05821445324605233,
+    "peak_rss_mb": 285.622272,
+    "peak_in_flight": 8,
+    "mb_per_in_flight": 35.702784,
+    "requests": 10000,
+    "server_ms_p50": 51.138877868652344,
+    "server_ms_p95": 51.61309242248535,
+    "latency_ms_p50": 51.770925521850586,
+    "latency_ms_p95": 53.215742111206055,
+    "client_ms_p50": 0.6659030914306641,
+    "client_ms_p95": 1.6498565673828125,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 10,
+   "repeat": 2,
+   "load": 3.53,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-crawlee-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 176.3112396924775,
+    "wall_s": 56.717881500022486,
+    "cpu_s": 13.884255999999999,
+    "cpu_ms_per_page": 1.3884256,
+    "cpu_util": 0.24479503875677186,
+    "peak_rss_mb": 219.938816,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 21.9938816,
+    "requests": 10000,
+    "server_ms_p50": 50.24600028991699,
+    "server_ms_p95": 51.19490623474121,
+    "latency_ms_p50": 52.867889404296875,
+    "latency_ms_p95": 58.38799476623535,
+    "client_ms_p50": 2.4437904357910156,
+    "client_ms_p95": 7.628917694091797,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 10,
+   "repeat": 2,
+   "load": 3.11,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-netweir-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 190.93763263530022,
+    "wall_s": 52.37312237499282,
+    "cpu_s": 6.442277,
+    "cpu_ms_per_page": 0.6442277,
+    "cpu_util": 0.12300731191608438,
+    "peak_rss_mb": 88.440832,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 8.8440832,
+    "requests": 10000,
+    "server_ms_p50": 51.116943359375,
+    "server_ms_p95": 51.67984962463379,
+    "latency_ms_p50": 53.21693420410156,
+    "latency_ms_p95": 56.487321853637695,
+    "client_ms_p50": 2.156972885131836,
+    "client_ms_p95": 4.994869232177734,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 2.0749568939208984,
+    "to_python_ms_p95": 4.912853240966797,
+    "parse_ms_p50": 0.06794929504394531,
+    "parse_ms_p95": 0.19693374633789062
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 50,
+   "repeat": 2,
+   "load": 2.45,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-scrapy-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 748.34023280915,
+    "wall_s": 13.36290575005114,
+    "cpu_s": 8.198288999999999,
+    "cpu_ms_per_page": 0.8198288999999999,
+    "cpu_util": 0.6135109498896693,
+    "peak_rss_mb": 117.506048,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 2.35012096,
+    "requests": 10000,
+    "server_ms_p50": 50.6591796875,
+    "server_ms_p95": 51.10979080200195,
+    "latency_ms_p50": 59.35311317443848,
+    "latency_ms_p95": 68.60685348510742,
+    "client_ms_p50": 8.69297981262207,
+    "client_ms_p95": 17.918825149536133,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 50,
+   "repeat": 2,
+   "load": 4.01,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-colly-2.json.gz",
+   "figures": {
+    "items": 10001,
+    "pages_per_sec": 935.8535012299732,
+    "wall_s": 10.686501665972173,
+    "cpu_s": 6.876616,
+    "cpu_ms_per_page": 0.6875928407159284,
+    "cpu_util": 0.6434861674046649,
+    "peak_rss_mb": 101.318656,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 2.02637312,
+    "requests": 10001,
+    "server_ms_p50": 50.25291442871094,
+    "server_ms_p95": 51.123857498168945,
+    "latency_ms_p50": 50.50182342529297,
+    "latency_ms_p95": 51.87201499938965,
+    "client_ms_p50": 0.20885467529296875,
+    "client_ms_p95": 0.9763240814208984,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 1
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 50,
+   "repeat": 2,
+   "load": 3.78,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-spider-rs-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 689.783664402524,
+    "wall_s": 14.497298959176987,
+    "cpu_s": 3.7423149999999996,
+    "cpu_ms_per_page": 0.37423149999999994,
+    "cpu_util": 0.25813877540485314,
+    "peak_rss_mb": 297.811968,
+    "peak_in_flight": 48,
+    "mb_per_in_flight": 6.204415999999999,
+    "requests": 10000,
+    "server_ms_p50": 51.01895332336426,
+    "server_ms_p95": 52.268028259277344,
+    "latency_ms_p50": 51.672935485839844,
+    "latency_ms_p95": 54.92973327636719,
+    "client_ms_p50": 0.6918907165527344,
+    "client_ms_p95": 2.7649402618408203,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 50,
+   "repeat": 2,
+   "load": 3.29,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-crawlee-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 838.672514760752,
+    "wall_s": 11.923605249961838,
+    "cpu_s": 9.265805,
+    "cpu_ms_per_page": 0.9265805,
+    "cpu_util": 0.777097598063275,
+    "peak_rss_mb": 301.694976,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 6.03389952,
+    "requests": 10000,
+    "server_ms_p50": 50.10390281677246,
+    "server_ms_p95": 50.755977630615234,
+    "latency_ms_p50": 51.97906494140625,
+    "latency_ms_p95": 58.52389335632324,
+    "client_ms_p50": 1.7969608306884766,
+    "client_ms_p95": 8.069276809692383,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 50,
+   "repeat": 2,
+   "load": 3.89,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-netweir-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 943.8937890644389,
+    "wall_s": 10.594412333099172,
+    "cpu_s": 4.077459,
+    "cpu_ms_per_page": 0.40774590000000005,
+    "cpu_util": 0.38486882252648985,
+    "peak_rss_mb": 95.27296,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 1.9054592,
+    "requests": 10000,
+    "server_ms_p50": 50.904035568237305,
+    "server_ms_p95": 51.61595344543457,
+    "latency_ms_p50": 55.14788627624512,
+    "latency_ms_p95": 60.115814208984375,
+    "client_ms_p50": 4.321098327636719,
+    "client_ms_p95": 8.736848831176758,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 4.2819976806640625,
+    "to_python_ms_p95": 8.697032928466797,
+    "parse_ms_p50": 0.04315376281738281,
+    "parse_ms_p95": 0.07581710815429688
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 3.58,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-scrapy-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1216.3446061997872,
+    "wall_s": 8.22135433414951,
+    "cpu_s": 7.58178,
+    "cpu_ms_per_page": 0.758178,
+    "cpu_util": 0.9222057208393424,
+    "peak_rss_mb": 120.946688,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.20946688,
+    "requests": 10000,
+    "server_ms_p50": 50.60982704162598,
+    "server_ms_p95": 51.12099647521973,
+    "latency_ms_p50": 65.01483917236328,
+    "latency_ms_p95": 91.13597869873047,
+    "client_ms_p50": 14.428853988647461,
+    "client_ms_p95": 40.407657623291016,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 3.18,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-colly-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1859.4145329570547,
+    "wall_s": 5.37803691579029,
+    "cpu_s": 5.286365,
+    "cpu_ms_per_page": 0.5286365,
+    "cpu_util": 0.982954390751552,
+    "peak_rss_mb": 106.627072,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.06627072,
+    "requests": 10000,
+    "server_ms_p50": 50.18281936645508,
+    "server_ms_p95": 51.01919174194336,
+    "latency_ms_p50": 50.39262771606445,
+    "latency_ms_p95": 51.65696144104004,
+    "client_ms_p50": 0.17189979553222656,
+    "client_ms_p95": 1.1119842529296875,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 2.93,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-spider-rs-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1287.8669714787318,
+    "wall_s": 7.764777124859393,
+    "cpu_s": 3.626656,
+    "cpu_ms_per_page": 0.3626656,
+    "cpu_util": 0.46706504793151715,
+    "peak_rss_mb": 309.297152,
+    "peak_in_flight": 96,
+    "mb_per_in_flight": 3.221845333333333,
+    "requests": 10000,
+    "server_ms_p50": 50.94599723815918,
+    "server_ms_p95": 52.89196968078613,
+    "latency_ms_p50": 51.71704292297363,
+    "latency_ms_p95": 55.854082107543945,
+    "client_ms_p50": 0.6990432739257812,
+    "client_ms_p95": 3.487825393676758,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 2.69,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-crawlee-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1367.4869582761155,
+    "wall_s": 7.312684000004083,
+    "cpu_s": 8.333912999999999,
+    "cpu_ms_per_page": 0.8333912999999998,
+    "cpu_util": 1.1396517338907775,
+    "peak_rss_mb": 312.508416,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 3.12508416,
+    "requests": 10000,
+    "server_ms_p50": 50.08220672607422,
+    "server_ms_p95": 50.402164459228516,
+    "latency_ms_p50": 53.25889587402344,
+    "latency_ms_p95": 69.03696060180664,
+    "client_ms_p50": 3.1442642211914062,
+    "client_ms_p95": 18.133878707885742,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 2.43,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-netweir-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1849.511092805188,
+    "wall_s": 5.406834291992709,
+    "cpu_s": 3.0805990000000003,
+    "cpu_ms_per_page": 0.3080599,
+    "cpu_util": 0.569760202298457,
+    "peak_rss_mb": 99.434496,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 0.9943449599999999,
+    "requests": 10000,
+    "server_ms_p50": 50.6291389465332,
+    "server_ms_p95": 51.1631965637207,
+    "latency_ms_p50": 54.81719970703125,
+    "latency_ms_p95": 59.91172790527344,
+    "client_ms_p50": 4.249811172485352,
+    "client_ms_p95": 9.119987487792969,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 4.21595573425293,
+    "to_python_ms_p95": 9.086847305297852,
+    "parse_ms_p50": 0.032901763916015625,
+    "parse_ms_p95": 0.051975250244140625
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 200,
+   "repeat": 2,
+   "load": 2.48,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-scrapy-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1258.2862870555985,
+    "wall_s": 7.947317000012845,
+    "cpu_s": 7.791205,
+    "cpu_ms_per_page": 0.7791205,
+    "cpu_util": 0.9803566411139014,
+    "peak_rss_mb": 127.041536,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.6352076799999999,
+    "requests": 10000,
+    "server_ms_p50": 50.8418083190918,
+    "server_ms_p95": 51.17177963256836,
+    "latency_ms_p50": 112.45322227478027,
+    "latency_ms_p95": 151.47089958190918,
+    "client_ms_p50": 61.68389320373535,
+    "client_ms_p95": 100.35109519958496,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 200,
+   "repeat": 2,
+   "load": 2.32,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-colly-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3630.7353366373177,
+    "wall_s": 2.754262999864295,
+    "cpu_s": 4.2469280000000005,
+    "cpu_ms_per_page": 0.4246928000000001,
+    "cpu_util": 1.5419471561754452,
+    "peak_rss_mb": 111.443968,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.55721984,
+    "requests": 10000,
+    "server_ms_p50": 50.11892318725586,
+    "server_ms_p95": 50.67014694213867,
+    "latency_ms_p50": 50.22478103637695,
+    "latency_ms_p95": 51.4528751373291,
+    "client_ms_p50": 0.09012222290039062,
+    "client_ms_p95": 0.9212493896484375,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 200,
+   "repeat": 2,
+   "load": 2.32,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-spider-rs-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 2901.491709367102,
+    "wall_s": 3.446503041079268,
+    "cpu_s": 3.081867,
+    "cpu_ms_per_page": 0.3081867,
+    "cpu_util": 0.8942011549872062,
+    "peak_rss_mb": 332.578816,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.66289408,
+    "requests": 10000,
+    "server_ms_p50": 50.586700439453125,
+    "server_ms_p95": 52.64592170715332,
+    "latency_ms_p50": 51.09000205993652,
+    "latency_ms_p95": 54.376840591430664,
+    "client_ms_p50": 0.3790855407714844,
+    "client_ms_p95": 2.203226089477539,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 200,
+   "repeat": 2,
+   "load": 2.22,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-crawlee-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1622.6715228119713,
+    "wall_s": 6.162676709005609,
+    "cpu_s": 8.737912,
+    "cpu_ms_per_page": 0.8737912,
+    "cpu_util": 1.4178760971236999,
+    "peak_rss_mb": 294.518784,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.47259392,
+    "requests": 10000,
+    "server_ms_p50": 50.100088119506836,
+    "server_ms_p95": 50.837039947509766,
+    "latency_ms_p50": 74.15509223937988,
+    "latency_ms_p95": 108.23988914489746,
+    "client_ms_p50": 23.975849151611328,
+    "client_ms_p95": 56.693077087402344,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 200,
+   "repeat": 2,
+   "load": 2.12,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-netweir-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3317.6614385242087,
+    "wall_s": 3.0141713328193873,
+    "cpu_s": 3.1143859999999997,
+    "cpu_ms_per_page": 0.31143859999999995,
+    "cpu_util": 1.0332478336879656,
+    "peak_rss_mb": 106.57792,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.5328896000000001,
+    "requests": 10000,
+    "server_ms_p50": 50.28700828552246,
+    "server_ms_p95": 51.10001564025879,
+    "latency_ms_p50": 53.30681800842285,
+    "latency_ms_p95": 60.534000396728516,
+    "client_ms_p50": 2.9349327087402344,
+    "client_ms_p95": 9.894132614135742,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 2.907991409301758,
+    "to_python_ms_p95": 9.865999221801758,
+    "parse_ms_p50": 0.02574920654296875,
+    "parse_ms_p95": 0.041961669921875
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 500,
+   "repeat": 2,
+   "load": 1.95,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-scrapy-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1219.7425763986014,
+    "wall_s": 8.198451208882034,
+    "cpu_s": 8.111181,
+    "cpu_ms_per_page": 0.8111181000000001,
+    "cpu_util": 0.9893552810575384,
+    "peak_rss_mb": 149.372928,
+    "peak_in_flight": 322,
+    "mb_per_in_flight": 0.46389108074534163,
+    "requests": 10000,
+    "server_ms_p50": 50.60410499572754,
+    "server_ms_p95": 51.17011070251465,
+    "latency_ms_p50": 280.26485443115234,
+    "latency_ms_p95": 344.8069095611572,
+    "client_ms_p50": 229.62713241577148,
+    "client_ms_p95": 294.2228317260742,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 500,
+   "repeat": 2,
+   "load": 1.8,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-colly-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 8372.767618178883,
+    "wall_s": 1.1943482079077512,
+    "cpu_s": 2.8398149999999998,
+    "cpu_ms_per_page": 0.28398149999999994,
+    "cpu_util": 2.377711107361866,
+    "peak_rss_mb": 131.055616,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.26211123199999997,
+    "requests": 10000,
+    "server_ms_p50": 50.2619743347168,
+    "server_ms_p95": 51.779985427856445,
+    "latency_ms_p50": 50.45294761657715,
+    "latency_ms_p95": 55.79209327697754,
+    "client_ms_p50": 0.1621246337890625,
+    "client_ms_p95": 4.335165023803711,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 500,
+   "repeat": 2,
+   "load": 1.8,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-spider-rs-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 5841.759444773018,
+    "wall_s": 1.7118130410090089,
+    "cpu_s": 2.38013,
+    "cpu_ms_per_page": 0.23801299999999997,
+    "cpu_util": 1.3904146907287604,
+    "peak_rss_mb": 397.7216,
+    "peak_in_flight": 496,
+    "mb_per_in_flight": 0.8018580645161291,
+    "requests": 10000,
+    "server_ms_p50": 50.421953201293945,
+    "server_ms_p95": 51.62692070007324,
+    "latency_ms_p50": 50.8880615234375,
+    "latency_ms_p95": 52.39605903625488,
+    "client_ms_p50": 0.34308433532714844,
+    "client_ms_p95": 0.8828639984130859,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 500,
+   "repeat": 2,
+   "load": 1.8,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-crawlee-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1795.5329924617129,
+    "wall_s": 5.569376915926114,
+    "cpu_s": 7.377489000000001,
+    "cpu_ms_per_page": 0.7377489,
+    "cpu_util": 1.324652490102337,
+    "peak_rss_mb": 297.926656,
+    "peak_in_flight": 411,
+    "mb_per_in_flight": 0.7248823746958637,
+    "requests": 10000,
+    "server_ms_p50": 50.07600784301758,
+    "server_ms_p95": 50.83131790161133,
+    "latency_ms_p50": 150.49219131469727,
+    "latency_ms_p95": 190.74583053588867,
+    "client_ms_p50": 100.3580093383789,
+    "client_ms_p95": 140.42019844055176,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 500,
+   "repeat": 2,
+   "load": 1.98,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-netweir-2.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 7356.85423804119,
+    "wall_s": 1.3592766250949353,
+    "cpu_s": 2.539069,
+    "cpu_ms_per_page": 0.2539069,
+    "cpu_util": 1.8679560533329005,
+    "peak_rss_mb": 145.457152,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.290914304,
+    "requests": 10000,
+    "server_ms_p50": 50.09627342224121,
+    "server_ms_p95": 50.914764404296875,
+    "latency_ms_p50": 55.89914321899414,
+    "latency_ms_p95": 60.460805892944336,
+    "client_ms_p50": 5.69605827331543,
+    "client_ms_p95": 10.34998893737793,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 5.672216415405273,
+    "to_python_ms_p95": 10.331153869628906,
+    "parse_ms_p50": 0.023126602172851562,
+    "parse_ms_p95": 0.03790855407714844
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 10,
+   "repeat": 3,
+   "load": 1.98,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-colly-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 188.23941471695255,
+    "wall_s": 53.12383708287962,
+    "cpu_s": 9.02801,
+    "cpu_ms_per_page": 0.9028010000000001,
+    "cpu_util": 0.1699427318458795,
+    "peak_rss_mb": 94.437376,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 9.4437376,
+    "requests": 10000,
+    "server_ms_p50": 50.5678653717041,
+    "server_ms_p95": 51.44619941711426,
+    "latency_ms_p50": 51.12767219543457,
+    "latency_ms_p95": 52.57391929626465,
+    "client_ms_p50": 0.3180503845214844,
+    "client_ms_p95": 1.4889240264892578,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 10,
+   "repeat": 3,
+   "load": 1.99,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-spider-rs-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 119.72602936960769,
+    "wall_s": 83.5240260839928,
+    "cpu_s": 4.844841,
+    "cpu_ms_per_page": 0.4844840999999999,
+    "cpu_util": 0.05800535758570795,
+    "peak_rss_mb": 287.277056,
+    "peak_in_flight": 8,
+    "mb_per_in_flight": 35.909632,
+    "requests": 10000,
+    "server_ms_p50": 51.1322021484375,
+    "server_ms_p95": 51.55301094055176,
+    "latency_ms_p50": 51.718711853027344,
+    "latency_ms_p95": 53.1158447265625,
+    "client_ms_p50": 0.6270408630371094,
+    "client_ms_p95": 1.6109943389892578,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 10,
+   "repeat": 3,
+   "load": 2.0,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-crawlee-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 179.042993580555,
+    "wall_s": 55.85250670812093,
+    "cpu_s": 12.383719,
+    "cpu_ms_per_page": 1.2383719,
+    "cpu_util": 0.22172181214203968,
+    "peak_rss_mb": 210.28864,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 21.028864,
+    "requests": 10000,
+    "server_ms_p50": 50.22096633911133,
+    "server_ms_p95": 51.13410949707031,
+    "latency_ms_p50": 52.574872970581055,
+    "latency_ms_p95": 56.40125274658203,
+    "client_ms_p50": 2.1300315856933594,
+    "client_ms_p95": 5.833864212036133,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 10,
+   "repeat": 3,
+   "load": 1.97,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-netweir-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 191.69107832572155,
+    "wall_s": 52.16726875002496,
+    "cpu_s": 5.833004,
+    "cpu_ms_per_page": 0.5833003999999999,
+    "cpu_util": 0.1118134826638247,
+    "peak_rss_mb": 86.966272,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 8.6966272,
+    "requests": 10000,
+    "server_ms_p50": 51.113128662109375,
+    "server_ms_p95": 51.596879959106445,
+    "latency_ms_p50": 52.92701721191406,
+    "latency_ms_p95": 55.93705177307129,
+    "client_ms_p50": 1.9030570983886719,
+    "client_ms_p95": 4.427909851074219,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 1.8320083618164062,
+    "to_python_ms_p95": 4.336833953857422,
+    "parse_ms_p50": 0.05817413330078125,
+    "parse_ms_p95": 0.164031982421875
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 10,
+   "repeat": 3,
+   "load": 2.2,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-10-scrapy-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 173.79494628792557,
+    "wall_s": 57.53907241602428,
+    "cpu_s": 12.922451,
+    "cpu_ms_per_page": 1.2922451000000001,
+    "cpu_util": 0.224585667745335,
+    "peak_rss_mb": 114.753536,
+    "peak_in_flight": 10,
+    "mb_per_in_flight": 11.4753536,
+    "requests": 10000,
+    "server_ms_p50": 50.79078674316406,
+    "server_ms_p95": 51.132917404174805,
+    "latency_ms_p50": 54.98504638671875,
+    "latency_ms_p95": 58.52913856506348,
+    "client_ms_p50": 4.258155822753906,
+    "client_ms_p95": 7.634878158569336,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 50,
+   "repeat": 3,
+   "load": 3.61,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-colly-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 935.0743149375954,
+    "wall_s": 10.694337166845798,
+    "cpu_s": 7.22268,
+    "cpu_ms_per_page": 0.722268,
+    "cpu_util": 0.6753742553013472,
+    "peak_rss_mb": 98.22208,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 1.9644416,
+    "requests": 10000,
+    "server_ms_p50": 50.24886131286621,
+    "server_ms_p95": 51.14603042602539,
+    "latency_ms_p50": 50.48799514770508,
+    "latency_ms_p95": 52.34527587890625,
+    "client_ms_p50": 0.2009868621826172,
+    "client_ms_p95": 1.3611316680908203,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 50,
+   "repeat": 3,
+   "load": 4.43,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-spider-rs-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 689.9541049294907,
+    "wall_s": 14.493717666948214,
+    "cpu_s": 3.719769,
+    "cpu_ms_per_page": 0.3719769,
+    "cpu_util": 0.2566469890939466,
+    "peak_rss_mb": 297.680896,
+    "peak_in_flight": 48,
+    "mb_per_in_flight": 6.201685333333334,
+    "requests": 10000,
+    "server_ms_p50": 51.001787185668945,
+    "server_ms_p95": 52.285194396972656,
+    "latency_ms_p50": 51.71322822570801,
+    "latency_ms_p95": 55.3278923034668,
+    "client_ms_p50": 0.7240772247314453,
+    "client_ms_p95": 2.897024154663086,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 50,
+   "repeat": 3,
+   "load": 3.58,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-crawlee-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 859.2792832443279,
+    "wall_s": 11.637659833068028,
+    "cpu_s": 8.718443,
+    "cpu_ms_per_page": 0.8718443000000001,
+    "cpu_util": 0.7491577452046528,
+    "peak_rss_mb": 297.746432,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 5.95492864,
+    "requests": 10000,
+    "server_ms_p50": 50.09722709655762,
+    "server_ms_p95": 50.75478553771973,
+    "latency_ms_p50": 51.744699478149414,
+    "latency_ms_p95": 56.1521053314209,
+    "client_ms_p50": 1.5249252319335938,
+    "client_ms_p95": 5.949974060058594,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 50,
+   "repeat": 3,
+   "load": 3.18,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-netweir-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 945.275712503421,
+    "wall_s": 10.578924082918093,
+    "cpu_s": 3.953104,
+    "cpu_ms_per_page": 0.3953104,
+    "cpu_util": 0.3736773200200124,
+    "peak_rss_mb": 93.782016,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 1.87564032,
+    "requests": 10000,
+    "server_ms_p50": 50.946950912475586,
+    "server_ms_p95": 51.355838775634766,
+    "latency_ms_p50": 54.3980598449707,
+    "latency_ms_p95": 59.076786041259766,
+    "client_ms_p50": 3.598928451538086,
+    "client_ms_p95": 8.008956909179688,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 3.557920455932617,
+    "to_python_ms_p95": 7.961034774780273,
+    "parse_ms_p50": 0.0438690185546875,
+    "parse_ms_p95": 0.07200241088867188
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 50,
+   "repeat": 3,
+   "load": 2.76,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-50-scrapy-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 778.2823904679701,
+    "wall_s": 12.848806708818302,
+    "cpu_s": 7.944739,
+    "cpu_ms_per_page": 0.7944739000000001,
+    "cpu_util": 0.6183250460564111,
+    "peak_rss_mb": 117.653504,
+    "peak_in_flight": 50,
+    "mb_per_in_flight": 2.35307008,
+    "requests": 10000,
+    "server_ms_p50": 50.614118576049805,
+    "server_ms_p95": 51.11289024353027,
+    "latency_ms_p50": 58.010101318359375,
+    "latency_ms_p95": 62.62707710266113,
+    "client_ms_p50": 7.345914840698242,
+    "client_ms_p95": 12.01319694519043,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 2.22,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-colly-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1851.0882494598548,
+    "wall_s": 5.40222758310847,
+    "cpu_s": 5.196517,
+    "cpu_ms_per_page": 0.5196516999999999,
+    "cpu_util": 0.9619211556818377,
+    "peak_rss_mb": 104.497152,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.04497152,
+    "requests": 10000,
+    "server_ms_p50": 50.18115043640137,
+    "server_ms_p95": 51.013946533203125,
+    "latency_ms_p50": 50.38166046142578,
+    "latency_ms_p95": 52.136898040771484,
+    "client_ms_p50": 0.1659393310546875,
+    "client_ms_p95": 1.4548301696777344,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 2.45,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-spider-rs-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1313.243847075106,
+    "wall_s": 7.614732041023672,
+    "cpu_s": 2.991457,
+    "cpu_ms_per_page": 0.2991457,
+    "cpu_util": 0.3928512499039755,
+    "peak_rss_mb": 308.26496,
+    "peak_in_flight": 96,
+    "mb_per_in_flight": 3.211093333333333,
+    "requests": 10000,
+    "server_ms_p50": 50.72283744812012,
+    "server_ms_p95": 52.18791961669922,
+    "latency_ms_p50": 51.31101608276367,
+    "latency_ms_p95": 55.48691749572754,
+    "client_ms_p50": 0.45299530029296875,
+    "client_ms_p95": 3.4317970275878906,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 2.58,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-crawlee-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1538.9480629218344,
+    "wall_s": 6.497945084003732,
+    "cpu_s": 8.238746,
+    "cpu_ms_per_page": 0.8238746000000001,
+    "cpu_util": 1.2679002197605014,
+    "peak_rss_mb": 312.639488,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 3.12639488,
+    "requests": 10000,
+    "server_ms_p50": 50.0798225402832,
+    "server_ms_p95": 50.2781867980957,
+    "latency_ms_p50": 52.61707305908203,
+    "latency_ms_p95": 63.89594078063965,
+    "client_ms_p50": 2.518892288208008,
+    "client_ms_p95": 13.575077056884766,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 2.7,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-netweir-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1853.0585848394057,
+    "wall_s": 5.396483458112925,
+    "cpu_s": 2.916298,
+    "cpu_ms_per_page": 0.2916298,
+    "cpu_util": 0.540407104484999,
+    "peak_rss_mb": 96.862208,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 0.9686220799999999,
+    "requests": 10000,
+    "server_ms_p50": 50.54903030395508,
+    "server_ms_p95": 51.164865493774414,
+    "latency_ms_p50": 55.761098861694336,
+    "latency_ms_p95": 61.18202209472656,
+    "client_ms_p50": 5.254983901977539,
+    "client_ms_p95": 10.277986526489258,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 5.222320556640625,
+    "to_python_ms_p95": 10.243892669677734,
+    "parse_ms_p50": 0.032901763916015625,
+    "parse_ms_p95": 0.04982948303222656
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 2.56,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-100-scrapy-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1252.477236980438,
+    "wall_s": 7.984177041100338,
+    "cpu_s": 7.3090850000000005,
+    "cpu_ms_per_page": 0.7309085000000001,
+    "cpu_util": 0.9154462585655165,
+    "peak_rss_mb": 120.291328,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 1.20291328,
+    "requests": 10000,
+    "server_ms_p50": 50.5521297454834,
+    "server_ms_p95": 51.0869026184082,
+    "latency_ms_p50": 65.42277336120605,
+    "latency_ms_p95": 87.23306655883789,
+    "client_ms_p50": 14.826059341430664,
+    "client_ms_p95": 36.511898040771484,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 200,
+   "repeat": 3,
+   "load": 2.32,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-colly-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3633.643579204754,
+    "wall_s": 2.752058583078906,
+    "cpu_s": 4.2642050000000005,
+    "cpu_ms_per_page": 0.4264205000000001,
+    "cpu_util": 1.549460111866281,
+    "peak_rss_mb": 116.228096,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.58114048,
+    "requests": 10000,
+    "server_ms_p50": 50.125837326049805,
+    "server_ms_p95": 50.90689659118652,
+    "latency_ms_p50": 50.232887268066406,
+    "latency_ms_p95": 51.56397819519043,
+    "client_ms_p50": 0.09107589721679688,
+    "client_ms_p95": 0.9748935699462891,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 200,
+   "repeat": 3,
+   "load": 2.32,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-spider-rs-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 2926.8382265684536,
+    "wall_s": 3.416656209155917,
+    "cpu_s": 3.0065739999999996,
+    "cpu_ms_per_page": 0.30065739999999996,
+    "cpu_util": 0.8799755714206821,
+    "peak_rss_mb": 332.300288,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.66150144,
+    "requests": 10000,
+    "server_ms_p50": 50.69899559020996,
+    "server_ms_p95": 52.19006538391113,
+    "latency_ms_p50": 51.15795135498047,
+    "latency_ms_p95": 54.57472801208496,
+    "client_ms_p50": 0.36907196044921875,
+    "client_ms_p95": 2.5959014892578125,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 200,
+   "repeat": 3,
+   "load": 2.38,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-crawlee-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1694.388306621261,
+    "wall_s": 5.9018348751123995,
+    "cpu_s": 8.52159,
+    "cpu_ms_per_page": 0.852159,
+    "cpu_util": 1.4438882449820671,
+    "peak_rss_mb": 296.22272,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 1.4811135999999998,
+    "requests": 10000,
+    "server_ms_p50": 50.09627342224121,
+    "server_ms_p95": 50.681114196777344,
+    "latency_ms_p50": 72.93224334716797,
+    "latency_ms_p95": 96.35686874389648,
+    "client_ms_p50": 22.76301383972168,
+    "client_ms_p95": 45.758962631225586,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 200,
+   "repeat": 3,
+   "load": 2.26,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-netweir-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 3338.678743808069,
+    "wall_s": 2.995196833042428,
+    "cpu_s": 3.2047239999999997,
+    "cpu_ms_per_page": 0.3204724,
+    "cpu_util": 1.0699543898571569,
+    "peak_rss_mb": 107.200512,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.53600256,
+    "requests": 10000,
+    "server_ms_p50": 50.3232479095459,
+    "server_ms_p95": 51.16081237792969,
+    "latency_ms_p50": 53.43914031982422,
+    "latency_ms_p95": 60.52589416503906,
+    "client_ms_p50": 2.937793731689453,
+    "client_ms_p95": 10.04481315612793,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 2.911090850830078,
+    "to_python_ms_p95": 10.015010833740234,
+    "parse_ms_p50": 0.026702880859375,
+    "parse_ms_p95": 0.04291534423828125
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 200,
+   "repeat": 3,
+   "load": 2.08,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-200-scrapy-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1295.696775604159,
+    "wall_s": 7.717855124967173,
+    "cpu_s": 7.600643,
+    "cpu_ms_per_page": 0.7600643,
+    "cpu_util": 0.9848128627618322,
+    "peak_rss_mb": 127.942656,
+    "peak_in_flight": 200,
+    "mb_per_in_flight": 0.63971328,
+    "requests": 10000,
+    "server_ms_p50": 50.77981948852539,
+    "server_ms_p95": 51.142215728759766,
+    "latency_ms_p50": 111.52219772338867,
+    "latency_ms_p95": 151.4108180999756,
+    "client_ms_p50": 60.94217300415039,
+    "client_ms_p95": 100.75187683105469,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 500,
+   "repeat": 3,
+   "load": 1.92,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-colly-3.json.gz",
+   "figures": {
+    "items": 10001,
+    "pages_per_sec": 8448.569393327025,
+    "wall_s": 1.1837507078889757,
+    "cpu_s": 2.877945,
+    "cpu_ms_per_page": 0.28776572342765727,
+    "cpu_util": 2.4312086833995146,
+    "peak_rss_mb": 133.955584,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.267911168,
+    "requests": 10001,
+    "server_ms_p50": 50.33707618713379,
+    "server_ms_p95": 51.7120361328125,
+    "latency_ms_p50": 50.611019134521484,
+    "latency_ms_p95": 56.24794960021973,
+    "client_ms_p50": 0.18978118896484375,
+    "client_ms_p95": 4.750967025756836,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 1
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 500,
+   "repeat": 3,
+   "load": 1.92,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-spider-rs-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 5849.8750952535465,
+    "wall_s": 1.7094382080249488,
+    "cpu_s": 2.548189,
+    "cpu_ms_per_page": 0.25481889999999996,
+    "cpu_util": 1.490658736909904,
+    "peak_rss_mb": 396.24704,
+    "peak_in_flight": 496,
+    "mb_per_in_flight": 0.7988851612903226,
+    "requests": 10000,
+    "server_ms_p50": 50.549983978271484,
+    "server_ms_p95": 51.65219306945801,
+    "latency_ms_p50": 50.91285705566406,
+    "latency_ms_p95": 52.7188777923584,
+    "client_ms_p50": 0.30493736267089844,
+    "client_ms_p95": 0.9100437164306641,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 500,
+   "repeat": 3,
+   "load": 1.92,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-crawlee-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1797.7607947373065,
+    "wall_s": 5.562475291080773,
+    "cpu_s": 7.516996000000001,
+    "cpu_ms_per_page": 0.7516996000000001,
+    "cpu_util": 1.3513760702997155,
+    "peak_rss_mb": 269.041664,
+    "peak_in_flight": 486,
+    "mb_per_in_flight": 0.5535836707818931,
+    "requests": 10000,
+    "server_ms_p50": 50.07624626159668,
+    "server_ms_p95": 50.84371566772461,
+    "latency_ms_p50": 148.59795570373535,
+    "latency_ms_p95": 196.59709930419922,
+    "client_ms_p50": 98.47211837768555,
+    "client_ms_p95": 145.8292007446289,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 500,
+   "repeat": 3,
+   "load": 2.17,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-netweir-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 7463.816817091106,
+    "wall_s": 1.3397970830556005,
+    "cpu_s": 2.501416,
+    "cpu_ms_per_page": 0.25014159999999996,
+    "cpu_util": 1.8670110807340765,
+    "peak_rss_mb": 145.932288,
+    "peak_in_flight": 500,
+    "mb_per_in_flight": 0.291864576,
+    "requests": 10000,
+    "server_ms_p50": 50.09627342224121,
+    "server_ms_p95": 50.84705352783203,
+    "latency_ms_p50": 55.32407760620117,
+    "latency_ms_p95": 61.97404861450195,
+    "client_ms_p50": 5.15294075012207,
+    "client_ms_p95": 11.768102645874023,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 5.129098892211914,
+    "to_python_ms_p95": 11.74783706665039,
+    "parse_ms_p50": 0.02288818359375,
+    "parse_ms_p95": 0.03600120544433594
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 500,
+   "repeat": 3,
+   "load": 2.17,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/crawl-500-scrapy-3.json.gz",
+   "figures": {
+    "items": 10000,
+    "pages_per_sec": 1249.285369731557,
+    "wall_s": 8.004576249979436,
+    "cpu_s": 7.941323,
+    "cpu_ms_per_page": 0.7941322999999999,
+    "cpu_util": 0.9920978640212716,
+    "peak_rss_mb": 149.9136,
+    "peak_in_flight": 348,
+    "mb_per_in_flight": 0.4307862068965517,
+    "requests": 10000,
+    "server_ms_p50": 50.66680908203125,
+    "server_ms_p95": 51.15389823913574,
+    "latency_ms_p50": 281.5840244293213,
+    "latency_ms_p95": 364.6531105041504,
+    "client_ms_p50": 230.87096214294434,
+    "client_ms_p95": 313.5950565338135,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  }
+ ],
+ "summary": {
+  "10": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 191.19169565841455,
+     "min": 190.93763263530022,
+     "max": 191.69107832572155
+    },
+    "wall_s": {
+     "median": 52.3035269160755,
+     "min": 52.16726875002496,
+     "max": 52.37312237499282
+    },
+    "cpu_s": {
+     "median": 6.3228040000000005,
+     "min": 5.833004,
+     "max": 6.442277
+    },
+    "cpu_ms_per_page": {
+     "median": 0.6322804,
+     "min": 0.5833003999999999,
+     "max": 0.6442277
+    },
+    "cpu_util": {
+     "median": 0.12088676180758062,
+     "min": 0.1118134826638247,
+     "max": 0.12300731191608438
+    },
+    "peak_rss_mb": {
+     "median": 86.966272,
+     "min": 83.607552,
+     "max": 88.440832
+    },
+    "peak_in_flight": {
+     "median": 10,
+     "min": 10,
+     "max": 10
+    },
+    "mb_per_in_flight": {
+     "median": 8.6966272,
+     "min": 8.3607552,
+     "max": 8.8440832
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 51.116943359375,
+     "min": 51.113128662109375,
+     "max": 51.145076751708984
+    },
+    "server_ms_p95": {
+     "median": 51.67984962463379,
+     "min": 51.596879959106445,
+     "max": 51.68914794921875
+    },
+    "latency_ms_p50": {
+     "median": 53.21693420410156,
+     "min": 52.92701721191406,
+     "max": 53.31301689147949
+    },
+    "latency_ms_p95": {
+     "median": 56.09297752380371,
+     "min": 55.93705177307129,
+     "max": 56.487321853637695
+    },
+    "client_ms_p50": {
+     "median": 2.156972885131836,
+     "min": 1.9030570983886719,
+     "max": 2.244234085083008
+    },
+    "client_ms_p95": {
+     "median": 4.536867141723633,
+     "min": 4.427909851074219,
+     "max": 4.994869232177734
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 2.0749568939208984,
+     "min": 1.8320083618164062,
+     "max": 2.1719932556152344
+    },
+    "to_python_ms_p95": {
+     "median": 4.459142684936523,
+     "min": 4.336833953857422,
+     "max": 4.912853240966797
+    },
+    "parse_ms_p50": {
+     "median": 0.06794929504394531,
+     "min": 0.05817413330078125,
+     "max": 0.06794929504394531
+    },
+    "parse_ms_p95": {
+     "median": 0.18405914306640625,
+     "min": 0.164031982421875,
+     "max": 0.19693374633789062
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 173.79494628792557,
+     "min": 171.26046081409137,
+     "max": 174.46012070664722
+    },
+    "wall_s": {
+     "median": 57.53907241602428,
+     "min": 57.31968979211524,
+     "max": 58.390593791846186
+    },
+    "cpu_s": {
+     "median": 13.288564000000001,
+     "min": 12.922451,
+     "max": 13.313156
+    },
+    "cpu_ms_per_page": {
+     "median": 1.3288564,
+     "min": 1.2922451000000001,
+     "max": 1.3313156
+    },
+    "cpu_util": {
+     "median": 0.2280017231449885,
+     "min": 0.224585667745335,
+     "max": 0.2318324479458007
+    },
+    "peak_rss_mb": {
+     "median": 114.098176,
+     "min": 110.133248,
+     "max": 114.753536
+    },
+    "peak_in_flight": {
+     "median": 10,
+     "min": 10,
+     "max": 10
+    },
+    "mb_per_in_flight": {
+     "median": 11.4098176,
+     "min": 11.0133248,
+     "max": 11.4753536
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.79078674316406,
+     "min": 50.73904991149902,
+     "max": 50.872087478637695
+    },
+    "server_ms_p95": {
+     "median": 51.12910270690918,
+     "min": 51.12600326538086,
+     "max": 51.132917404174805
+    },
+    "latency_ms_p50": {
+     "median": 54.98504638671875,
+     "min": 54.85391616821289,
+     "max": 56.07485771179199
+    },
+    "latency_ms_p95": {
+     "median": 58.26687812805176,
+     "min": 57.557106018066406,
+     "max": 58.52913856506348
+    },
+    "client_ms_p50": {
+     "median": 4.258155822753906,
+     "min": 4.164695739746094,
+     "max": 5.272150039672852
+    },
+    "client_ms_p95": {
+     "median": 7.409334182739258,
+     "min": 6.718158721923828,
+     "max": 7.634878158569336
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 188.23941471695255,
+     "min": 187.358407983008,
+     "max": 188.5349185409775
+    },
+    "wall_s": {
+     "median": 53.12383708287962,
+     "min": 53.040572416968644,
+     "max": 53.37363883294165
+    },
+    "cpu_s": {
+     "median": 8.876284,
+     "min": 8.539081,
+     "max": 9.02801
+    },
+    "cpu_ms_per_page": {
+     "median": 0.8876284,
+     "min": 0.8539081000000001,
+     "max": 0.9028010000000001
+    },
+    "cpu_util": {
+     "median": 0.16734894808865816,
+     "min": 0.15998686217979516,
+     "max": 0.1699427318458795
+    },
+    "peak_rss_mb": {
+     "median": 95.60064,
+     "min": 94.437376,
+     "max": 96.91136
+    },
+    "peak_in_flight": {
+     "median": 10,
+     "min": 10,
+     "max": 10
+    },
+    "mb_per_in_flight": {
+     "median": 9.560064,
+     "min": 9.4437376,
+     "max": 9.691136
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.5678653717041,
+     "min": 50.45890808105469,
+     "max": 50.60124397277832
+    },
+    "server_ms_p95": {
+     "median": 51.44619941711426,
+     "min": 51.42927169799805,
+     "max": 51.81097984313965
+    },
+    "latency_ms_p50": {
+     "median": 51.12767219543457,
+     "min": 50.92930793762207,
+     "max": 51.16724967956543
+    },
+    "latency_ms_p95": {
+     "median": 52.58822441101074,
+     "min": 52.57391929626465,
+     "max": 53.04121971130371
+    },
+    "client_ms_p50": {
+     "median": 0.3180503845214844,
+     "min": 0.30112266540527344,
+     "max": 0.3521442413330078
+    },
+    "client_ms_p95": {
+     "median": 1.4889240264892578,
+     "min": 1.481771469116211,
+     "max": 1.6551017761230469
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 119.30853734957398,
+     "min": 116.21338167364353,
+     "max": 119.72602936960769
+    },
+    "wall_s": {
+     "median": 83.81629866687581,
+     "min": 83.5240260839928,
+     "max": 86.04861037502997
+    },
+    "cpu_s": {
+     "median": 4.844841,
+     "min": 4.710887,
+     "max": 4.87932
+    },
+    "cpu_ms_per_page": {
+     "median": 0.4844840999999999,
+     "min": 0.47108869999999997,
+     "max": 0.487932
+    },
+    "cpu_util": {
+     "median": 0.05800535758570795,
+     "min": 0.05474681089524055,
+     "max": 0.05821445324605233
+    },
+    "peak_rss_mb": {
+     "median": 285.622272,
+     "min": 282.034176,
+     "max": 287.277056
+    },
+    "peak_in_flight": {
+     "median": 8,
+     "min": 8,
+     "max": 8
+    },
+    "mb_per_in_flight": {
+     "median": 35.702784,
+     "min": 35.254272,
+     "max": 35.909632
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 51.138877868652344,
+     "min": 51.1322021484375,
+     "max": 52.152156829833984
+    },
+    "server_ms_p95": {
+     "median": 51.61309242248535,
+     "min": 51.55301094055176,
+     "max": 53.66086959838867
+    },
+    "latency_ms_p50": {
+     "median": 51.770925521850586,
+     "min": 51.718711853027344,
+     "max": 52.85000801086426
+    },
+    "latency_ms_p95": {
+     "median": 53.215742111206055,
+     "min": 53.1158447265625,
+     "max": 55.87005615234375
+    },
+    "client_ms_p50": {
+     "median": 0.6659030914306641,
+     "min": 0.6270408630371094,
+     "max": 0.7660388946533203
+    },
+    "client_ms_p95": {
+     "median": 1.6498565673828125,
+     "min": 1.6109943389892578,
+     "max": 2.5110244750976562
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 176.3112396924775,
+     "min": 170.1015040116012,
+     "max": 179.042993580555
+    },
+    "wall_s": {
+     "median": 56.717881500022486,
+     "min": 55.85250670812093,
+     "max": 58.78842787491158
+    },
+    "cpu_s": {
+     "median": 13.884255999999999,
+     "min": 12.383719,
+     "max": 14.130834
+    },
+    "cpu_ms_per_page": {
+     "median": 1.3884256,
+     "min": 1.2383719,
+     "max": 1.4130834
+    },
+    "cpu_util": {
+     "median": 0.24036761163382708,
+     "min": 0.22172181214203968,
+     "max": 0.24479503875677186
+    },
+    "peak_rss_mb": {
+     "median": 210.28864,
+     "min": 179.15904,
+     "max": 219.938816
+    },
+    "peak_in_flight": {
+     "median": 10,
+     "min": 10,
+     "max": 10
+    },
+    "mb_per_in_flight": {
+     "median": 21.028864,
+     "min": 17.915904,
+     "max": 21.9938816
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.24600028991699,
+     "min": 50.22096633911133,
+     "max": 50.60100555419922
+    },
+    "server_ms_p95": {
+     "median": 51.19490623474121,
+     "min": 51.13410949707031,
+     "max": 52.420854568481445
+    },
+    "latency_ms_p50": {
+     "median": 52.867889404296875,
+     "min": 52.574872970581055,
+     "max": 54.24189567565918
+    },
+    "latency_ms_p95": {
+     "median": 58.38799476623535,
+     "min": 56.40125274658203,
+     "max": 62.60395050048828
+    },
+    "client_ms_p50": {
+     "median": 2.4437904357910156,
+     "min": 2.1300315856933594,
+     "max": 3.368854522705078
+    },
+    "client_ms_p95": {
+     "median": 7.628917694091797,
+     "min": 5.833864212036133,
+     "max": 10.752677917480469
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  "50": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 943.8937890644389,
+     "min": 941.8902571914593,
+     "max": 945.275712503421
+    },
+    "wall_s": {
+     "median": 10.594412333099172,
+     "min": 10.578924082918093,
+     "max": 10.616948124952614
+    },
+    "cpu_s": {
+     "median": 4.077459,
+     "min": 3.953104,
+     "max": 4.096912
+    },
+    "cpu_ms_per_page": {
+     "median": 0.40774590000000005,
+     "min": 0.3953104,
+     "max": 0.4096911999999999
+    },
+    "cpu_util": {
+     "median": 0.38486882252648985,
+     "min": 0.3736773200200124,
+     "max": 0.3858841497370776
+    },
+    "peak_rss_mb": {
+     "median": 94.306304,
+     "min": 93.782016,
+     "max": 95.27296
+    },
+    "peak_in_flight": {
+     "median": 50,
+     "min": 50,
+     "max": 50
+    },
+    "mb_per_in_flight": {
+     "median": 1.88612608,
+     "min": 1.87564032,
+     "max": 1.9054592
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.930023193359375,
+     "min": 50.904035568237305,
+     "max": 50.946950912475586
+    },
+    "server_ms_p95": {
+     "median": 51.61595344543457,
+     "min": 51.355838775634766,
+     "max": 51.759958267211914
+    },
+    "latency_ms_p50": {
+     "median": 55.13501167297363,
+     "min": 54.3980598449707,
+     "max": 55.14788627624512
+    },
+    "latency_ms_p95": {
+     "median": 60.098886489868164,
+     "min": 59.076786041259766,
+     "max": 60.115814208984375
+    },
+    "client_ms_p50": {
+     "median": 4.311084747314453,
+     "min": 3.598928451538086,
+     "max": 4.321098327636719
+    },
+    "client_ms_p95": {
+     "median": 8.678913116455078,
+     "min": 8.008956909179688,
+     "max": 8.736848831176758
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 4.261016845703125,
+     "min": 3.557920455932617,
+     "max": 4.2819976806640625
+    },
+    "to_python_ms_p95": {
+     "median": 8.625984191894531,
+     "min": 7.961034774780273,
+     "max": 8.697032928466797
+    },
+    "parse_ms_p50": {
+     "median": 0.0438690185546875,
+     "min": 0.04315376281738281,
+     "max": 0.04410743713378906
+    },
+    "parse_ms_p95": {
+     "median": 0.07581710815429688,
+     "min": 0.07200241088867188,
+     "max": 0.07581710815429688
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 748.34023280915,
+     "min": 747.3085751987522,
+     "max": 778.2823904679701
+    },
+    "wall_s": {
+     "median": 13.36290575005114,
+     "min": 12.848806708818302,
+     "max": 13.381353207863867
+    },
+    "cpu_s": {
+     "median": 8.198288999999999,
+     "min": 7.944739,
+     "max": 8.388964
+    },
+    "cpu_ms_per_page": {
+     "median": 0.8198288999999999,
+     "min": 0.7944739000000001,
+     "max": 0.8388964
+    },
+    "cpu_util": {
+     "median": 0.6183250460564111,
+     "min": 0.6135109498896693,
+     "max": 0.6269144734233626
+    },
+    "peak_rss_mb": {
+     "median": 117.506048,
+     "min": 117.424128,
+     "max": 117.653504
+    },
+    "peak_in_flight": {
+     "median": 50,
+     "min": 50,
+     "max": 50
+    },
+    "mb_per_in_flight": {
+     "median": 2.35012096,
+     "min": 2.34848256,
+     "max": 2.35307008
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.6591796875,
+     "min": 50.614118576049805,
+     "max": 50.752878189086914
+    },
+    "server_ms_p95": {
+     "median": 51.11289024353027,
+     "min": 51.10979080200195,
+     "max": 51.12814903259277
+    },
+    "latency_ms_p50": {
+     "median": 59.35311317443848,
+     "min": 58.010101318359375,
+     "max": 59.47709083557129
+    },
+    "latency_ms_p95": {
+     "median": 68.60685348510742,
+     "min": 62.62707710266113,
+     "max": 68.67623329162598
+    },
+    "client_ms_p50": {
+     "median": 8.69297981262207,
+     "min": 7.345914840698242,
+     "max": 8.763790130615234
+    },
+    "client_ms_p95": {
+     "median": 17.918825149536133,
+     "min": 12.01319694519043,
+     "max": 17.938852310180664
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10001
+    },
+    "pages_per_sec": {
+     "median": 935.0743149375954,
+     "min": 931.5918264434002,
+     "max": 935.8535012299732
+    },
+    "wall_s": {
+     "median": 10.694337166845798,
+     "min": 10.686501665972173,
+     "max": 10.734314874978736
+    },
+    "cpu_s": {
+     "median": 7.22268,
+     "min": 6.876616,
+     "max": 7.326808999999999
+    },
+    "cpu_ms_per_page": {
+     "median": 0.722268,
+     "min": 0.6875928407159284,
+     "max": 0.7326809
+    },
+    "cpu_util": {
+     "median": 0.6753742553013472,
+     "min": 0.6434861674046649,
+     "max": 0.6825595378311942
+    },
+    "peak_rss_mb": {
+     "median": 98.582528,
+     "min": 98.22208,
+     "max": 101.318656
+    },
+    "peak_in_flight": {
+     "median": 50,
+     "min": 50,
+     "max": 50
+    },
+    "mb_per_in_flight": {
+     "median": 1.9716505599999998,
+     "min": 1.9644416,
+     "max": 2.02637312
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10001
+    },
+    "server_ms_p50": {
+     "median": 50.25291442871094,
+     "min": 50.24886131286621,
+     "max": 50.263166427612305
+    },
+    "server_ms_p95": {
+     "median": 51.14603042602539,
+     "min": 51.123857498168945,
+     "max": 51.19490623474121
+    },
+    "latency_ms_p50": {
+     "median": 50.50015449523926,
+     "min": 50.48799514770508,
+     "max": 50.50182342529297
+    },
+    "latency_ms_p95": {
+     "median": 52.34527587890625,
+     "min": 51.87201499938965,
+     "max": 52.64997482299805
+    },
+    "client_ms_p50": {
+     "median": 0.2009868621826172,
+     "min": 0.2009868621826172,
+     "max": 0.20885467529296875
+    },
+    "client_ms_p95": {
+     "median": 1.3611316680908203,
+     "min": 0.9763240814208984,
+     "max": 1.6589164733886719
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 1
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 689.783664402524,
+     "min": 687.8891809992846,
+     "max": 689.9541049294907
+    },
+    "wall_s": {
+     "median": 14.497298959176987,
+     "min": 14.493717666948214,
+     "max": 14.537225291831419
+    },
+    "cpu_s": {
+     "median": 3.719769,
+     "min": 3.572005,
+     "max": 3.7423149999999996
+    },
+    "cpu_ms_per_page": {
+     "median": 0.3719769,
+     "min": 0.3572005,
+     "max": 0.37423149999999994
+    },
+    "cpu_util": {
+     "median": 0.2566469890939466,
+     "min": 0.24571435939753494,
+     "max": 0.25813877540485314
+    },
+    "peak_rss_mb": {
+     "median": 297.680896,
+     "min": 297.45152,
+     "max": 297.811968
+    },
+    "peak_in_flight": {
+     "median": 48,
+     "min": 48,
+     "max": 48
+    },
+    "mb_per_in_flight": {
+     "median": 6.201685333333334,
+     "min": 6.196906666666667,
+     "max": 6.204415999999999
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 51.01895332336426,
+     "min": 51.001787185668945,
+     "max": 51.09691619873047
+    },
+    "server_ms_p95": {
+     "median": 52.285194396972656,
+     "min": 52.268028259277344,
+     "max": 52.47306823730469
+    },
+    "latency_ms_p50": {
+     "median": 51.71322822570801,
+     "min": 51.672935485839844,
+     "max": 51.737070083618164
+    },
+    "latency_ms_p95": {
+     "median": 55.3278923034668,
+     "min": 54.92973327636719,
+     "max": 55.452823638916016
+    },
+    "client_ms_p50": {
+     "median": 0.6918907165527344,
+     "min": 0.6561279296875,
+     "max": 0.7240772247314453
+    },
+    "client_ms_p95": {
+     "median": 2.897024154663086,
+     "min": 2.7649402618408203,
+     "max": 3.0889511108398438
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 838.672514760752,
+     "min": 817.7400052869843,
+     "max": 859.2792832443279
+    },
+    "wall_s": {
+     "median": 11.923605249961838,
+     "min": 11.637659833068028,
+     "max": 12.228825709084049
+    },
+    "cpu_s": {
+     "median": 9.265805,
+     "min": 8.718443,
+     "max": 9.373631
+    },
+    "cpu_ms_per_page": {
+     "median": 0.9265805,
+     "min": 0.8718443000000001,
+     "max": 0.9373630999999999
+    },
+    "cpu_util": {
+     "median": 0.766519306349824,
+     "min": 0.7491577452046528,
+     "max": 0.777097598063275
+    },
+    "peak_rss_mb": {
+     "median": 301.694976,
+     "min": 297.746432,
+     "max": 313.655296
+    },
+    "peak_in_flight": {
+     "median": 50,
+     "min": 50,
+     "max": 50
+    },
+    "mb_per_in_flight": {
+     "median": 6.03389952,
+     "min": 5.95492864,
+     "max": 6.273105920000001
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.10104179382324,
+     "min": 50.09722709655762,
+     "max": 50.10390281677246
+    },
+    "server_ms_p95": {
+     "median": 50.75478553771973,
+     "min": 50.71687698364258,
+     "max": 50.755977630615234
+    },
+    "latency_ms_p50": {
+     "median": 51.744699478149414,
+     "min": 51.728010177612305,
+     "max": 51.97906494140625
+    },
+    "latency_ms_p95": {
+     "median": 57.62910842895508,
+     "min": 56.1521053314209,
+     "max": 58.52389335632324
+    },
+    "client_ms_p50": {
+     "median": 1.5249252319335938,
+     "min": 1.5170574188232422,
+     "max": 1.7969608306884766
+    },
+    "client_ms_p95": {
+     "median": 7.253170013427734,
+     "min": 5.949974060058594,
+     "max": 8.069276809692383
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  "100": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1853.0585848394057,
+     "min": 1849.511092805188,
+     "max": 1861.7331009633342
+    },
+    "wall_s": {
+     "median": 5.396483458112925,
+     "min": 5.371339207980782,
+     "max": 5.406834291992709
+    },
+    "cpu_s": {
+     "median": 2.916298,
+     "min": 2.837315,
+     "max": 3.0805990000000003
+    },
+    "cpu_ms_per_page": {
+     "median": 0.2916298,
+     "min": 0.28373149999999997,
+     "max": 0.3080599
+    },
+    "cpu_util": {
+     "median": 0.540407104484999,
+     "min": 0.5282323253359782,
+     "max": 0.569760202298457
+    },
+    "peak_rss_mb": {
+     "median": 96.862208,
+     "min": 96.763904,
+     "max": 99.434496
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 0.9686220799999999,
+     "min": 0.96763904,
+     "max": 0.9943449599999999
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.54903030395508,
+     "min": 50.421953201293945,
+     "max": 50.6291389465332
+    },
+    "server_ms_p95": {
+     "median": 51.164865493774414,
+     "min": 51.1631965637207,
+     "max": 51.306962966918945
+    },
+    "latency_ms_p50": {
+     "median": 54.81719970703125,
+     "min": 53.78913879394531,
+     "max": 55.761098861694336
+    },
+    "latency_ms_p95": {
+     "median": 59.91172790527344,
+     "min": 59.90481376647949,
+     "max": 61.18202209472656
+    },
+    "client_ms_p50": {
+     "median": 4.249811172485352,
+     "min": 3.1728744506835938,
+     "max": 5.254983901977539
+    },
+    "client_ms_p95": {
+     "median": 9.119987487792969,
+     "min": 8.878707885742188,
+     "max": 10.277986526489258
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 4.21595573425293,
+     "min": 3.1430721282958984,
+     "max": 5.222320556640625
+    },
+    "to_python_ms_p95": {
+     "median": 9.086847305297852,
+     "min": 8.846044540405273,
+     "max": 10.243892669677734
+    },
+    "parse_ms_p50": {
+     "median": 0.032901763916015625,
+     "min": 0.029087066650390625,
+     "max": 0.032901763916015625
+    },
+    "parse_ms_p95": {
+     "median": 0.051975250244140625,
+     "min": 0.04982948303222656,
+     "max": 0.053882598876953125
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1216.3446061997872,
+     "min": 1161.4563790444338,
+     "max": 1252.477236980438
+    },
+    "wall_s": {
+     "median": 8.22135433414951,
+     "min": 7.984177041100338,
+     "max": 8.609879957977682
+    },
+    "cpu_s": {
+     "median": 7.58178,
+     "min": 7.3090850000000005,
+     "max": 8.188753
+    },
+    "cpu_ms_per_page": {
+     "median": 0.758178,
+     "min": 0.7309085000000001,
+     "max": 0.8188753000000001
+    },
+    "cpu_util": {
+     "median": 0.9222057208393424,
+     "min": 0.9154462585655165,
+     "max": 0.9510879408269244
+    },
+    "peak_rss_mb": {
+     "median": 120.946688,
+     "min": 120.291328,
+     "max": 122.30656
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 1.20946688,
+     "min": 1.20291328,
+     "max": 1.2230656
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.60982704162598,
+     "min": 50.5521297454834,
+     "max": 50.62508583068848
+    },
+    "server_ms_p95": {
+     "median": 51.12099647521973,
+     "min": 51.0869026184082,
+     "max": 51.12099647521973
+    },
+    "latency_ms_p50": {
+     "median": 65.42277336120605,
+     "min": 65.01483917236328,
+     "max": 68.59302520751953
+    },
+    "latency_ms_p95": {
+     "median": 91.13597869873047,
+     "min": 87.23306655883789,
+     "max": 98.51694107055664
+    },
+    "client_ms_p50": {
+     "median": 14.826059341430664,
+     "min": 14.428853988647461,
+     "max": 17.9898738861084
+    },
+    "client_ms_p95": {
+     "median": 40.407657623291016,
+     "min": 36.511898040771484,
+     "max": 47.64819145202637
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1851.2608909522064,
+     "min": 1851.0882494598548,
+     "max": 1859.4145329570547
+    },
+    "wall_s": {
+     "median": 5.4017237920779735,
+     "min": 5.37803691579029,
+     "max": 5.40222758310847
+    },
+    "cpu_s": {
+     "median": 5.196517,
+     "min": 5.117732999999999,
+     "max": 5.286365
+    },
+    "cpu_ms_per_page": {
+     "median": 0.5196516999999999,
+     "min": 0.5117732999999999,
+     "max": 0.5286365
+    },
+    "cpu_util": {
+     "median": 0.9619211556818377,
+     "min": 0.9474258953235507,
+     "max": 0.982954390751552
+    },
+    "peak_rss_mb": {
+     "median": 105.250816,
+     "min": 104.497152,
+     "max": 106.627072
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 1.05250816,
+     "min": 1.04497152,
+     "max": 1.06627072
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.18281936645508,
+     "min": 50.18115043640137,
+     "max": 50.195932388305664
+    },
+    "server_ms_p95": {
+     "median": 51.01919174194336,
+     "min": 51.013946533203125,
+     "max": 51.10669136047363
+    },
+    "latency_ms_p50": {
+     "median": 50.39262771606445,
+     "min": 50.38166046142578,
+     "max": 50.40407180786133
+    },
+    "latency_ms_p95": {
+     "median": 52.02078819274902,
+     "min": 51.65696144104004,
+     "max": 52.136898040771484
+    },
+    "client_ms_p50": {
+     "median": 0.16617774963378906,
+     "min": 0.1659393310546875,
+     "max": 0.17189979553222656
+    },
+    "client_ms_p95": {
+     "median": 1.1119842529296875,
+     "min": 1.0938644409179688,
+     "max": 1.4548301696777344
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1313.243847075106,
+     "min": 1287.8669714787318,
+     "max": 1313.8541247172811
+    },
+    "wall_s": {
+     "median": 7.614732041023672,
+     "min": 7.611195042030886,
+     "max": 7.764777124859393
+    },
+    "cpu_s": {
+     "median": 2.991457,
+     "min": 2.7799370000000003,
+     "max": 3.626656
+    },
+    "cpu_ms_per_page": {
+     "median": 0.2991457,
+     "min": 0.2779937,
+     "max": 0.3626656
+    },
+    "cpu_util": {
+     "median": 0.3928512499039755,
+     "min": 0.3652431693904185,
+     "max": 0.46706504793151715
+    },
+    "peak_rss_mb": {
+     "median": 309.182464,
+     "min": 308.26496,
+     "max": 309.297152
+    },
+    "peak_in_flight": {
+     "median": 96,
+     "min": 96,
+     "max": 96
+    },
+    "mb_per_in_flight": {
+     "median": 3.2206506666666663,
+     "min": 3.211093333333333,
+     "max": 3.221845333333333
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.73404312133789,
+     "min": 50.72283744812012,
+     "max": 50.94599723815918
+    },
+    "server_ms_p95": {
+     "median": 52.18791961669922,
+     "min": 52.13522911071777,
+     "max": 52.89196968078613
+    },
+    "latency_ms_p50": {
+     "median": 51.336050033569336,
+     "min": 51.31101608276367,
+     "max": 51.71704292297363
+    },
+    "latency_ms_p95": {
+     "median": 55.48691749572754,
+     "min": 55.104970932006836,
+     "max": 55.854082107543945
+    },
+    "client_ms_p50": {
+     "median": 0.47779083251953125,
+     "min": 0.45299530029296875,
+     "max": 0.6990432739257812
+    },
+    "client_ms_p95": {
+     "median": 3.4317970275878906,
+     "min": 3.1909942626953125,
+     "max": 3.487825393676758
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1498.6526645322426,
+     "min": 1367.4869582761155,
+     "max": 1538.9480629218344
+    },
+    "wall_s": {
+     "median": 6.672660207841545,
+     "min": 6.497945084003732,
+     "max": 7.312684000004083
+    },
+    "cpu_s": {
+     "median": 8.251290000000001,
+     "min": 8.238746,
+     "max": 8.333912999999999
+    },
+    "cpu_ms_per_page": {
+     "median": 0.8251290000000001,
+     "min": 0.8238746000000001,
+     "max": 0.8333912999999998
+    },
+    "cpu_util": {
+     "median": 1.236581774432825,
+     "min": 1.1396517338907775,
+     "max": 1.2679002197605014
+    },
+    "peak_rss_mb": {
+     "median": 312.508416,
+     "min": 310.116352,
+     "max": 312.639488
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 3.12508416,
+     "min": 3.10116352,
+     "max": 3.12639488
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.08220672607422,
+     "min": 50.0798225402832,
+     "max": 50.08578300476074
+    },
+    "server_ms_p95": {
+     "median": 50.402164459228516,
+     "min": 50.2781867980957,
+     "max": 50.462961196899414
+    },
+    "latency_ms_p50": {
+     "median": 53.16591262817383,
+     "min": 52.61707305908203,
+     "max": 53.25889587402344
+    },
+    "latency_ms_p95": {
+     "median": 69.03696060180664,
+     "min": 63.89594078063965,
+     "max": 69.98705863952637
+    },
+    "client_ms_p50": {
+     "median": 3.0498504638671875,
+     "min": 2.518892288208008,
+     "max": 3.1442642211914062
+    },
+    "client_ms_p95": {
+     "median": 18.133878707885742,
+     "min": 13.575077056884766,
+     "max": 19.69623565673828
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  "200": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 3338.678743808069,
+     "min": 3317.6614385242087,
+     "max": 3526.2840550608303
+    },
+    "wall_s": {
+     "median": 2.995196833042428,
+     "min": 2.8358464161865413,
+     "max": 3.0141713328193873
+    },
+    "cpu_s": {
+     "median": 3.1143859999999997,
+     "min": 2.431925,
+     "max": 3.2047239999999997
+    },
+    "cpu_ms_per_page": {
+     "median": 0.31143859999999995,
+     "min": 0.2431925,
+     "max": 0.3204724
+    },
+    "cpu_util": {
+     "median": 1.0332478336879656,
+     "min": 0.857565835060381,
+     "max": 1.0699543898571569
+    },
+    "peak_rss_mb": {
+     "median": 106.57792,
+     "min": 103.399424,
+     "max": 107.200512
+    },
+    "peak_in_flight": {
+     "median": 200,
+     "min": 200,
+     "max": 200
+    },
+    "mb_per_in_flight": {
+     "median": 0.5328896000000001,
+     "min": 0.51699712,
+     "max": 0.53600256
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.3232479095459,
+     "min": 50.28700828552246,
+     "max": 50.331830978393555
+    },
+    "server_ms_p95": {
+     "median": 51.13697052001953,
+     "min": 51.10001564025879,
+     "max": 51.16081237792969
+    },
+    "latency_ms_p50": {
+     "median": 53.43914031982422,
+     "min": 53.30681800842285,
+     "max": 54.7640323638916
+    },
+    "latency_ms_p95": {
+     "median": 60.534000396728516,
+     "min": 60.52589416503906,
+     "max": 62.58392333984375
+    },
+    "client_ms_p50": {
+     "median": 2.937793731689453,
+     "min": 2.9349327087402344,
+     "max": 4.335165023803711
+    },
+    "client_ms_p95": {
+     "median": 10.04481315612793,
+     "min": 9.894132614135742,
+     "max": 11.76595687866211
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 2.911090850830078,
+     "min": 2.907991409301758,
+     "max": 4.308938980102539
+    },
+    "to_python_ms_p95": {
+     "median": 10.015010833740234,
+     "min": 9.865999221801758,
+     "max": 11.738777160644531
+    },
+    "parse_ms_p50": {
+     "median": 0.025987625122070312,
+     "min": 0.02574920654296875,
+     "max": 0.026702880859375
+    },
+    "parse_ms_p95": {
+     "median": 0.041961669921875,
+     "min": 0.04029273986816406,
+     "max": 0.04291534423828125
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1258.2862870555985,
+     "min": 1188.3494457539573,
+     "max": 1295.696775604159
+    },
+    "wall_s": {
+     "median": 7.947317000012845,
+     "min": 7.717855124967173,
+     "max": 8.415033166995272
+    },
+    "cpu_s": {
+     "median": 7.791205,
+     "min": 7.600643,
+     "max": 8.260063
+    },
+    "cpu_ms_per_page": {
+     "median": 0.7791205,
+     "min": 0.7600643,
+     "max": 0.8260063
+    },
+    "cpu_util": {
+     "median": 0.9815841287942771,
+     "min": 0.9803566411139014,
+     "max": 0.9848128627618322
+    },
+    "peak_rss_mb": {
+     "median": 127.942656,
+     "min": 127.041536,
+     "max": 128.466944
+    },
+    "peak_in_flight": {
+     "median": 200,
+     "min": 200,
+     "max": 200
+    },
+    "mb_per_in_flight": {
+     "median": 0.63971328,
+     "min": 0.6352076799999999,
+     "max": 0.64233472
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.8418083190918,
+     "min": 50.77981948852539,
+     "max": 50.914764404296875
+    },
+    "server_ms_p95": {
+     "median": 51.17177963256836,
+     "min": 51.142215728759766,
+     "max": 51.21207237243652
+    },
+    "latency_ms_p50": {
+     "median": 112.45322227478027,
+     "min": 111.52219772338867,
+     "max": 115.53621292114258
+    },
+    "latency_ms_p95": {
+     "median": 151.47089958190918,
+     "min": 151.4108180999756,
+     "max": 161.0851287841797
+    },
+    "client_ms_p50": {
+     "median": 61.68389320373535,
+     "min": 60.94217300415039,
+     "max": 64.76688385009766
+    },
+    "client_ms_p95": {
+     "median": 100.75187683105469,
+     "min": 100.35109519958496,
+     "max": 110.4738712310791
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 3633.643579204754,
+     "min": 3630.7353366373177,
+     "max": 3642.5756635054186
+    },
+    "wall_s": {
+     "median": 2.752058583078906,
+     "min": 2.745310166152194,
+     "max": 2.754262999864295
+    },
+    "cpu_s": {
+     "median": 4.2469280000000005,
+     "min": 4.237141,
+     "max": 4.2642050000000005
+    },
+    "cpu_ms_per_page": {
+     "median": 0.4246928000000001,
+     "min": 0.42371410000000004,
+     "max": 0.4264205000000001
+    },
+    "cpu_util": {
+     "median": 1.5434106689441014,
+     "min": 1.5419471561754452,
+     "max": 1.549460111866281
+    },
+    "peak_rss_mb": {
+     "median": 116.228096,
+     "min": 111.443968,
+     "max": 118.45632
+    },
+    "peak_in_flight": {
+     "median": 200,
+     "min": 200,
+     "max": 200
+    },
+    "mb_per_in_flight": {
+     "median": 0.58114048,
+     "min": 0.55721984,
+     "max": 0.5922816000000001
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.125837326049805,
+     "min": 50.11892318725586,
+     "max": 50.15206336975098
+    },
+    "server_ms_p95": {
+     "median": 50.74787139892578,
+     "min": 50.67014694213867,
+     "max": 50.90689659118652
+    },
+    "latency_ms_p50": {
+     "median": 50.232887268066406,
+     "min": 50.22478103637695,
+     "max": 50.27890205383301
+    },
+    "latency_ms_p95": {
+     "median": 51.53703689575195,
+     "min": 51.4528751373291,
+     "max": 51.56397819519043
+    },
+    "client_ms_p50": {
+     "median": 0.09107589721679688,
+     "min": 0.09012222290039062,
+     "max": 0.10180473327636719
+    },
+    "client_ms_p95": {
+     "median": 0.9238719940185547,
+     "min": 0.9212493896484375,
+     "max": 0.9748935699462891
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 2919.998856836558,
+     "min": 2901.491709367102,
+     "max": 2926.8382265684536
+    },
+    "wall_s": {
+     "median": 3.4246588749811053,
+     "min": 3.416656209155917,
+     "max": 3.446503041079268
+    },
+    "cpu_s": {
+     "median": 3.0065739999999996,
+     "min": 2.612079,
+     "max": 3.081867
+    },
+    "cpu_ms_per_page": {
+     "median": 0.30065739999999996,
+     "min": 0.2612079,
+     "max": 0.3081867
+    },
+    "cpu_util": {
+     "median": 0.8799755714206821,
+     "min": 0.7627267693966779,
+     "max": 0.8942011549872062
+    },
+    "peak_rss_mb": {
+     "median": 332.578816,
+     "min": 332.300288,
+     "max": 332.955648
+    },
+    "peak_in_flight": {
+     "median": 200,
+     "min": 200,
+     "max": 200
+    },
+    "mb_per_in_flight": {
+     "median": 1.66289408,
+     "min": 1.66150144,
+     "max": 1.66477824
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.63605308532715,
+     "min": 50.586700439453125,
+     "max": 50.69899559020996
+    },
+    "server_ms_p95": {
+     "median": 52.19006538391113,
+     "min": 51.78380012512207,
+     "max": 52.64592170715332
+    },
+    "latency_ms_p50": {
+     "median": 51.09000205993652,
+     "min": 51.08904838562012,
+     "max": 51.15795135498047
+    },
+    "latency_ms_p95": {
+     "median": 54.376840591430664,
+     "min": 52.7949333190918,
+     "max": 54.57472801208496
+    },
+    "client_ms_p50": {
+     "median": 0.36907196044921875,
+     "min": 0.35881996154785156,
+     "max": 0.3790855407714844
+    },
+    "client_ms_p95": {
+     "median": 2.203226089477539,
+     "min": 1.4350414276123047,
+     "max": 2.5959014892578125
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1656.3807034102517,
+     "min": 1622.6715228119713,
+     "max": 1694.388306621261
+    },
+    "wall_s": {
+     "median": 6.037259417120367,
+     "min": 5.9018348751123995,
+     "max": 6.162676709005609
+    },
+    "cpu_s": {
+     "median": 8.52159,
+     "min": 7.886113,
+     "max": 8.737912
+    },
+    "cpu_ms_per_page": {
+     "median": 0.852159,
+     "min": 0.7886113,
+     "max": 0.8737912
+    },
+    "cpu_util": {
+     "median": 1.4178760971236999,
+     "min": 1.306240539811273,
+     "max": 1.4438882449820671
+    },
+    "peak_rss_mb": {
+     "median": 294.518784,
+     "min": 292.962304,
+     "max": 296.22272
+    },
+    "peak_in_flight": {
+     "median": 200,
+     "min": 200,
+     "max": 200
+    },
+    "mb_per_in_flight": {
+     "median": 1.47259392,
+     "min": 1.46481152,
+     "max": 1.4811135999999998
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.09627342224121,
+     "min": 50.09102821350098,
+     "max": 50.100088119506836
+    },
+    "server_ms_p95": {
+     "median": 50.7359504699707,
+     "min": 50.681114196777344,
+     "max": 50.837039947509766
+    },
+    "latency_ms_p50": {
+     "median": 74.15509223937988,
+     "min": 72.93224334716797,
+     "max": 75.0739574432373
+    },
+    "latency_ms_p95": {
+     "median": 100.02303123474121,
+     "min": 96.35686874389648,
+     "max": 108.23988914489746
+    },
+    "client_ms_p50": {
+     "median": 23.975849151611328,
+     "min": 22.76301383972168,
+     "max": 24.901866912841797
+    },
+    "client_ms_p95": {
+     "median": 49.42798614501953,
+     "min": 45.758962631225586,
+     "max": 56.693077087402344
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  "500": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 7356.85423804119,
+     "min": 6851.6922340064875,
+     "max": 7463.816817091106
+    },
+    "wall_s": {
+     "median": 1.3592766250949353,
+     "min": 1.3397970830556005,
+     "max": 1.4594934592023492
+    },
+    "cpu_s": {
+     "median": 2.539069,
+     "min": 2.501416,
+     "max": 2.57257
+    },
+    "cpu_ms_per_page": {
+     "median": 0.2539069,
+     "min": 0.25014159999999996,
+     "max": 0.25725699999999996
+    },
+    "cpu_util": {
+     "median": 1.8670110807340765,
+     "min": 1.7626457890438068,
+     "max": 1.8679560533329005
+    },
+    "peak_rss_mb": {
+     "median": 145.932288,
+     "min": 145.457152,
+     "max": 153.92768
+    },
+    "peak_in_flight": {
+     "median": 500,
+     "min": 500,
+     "max": 500
+    },
+    "mb_per_in_flight": {
+     "median": 0.291864576,
+     "min": 0.290914304,
+     "max": 0.30785536
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.09627342224121,
+     "min": 50.09627342224121,
+     "max": 50.11606216430664
+    },
+    "server_ms_p95": {
+     "median": 50.914764404296875,
+     "min": 50.84705352783203,
+     "max": 51.180124282836914
+    },
+    "latency_ms_p50": {
+     "median": 55.89914321899414,
+     "min": 55.32407760620117,
+     "max": 107.98096656799316
+    },
+    "latency_ms_p95": {
+     "median": 61.97404861450195,
+     "min": 60.460805892944336,
+     "max": 167.67406463623047
+    },
+    "client_ms_p50": {
+     "median": 5.69605827331543,
+     "min": 5.15294075012207,
+     "max": 57.24477767944336
+    },
+    "client_ms_p95": {
+     "median": 11.768102645874023,
+     "min": 10.34998893737793,
+     "max": 117.61212348937988
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 5.672216415405273,
+     "min": 5.129098892211914,
+     "max": 57.22498893737793
+    },
+    "to_python_ms_p95": {
+     "median": 11.74783706665039,
+     "min": 10.331153869628906,
+     "max": 117.5839900970459
+    },
+    "parse_ms_p50": {
+     "median": 0.02288818359375,
+     "min": 0.02193450927734375,
+     "max": 0.023126602172851562
+    },
+    "parse_ms_p95": {
+     "median": 0.03600120544433594,
+     "min": 0.034809112548828125,
+     "max": 0.03790855407714844
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1246.6397927638357,
+     "min": 1219.7425763986014,
+     "max": 1249.285369731557
+    },
+    "wall_s": {
+     "median": 8.021563292015344,
+     "min": 8.004576249979436,
+     "max": 8.198451208882034
+    },
+    "cpu_s": {
+     "median": 7.9438699999999995,
+     "min": 7.941323,
+     "max": 8.111181
+    },
+    "cpu_ms_per_page": {
+     "median": 0.794387,
+     "min": 0.7941322999999999,
+     "max": 0.8111181000000001
+    },
+    "cpu_util": {
+     "median": 0.9903144450542851,
+     "min": 0.9893552810575384,
+     "max": 0.9920978640212716
+    },
+    "peak_rss_mb": {
+     "median": 149.372928,
+     "min": 148.979712,
+     "max": 149.9136
+    },
+    "peak_in_flight": {
+     "median": 322,
+     "min": 286,
+     "max": 348
+    },
+    "mb_per_in_flight": {
+     "median": 0.46389108074534163,
+     "min": 0.4307862068965517,
+     "max": 0.5209080839160839
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.66680908203125,
+     "min": 50.60410499572754,
+     "max": 50.73904991149902
+    },
+    "server_ms_p95": {
+     "median": 51.15389823913574,
+     "min": 51.13697052001953,
+     "max": 51.17011070251465
+    },
+    "latency_ms_p50": {
+     "median": 280.26485443115234,
+     "min": 266.12210273742676,
+     "max": 281.5840244293213
+    },
+    "latency_ms_p95": {
+     "median": 344.8069095611572,
+     "min": 342.21482276916504,
+     "max": 364.6531105041504
+    },
+    "client_ms_p50": {
+     "median": 229.62713241577148,
+     "min": 215.52205085754395,
+     "max": 230.87096214294434
+    },
+    "client_ms_p95": {
+     "median": 294.2228317260742,
+     "min": 291.71109199523926,
+     "max": 313.5950565338135
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10001
+    },
+    "pages_per_sec": {
+     "median": 8448.569393327025,
+     "min": 8372.767618178883,
+     "max": 8562.359811908342
+    },
+    "wall_s": {
+     "median": 1.1837507078889757,
+     "min": 1.167902332963422,
+     "max": 1.1943482079077512
+    },
+    "cpu_s": {
+     "median": 2.8398149999999998,
+     "min": 2.76506,
+     "max": 2.877945
+    },
+    "cpu_ms_per_page": {
+     "median": 0.28398149999999994,
+     "min": 0.276506,
+     "max": 0.28776572342765727
+    },
+    "cpu_util": {
+     "median": 2.377711107361866,
+     "min": 2.3675438621515283,
+     "max": 2.4312086833995146
+    },
+    "peak_rss_mb": {
+     "median": 131.055616,
+     "min": 126.550016,
+     "max": 133.955584
+    },
+    "peak_in_flight": {
+     "median": 500,
+     "min": 500,
+     "max": 500
+    },
+    "mb_per_in_flight": {
+     "median": 0.26211123199999997,
+     "min": 0.253100032,
+     "max": 0.267911168
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10001
+    },
+    "server_ms_p50": {
+     "median": 50.27294158935547,
+     "min": 50.2619743347168,
+     "max": 50.33707618713379
+    },
+    "server_ms_p95": {
+     "median": 51.7120361328125,
+     "min": 51.09715461730957,
+     "max": 51.779985427856445
+    },
+    "latency_ms_p50": {
+     "median": 50.49896240234375,
+     "min": 50.45294761657715,
+     "max": 50.611019134521484
+    },
+    "latency_ms_p95": {
+     "median": 55.79209327697754,
+     "min": 52.0172119140625,
+     "max": 56.24794960021973
+    },
+    "client_ms_p50": {
+     "median": 0.17523765563964844,
+     "min": 0.1621246337890625,
+     "max": 0.18978118896484375
+    },
+    "client_ms_p95": {
+     "median": 4.335165023803711,
+     "min": 1.3020038604736328,
+     "max": 4.750967025756836
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 1
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 5844.043376931982,
+     "min": 5841.759444773018,
+     "max": 5849.8750952535465
+    },
+    "wall_s": {
+     "median": 1.711144041037187,
+     "min": 1.7094382080249488,
+     "max": 1.7118130410090089
+    },
+    "cpu_s": {
+     "median": 2.38013,
+     "min": 2.309904,
+     "max": 2.548189
+    },
+    "cpu_ms_per_page": {
+     "median": 0.23801299999999997,
+     "min": 0.2309904,
+     "max": 0.25481889999999996
+    },
+    "cpu_util": {
+     "median": 1.3904146907287604,
+     "min": 1.3499179172548692,
+     "max": 1.490658736909904
+    },
+    "peak_rss_mb": {
+     "median": 396.24704,
+     "min": 395.804672,
+     "max": 397.7216
+    },
+    "peak_in_flight": {
+     "median": 496,
+     "min": 496,
+     "max": 496
+    },
+    "mb_per_in_flight": {
+     "median": 0.7988851612903226,
+     "min": 0.7979932903225806,
+     "max": 0.8018580645161291
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.421953201293945,
+     "min": 50.357818603515625,
+     "max": 50.549983978271484
+    },
+    "server_ms_p95": {
+     "median": 51.65219306945801,
+     "min": 51.62692070007324,
+     "max": 51.73778533935547
+    },
+    "latency_ms_p50": {
+     "median": 50.8880615234375,
+     "min": 50.70781707763672,
+     "max": 50.91285705566406
+    },
+    "latency_ms_p95": {
+     "median": 52.7188777923584,
+     "min": 52.39605903625488,
+     "max": 53.971052169799805
+    },
+    "client_ms_p50": {
+     "median": 0.30493736267089844,
+     "min": 0.2760887145996094,
+     "max": 0.34308433532714844
+    },
+    "client_ms_p95": {
+     "median": 0.9100437164306641,
+     "min": 0.8828639984130859,
+     "max": 3.0241012573242188
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "pages_per_sec": {
+     "median": 1795.5329924617129,
+     "min": 1774.10923521072,
+     "max": 1797.7607947373065
+    },
+    "wall_s": {
+     "median": 5.569376915926114,
+     "min": 5.562475291080773,
+     "max": 5.63663150020875
+    },
+    "cpu_s": {
+     "median": 7.516996000000001,
+     "min": 7.377489000000001,
+     "max": 7.52014
+    },
+    "cpu_ms_per_page": {
+     "median": 0.7516996000000001,
+     "min": 0.7377489,
+     "max": 0.752014
+    },
+    "cpu_util": {
+     "median": 1.3341549824077543,
+     "min": 1.324652490102337,
+     "max": 1.3513760702997155
+    },
+    "peak_rss_mb": {
+     "median": 297.926656,
+     "min": 269.041664,
+     "max": 300.138496
+    },
+    "peak_in_flight": {
+     "median": 447,
+     "min": 411,
+     "max": 486
+    },
+    "mb_per_in_flight": {
+     "median": 0.6714507740492169,
+     "min": 0.5535836707818931,
+     "max": 0.7248823746958637
+    },
+    "requests": {
+     "median": 10000,
+     "min": 10000,
+     "max": 10000
+    },
+    "server_ms_p50": {
+     "median": 50.07600784301758,
+     "min": 50.074100494384766,
+     "max": 50.07624626159668
+    },
+    "server_ms_p95": {
+     "median": 50.83131790161133,
+     "min": 50.77099800109863,
+     "max": 50.84371566772461
+    },
+    "latency_ms_p50": {
+     "median": 150.49219131469727,
+     "min": 148.59795570373535,
+     "max": 153.81932258605957
+    },
+    "latency_ms_p95": {
+     "median": 194.08202171325684,
+     "min": 190.74583053588867,
+     "max": 196.59709930419922
+    },
+    "client_ms_p50": {
+     "median": 100.3580093383789,
+     "min": 98.47211837768555,
+     "max": 103.7139892578125
+    },
+    "client_ms_p95": {
+     "median": 143.86987686157227,
+     "min": 140.42019844055176,
+     "max": 145.8292007446289
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  }
+ }
+}

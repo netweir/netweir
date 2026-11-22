@@ -1,0 +1,1005 @@
+{
+ "mode": "boss",
+ "environment": {
+  "date": "2026-11-22T03:40:54+00:00",
+  "host": "GPK",
+  "cpu": "Apple M2 Max",
+  "cores": 12,
+  "memory_gb": 32,
+  "os": "macOS 26.7.2",
+  "arch": "arm64",
+  "load_at_start": [
+   2.07,
+   2.76,
+   4.84
+  ],
+  "netweir_commit": "b089aa4",
+  "python": "3.13.15",
+  "rust": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "go": "go version go1.27.2 darwin/arm64",
+  "node": "v22.14.0",
+  "python_packages": {
+   "netweir": "0.8.0",
+   "scrapy": "2.20.0",
+   "scrapling": "0.5.1",
+   "httpx": "0.28.1",
+   "selectolax": "1.0.2",
+   "crawlee": "1.11.1",
+   "crawl4ai": "0.9.5"
+  },
+  "others": {
+   "crawlee-node": "3.18.2",
+   "colly": "v2.3.0",
+   "spider-rs": "2.53.9"
+  }
+ },
+ "settings": {
+  "sites": 100,
+  "pages_per_site": 10,
+  "latency_ms": 50.0,
+  "per_site": 8,
+  "boss": "/Users/james/Documents/GitHub/scraper-benchrepro/bench/.cache/boss/1000-20261119-0"
+ },
+ "repeats": 3,
+ "quiet": 4.0,
+ "levels": [
+  100
+ ],
+ "runs": [
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 2.07,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-netweir-1.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 618.7722824395911,
+    "wall_s": 1.6161034170072526,
+    "cpu_s": 1.7914240000000001,
+    "cpu_ms_per_page": 1.7914240000000001,
+    "cpu_util": 1.1084835172970622,
+    "peak_rss_mb": 690.388992,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 6.90388992,
+    "requests": 1000,
+    "server_ms_p50": 50.217390060424805,
+    "server_ms_p95": 53.99894714355469,
+    "latency_ms_p50": 468.6453342437744,
+    "latency_ms_p95": 742.966890335083,
+    "client_ms_p50": 418.5061454772949,
+    "client_ms_p95": 692.7380561828613,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 418.43295097351074,
+    "to_python_ms_p95": 692.6398277282715,
+    "parse_ms_p50": 0.019073486328125,
+    "parse_ms_p95": 2.023935317993164
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 2.07,
+   "exit": 0,
+   "stderr": "eld (\n                                 ^^^^^^^\n    ...<3 lines>...\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/internet/defer.py\", line 1244, in adapt\n    extracted: _SelfResultT | Failure = result.result()\n                                        ~~~~~~~~~~~~~^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 201, in download_async\n    result, _ = await self._process_exception(ex, request)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 341, in _process_exception\n    raise exception\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 194, in download_async\n    result: Response | Request = await self._process_request(\n                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        request, download_func\n        ^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 230, in _process_request\n    response = await download_func(request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 507, in _enqueue_request\n    return await maybe_deferred_to_future(d)  # fired in _wait_for_download()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 740, in _wait_for_download\n    response = await self._download(slot, request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 580, in _download\n    response: Response = await self.handlers.download_request_async(request)\n                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 209, in download_request_async\n    return await self._download(handler_id, handler, request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 224, in _download\n    return await handler.download_request(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 323, in download_request\n    return await maybe_deferred_to_future(agent.download_request(request))\n                                          ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 862, in download_request\n    headers = TxHeaders(request.headers)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 67, in __init__\n    self.setRawHeaders(name, values)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 134, in setRawHeaders\n    _name = _nameEncoder.encode(name)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 250, in encode\n    raise InvalidHeaderName(bytes_name)\ntwisted.web.http_headers.InvalidHeaderName: b'\\x00R\\x00e\\x00f\\x00e\\x00r\\x00e\\x00r'\n",
+   "raw": "raw/boss-100-scrapy-1.json.gz",
+   "figures": {
+    "items": 988,
+    "pages_per_sec": 176.45842362452746,
+    "wall_s": 5.59905262500979,
+    "cpu_s": 5.5345509999999996,
+    "cpu_ms_per_page": 5.601772267206477,
+    "cpu_util": 0.9884799037748502,
+    "peak_rss_mb": 928.104448,
+    "peak_in_flight": 94,
+    "mb_per_in_flight": 9.873451574468085,
+    "requests": 988,
+    "server_ms_p50": 50.51684379577637,
+    "server_ms_p95": 52.68692970275879,
+    "latency_ms_p50": 107.84411430358887,
+    "latency_ms_p95": 209.06710624694824,
+    "client_ms_p50": 56.88190460205078,
+    "client_ms_p95": 157.09996223449707,
+    "wrong": 0,
+    "missing": 12,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 1.98,
+   "exit": 0,
+   "stderr": "http://site57.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site36.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site35.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site65.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site61.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site90.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site89.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site99.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site97.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site91.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site62.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site66.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site96.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site56.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site87.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site15.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site76.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site1.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site13.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site92.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site33.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site50.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site34.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site69.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site79.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site6.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site98.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site70.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site78.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site86.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site45.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site18.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site81.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site20.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site58.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site30.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\n",
+   "raw": "raw/boss-100-colly-1.json.gz",
+   "figures": {
+    "items": 908,
+    "pages_per_sec": 1147.6746927583831,
+    "wall_s": 0.7911649579182267,
+    "cpu_s": 4.019583,
+    "cpu_ms_per_page": 4.426853524229075,
+    "cpu_util": 5.0805877583059695,
+    "peak_rss_mb": 1134.280704,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 11.34280704,
+    "requests": 948,
+    "server_ms_p50": 50.22311210632324,
+    "server_ms_p95": 51.90396308898926,
+    "latency_ms_p50": 51.299095153808594,
+    "latency_ms_p95": 70.1301097869873,
+    "client_ms_p50": 0.675201416015625,
+    "client_ms_p95": 19.407033920288086,
+    "wrong": 8,
+    "missing": 92,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 3.66,
+   "exit": -9,
+   "stderr": "",
+   "raw": "raw/boss-100-spider-rs-1.json.gz",
+   "error": "still running after 120 s, killed"
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 3.42,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-crawlee-1.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 219.2115084262168,
+    "wall_s": 4.561804292025045,
+    "cpu_s": 7.671729,
+    "cpu_ms_per_page": 7.671729,
+    "cpu_util": 1.6817312863271519,
+    "peak_rss_mb": 1768.996864,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 17.68996864,
+    "requests": 1000,
+    "server_ms_p50": 51.41401290893555,
+    "server_ms_p95": 58.83216857910156,
+    "latency_ms_p50": 102.3249626159668,
+    "latency_ms_p95": 1584.956169128418,
+    "client_ms_p50": 51.094770431518555,
+    "client_ms_p95": 1531.7602157592773,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "httpx+selectolax",
+   "in_flight": 100,
+   "repeat": 1,
+   "load": 3.3,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-httpx+selectolax-1.json.gz",
+   "figures": {
+    "items": 991,
+    "pages_per_sec": 271.61281551984507,
+    "wall_s": 3.6485760000068694,
+    "cpu_s": 3.757846,
+    "cpu_ms_per_page": 3.791973763874874,
+    "cpu_util": 1.0299486703834386,
+    "peak_rss_mb": 2755.70688,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 27.557068800000003,
+    "requests": 991,
+    "server_ms_p50": 50.22621154785156,
+    "server_ms_p95": 52.0319938659668,
+    "latency_ms_p50": 142.4250602722168,
+    "latency_ms_p95": 283.59317779541016,
+    "client_ms_p50": 91.75705909729004,
+    "client_ms_p95": 230.33523559570312,
+    "wrong": 8,
+    "missing": 9,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 3.3,
+   "exit": 0,
+   "stderr": "eld (\n                                 ^^^^^^^\n    ...<3 lines>...\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/internet/defer.py\", line 1244, in adapt\n    extracted: _SelfResultT | Failure = result.result()\n                                        ~~~~~~~~~~~~~^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 201, in download_async\n    result, _ = await self._process_exception(ex, request)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 341, in _process_exception\n    raise exception\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 194, in download_async\n    result: Response | Request = await self._process_request(\n                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        request, download_func\n        ^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 230, in _process_request\n    response = await download_func(request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 507, in _enqueue_request\n    return await maybe_deferred_to_future(d)  # fired in _wait_for_download()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 740, in _wait_for_download\n    response = await self._download(slot, request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 580, in _download\n    response: Response = await self.handlers.download_request_async(request)\n                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 209, in download_request_async\n    return await self._download(handler_id, handler, request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 224, in _download\n    return await handler.download_request(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 323, in download_request\n    return await maybe_deferred_to_future(agent.download_request(request))\n                                          ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 862, in download_request\n    headers = TxHeaders(request.headers)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 67, in __init__\n    self.setRawHeaders(name, values)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 134, in setRawHeaders\n    _name = _nameEncoder.encode(name)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 250, in encode\n    raise InvalidHeaderName(bytes_name)\ntwisted.web.http_headers.InvalidHeaderName: b'\\x00R\\x00e\\x00f\\x00e\\x00r\\x00e\\x00r'\n",
+   "raw": "raw/boss-100-scrapy-2.json.gz",
+   "figures": {
+    "items": 987,
+    "pages_per_sec": 186.6891208461812,
+    "wall_s": 5.286864041816443,
+    "cpu_s": 5.210799,
+    "cpu_ms_per_page": 5.279431610942249,
+    "cpu_util": 0.9856124460143466,
+    "peak_rss_mb": 980.926464,
+    "peak_in_flight": 97,
+    "mb_per_in_flight": 10.112643958762886,
+    "requests": 987,
+    "server_ms_p50": 50.7810115814209,
+    "server_ms_p95": 54.34417724609375,
+    "latency_ms_p50": 116.17898941040039,
+    "latency_ms_p95": 187.52384185791016,
+    "client_ms_p50": 64.27216529846191,
+    "client_ms_p95": 135.12206077575684,
+    "wrong": 0,
+    "missing": 13,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 3.36,
+   "exit": 0,
+   "stderr": "http://site65.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site36.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site35.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site57.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site99.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site62.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site66.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site61.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site90.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site56.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site91.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site76.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site97.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site96.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site87.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site89.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site81.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site1.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site92.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site6.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site13.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site86.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site18.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site15.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site20.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site45.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site33.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site34.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site69.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site98.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site70.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site79.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site50.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site78.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site30.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site58.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\n",
+   "raw": "raw/boss-100-colly-2.json.gz",
+   "figures": {
+    "items": 908,
+    "pages_per_sec": 1019.045470516718,
+    "wall_s": 0.8910299160052091,
+    "cpu_s": 3.958436,
+    "cpu_ms_per_page": 4.359511013215859,
+    "cpu_util": 4.442539951685369,
+    "peak_rss_mb": 1007.468544,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 10.07468544,
+    "requests": 949,
+    "server_ms_p50": 50.447940826416016,
+    "server_ms_p95": 53.62987518310547,
+    "latency_ms_p50": 51.84006690979004,
+    "latency_ms_p95": 107.37895965576172,
+    "client_ms_p50": 0.8547306060791016,
+    "client_ms_p95": 55.106163024902344,
+    "wrong": 8,
+    "missing": 92,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 4.69,
+   "exit": -9,
+   "stderr": "",
+   "raw": "raw/boss-100-spider-rs-2.json.gz",
+   "error": "still running after 120 s, killed"
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 4.18,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-crawlee-2.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 215.304830868325,
+    "wall_s": 4.644577624974772,
+    "cpu_s": 7.714767,
+    "cpu_ms_per_page": 7.714767,
+    "cpu_util": 1.661026604123535,
+    "peak_rss_mb": 2103.508992,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 21.03508992,
+    "requests": 1000,
+    "server_ms_p50": 50.74906349182129,
+    "server_ms_p95": 55.12404441833496,
+    "latency_ms_p50": 114.17174339294434,
+    "latency_ms_p95": 1255.1391124725342,
+    "client_ms_p50": 63.88998031616211,
+    "client_ms_p95": 1204.8251628875732,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "httpx+selectolax",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 4.16,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-httpx+selectolax-2.json.gz",
+   "figures": {
+    "items": 991,
+    "pages_per_sec": 255.2464637049617,
+    "wall_s": 3.8825219578575343,
+    "cpu_s": 3.976244,
+    "cpu_ms_per_page": 4.0123551967709385,
+    "cpu_util": 1.0241394751040078,
+    "peak_rss_mb": 2917.629952,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 29.176299519999997,
+    "requests": 991,
+    "server_ms_p50": 50.189971923828125,
+    "server_ms_p95": 51.989078521728516,
+    "latency_ms_p50": 96.72093391418457,
+    "latency_ms_p95": 239.3810749053955,
+    "client_ms_p50": 46.668052673339844,
+    "client_ms_p95": 188.46487998962402,
+    "wrong": 8,
+    "missing": 9,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 2,
+   "load": 4.16,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-netweir-2.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 633.1881950709655,
+    "wall_s": 1.5793092919047922,
+    "cpu_s": 1.764453,
+    "cpu_ms_per_page": 1.764453,
+    "cpu_util": 1.1172308103575503,
+    "peak_rss_mb": 644.317184,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 6.44317184,
+    "requests": 1000,
+    "server_ms_p50": 50.30703544616699,
+    "server_ms_p95": 52.802085876464844,
+    "latency_ms_p50": 440.1991367340088,
+    "latency_ms_p95": 850.9161472320557,
+    "client_ms_p50": 388.11707496643066,
+    "client_ms_p95": 800.6789684295654,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 365.79203605651855,
+    "to_python_ms_p95": 800.4860877990723,
+    "parse_ms_p50": 0.019073486328125,
+    "parse_ms_p95": 2.1240711212158203
+   }
+  },
+  {
+   "crawler": "colly",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 3.75,
+   "exit": 0,
+   "stderr": "http://site35.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site57.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site36.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site65.localhost:58131/p/0 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site99.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site89.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site91.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site97.localhost:58131/p/3 html: open stack of elements exceeds 512 nodes\nhttp://site62.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site56.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site66.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site87.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site96.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site76.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site90.localhost:58131/p/1 html: open stack of elements exceeds 512 nodes\nhttp://site61.localhost:58131/p/2 html: open stack of elements exceeds 512 nodes\nhttp://site46.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site7.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site15.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site18.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site52.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site86.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site81.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site78.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site34.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site33.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site98.localhost:58131/p/5 html: open stack of elements exceeds 512 nodes\nhttp://site58.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site1.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site79.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site6.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site13.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site3.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site69.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/6 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site20.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site94.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site50.localhost:58131/p/8 html: open stack of elements exceeds 512 nodes\nhttp://site92.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site70.localhost:58131/p/7 html: open stack of elements exceeds 512 nodes\nhttp://site45.localhost:58131/p/9 html: open stack of elements exceeds 512 nodes\nhttp://site30.localhost:58131/p/4 html: open stack of elements exceeds 512 nodes\n",
+   "raw": "raw/boss-100-colly-3.json.gz",
+   "figures": {
+    "items": 908,
+    "pages_per_sec": 1228.4373776578268,
+    "wall_s": 0.7391504170373082,
+    "cpu_s": 3.548491,
+    "cpu_ms_per_page": 3.9080297356828195,
+    "cpu_util": 4.800769800311013,
+    "peak_rss_mb": 1092.780032,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 10.92780032,
+    "requests": 949,
+    "server_ms_p50": 50.225019454956055,
+    "server_ms_p95": 51.836252212524414,
+    "latency_ms_p50": 51.11193656921387,
+    "latency_ms_p95": 63.54713439941406,
+    "client_ms_p50": 0.6299018859863281,
+    "client_ms_p95": 13.109922409057617,
+    "wrong": 8,
+    "missing": 92,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "spider-rs",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 3.75,
+   "exit": -9,
+   "stderr": "",
+   "raw": "raw/boss-100-spider-rs-3.json.gz",
+   "error": "still running after 120 s, killed"
+  },
+  {
+   "crawler": "crawlee",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 4.07,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-crawlee-3.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 233.67779582304715,
+    "wall_s": 4.279396750032902,
+    "cpu_s": 7.450891,
+    "cpu_ms_per_page": 7.450891,
+    "cpu_util": 1.7411077857977797,
+    "peak_rss_mb": 2043.641856,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 20.43641856,
+    "requests": 1000,
+    "server_ms_p50": 50.42099952697754,
+    "server_ms_p95": 57.06524848937988,
+    "latency_ms_p50": 111.6020679473877,
+    "latency_ms_p95": 1439.0861988067627,
+    "client_ms_p50": 60.61220169067383,
+    "client_ms_p95": 1388.5619640350342,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "httpx+selectolax",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 3.98,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-httpx+selectolax-3.json.gz",
+   "figures": {
+    "items": 991,
+    "pages_per_sec": 264.98247562703324,
+    "wall_s": 3.7398699580226094,
+    "cpu_s": 3.8543570000000003,
+    "cpu_ms_per_page": 3.8893612512613527,
+    "cpu_util": 1.030612572967089,
+    "peak_rss_mb": 3030.204416,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 30.30204416,
+    "requests": 991,
+    "server_ms_p50": 50.1399040222168,
+    "server_ms_p95": 52.335262298583984,
+    "latency_ms_p50": 97.21875190734863,
+    "latency_ms_p95": 232.68818855285645,
+    "client_ms_p50": 47.16181755065918,
+    "client_ms_p95": 181.01096153259277,
+    "wrong": 8,
+    "missing": 9,
+    "twice": 0
+   }
+  },
+  {
+   "crawler": "netweir",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 3.9,
+   "exit": 0,
+   "stderr": "",
+   "raw": "raw/boss-100-netweir-3.json.gz",
+   "figures": {
+    "items": 1000,
+    "pages_per_sec": 658.6253091334906,
+    "wall_s": 1.5183139580767602,
+    "cpu_s": 1.7485339999999998,
+    "cpu_ms_per_page": 1.7485339999999998,
+    "cpu_util": 1.151628746280419,
+    "peak_rss_mb": 662.24128,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 6.622412799999999,
+    "requests": 1000,
+    "server_ms_p50": 50.18496513366699,
+    "server_ms_p95": 52.867889404296875,
+    "latency_ms_p50": 508.5108280181885,
+    "latency_ms_p95": 628.3202171325684,
+    "client_ms_p50": 458.38189125061035,
+    "client_ms_p95": 574.4578838348389,
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": 458.1260681152344,
+    "to_python_ms_p95": 572.7660655975342,
+    "parse_ms_p50": 0.02002716064453125,
+    "parse_ms_p95": 1.9578933715820312
+   }
+  },
+  {
+   "crawler": "scrapy",
+   "in_flight": 100,
+   "repeat": 3,
+   "load": 3.9,
+   "exit": 0,
+   "stderr": "eld (\n                                 ^^^^^^^\n    ...<3 lines>...\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/internet/defer.py\", line 1244, in adapt\n    extracted: _SelfResultT | Failure = result.result()\n                                        ~~~~~~~~~~~~~^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 201, in download_async\n    result, _ = await self._process_exception(ex, request)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 341, in _process_exception\n    raise exception\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 194, in download_async\n    result: Response | Request = await self._process_request(\n                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        request, download_func\n        ^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/middleware.py\", line 230, in _process_request\n    response = await download_func(request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 507, in _enqueue_request\n    return await maybe_deferred_to_future(d)  # fired in _wait_for_download()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 740, in _wait_for_download\n    response = await self._download(slot, request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/__init__.py\", line 580, in _download\n    response: Response = await self.handlers.download_request_async(request)\n                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 209, in download_request_async\n    return await self._download(handler_id, handler, request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/__init__.py\", line 224, in _download\n    return await handler.download_request(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 323, in download_request\n    return await maybe_deferred_to_future(agent.download_request(request))\n                                          ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/scrapy/core/downloader/handlers/http11.py\", line 862, in download_request\n    headers = TxHeaders(request.headers)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 67, in __init__\n    self.setRawHeaders(name, values)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 134, in setRawHeaders\n    _name = _nameEncoder.encode(name)\n  File \"/Users/james/Documents/GitHub/scraper-benchrepro/.venv/lib/python3.13/site-packages/twisted/web/http_headers.py\", line 250, in encode\n    raise InvalidHeaderName(bytes_name)\ntwisted.web.http_headers.InvalidHeaderName: b'\\x00R\\x00e\\x00f\\x00e\\x00r\\x00e\\x00r'\n",
+   "raw": "raw/boss-100-scrapy-3.json.gz",
+   "figures": {
+    "items": 988,
+    "pages_per_sec": 187.374257546746,
+    "wall_s": 5.272869458887726,
+    "cpu_s": 5.164282999999999,
+    "cpu_ms_per_page": 5.227007085020242,
+    "cpu_util": 0.9794065717472489,
+    "peak_rss_mb": 876.068864,
+    "peak_in_flight": 100,
+    "mb_per_in_flight": 8.76068864,
+    "requests": 988,
+    "server_ms_p50": 50.69279670715332,
+    "server_ms_p95": 54.36897277832031,
+    "latency_ms_p50": 118.3938980102539,
+    "latency_ms_p95": 301.102876663208,
+    "client_ms_p50": 66.06578826904297,
+    "client_ms_p95": 247.47800827026367,
+    "wrong": 0,
+    "missing": 12,
+    "twice": 0
+   }
+  }
+ ],
+ "summary": {
+  "100": {
+   "netweir": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 1000,
+     "min": 1000,
+     "max": 1000
+    },
+    "pages_per_sec": {
+     "median": 633.1881950709655,
+     "min": 618.7722824395911,
+     "max": 658.6253091334906
+    },
+    "wall_s": {
+     "median": 1.5793092919047922,
+     "min": 1.5183139580767602,
+     "max": 1.6161034170072526
+    },
+    "cpu_s": {
+     "median": 1.764453,
+     "min": 1.7485339999999998,
+     "max": 1.7914240000000001
+    },
+    "cpu_ms_per_page": {
+     "median": 1.764453,
+     "min": 1.7485339999999998,
+     "max": 1.7914240000000001
+    },
+    "cpu_util": {
+     "median": 1.1172308103575503,
+     "min": 1.1084835172970622,
+     "max": 1.151628746280419
+    },
+    "peak_rss_mb": {
+     "median": 662.24128,
+     "min": 644.317184,
+     "max": 690.388992
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 6.622412799999999,
+     "min": 6.44317184,
+     "max": 6.90388992
+    },
+    "requests": {
+     "median": 1000,
+     "min": 1000,
+     "max": 1000
+    },
+    "server_ms_p50": {
+     "median": 50.217390060424805,
+     "min": 50.18496513366699,
+     "max": 50.30703544616699
+    },
+    "server_ms_p95": {
+     "median": 52.867889404296875,
+     "min": 52.802085876464844,
+     "max": 53.99894714355469
+    },
+    "latency_ms_p50": {
+     "median": 468.6453342437744,
+     "min": 440.1991367340088,
+     "max": 508.5108280181885
+    },
+    "latency_ms_p95": {
+     "median": 742.966890335083,
+     "min": 628.3202171325684,
+     "max": 850.9161472320557
+    },
+    "client_ms_p50": {
+     "median": 418.5061454772949,
+     "min": 388.11707496643066,
+     "max": 458.38189125061035
+    },
+    "client_ms_p95": {
+     "median": 692.7380561828613,
+     "min": 574.4578838348389,
+     "max": 800.6789684295654
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0,
+    "to_python_ms_p50": {
+     "median": 418.43295097351074,
+     "min": 365.79203605651855,
+     "max": 458.1260681152344
+    },
+    "to_python_ms_p95": {
+     "median": 692.6398277282715,
+     "min": 572.7660655975342,
+     "max": 800.4860877990723
+    },
+    "parse_ms_p50": {
+     "median": 0.019073486328125,
+     "min": 0.019073486328125,
+     "max": 0.02002716064453125
+    },
+    "parse_ms_p95": {
+     "median": 2.023935317993164,
+     "min": 1.9578933715820312,
+     "max": 2.1240711212158203
+    }
+   },
+   "scrapy": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 988,
+     "min": 987,
+     "max": 988
+    },
+    "pages_per_sec": {
+     "median": 186.6891208461812,
+     "min": 176.45842362452746,
+     "max": 187.374257546746
+    },
+    "wall_s": {
+     "median": 5.286864041816443,
+     "min": 5.272869458887726,
+     "max": 5.59905262500979
+    },
+    "cpu_s": {
+     "median": 5.210799,
+     "min": 5.164282999999999,
+     "max": 5.5345509999999996
+    },
+    "cpu_ms_per_page": {
+     "median": 5.279431610942249,
+     "min": 5.227007085020242,
+     "max": 5.601772267206477
+    },
+    "cpu_util": {
+     "median": 0.9856124460143466,
+     "min": 0.9794065717472489,
+     "max": 0.9884799037748502
+    },
+    "peak_rss_mb": {
+     "median": 928.104448,
+     "min": 876.068864,
+     "max": 980.926464
+    },
+    "peak_in_flight": {
+     "median": 97,
+     "min": 94,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 9.873451574468085,
+     "min": 8.76068864,
+     "max": 10.112643958762886
+    },
+    "requests": {
+     "median": 988,
+     "min": 987,
+     "max": 988
+    },
+    "server_ms_p50": {
+     "median": 50.69279670715332,
+     "min": 50.51684379577637,
+     "max": 50.7810115814209
+    },
+    "server_ms_p95": {
+     "median": 54.34417724609375,
+     "min": 52.68692970275879,
+     "max": 54.36897277832031
+    },
+    "latency_ms_p50": {
+     "median": 116.17898941040039,
+     "min": 107.84411430358887,
+     "max": 118.3938980102539
+    },
+    "latency_ms_p95": {
+     "median": 209.06710624694824,
+     "min": 187.52384185791016,
+     "max": 301.102876663208
+    },
+    "client_ms_p50": {
+     "median": 64.27216529846191,
+     "min": 56.88190460205078,
+     "max": 66.06578826904297
+    },
+    "client_ms_p95": {
+     "median": 157.09996223449707,
+     "min": 135.12206077575684,
+     "max": 247.47800827026367
+    },
+    "wrong": 0,
+    "missing": 13,
+    "twice": 0
+   },
+   "colly": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 908,
+     "min": 908,
+     "max": 908
+    },
+    "pages_per_sec": {
+     "median": 1147.6746927583831,
+     "min": 1019.045470516718,
+     "max": 1228.4373776578268
+    },
+    "wall_s": {
+     "median": 0.7911649579182267,
+     "min": 0.7391504170373082,
+     "max": 0.8910299160052091
+    },
+    "cpu_s": {
+     "median": 3.958436,
+     "min": 3.548491,
+     "max": 4.019583
+    },
+    "cpu_ms_per_page": {
+     "median": 4.359511013215859,
+     "min": 3.9080297356828195,
+     "max": 4.426853524229075
+    },
+    "cpu_util": {
+     "median": 4.800769800311013,
+     "min": 4.442539951685369,
+     "max": 5.0805877583059695
+    },
+    "peak_rss_mb": {
+     "median": 1092.780032,
+     "min": 1007.468544,
+     "max": 1134.280704
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 10.92780032,
+     "min": 10.07468544,
+     "max": 11.34280704
+    },
+    "requests": {
+     "median": 949,
+     "min": 948,
+     "max": 949
+    },
+    "server_ms_p50": {
+     "median": 50.225019454956055,
+     "min": 50.22311210632324,
+     "max": 50.447940826416016
+    },
+    "server_ms_p95": {
+     "median": 51.90396308898926,
+     "min": 51.836252212524414,
+     "max": 53.62987518310547
+    },
+    "latency_ms_p50": {
+     "median": 51.299095153808594,
+     "min": 51.11193656921387,
+     "max": 51.84006690979004
+    },
+    "latency_ms_p95": {
+     "median": 70.1301097869873,
+     "min": 63.54713439941406,
+     "max": 107.37895965576172
+    },
+    "client_ms_p50": {
+     "median": 0.675201416015625,
+     "min": 0.6299018859863281,
+     "max": 0.8547306060791016
+    },
+    "client_ms_p95": {
+     "median": 19.407033920288086,
+     "min": 13.109922409057617,
+     "max": 55.106163024902344
+    },
+    "wrong": 8,
+    "missing": 92,
+    "twice": 0
+   },
+   "spider-rs": {
+    "runs": 3,
+    "failed": 3
+   },
+   "crawlee": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 1000,
+     "min": 1000,
+     "max": 1000
+    },
+    "pages_per_sec": {
+     "median": 219.2115084262168,
+     "min": 215.304830868325,
+     "max": 233.67779582304715
+    },
+    "wall_s": {
+     "median": 4.561804292025045,
+     "min": 4.279396750032902,
+     "max": 4.644577624974772
+    },
+    "cpu_s": {
+     "median": 7.671729,
+     "min": 7.450891,
+     "max": 7.714767
+    },
+    "cpu_ms_per_page": {
+     "median": 7.671729,
+     "min": 7.450891,
+     "max": 7.714767
+    },
+    "cpu_util": {
+     "median": 1.6817312863271519,
+     "min": 1.661026604123535,
+     "max": 1.7411077857977797
+    },
+    "peak_rss_mb": {
+     "median": 2043.641856,
+     "min": 1768.996864,
+     "max": 2103.508992
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 20.43641856,
+     "min": 17.68996864,
+     "max": 21.03508992
+    },
+    "requests": {
+     "median": 1000,
+     "min": 1000,
+     "max": 1000
+    },
+    "server_ms_p50": {
+     "median": 50.74906349182129,
+     "min": 50.42099952697754,
+     "max": 51.41401290893555
+    },
+    "server_ms_p95": {
+     "median": 57.06524848937988,
+     "min": 55.12404441833496,
+     "max": 58.83216857910156
+    },
+    "latency_ms_p50": {
+     "median": 111.6020679473877,
+     "min": 102.3249626159668,
+     "max": 114.17174339294434
+    },
+    "latency_ms_p95": {
+     "median": 1439.0861988067627,
+     "min": 1255.1391124725342,
+     "max": 1584.956169128418
+    },
+    "client_ms_p50": {
+     "median": 60.61220169067383,
+     "min": 51.094770431518555,
+     "max": 63.88998031616211
+    },
+    "client_ms_p95": {
+     "median": 1388.5619640350342,
+     "min": 1204.8251628875732,
+     "max": 1531.7602157592773
+    },
+    "wrong": 0,
+    "missing": 0,
+    "twice": 0
+   },
+   "httpx+selectolax": {
+    "runs": 3,
+    "failed": 0,
+    "items": {
+     "median": 991,
+     "min": 991,
+     "max": 991
+    },
+    "pages_per_sec": {
+     "median": 264.98247562703324,
+     "min": 255.2464637049617,
+     "max": 271.61281551984507
+    },
+    "wall_s": {
+     "median": 3.7398699580226094,
+     "min": 3.6485760000068694,
+     "max": 3.8825219578575343
+    },
+    "cpu_s": {
+     "median": 3.8543570000000003,
+     "min": 3.757846,
+     "max": 3.976244
+    },
+    "cpu_ms_per_page": {
+     "median": 3.8893612512613527,
+     "min": 3.791973763874874,
+     "max": 4.0123551967709385
+    },
+    "cpu_util": {
+     "median": 1.0299486703834386,
+     "min": 1.0241394751040078,
+     "max": 1.030612572967089
+    },
+    "peak_rss_mb": {
+     "median": 2917.629952,
+     "min": 2755.70688,
+     "max": 3030.204416
+    },
+    "peak_in_flight": {
+     "median": 100,
+     "min": 100,
+     "max": 100
+    },
+    "mb_per_in_flight": {
+     "median": 29.176299519999997,
+     "min": 27.557068800000003,
+     "max": 30.30204416
+    },
+    "requests": {
+     "median": 991,
+     "min": 991,
+     "max": 991
+    },
+    "server_ms_p50": {
+     "median": 50.189971923828125,
+     "min": 50.1399040222168,
+     "max": 50.22621154785156
+    },
+    "server_ms_p95": {
+     "median": 52.0319938659668,
+     "min": 51.989078521728516,
+     "max": 52.335262298583984
+    },
+    "latency_ms_p50": {
+     "median": 97.21875190734863,
+     "min": 96.72093391418457,
+     "max": 142.4250602722168
+    },
+    "latency_ms_p95": {
+     "median": 239.3810749053955,
+     "min": 232.68818855285645,
+     "max": 283.59317779541016
+    },
+    "client_ms_p50": {
+     "median": 47.16181755065918,
+     "min": 46.668052673339844,
+     "max": 91.75705909729004
+    },
+    "client_ms_p95": {
+     "median": 188.46487998962402,
+     "min": 181.01096153259277,
+     "max": 230.33523559570312
+    },
+    "wrong": 8,
+    "missing": 9,
+    "twice": 0
+   }
+  }
+ }
+}
