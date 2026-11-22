@@ -109,6 +109,17 @@ jobs:
               return;
             }
 
+            // listCommits gives at most 250 commits, GitHub's limit for one
+            // pull request, so the authors of any after that would never be
+            // asked. Fail rather than pass what wasn't read.
+            if (pr.commits > 250) {
+              core.setFailed(
+                `this pull request has ${pr.commits} commits, and the CLA check can read only 250; ` +
+                'split it, or squash some of its commits, and push again',
+              );
+              return;
+            }
+
             const commits = await github.paginate(github.rest.pulls.listCommits, {
               owner, repo, pull_number: number, per_page: 100,
             });
