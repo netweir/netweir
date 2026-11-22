@@ -147,13 +147,37 @@ A rerun on the same day and machine replaces that day's file.
 
 ## Reproduce the published table
 
-The published table names the machine it ran on, and its spread is the
-slowest and fastest of its runs. A rerun on the same kind of machine at a
-load below 3 lands inside that spread for the crawlers that wait on the
-server; the ones that wait on themselves vary more, so compare a rerun's
-median and spread with the published ones, not one run with one median.
+The published table names the machine it ran on, and gives the slowest
+and fastest of its runs beside each median. Three runs make a narrow
+spread, narrower than the difference between one day's runs and the
+next, so judge a rerun by how far it lands from the median, not only by
+whether it lands inside the brackets.
+
+Here's how far one rerun landed. It ran from a clean clone of the branch,
+set up by the steps above in 3 minutes 20 seconds (`uv sync`, a release
+build of Netweir from nothing, the three programs), once at each
+setting, on the same M2 Max at loads of 3 to 8, against the
+`2026-11-22-GPK` results:
+
+| In flight | Netweir | Colly | Scrapy |
+|--:|--:|--:|--:|
+| 10 | 192, inside | 187, inside | 166, 3% under |
+| 50 | 948, 0.3% over | 929, 0.3% under | 703, 6% under |
+| 100 | 1,777, 4% under | 1,837, 0.8% under | 1,018, 12% under |
+| 200 | 3,465, inside | 3,596, 1% under | 1,299, 0.2% over |
+| 500 | 7,283, inside | 8,089, 3% under | 1,236, inside |
+
+The crawlers that wait on the server came within 4% of the published
+median everywhere. Scrapy, which waits on its own CPU from 100 in flight
+up, moved most, and most where the load was highest. For a closer
+comparison, run with `--repeats 5` or more on a machine doing nothing
+else.
+
 A different machine moves every crawler that's limited by its own CPU,
-so compare the order and the ratios there, not the counts.
+so compare the order and the ratios there, not the counts. The ones
+held by the server's 50 ms (every crawler at 10 in flight, and each one
+until it runs out of CPU) should come out close to the same on any
+machine.
 
 `bench/results/` holds the results of the published runs, the JSON and
 Markdown without `raw/`.
