@@ -719,6 +719,31 @@ with `uv run python bench/crawl.py` once the others are installed (the
 docstring says how to build the ones that aren't Python, and how to start
 Firecrawl).
 
+`--sweep` runs the same crawl at 10, 50, 100, 200 and 500 requests in
+flight, and every run also records each page's latency, split into the
+server's 50 ms and the crawler's own time, CPU use, memory per request in
+flight, and how many titles and prices came back wrong, missing or twice.
+On 22 November 2026 (pages a second, median of three runs):
+
+| In flight | 10 | 50 | 100 | 200 | 500 |
+|---|--:|--:|--:|--:|--:|
+| Colly | 188 | 935 | 1,851 | 3,634 | 8,449 |
+| Netweir | 191 | 944 | 1,853 | 3,339 | 7,357 |
+| spider-rs | 119 | 690 | 1,313 | 2,920 | 5,844 |
+| Crawlee for Python | 176 | 839 | 1,499 | 1,656 | 1,796 |
+| Scrapy | 174 | 748 | 1,216 | 1,258 | 1,247 |
+
+Scrapy stops scaling at about 100 in flight and Crawlee at about 200;
+Colly, Netweir and spider-rs keep going, and Colly pulls ahead from 200.
+`--boss` serves the final boss pages instead, with the title, price and
+links put in each: there Colly is fastest again (1,148 pages a second to
+Netweir's 633) but reads 8 UTF-16 pages wrong and misses 92, Scrapy and
+httpx + selectolax miss 9 to 13, Netweir and Crawlee get all 1,000
+right, and spider-rs doesn't finish in two minutes. Netweir's pages
+there wait 420 ms (p50) between the server's answer and Python, against
+Colly's under 1 ms; that's #372. [bench/README.md](bench/README.md)
+takes a bare machine to these tables, and `bench/results/` has every run.
+
 Some pages need a browser. `bench/browser.py` renders the 30 items of
 test.netweir.com's client-rendered shop three times over, four pages at a
 time in one headless browser, and checks every name against the site's
