@@ -736,13 +736,26 @@ On 22 November 2026 (pages a second, median of three runs):
 Scrapy stops scaling at about 100 in flight and Crawlee at about 200;
 Colly, Netweir and spider-rs keep going, and Colly pulls ahead from 200.
 `--boss` serves the final boss pages instead, with the title, price and
-links put in each: there Colly is fastest again (1,148 pages a second to
-Netweir's 633) but reads 8 UTF-16 pages wrong and misses 92, Scrapy and
-httpx + selectolax miss 9 to 13, Netweir and Crawlee get all 1,000
-right, and spider-rs doesn't finish in two minutes. Netweir's pages
-there wait 420 ms (p50) between the server's answer and Python, against
-Colly's under 1 ms; that's #372. [bench/README.md](bench/README.md)
-takes a bare machine to these tables, and `bench/results/` has every run.
+links put in each. Rerun on 22 November 2026 after #374, which parses
+pages ahead so a giant no longer holds up the small pages behind it
+(median of three runs; the earlier figures predate #374):
+
+| Final boss | Pages a second | Client p50 | Peak memory | Wrong | Missing |
+|---|--:|--:|--:|--:|--:|
+| Netweir | 1,188 | 6.7 ms | 914 MB | 0 | 0 |
+| Colly | 1,015 | 0.8 ms | 923 MB | 8 | 92 |
+| httpx + selectolax | 254 | 46.5 ms | 2,760 MB | 8 | 9 |
+| Crawlee for Python | 209 | 59.7 ms | 1,987 MB | 0 | 0 |
+| Scrapy | 182 | 52.9 ms | 835 MB | 0 | 12 |
+
+Netweir went from 633 pages a second to 1,188, and its pages now wait
+6.7 ms (p50) between the server's answer and the item, down from 419 ms.
+Parsing ahead costs memory: Netweir's peak rose from 662 MB to 914 MB.
+Colly reads 8 UTF-16 pages wrong and misses 92, Scrapy and
+httpx + selectolax miss 9 to 12, Netweir and Crawlee get all 1,000
+right, and spider-rs still doesn't finish in two minutes.
+[bench/README.md](bench/README.md) takes a bare machine to these tables,
+and `bench/results/` has every run.
 
 Some pages need a browser. `bench/browser.py` renders the 30 items of
 test.netweir.com's client-rendered shop three times over, four pages at a

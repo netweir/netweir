@@ -143,7 +143,12 @@ Each run writes to `bench/results/<date>-<host>/`:
   sweep of five crawlers) and stay out of it; CI keeps its own as the
   `bench-crawl-results` artifact.
 
-A rerun on the same day and machine replaces that day's file.
+A rerun on the same day and machine replaces that day's file, unless
+`--results` names another folder. `2026-11-22-GPK-2` is one: the final
+boss rerun after #374, and Netweir at 100 in flight to check the plain
+crawl didn't slow down (1,813 pages a second against 1,853 in the
+committed sweep, inside the spread a rerun shows below). The final
+boss figures in `2026-11-22-GPK` predate #374.
 
 ## Reproduce the published table
 
