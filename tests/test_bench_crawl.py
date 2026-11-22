@@ -38,7 +38,7 @@ def test_a_body_tag_in_a_comment_or_an_attribute_is_passed_over():
 
 
 def test_boss_pages_without_a_body_get_it_after_the_bom_in_their_encoding():
-    body = "﻿<p>текст".encode("utf-16-le")
+    body = "\ufeff<p>текст".encode("utf-16-le")
     out = crawl.boss_page(body, 1, 2)
     assert out.startswith(b"\xff\xfe<\x00h\x001\x00")
     text = out.decode("utf-16")
@@ -47,10 +47,12 @@ def test_boss_pages_without_a_body_get_it_after_the_bom_in_their_encoding():
 
 
 def test_a_utf16_body_tag_is_found_only_on_a_character():
-    # "㰀" is 00 3C in UTF-16BE: a "<" byte that isn't a "<".
-    body = "﻿㰀body><body>x".encode("utf-16-be")
+    # Read from the second byte, these six characters spell "<body".
+    decoy = "".join(map(chr, [0x0100, 0x3C00, 0x6200, 0x6F00, 0x6400, 0x7900]))
+    assert decoy.encode("utf-16-be")[1:11] == "<body".encode("utf-16-be")
+    body = (chr(0xFEFF) + decoy + "<body>x").encode("utf-16-be")
     text = crawl.boss_page(body, 0, 0).decode("utf-16")
-    assert re.fullmatch(r"㰀body><body><h1 .*</ul>x", text)
+    assert re.fullmatch(f"{decoy}<body><h1 .*</ul>x", text)
 
 
 def test_urls_name_their_site_by_host_or_by_port():
