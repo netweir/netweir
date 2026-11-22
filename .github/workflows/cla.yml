@@ -38,6 +38,8 @@ jobs:
             // The copyright holder doesn't license their own work to
             // themselves.
             const EXEMPT = new Set(['jamesconwaydev']);
+            // Bots that open pull requests here, by their GitHub login.
+            const EXEMPT_BOTS = new Set(['dependabot[bot]']);
             const MARK = '<!-- netweir-cla -->';
             const { owner, repo } = context.repo;
             const CLA = `https://github.com/${owner}/${repo}/blob/main/CLA.md`;
@@ -100,16 +102,40 @@ jobs:
               return;
             }
 
+            // GitHub vouches for who opened the pull request. It doesn't
+            // vouch for the emails on its commits, which anyone can set.
+            if (EXEMPT.has(pr.user.login) ||
+                (pr.user.type === 'Bot' && EXEMPT_BOTS.has(pr.user.login))) {
+              return;
+            }
+
             const commits = await github.paginate(github.rest.pulls.listCommits, {
               owner, repo, pull_number: number, per_page: 100,
             });
             const authors = new Map();
             const unlinked = new Set();
+            // Commits whose email belongs to an exempt account or a bot.
+            const borrowed = new Set();
             for (const c of commits) {
-              if (!c.author) {
-                unlinked.add(c.commit.author.email);
-              } else if (c.author.type !== 'Bot' && !EXEMPT.has(c.author.login)) {
-                authors.set(c.author.id, c.author.login);
+              for (const [who, email, committer] of [
+                [c.author, c.commit.author.email, false],
+                [c.committer, c.commit.committer.email, true],
+              ]) {
+                if (!who) {
+                  unlinked.add(email);
+                } else if (committer && who.login === 'web-flow') {
+                  // GitHub committed it for someone in the browser; the
+                  // author is checked on its own.
+                } else if (who.type === 'Bot' || EXEMPT.has(who.login)) {
+                  // Only a signature from an exempt account's own key,
+                  // which GitHub verifies against the committer, shows
+                  // the commit is really theirs.
+                  if (!(c.commit.verification?.verified && EXEMPT.has(c.committer?.login))) {
+                    borrowed.add(c.sha.slice(0, 7));
+                  }
+                } else {
+                  authors.set(who.id, who.login);
+                }
               }
             }
             const { list } = await signatures();
@@ -121,7 +147,7 @@ jobs:
             });
             const ours = comments.find((c) => c.user.type === 'Bot' && c.body.startsWith(MARK));
 
-            if (missing.length === 0 && unlinked.size === 0) {
+            if (missing.length === 0 && unlinked.size === 0 && borrowed.size === 0) {
               if (ours) {
                 await github.rest.issues.updateComment({
                   owner, repo, comment_id: ours.id,
@@ -140,9 +166,16 @@ jobs:
               body += `> ${PHRASE}.\n\n`;
             }
             if (unlinked.size > 0) {
-              body += 'Some commits are by an email address that isn\'t linked to a GitHub account, ';
+              body += 'Some commits have an author or committer email that isn\'t linked to a GitHub account, ';
               body += 'so there is no one to ask. Add the address to your GitHub account, or ';
-              body += 'rewrite those commits with an address that is, then push again.\n';
+              body += 'rewrite those commits with an address that is, then push again.\n\n';
+            }
+            if (borrowed.size > 0) {
+              body += `Some commits (${[...borrowed].join(', ')}) have an author or committer email `;
+              body += 'that belongs to the maintainer or to a bot, so they can\'t count as yours. ';
+              body += 'Rewrite them with your own email, for example with ';
+              body += '`git rebase -i` and `git commit --amend --reset-author`, then push again. ';
+              body += 'If you haven\'t agreed to the CLA yet, this check will then ask you to.\n';
             }
             if (ours) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: ours.id, body });
@@ -153,5 +186,8 @@ jobs:
             const waiting = [...missing];
             if (unlinked.size > 0) {
               waiting.push(`${unlinked.size} author(s) with no GitHub account`);
+            }
+            if (borrowed.size > 0) {
+              waiting.push(`the authors of ${borrowed.size} commit(s) with the maintainer's or a bot's email`);
             }
             core.setFailed(`waiting for the CLA from: ${waiting.join(', ')}`);
