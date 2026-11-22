@@ -1,9 +1,12 @@
 //! bench/crawl.py's crawl with spider-rs: every site from its first page,
 //! every page's title and price, 8 requests in flight per site and about
-//! 100 in all. Prints the number of items.
+//! 100 in all. Prints the number of items, and writes each one, with the
+//! time it was extracted, as a JSON line to the file BENCH_ITEMS names.
 
-use std::sync::Arc;
+use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use scraper::{Html, Selector};
 use spider::website::Website;
@@ -24,6 +27,7 @@ async fn main() {
     let gate = Arc::new(Semaphore::new((concurrency / per_site).max(1)));
     let items = Arc::new(AtomicUsize::new(0));
     let lost = Arc::new(AtomicUsize::new(0));
+    let found = Arc::new(Mutex::new(Vec::new()));
     let title = Selector::parse("h1.title").unwrap();
     let price = Selector::parse("p.price").unwrap();
 
@@ -35,21 +39,29 @@ async fn main() {
             .with_delay(0)
             .with_concurrency_limit(Some(per_site));
         let mut rx = website.subscribe(4096);
-        let (items, lost, title, price) =
-            (items.clone(), lost.clone(), title.clone(), price.clone());
+        let (items, lost, found, title, price) = (
+            items.clone(),
+            lost.clone(),
+            found.clone(),
+            title.clone(),
+            price.clone(),
+        );
         let reader = tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(page) => {
                         let doc = Html::parse_document(&page.get_html());
-                        let _ = (
-                            doc.select(&title)
-                                .next()
-                                .map(|e| e.text().collect::<String>()),
-                            doc.select(&price)
-                                .next()
-                                .map(|e| e.text().collect::<String>()),
-                        );
+                        let text = |s: &Selector| {
+                            doc.select(s).next().map(|e| e.text().collect::<String>())
+                        };
+                        let (title, price) = (text(&title), text(&price));
+                        let t = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs_f64();
+                        found.lock().unwrap().push(serde_json::json!({
+                            "url": page.get_url(), "title": title, "price": price, "t": t,
+                        }));
                         items.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(RecvError::Lagged(n)) => {
@@ -69,6 +81,13 @@ async fn main() {
     }
     for crawl in crawls {
         crawl.await.unwrap();
+    }
+    if let Ok(path) = std::env::var("BENCH_ITEMS") {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        for item in found.lock().unwrap().iter() {
+            writeln!(out, "{item}").unwrap();
+        }
+        out.flush().unwrap();
     }
     let lost = lost.load(Ordering::Relaxed);
     if lost > 0 {

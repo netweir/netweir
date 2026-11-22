@@ -185,6 +185,7 @@ name = "bench-spider"
 version = "0.0.0"
 dependencies = [
  "scraper",
+ "serde_json",
  "spider",
  "tokio",
 ]

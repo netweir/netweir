@@ -332,3 +332,17 @@ jobs:
           submodules: true
           persist-credentials: false
       - run: uv run python bench/boss.py --smoke --check --parsec parsec
+      # The whole crawl, once, with Netweir alone, then over the final
+      # boss pages the step above built: fails if Netweir reads a page
+      # wrong, misses one or reads one twice. The results, with every
+      # run's raw items and server timings, are kept as an artifact.
+      - run: uv run python bench/crawl.py --only netweir --repeats 1 --now --check --results bench-results
+      - run: >-
+          uv run python bench/crawl.py --only netweir --repeats 1 --now --check --results bench-results
+          --boss bench/.cache/boss/300-20261119-2000000
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: bench-crawl-results
+          path: bench-results
+          if-no-files-found: ignore

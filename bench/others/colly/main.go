@@ -1,14 +1,19 @@
 // bench/crawl.py's crawl with Colly: every site from its first page, every
 // page's title and price, 100 requests in flight in all and 8 per site.
-// Prints the number of items.
+// Prints the number of items, and writes each one, with the time it was
+// extracted, as a JSON line to the file BENCH_ITEMS names.
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gocolly/colly/v2"
 )
@@ -52,9 +57,23 @@ func main() {
 		}
 	}
 
-	var items atomic.Int64
+	type item struct {
+		URL   string  `json:"url"`
+		Title string  `json:"title"`
+		Price string  `json:"price"`
+		T     float64 `json:"t"`
+	}
+	var (
+		items atomic.Int64
+		mu    sync.Mutex
+		found []item
+	)
 	c.OnHTML("html", func(e *colly.HTMLElement) {
-		_, _ = e.ChildText("h1.title"), e.ChildText("p.price")
+		title, price := e.ChildText("h1.title"), e.ChildText("p.price")
+		t := float64(time.Now().UnixNano()) / 1e9
+		mu.Lock()
+		found = append(found, item{e.Request.URL.String(), title, price, t})
+		mu.Unlock()
 		items.Add(1)
 		e.ForEach("a.next", func(_ int, a *colly.HTMLElement) {
 			_ = a.Request.Visit(a.Attr("href"))
@@ -69,5 +88,24 @@ func main() {
 		}
 	}
 	c.Wait()
+	if path := os.Getenv("BENCH_ITEMS"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			panic(err)
+		}
+		w := bufio.NewWriter(f)
+		enc := json.NewEncoder(w)
+		for _, it := range found {
+			if err := enc.Encode(it); err != nil {
+				panic(err)
+			}
+		}
+		if err := w.Flush(); err != nil {
+			panic(err)
+		}
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+	}
 	fmt.Println(items.Load())
 }

@@ -8,3 +8,4 @@ __pycache__/
 /dist
 /bench/.cache
 /bench/realworld/target
+/bench/results/*/raw/
