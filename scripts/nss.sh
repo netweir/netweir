@@ -21,9 +21,7 @@
 # the shared ones (nss3, ssl3, ...) in release builds elsewhere. A wheel
 # can't carry those, so on Linux and macOS the shared libraries are
 # deleted and archives take their names: libnss3.a holds every library
-# nss-rs links statically, and the other names are empty. NSS's own SQLite
-# is replaced by an empty archive too, so NSS uses the one netweir-core
-# already links (rusqlite's) instead of a second copy of the same symbols.
+# nss-rs links statically, and the other names are empty.
 
 set -euo pipefail
 
@@ -75,9 +73,10 @@ if [ ! -f "$out/done" ]; then
 
   # NSS's own cryptography (freebl) defines a few names BoringSSL, which
   # netweir links for TCP, defines too (SHA256_Update, HMAC_Init, ...),
-  # and with both in one binary each library would call the other's.
-  # freebl's symbols get a prefix, references to them throughout NSS with
-  # them, all but FREEBL_GetVector, the one nss-rs calls.
+  # and NSS's SQLite every name rusqlite's does; with both in one binary
+  # each would call the other's. Their symbols get a prefix, references
+  # to them throughout NSS with them, all but FREEBL_GetVector, the one
+  # nss-rs calls. (On macOS NSS uses the system's SQLite and has none.)
   case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*) a_pre=""; a_ext=lib ;;
     *) a_pre=lib; a_ext=a ;;
@@ -105,7 +104,7 @@ if [ ! -f "$out/done" ]; then
   }
   freebl=(freebl_static gcm hw-acc-crypto-avx hw-acc-crypto-avx2 sha-x86_c_lib armv8_c_lib
     crux pqcwrap_static ghash-aes-x86_c_lib ghash-aes-aarch64_c_lib intel-gcm-wrap_c_lib
-    aarch64-gcm-wrap_c_lib)
+    aarch64-gcm-wrap_c_lib sqlite)
   map="$out/freebl-symbols.txt"
   for f in "${freebl[@]}"; do
     [ ! -f "$lib/$a_pre$f.$a_ext" ] || defined "$lib/$a_pre$f.$a_ext"
@@ -122,15 +121,12 @@ if [ ! -f "$out/done" ]; then
   # An archive with no members, which every linker takes as nothing.
   empty() { printf '!<arch>\n' > "$1"; }
   case "$(uname -s)" in
-    MINGW* | MSYS* | CYGWIN*)
-      empty "$lib/sqlite.lib"
-      ;;
+    MINGW* | MSYS* | CYGWIN*) ;;
     *)
-      [ ! -f "$lib/libsqlite.a" ] || empty "$lib/libsqlite.a"
       # What nss-rs links statically (its build.rs, static_link), as one
       # archive in place of the shared libraries.
       parts=(certdb certhi cryptohi freebl_static gcm nss_static nssb nssdev nsspki
-        nssutil pk11wrap_static softokn_static ssl pqcwrap_static crux)
+        nssutil pk11wrap_static softokn_static ssl pqcwrap_static crux sqlite)
       case "$arch" in
         arm64) parts+=(armv8_c_lib ghash-aes-aarch64_c_lib aarch64-gcm-wrap_c_lib) ;;
         x64) parts+=(ghash-aes-x86_c_lib sha-x86_c_lib hw-acc-crypto-avx

@@ -116,8 +116,10 @@ built, all in `scripts/nss.sh`:
   together, each library calls the other's, and the process crashes. Every
   symbol freebl defines gets a `netweir_nss_` prefix, and every reference
   to it in NSS with it, except `FREEBL_GetVector`, the one nss-rs calls.
-- NSS's own SQLite is replaced by an empty archive, so NSS uses the copy
-  netweir-core already links through rusqlite.
+- NSS's own SQLite (Linux and Windows; on macOS NSS uses the system's)
+  defines every name the SQLite rusqlite links does. Its symbols get the
+  same prefix, so NSS keeps a private copy and netweir's databases keep
+  theirs.
 - nss-rs links NSS's shared libraries in a release build outside Windows,
   and a wheel can't carry them. The script deletes them and puts static
   archives under their names.
