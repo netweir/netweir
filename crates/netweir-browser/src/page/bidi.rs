@@ -1,6 +1,6 @@
 //! A Firefox page's commands, over WebDriver BiDi. Its page is the same
 //! [`Page`] as Chrome's, made by [`open`] instead of a CDP target; what
-//! isn't here yet is refused by name (see `Page::chrome_only`).
+//! isn't here yet is refused by name (see `Inner::chrome_only`).
 
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
@@ -209,14 +209,20 @@ pub(crate) async fn request_body(
 
 /// The first part of `env` a Firefox page can't have, by the name its
 /// error gives; None when Firefox can give it all. A phone's environment
-/// and touch are Chrome's; the media features (colour scheme, reduced
-/// motion, forced colours, contrast, print) Firefox has no command for.
+/// and touch are Chrome's. Of the media features, Firefox's
+/// `emulation.setMediaFeaturesOverride` takes only `prefers-color-scheme`,
+/// and only light or dark; reduced motion, forced colours, contrast and
+/// print it has no command for.
 pub(crate) fn env_unsupported(env: &Environment) -> Option<&'static str> {
+    use crate::environment::ColorScheme;
     let unsupported = [
         (env.phone.is_some(), "a phone's environment"),
         (env.mobile == Some(true), "a phone's layout (mobile)"),
         (env.has_touch == Some(true), "touch"),
-        (env.color_scheme.is_some(), "a colour scheme"),
+        (
+            env.color_scheme == Some(ColorScheme::NoPreference),
+            "the colour scheme no-preference (light or dark is)",
+        ),
         (env.reduced_motion.is_some(), "reduced motion"),
         (env.forced_colors.is_some(), "forced colours"),
         (env.contrast.is_some(), "a contrast preference"),
@@ -267,6 +273,9 @@ async fn apply_env(page: &Page, env: &Environment, scope: &Scope) -> Result<()> 
             json!({"timezone": timezone}),
         )
         .await?;
+    }
+    if env.color_scheme.is_some() {
+        color_scheme_on(browser, scope, env.color_scheme).await?;
     }
     if let Some(user_agent) = &env.user_agent {
         emulate(
@@ -349,6 +358,9 @@ fn differences(env: &Environment, base: &Environment) -> Environment {
             .clone()
             .filter(|_| differs(&env.user_agent, &base.user_agent)),
         screen: env.screen.filter(|_| env.screen != base.screen),
+        color_scheme: env
+            .color_scheme
+            .filter(|_| env.color_scheme != base.color_scheme),
         geolocation: env
             .geolocation
             .filter(|_| env.geolocation != base.geolocation),
@@ -456,6 +468,51 @@ async fn geolocation_on(
             "",
             "emulation.setGeolocationOverride",
             scope.on(json!({"coordinates": coordinates})),
+        )
+        .await?;
+    Ok(())
+}
+
+/// What `prefers-color-scheme` matches in the page and its frames, or
+/// what the system says for None.
+pub(super) async fn set_color_scheme(
+    page: &Page,
+    scheme: Option<crate::environment::ColorScheme>,
+) -> Result<()> {
+    change(
+        page,
+        scheme.is_some(),
+        |e| e.color_scheme = None,
+        async |b, scope, env| color_scheme_on(b, scope, env.color_scheme).await,
+    )
+    .await
+}
+
+/// The BrowsingContext's own colour scheme override, the one Firefox's
+/// DevTools set: the media query, and the colours a page that says
+/// `color-scheme: light dark` is drawn in, follow it, as they would the
+/// system's.
+async fn color_scheme_on(
+    browser: &Inner,
+    scope: &Scope,
+    scheme: Option<crate::environment::ColorScheme>,
+) -> Result<()> {
+    use crate::environment::ColorScheme;
+    let value = match scheme {
+        Some(ColorScheme::Dark) => Value::from("dark"),
+        Some(ColorScheme::Light) => Value::from("light"),
+        Some(ColorScheme::NoPreference) => {
+            return Err(unsupported(
+                "the colour scheme no-preference (light or dark is)",
+            ));
+        }
+        None => Value::Null,
+    };
+    browser
+        .call(
+            "",
+            "emulation.setMediaFeaturesOverride",
+            scope.on(json!({"features": {"prefers-color-scheme": value}})),
         )
         .await?;
     Ok(())
@@ -926,6 +983,7 @@ pub(super) fn holds_popups(env: &Environment) -> bool {
         || env.timezone.is_some()
         || env.user_agent.is_some()
         || env.screen.is_some()
+        || env.color_scheme.is_some()
         || env.geolocation.is_some()
         || !env.init_scripts.is_empty()
         || !env.extra_headers.is_empty()
@@ -2344,17 +2402,14 @@ pub(crate) async fn cookies(browser: &Inner, context: Option<&str>) -> Result<Ve
 /// Sets `cookies` in `context`, a Firefox user context (the session's
 /// own when None). A domain with a leading dot is the domain's and its
 /// subdomains', one without it the host's alone, as Firefox keeps them.
+/// One with a `partition_key` (the top-level site, as Chrome names it) is
+/// kept in that site's partition, as a `Partitioned` cookie the site's
+/// frames set would be.
 pub(crate) async fn set_cookies(
     browser: &Inner,
     context: Option<&str>,
     cookies: &[Cookie],
 ) -> Result<()> {
-    if let Some(c) = cookies.iter().find(|c| c.partition_key.is_some()) {
-        return Err(Error::Unsupported {
-            engine: "Firefox",
-            feature: format!("the partitioned cookie {:?}", c.name),
-        });
-    }
     for c in cookies {
         let mut cookie = json!({
             "name": c.name,
@@ -2370,11 +2425,15 @@ pub(crate) async fn set_cookies(
         if let Some(s) = &c.same_site {
             cookie["sameSite"] = Value::from(s.to_ascii_lowercase());
         }
+        let mut partition = partition(browser, context);
+        if let Some(site) = &c.partition_key {
+            partition["sourceOrigin"] = Value::from(site.trim_end_matches('/'));
+        }
         browser
             .call(
                 "",
                 "storage.setCookie",
-                json!({"cookie": cookie, "partition": partition(browser, context)}),
+                json!({"cookie": cookie, "partition": partition}),
             )
             .await?;
     }

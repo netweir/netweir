@@ -426,6 +426,58 @@ async fn pages_and_contexts_keep_their_cookies_apart() {
     assert!(c1.evaluate("1").await.is_err());
 }
 
+/// A partitioned cookie is the frame's under the top-level site it was
+/// set for, and nobody's anywhere else, as one the frame set with
+/// `Partitioned` would be. localhost and 127.0.0.1 are two sites.
+#[tokio::test]
+async fn a_firefox_partitioned_cookie_is_kept_under_its_top_level_site() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![
+        (
+            "/",
+            common::html(
+                "<script>document.write(`<iframe src='http://127.0.0.1:${location.port}/frame'>\
+                 </iframe>`)</script>",
+            ),
+        ),
+        ("/frame", common::html("<p>frame</p>")),
+    ]);
+    let top = server.url.replace("127.0.0.1", "localhost");
+    let context = browser.new_context().await.unwrap();
+    context
+        .set_cookies(&[netweir_browser::Cookie {
+            name: "chip".into(),
+            value: "1".into(),
+            domain: "127.0.0.1".into(),
+            path: "/".into(),
+            expires: -1.0,
+            http_only: false,
+            secure: true,
+            same_site: Some("None".into()),
+            partition_key: Some(top.clone()),
+        }])
+        .await
+        .unwrap();
+    let page = context.new_page().await.unwrap();
+    let load = netweir_browser::WaitUntil::Load;
+    page.goto(&format!("{top}/"), load, None).await.unwrap();
+    let frames = page.frames().await.unwrap();
+    let frame = frames.into_iter().find(|f| f.url().ends_with("/frame"));
+    let frame = frame.expect("the frame loaded");
+    assert_eq!(frame.evaluate("document.cookie").await.unwrap(), "chip=1");
+    page.goto(&format!("{}/frame", server.url), load, None)
+        .await
+        .unwrap();
+    assert_eq!(page.evaluate("document.cookie").await.unwrap(), "");
+    // Read back, it's there, but Firefox doesn't say under which site.
+    let kept = context.cookies().await.unwrap();
+    let chip = kept.iter().find(|c| c.name == "chip").expect("listed");
+    assert_eq!(chip.partition_key, None);
+    context.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn every_firefox_page_is_visible() {
     let Some(browser) = firefox_browser().await else {
@@ -527,9 +579,12 @@ async fn unported_methods_are_unsupported_and_send_nothing() {
         other => panic!("{what}: {other:?}"),
     };
     unsupported(
-        page.emulate_media(&netweir_browser::MediaChange::default())
-            .await,
-        "emulate_media",
+        page.emulate_media(&netweir_browser::MediaChange {
+            reduced_motion: Some(Some(netweir_browser::ReducedMotion::Reduce)),
+            ..Default::default()
+        })
+        .await,
+        "reduced motion",
     );
     unsupported(
         browser
@@ -1109,10 +1164,10 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
     for (env, what) in [
         (
             netweir_browser::Environment {
-                color_scheme: Some(netweir_browser::ColorScheme::Dark),
+                color_scheme: Some(netweir_browser::ColorScheme::NoPreference),
                 ..Default::default()
             },
-            "colour scheme",
+            "no-preference",
         ),
         (
             netweir_browser::Environment {
@@ -1132,6 +1187,81 @@ async fn a_firefox_page_has_the_environment_it_was_given() {
     assert!(
         context
             .grant_permissions(&["geolocation".into()], None)
+            .await
+            .is_err()
+    );
+    browser.close().await.unwrap();
+}
+
+/// A colour scheme reaches the page and its frames from the first
+/// document, and the colours a page drawn in `light dark` gets follow it,
+/// as they do when the system's is dark. Changed later, it changes; taken
+/// away, the system's is back.
+#[tokio::test]
+async fn a_firefox_page_has_the_colour_scheme_it_was_given() {
+    let Some(browser) = firefox_browser().await else {
+        return;
+    };
+    let server = common::serve(vec![
+        (
+            "/",
+            common::html(
+                "<meta name=color-scheme content='light dark'>\
+                 <script>window.first = matchMedia('(prefers-color-scheme: dark)').matches</script>\
+                 <iframe src=/frame></iframe>",
+            ),
+        ),
+        ("/frame", common::html("<p>frame</p>")),
+    ]);
+    let system = {
+        let page = browser.new_page().await.unwrap();
+        page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+            .await
+            .unwrap();
+        page.evaluate("first").await.unwrap()
+    };
+    let page = browser
+        .new_page_with(netweir_browser::Environment {
+            color_scheme: Some(netweir_browser::ColorScheme::Dark),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    page.goto(&server.url, netweir_browser::WaitUntil::Load, None)
+        .await
+        .unwrap();
+    let seen = "[first, matchMedia('(prefers-color-scheme: dark)').matches, \
+                frames[0].matchMedia('(prefers-color-scheme: dark)').matches, \
+                getComputedStyle(document.body).color]";
+    assert_eq!(
+        page.evaluate(seen).await.unwrap(),
+        serde_json::json!([true, true, true, "rgb(251, 251, 254)"])
+    );
+    let scheme = |s| netweir_browser::MediaChange {
+        color_scheme: Some(s),
+        ..Default::default()
+    };
+    page.emulate_media(&scheme(Some(netweir_browser::ColorScheme::Light)))
+        .await
+        .unwrap();
+    assert_eq!(
+        page.evaluate(
+            "[matchMedia('(prefers-color-scheme: dark)').matches, \
+                       getComputedStyle(document.body).color]"
+        )
+        .await
+        .unwrap(),
+        serde_json::json!([false, "rgb(0, 0, 0)"])
+    );
+    page.emulate_media(&scheme(None)).await.unwrap();
+    assert_eq!(
+        page.evaluate("matchMedia('(prefers-color-scheme: dark)').matches")
+            .await
+            .unwrap(),
+        system
+    );
+    assert!(
+        page.emulate_media(&scheme(Some(netweir_browser::ColorScheme::NoPreference)))
             .await
             .is_err()
     );
@@ -1211,7 +1341,8 @@ async fn popup_sees(page: netweir_browser::Page) -> (serde_json::Value, Vec<(Str
             "/popup",
             common::html(
                 "<script>window.first = [navigator.userAgent, navigator.language, \
-                 Intl.DateTimeFormat().resolvedOptions().timeZone, window.inited ?? null];</script>",
+                 Intl.DateTimeFormat().resolvedOptions().timeZone, window.inited ?? null, \
+                 matchMedia('(prefers-color-scheme: dark)').matches];</script>",
             ),
         ),
     ]);
@@ -1247,6 +1378,7 @@ fn popup_env() -> netweir_browser::Environment {
         ),
         extra_headers: vec![("X-Netweir-Test".into(), "popup".into())],
         init_scripts: vec!["window.inited = 'yes'".into()],
+        color_scheme: Some(netweir_browser::ColorScheme::Dark),
         ..Default::default()
     }
 }
@@ -1255,7 +1387,7 @@ fn assert_opener_env(first: serde_json::Value, headers: Vec<(String, String)>) {
     let env = popup_env();
     assert_eq!(
         first,
-        serde_json::json!([env.user_agent, "de-DE", "Asia/Tokyo", "yes"])
+        serde_json::json!([env.user_agent, "de-DE", "Asia/Tokyo", "yes", true])
     );
     let header = |name: &str| {
         headers

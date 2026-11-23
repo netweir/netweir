@@ -1055,11 +1055,6 @@ impl Page {
         self.inner.browser.engine() == Engine::Firefox
     }
 
-    /// For what Netweir can't do on a Firefox page, or can't do there yet.
-    pub(crate) fn chrome_only(&self, feature: &str) -> Result<()> {
-        self.inner.browser.chrome_only(feature)
-    }
-
     /// The runtime the page's own tasks run on.
     pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
         self.inner.decider.runtime.clone()
@@ -3224,7 +3219,33 @@ impl Page {
     /// What `prefers-color-scheme` and `prefers-reduced-motion` match, in
     /// the page and its frames; None leaves one as it is.
     pub async fn emulate_media(&self, change: &crate::MediaChange) -> Result<()> {
-        self.chrome_only("Page.emulate_media")?;
+        if self.is_firefox() {
+            // Only the colour scheme has a command on Firefox; taking the
+            // others away is a change to nothing.
+            let refused = [
+                (change.media.flatten().is_some(), "a media type"),
+                (change.reduced_motion.flatten().is_some(), "reduced motion"),
+                (change.forced_colors.flatten().is_some(), "forced colours"),
+                (change.contrast.flatten().is_some(), "a contrast preference"),
+                (
+                    change.color_scheme == Some(Some(crate::ColorScheme::NoPreference)),
+                    "the colour scheme no-preference (light or dark is)",
+                ),
+            ];
+            if let Some((_, what)) = refused.iter().find(|(given, _)| *given) {
+                return Err(Error::Unsupported {
+                    engine: "Firefox",
+                    feature: format!("Page.emulate_media with {what}"),
+                });
+            }
+            let Some(scheme) = change.color_scheme else {
+                return Ok(());
+            };
+            let mut env = self.environment();
+            env.color_scheme = scheme;
+            self.replace_environment(env);
+            return bidi::set_color_scheme(self, scheme).await;
+        }
         let mut env = self.environment();
         if let Some(v) = change.media {
             env.media = v;

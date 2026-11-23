@@ -215,12 +215,20 @@ where Chrome would do it:
 | `connect` | Netweir starts its own Firefox; it doesn't attach to one |
 | `worker_header_order` | Chrome's only |
 | a phone's environment, `is_mobile`, `has_touch` | Chrome's only |
-| `color_scheme`, `reduced_motion`, `forced_colors`, `contrast`, `emulate_media()` | Firefox has no command for them |
-| permissions for every origin | grant them to an origin instead |
-| `download.cancel()` | Firefox can't stop a download |
-| an HTML5 drag (`drag()` from a `draggable` element) | Firefox doesn't begin one from WebDriver's mouse |
+| `reduced_motion`, `forced_colors`, `contrast` and a media type, in an environment or `emulate_media()` | Firefox's WebDriver BiDi overrides only `prefers-color-scheme` |
+| `color_scheme="no-preference"` | Firefox's override takes only `"light"` or `"dark"` |
+| permissions for every origin | Firefox's `permissions.setPermission` takes one origin: grant them to an origin instead |
+| `download.cancel()` | Firefox's WebDriver BiDi has no command to stop a download |
+| an HTML5 drag (`drag()` from a `draggable` element) | Firefox's WebDriver starts the drag but ends it without a `drop` |
 | `start_tracing()` and `stop_tracing()` | Chrome's DevTools format |
-| a partitioned cookie | not set on Firefox |
+
+`color_scheme` and `emulate_media(color_scheme=...)` set the same
+override Firefox's DevTools do, so the media query and the colours of a
+page drawn in `color-scheme: light dark` follow it, as they would the
+system's. A cookie with a `partition_key` is kept under that top-level
+site, as one a frame set with `Partitioned` would be, but `cookies()`
+gives it back without its `partition_key`: Firefox doesn't say which
+partition a cookie is in.
 
 Keyboard shortcuts edit a field the way the system Firefox runs on does
 (Command on macOS, Control elsewhere), whatever system the page's
