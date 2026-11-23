@@ -463,18 +463,19 @@ async fn alt_svc_clear_and_max_age_are_honoured() {
     let fetcher = fetcher();
 
     // ma=3: HTTP/3 for three seconds, then TCP again.
-    let learnt = Instant::now();
     let offered = fetcher
         .get(&offering(&origin, &format!("h3=\"{to}\"; ma=3")), &[])
         .await
         .unwrap();
+    // Its lifetime starts when the answer is read, just before this.
+    let learnt = Instant::now();
     assert_eq!(offered.version, "HTTP/2");
     until_http3(&fetcher, &plain).await;
     assert!(
         learnt.elapsed() < Duration::from_secs(3),
         "too slow to tell"
     );
-    tokio::time::sleep_until((learnt + Duration::from_millis(3200)).into()).await;
+    tokio::time::sleep_until((learnt + Duration::from_millis(3300)).into()).await;
     assert_eq!(fetcher.get(&plain, &[]).await.unwrap().version, "HTTP/2");
 
     // A day by default, until the origin says `clear`, over HTTP/3 here.
