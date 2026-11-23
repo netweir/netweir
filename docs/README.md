@@ -42,6 +42,7 @@ The designs behind it, for anyone working on Netweir:
 - [design/monitoring.md](design/monitoring.md): item validation and end-of-crawl checks.
 - [design/metrics.md](design/metrics.md): live stats, the progress line and the metrics endpoint.
 - [design/proxies.md](design/proxies.md): proxy pools, rotation and health.
+- [design/http3.md](design/http3.md): HTTP/3 through Firefox's own QUIC stack, what matches Firefox and what doesn't yet.
 - [design/sessions.md](design/sessions.md): the cookie jar, named jars, storage state and handing cookies between Chrome and HTTP.
 - [design/scrapy.md](design/scrapy.md): Netweir as Scrapy's download handler.
 - [design/archive.md](design/archive.md): WARC and HAR files of what a crawl fetched.

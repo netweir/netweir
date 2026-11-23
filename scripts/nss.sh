@@ -42,6 +42,14 @@ case "$target" in
   *) echo "scripts/nss.sh: no NSS build for $target" >&2; exit 1 ;;
 esac
 
+# On macOS, the oldest version the build runs on is the one Rust builds
+# for (and a wheel is tagged with), not the version of the machine that
+# builds it.
+case "$target" in
+  aarch64-apple-darwin) export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0} ;;
+  x86_64-apple-darwin) export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-10.12} ;;
+esac
+
 if [ ! -f "$out/done" ]; then
   mkdir -p "$out"
   tarball="$out/nss.tar.gz"

@@ -8,8 +8,10 @@ Firefox runs.
 This is issue #387. When the fetcher moves to it, races TCP and falls
 back, the way Firefox does, is #389, under
 [When a request goes over HTTP/3](#when-a-request-goes-over-http3).
-Both are in netweir-core's `http3` feature, which the wheels don't have
-yet: `pip install netweir` still speaks HTTP/1.1 and HTTP/2 only.
+Both are in netweir-core's `http3` feature, which netweir-py's own
+`http3` feature turns on. The wheels have it (#400); a build from the
+source distribution doesn't unless it's asked for, since it needs NSS
+built first. In Python it's the `http3=` setting, on by default.
 
 ## The stack
 

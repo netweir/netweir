@@ -46,6 +46,9 @@ fn fetch_error(e: CoreError) -> PyErr {
 
 /// Fetch options from the arguments Fetcher and Crawler share.
 /// `ca_certificates` is PEM, trusted in place of the bundled roots.
+/// `http3` off keeps every request on TCP; a build without the http3
+/// feature never leaves it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fetch_options(
     profile: &str,
     proxy: Option<String>,
@@ -53,6 +56,7 @@ pub(crate) fn fetch_options(
     verify: bool,
     ca_certificates: Option<Vec<u8>>,
     max_redirects: u32,
+    http3: bool,
 ) -> PyResult<FetchOptions> {
     let profile = Profile::named(profile).map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mut options = FetchOptions::new(profile);
@@ -61,6 +65,7 @@ pub(crate) fn fetch_options(
     options.verify_certificates = verify;
     options.ca_certificates = ca_certificates;
     options.max_redirects = max_redirects;
+    options.http3 = http3;
     Ok(options)
 }
 
@@ -129,7 +134,7 @@ impl Fetcher {
     /// `max_redirects` is how many redirects a request follows before it
     /// fails.
     #[new]
-    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None, cookies=true, system_proxy=true, ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS))]
+    #[pyo3(signature = (profile="chrome", proxy=None, timeout=30.0, verify=true, max_size=None, cookies=true, system_proxy=true, ca_certificates=None, max_redirects=netweir_core::MAX_REDIRECTS, http3=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         profile: &str,
@@ -141,6 +146,7 @@ impl Fetcher {
         system_proxy: bool,
         ca_certificates: Option<Vec<u8>>,
         max_redirects: u32,
+        http3: bool,
     ) -> PyResult<Fetcher> {
         let mut options = fetch_options(
             profile,
@@ -149,6 +155,7 @@ impl Fetcher {
             verify,
             ca_certificates,
             max_redirects,
+            http3,
         )?;
         options.max_body = max_size;
         options.cookies = cookies;

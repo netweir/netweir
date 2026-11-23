@@ -1246,7 +1246,7 @@ impl Crawler {
         http_auth=None, saved_logins=Vec::new(),
         xml_recover=false, parse_timeout=Some(10.0), parse_pages=true,
         browser_environment=None, browser_worker_header_order=false, browser_steps=None,
-        browser_steps_max=Some(120.0), browser_engine="chrome",
+        browser_steps_max=Some(120.0), browser_engine="chrome", http3=true,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1306,6 +1306,7 @@ impl Crawler {
         browser_steps: Option<&str>,
         browser_steps_max: Option<f64>,
         browser_engine: &str,
+        http3: bool,
         py: Python<'_>,
     ) -> PyResult<Crawler> {
         let environment = crate::environment::environment_from(browser_environment.as_ref())?;
@@ -1435,6 +1436,7 @@ impl Crawler {
             verify,
             ca_certificates,
             max_redirects,
+            http3,
         )?;
         options.max_body = max_response_size;
         // "match" goes by the HTTP profile, so the browser a site sees is

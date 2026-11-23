@@ -590,7 +590,9 @@ class Client:
     a (user, password) login every call sends unless it has its own.
     ``storage_state`` starts the client with the cookies of a storage state:
     a path to a file ``storage_state()`` (here or in a browser context) or
-    Playwright saved, or its dict. ``cookies`` is the jar.
+    Playwright saved, or its dict. ``cookies`` is the jar. ``http3=False``
+    keeps every request on TCP; otherwise a Firefox profile moves to HTTP/3
+    once a site offers it, as Firefox does, unless there's a proxy.
     """
 
     def __init__(
@@ -604,6 +606,7 @@ class Client:
         max_redirects: int = 20,
         auth: Auth = None,
         storage_state: str | os.PathLike[str] | dict[str, Any] | None = None,
+        http3: bool = True,
     ):
         check, cas = certificates(verify)
         self._fetcher = Fetcher(
@@ -614,6 +617,7 @@ class Client:
             max_size=max_size,
             ca_certificates=cas,
             max_redirects=redirect_limit(max_redirects),
+            http3=http3,
         )
         self._auth = checked_auth(auth)
         self.cookies = Cookies(self._fetcher)
@@ -742,8 +746,8 @@ def get(
     and the like) raises Blocked; pass ``raise_on_block=False`` to get it
     as a page, with ``page.blocked`` naming the vendor. With ``referer``,
     it's sent as following a link on that page. ``params``, ``auth``,
-    ``allow_redirects`` (or ``follow_redirects``), ``max_redirects`` and
-    ``verify`` work as in ``request``."""
+    ``allow_redirects`` (or ``follow_redirects``), ``max_redirects``,
+    ``verify`` and ``http3`` work as in ``request``."""
     return request(
         "GET",
         url,
@@ -778,6 +782,7 @@ def request(
     follow_redirects: bool | None = None,
     max_redirects: int = 20,
     verify: Verify = True,
+    http3: bool = True,
 ) -> Page:
     """Sends any request and waits for the page. ``form`` is submitted as
     a form (URL-encoded); ``json`` or a raw ``body`` as a page's script
@@ -791,12 +796,21 @@ def request(
     ``follow_redirects=False``) returns a redirect as the page; more than
     ``max_redirects`` is FetchError("too_many_redirects"). ``verify`` is
     True, False (no certificate check), or the path of a PEM file of CA
-    certificates to trust in place of the bundled ones."""
+    certificates to trust in place of the bundled ones. ``http3=False``
+    keeps the request on TCP. A site offers HTTP/3 in a response and it's
+    later requests that move, so HTTP/3 shows on a Client, which keeps
+    what it learnt, more than in one call."""
     how = payload(method, form, json, body)
     url, policy = _policy(url, params, auth, allow_redirects, follow_redirects, max_redirects, None)
     check, cas = certificates(verify)
     fetcher = Fetcher(
-        profile, proxy, seconds(timeout), verify=check, max_size=max_size, ca_certificates=cas
+        profile,
+        proxy,
+        seconds(timeout),
+        verify=check,
+        max_size=max_size,
+        ca_certificates=cas,
+        http3=http3,
     )
     response = fetcher.send_blocking(url, headers=_pairs(headers), referer=referer, **how, **policy)
     return _checked(Page(response), raise_on_block)

@@ -95,9 +95,42 @@ Checking happens on your side, after the server has read the handshake,
 so neither changes what a site sees: Netweir's tests hold both handshakes
 to the browser's recorded one.
 
+## HTTP/3
+
+A site that offers HTTP/3 says so in an `Alt-Svc` header, and Firefox
+takes it up: the first request goes over TCP, and the ones after it over
+QUIC. With a Firefox profile, Netweir does the same, through the QUIC
+stack Firefox itself runs. If the HTTP/3 connection isn't up yet, a
+request waits 100 ms for it and then goes over TCP. If it fails, the site
+stays on TCP, as in Firefox.
+
+```python
+async with netweir.Client(profile="firefox") as client:
+    await client.get("https://cloudflare.com/")  # TCP, learns Alt-Svc
+    await client.get("https://cloudflare.com/")  # HTTP/3, once it's up
+```
+
+Since it's the next request that moves, HTTP/3 shows up on a Client or a
+crawl, which remember what a site offered, more than in one
+`netweir.get()`. Chrome and Safari profiles stay on HTTP/2 and HTTP/1.1
+for now. A `proxy`, or a system proxy for https, keeps every request on
+TCP, as Firefox never sends QUIC through one. So does `http3=False`, on
+`netweir.get()`, a Client, or in [settings](settings.md#fetching).
+
+Not everything is Firefox's yet: Firefox sends a request in 0-RTT on a
+resumed connection and Netweir waits for the handshake, and Netweir tries
+only the first address a name resolves to where Firefox races IPv4 and
+IPv6. [design/http3.md](design/http3.md#what-doesnt-match-yet) lists each
+difference.
+
+HTTP/3 comes in the wheels `pip install netweir` installs. A build from
+the source distribution leaves it out unless it's asked for
+([CONTRIBUTING.md](https://github.com/netweir/netweir/blob/main/CONTRIBUTING.md)
+says how), and then `http3` changes nothing.
+
 ## On a Client
 
-A Client takes `verify`, `max_redirects` and `auth` for every call, and
+A Client takes `verify`, `max_redirects`, `auth` and `http3` for every call, and
 each call takes `params`, `auth`, `allow_redirects`, `max_redirects` and
 `timeout` for itself:
 

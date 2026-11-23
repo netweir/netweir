@@ -36,6 +36,8 @@ Working today:
 - Fetching that is indistinguishable from Chrome 157, Firefox 160 or
   Safari 27 on the wire, over HTTP/2 and HTTP/1.1, with cookies and
   redirects. Below: how that's proved, and the one known exception.
+- HTTP/3 the way Firefox does it: once a site offers it, a Firefox profile
+  moves there on Firefox's own QUIC stack.
 - Forms, logins and JSON APIs: POST and any other method, sent the way
   Chrome, Firefox or Safari sends a form or a page's own script, and forms read off
   a page the way a browser submits them. See
@@ -472,6 +474,15 @@ So is Safari 27, as `profile="safari"`. It has two habits of its own, and
 Netweir copies both. Two cookies with the same path go out newest first.
 And once a site has answered over HTTP/1.1, Safari stops offering it
 HTTP/2 on new connections, so Netweir does the same.
+
+Firefox goes over HTTP/3 too. When a site offers it in `Alt-Svc`, the
+next requests leave on neqo, the QUIC stack Firefox itself runs, set up
+with Firefox 160's settings, and a test holds the QUIC Initial, the
+ClientHello inside it and the HTTP/3 settings to a recording of the real
+browser. What isn't Firefox's yet, 0-RTT for one, is listed in
+[docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
+proxy it stays on TCP, as Firefox does, and `http3=False` turns it
+off. Chrome and Safari stay on HTTP/2 until their own QUIC is in.
 
 One known difference: Chrome sends a `priority` header only over HTTP/2,
 and Netweir can't tell a server lacks HTTP/2 until it has answered once. So

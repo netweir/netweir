@@ -379,6 +379,7 @@ class Fetcher:
         system_proxy: bool = True,
         ca_certificates: bytes | None = None,
         max_redirects: int = 20,
+        http3: bool = True,
     ) -> None: ...
     def cookies(self) -> list[dict[str, Any]]: ...
     def find_cookies(
@@ -482,6 +483,7 @@ class Crawler:
         browser_steps: str | None = None,
         browser_steps_max: float | None = 120.0,
         browser_engine: Literal["chrome", "firefox", "match"] = "chrome",
+        http3: bool = True,
     ) -> None: ...
     def add_rule(
         self,

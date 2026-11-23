@@ -19,3 +19,11 @@ netweir includes BoringSSL, Google's TLS library, compiled from source
 through the btls crate. BoringSSL is licensed under the Apache License,
 Version 2.0; its LICENSE file is in the btls-sys crate's deps/boringssl
 directory.
+
+netweir's wheels include NSS and NSPR, Mozilla's TLS and portability
+libraries, compiled from Mozilla's release tarball
+(https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_132_RTM/src/)
+for HTTP/3 with Firefox profiles. NSS and NSPR are licensed under the
+Mozilla Public License, Version 2.0 (https://mozilla.org/MPL/2.0/); their
+source code, unmodified, is at that address and in the tarball
+scripts/nss.sh downloads.

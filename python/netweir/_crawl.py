@@ -136,6 +136,10 @@ class Settings:
     #: certificates to trust in place of the bundled ones, for hosts an
     #: internal CA vouches for. Nothing on the wire changes.
     verify: bool | str | os.PathLike = True
+    #: Move to HTTP/3 where the profile's browser would, after a site
+    #: offers it (Alt-Svc). Only Firefox profiles have it yet, and never
+    #: through a proxy. False keeps every request on TCP.
+    http3: bool = True
     #: A (user, password) login sent as HTTP Basic to http_auth_domain and
     #: its subdomains, and nowhere else (Scrapy's HTTPAUTH_USER,
     #: HTTPAUTH_PASS and HTTPAUTH_DOMAIN). Each needs the other.
@@ -516,6 +520,7 @@ class Settings:
             browser_steps=steps_json(list(self.browser_steps), str) if self.browser_steps else None,
             browser_steps_max=self.browser_steps_max,
             browser_engine=self.browser_engine,
+            http3=self.http3,
             cache=None if self.cache is None else os.path.join(self.cache, "cache.sqlite3"),
             cache_expiry=self.cache_expiry,
             deltafetch=None

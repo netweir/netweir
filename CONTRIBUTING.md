@@ -62,6 +62,17 @@ NSS_DIR=... NSS_PREBUILT=1 cargo test -p netweir-core --features http3 --test ht
 with the two values the script prints.
 [docs/design/http3.md](docs/design/http3.md) says why.
 
+The wheels on PyPI have it. A build from source, `maturin develop` or
+`pip install` from the source distribution, leaves it out unless asked,
+so it needs no NSS; to put it in, run `scripts/nss.sh`, set the two
+values, and build with the feature:
+
+```
+NSS_DIR=... NSS_PREBUILT=1 maturin develop --release --features http3
+NSS_DIR=... NSS_PREBUILT=1 pip install netweir --no-binary netweir \
+  --config-settings build-args="--features http3"
+```
+
 A bug fix comes with the test that would have caught it. A new feature
 comes with tests and, if you can use it from Python, a line in
 [docs/](docs/README.md).

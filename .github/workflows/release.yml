@@ -2,6 +2,11 @@ name: release
 
 # Wheels for every platform on every version tag; a manual run builds them
 # without publishing, to check a release before tagging it.
+#
+# Every wheel has netweir-core's http3 feature: NSS is built first, by
+# scripts/nss.sh, and cached as ci.yml's http3 job caches it. The keys
+# here are the wheels' own, since Linux builds NSS inside the manylinux
+# container and macOS for the oldest version a wheel runs on.
 on:
   push:
     tags: ["v*"]
@@ -24,6 +29,8 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64
     runs-on: ${{ matrix.runner }}
+    env:
+      TRIPLE: ${{ matrix.target }}-unknown-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,15 +40,28 @@ jobs:
       - name: Pin build timestamps to the commit
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      # The container mounts the workspace at the same path, so what it
+      # builds in target/nss is cached from here.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/nss/${{ env.TRIPLE }}
+          key: nss-wheel-manylinux_2_28-${{ env.TRIPLE }}-${{ hashFiles('scripts/nss.sh') }}
       - name: One wheel for Python 3.11 and later, one for free-threaded 3.14
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: "2_28"
-          # BoringSSL builds with CMake.
-          before-script-linux: dnf install -y cmake perl-IPC-Cmd clang
-          docker-options: -e SOURCE_DATE_EPOCH
-          args: --release --out dist -i python3.11 -i python3.14t
+          # BoringSSL builds with CMake; NSS with gyp and ninja, inside the
+          # container so it links against the glibc the wheel promises.
+          before-script-linux: |
+            dnf install -y cmake perl-IPC-Cmd clang
+            uv tool install gyp-next==0.22.4
+            uv tool install ninja==1.13.0
+            scripts/nss.sh "$TRIPLE" > /tmp/nss.out
+            tail -n 2 /tmp/nss.out
+            export $(tail -n 2 /tmp/nss.out)
+          docker-options: -e SOURCE_DATE_EPOCH -e TRIPLE
+          args: --release --features http3 --out dist -i python3.11 -i python3.14t
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-linux-${{ matrix.target }}
@@ -67,10 +87,25 @@ jobs:
           python-version: |
             3.11
             3.14t
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: NSS's build tools
+        run: |
+          uv tool install gyp-next==0.22.4
+          uv tool install ninja==1.13.0
+          uv tool dir --bin >> "$GITHUB_PATH"
+      # NSS for x86_64 builds under Rosetta (scripts/nss.sh).
+      - if: matrix.target == 'x86_64-apple-darwin'
+        run: arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/nss/${{ matrix.target }}
+          key: nss-wheel-${{ matrix.target }}-${{ hashFiles('scripts/nss.sh') }}
+      - name: NSS
+        run: scripts/nss.sh ${{ matrix.target }}
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.11 -i python3.14t
+          args: --release --features http3 --out dist -i python3.11 -i python3.14t
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -92,10 +127,47 @@ jobs:
           python-version: |
             3.11
             3.14t
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # NSS builds with gyp and ninja, under MSYS2's bash with MSVC and
+      # Mozilla's nsinstall, as in ci.yml's http3 job.
+      - name: NSS's build tools
+        shell: bash
+        run: |
+          uv tool install gyp-next==0.22.4
+          uv tool install ninja==1.13.0
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: MSYS2 and nsinstall
+        shell: bash
+        run: |
+          mkdir -p "$HOME/bin"
+          curl --fail --silent --show-error -o "$HOME/bin/nsinstall" \
+            https://hg-edge.mozilla.org/releases/mozilla-release/raw-file/FIREFOX_160_0_RELEASE/config/nsinstall.py
+          echo "f88df5591ee50d6e86625efd6e5f9c7b0dd4cba61e27ab533b1990115e100caf  $HOME/bin/nsinstall" | sha256sum -c -
+          sed -i '1i #! /usr/bin/env python3' "$HOME/bin/nsinstall"
+          chmod +x "$HOME/bin/nsinstall"
+          python3 -m pip install mozfile==3.0.0
+          { echo C:/msys64/usr/bin; echo C:/msys64/mingw64/bin; cygpath -m "$HOME/bin"; } >> "$GITHUB_PATH"
+          case "${VSCMD_VER%%.*}" in 17) year=2022 ;; 18) year=2026 ;; *) year= ;; esac
+          if [ -n "$year" ]; then
+            { echo "VSPATH=$VSINSTALLDIR"
+              echo "GYP_MSVS_OVERRIDE_PATH=$VSINSTALLDIR"
+              echo "GYP_MSVS_VERSION=$year"; } >> "$GITHUB_ENV"
+          fi
+      # From here on `bash` is MSYS2's, whose link.exe would shadow MSVC's.
+      - shell: bash
+        run: rm -f /usr/bin/link.exe
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/nss/x86_64-pc-windows-msvc
+          key: nss-wheel-x86_64-pc-windows-msvc-${{ hashFiles('scripts/nss.sh') }}
+      - name: NSS
+        shell: bash
+        run: scripts/nss.sh x86_64-pc-windows-msvc
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: x64
-          args: --release --out dist -i python3.11 -i python3.14t
+          args: --release --features http3 --out dist -i python3.11 -i python3.14t
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-windows
@@ -144,6 +216,16 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
+      # The fingerprint crate's capture server, for tests/test_http3.py:
+      # a Firefox profile has to move to HTTP/3 in every wheel.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - name: The capture server
+        shell: bash
+        run: |
+          cargo build --release --locked -p netweir-fingerprint --bin capture
+          echo "NETWEIR_CAPTURE=$GITHUB_WORKSPACE/target/release/capture" >> "$GITHUB_ENV"
       - name: Install the built wheel, not the source
         run: |
           uv venv

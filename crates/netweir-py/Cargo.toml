@@ -22,6 +22,12 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 url = "2"
 
+[features]
+# Firefox profiles over HTTP/3 (netweir-core's http3 feature). The release
+# wheels turn it on; a build from source leaves it off unless asked, since
+# it needs NSS from scripts/nss.sh and NSS_DIR set (CONTRIBUTING.md).
+http3 = ["netweir-core/http3"]
+
 [lints.rust]
 # Set by .cargo/config.toml for PyO3; lib.rs reports it.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(pyo3_disable_reference_pool)"] }
