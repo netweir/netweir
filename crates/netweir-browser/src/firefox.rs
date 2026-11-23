@@ -174,6 +174,11 @@ user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
 user_pref("datareporting.healthreport.uploadEnabled", false);
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+// No survey bar ("Please help make Firefox better"), which shortens the
+// page: Heartbeat comes through Normandy, which also fetches recipes and
+// studies no page asked for.
+user_pref("app.normandy.enabled", false);
+user_pref("app.shield.optoutstudies.enabled", false);
 // The pinned build stays the pinned build: Netweir moves the pin.
 user_pref("app.update.disabledForTesting", true);
 // Downloads stay in the profile, never in the person's own folder.
@@ -804,6 +809,17 @@ mod tests {
             js.ends_with("user_pref(\"network.proxy.type\", 5);\n"),
             "{js}"
         );
+    }
+
+    #[test]
+    fn no_survey_bar_shortens_the_page() {
+        let js = user_js(Path::new("/p"), None).unwrap();
+        for pref in [
+            "user_pref(\"app.normandy.enabled\", false);",
+            "user_pref(\"app.shield.optoutstudies.enabled\", false);",
+        ] {
+            assert!(js.contains(pref), "{pref} missing from {js}");
+        }
     }
 
     #[test]
