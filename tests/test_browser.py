@@ -612,8 +612,8 @@ async def test_a_proxy_refusing_the_login_gives_its_407_without_asking_forever()
             with pytest.raises(netweir.FetchError, match=failure[ENGINE]):
                 await page.goto("http://shop.test/item")
             if ENGINE == "firefox":
-                # Without the login, then with it (three times on a Linux
-                # runner): a few, where a loop would be dozens.
+                # Without the login, then with it (three times on Linux and
+                # Windows runners): a few, where a loop would be dozens.
                 assert server.asked <= 4, server.asked
 
 
