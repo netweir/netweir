@@ -106,10 +106,9 @@ if [ ! -f "$out/done" ]; then
     crux pqcwrap_static ghash-aes-x86_c_lib ghash-aes-aarch64_c_lib intel-gcm-wrap_c_lib
     aarch64-gcm-wrap_c_lib sqlite)
   map="$out/freebl-symbols.txt"
-  # NSPR's own names stay as they are. On Windows freebl carries a copy
-  # of some (PR_CeilingLog2), and renaming NSPR's definition leaves
-  # plds's dllimport reference, __imp_PR_CeilingLog2, with nothing to
-  # bind to. BoringSSL defines no PR_ or PL_ names, so nothing clashes.
+  # NSPR's own names stay as they are, should freebl carry a copy of any:
+  # BoringSSL defines no PR_ or PL_ names, so none of them clash, and on
+  # Windows plds reaches them through dllimport names the map can't see.
   nspr_names="$out/nspr-symbols.txt"
   for f in nspr4 plc4 plds4 nspr4_s plc4_s plds4_s; do
     [ ! -f "$lib/$a_pre$f.$a_ext" ] || defined "$lib/$a_pre$f.$a_ext"

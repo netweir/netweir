@@ -185,7 +185,17 @@ mod gecko {
     unsafe extern "C" {
         fn SSL_OptionSetDefault(option: i32, value: c_int) -> c_int;
         fn NSS_SetAlgorithmPolicy(tag: c_int, set: u32, clear: u32) -> c_int;
+        #[cfg(windows)]
+        fn PR_CeilingLog2(i: u32) -> c_int;
     }
+
+    // On Windows NSPR's plds is built to call NSPR through its DLL, and
+    // MSVC's linker binds such a call to a static library only for a
+    // function something else has already pulled in. Nothing else calls
+    // PR_CeilingLog2, which PL_NewHashTable does, so this pulls it in.
+    #[cfg(windows)]
+    #[used]
+    static PULL_PR_CEILING_LOG2: unsafe extern "C" fn(u32) -> c_int = PR_CeilingLog2;
 
     /// Once per process, after NSS's own initialisation.
     pub(super) fn defaults() -> Result<(), String> {
