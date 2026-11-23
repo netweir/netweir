@@ -7,15 +7,25 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**More engines.** Firefox and WebKit, but only once they can be driven
-without announcing it, as Chrome is today. And HTTP/3, when a request can go
-out over it looking exactly like the browser it claims to be.
+**HTTP/3,** when a request can go out over it looking exactly like the
+browser it claims to be. Netweir's fetcher speaks HTTP/1.1 and HTTP/2,
+which is what a browser falls back to when a site offers no HTTP/3.
+
+**Firefox's gaps.** Firefox can't yet take a `proxy`, and a few
+other options raise `BrowserError` on it.
+[docs/browser.md](docs/browser.md#starting-firefox) lists them.
+
+**WebKit,** once Safari can be driven without `navigator.webdriver` saying
+so. No route does that today, and a WebKit that every challenge spots would
+be no use to you.
 
 ## Shipped
 
-0.7 finished the browser list: finding elements by their text or role, saving
-a page as a PDF, tracing, and replaying a HAR file through routes. The
-[release notes](https://github.com/netweir/netweir/releases/tag/v0.7.0)
+0.8 added Firefox: `netweir.browser(engine="firefox")` drives the Firefox
+`netweir install firefox` installs, and pages can't tell it's driven. 0.7
+finished the browser list before it: finding elements by their text or
+role, saving a page as a PDF, tracing, and replaying a HAR file through
+routes. The [release notes](https://github.com/netweir/netweir/releases)
 have the details.
 
 ## Support
