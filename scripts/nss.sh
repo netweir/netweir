@@ -115,6 +115,17 @@ if [ ! -f "$out/done" ]; then
       }' > "$map"
   [ -s "$map" ] || { echo "scripts/nss.sh: no freebl symbols found" >&2; exit 1; }
   for a in "$lib"/*."$a_ext"; do
+    # On Windows the directory also holds the import libraries for NSS's
+    # DLLs, whose short import members objcopy can't rewrite. Nothing
+    # links them, so they're left as they are.
+    case "$(uname -s)" in
+      MINGW* | MSYS* | CYGWIN*)
+        if dumpbin -nologo -linkermember:1 "$a" | grep -q __IMPORT_DESCRIPTOR_; then
+          echo "scripts/nss.sh: $(basename "$a") is an import library, left alone"
+          continue
+        fi ;;
+    esac
+    echo "scripts/nss.sh: prefixing freebl symbols in $(basename "$a")"
     objcopy --redefine-syms="$map" "$a"
   done
 
