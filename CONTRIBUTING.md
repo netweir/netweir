@@ -51,6 +51,17 @@ uv run pytest
 `netweir-py` is left out of `cargo test` because it's a Python extension
 and only links inside Python; `pytest` covers it.
 
+HTTP/3 (netweir-core's `http3` feature) builds only after NSS has, which
+takes gyp-next and ninja (`pip install gyp-next ninja`) and a minute:
+
+```
+scripts/nss.sh
+NSS_DIR=... NSS_PREBUILT=1 cargo test -p netweir-core --features http3 --test http3
+```
+
+with the two values the script prints.
+[docs/design/http3.md](docs/design/http3.md) says why.
+
 A bug fix comes with the test that would have caught it. A new feature
 comes with tests and, if you can use it from Python, a line in
 [docs/](docs/README.md).

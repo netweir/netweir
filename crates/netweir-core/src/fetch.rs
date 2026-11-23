@@ -143,7 +143,26 @@ pub struct Fetcher {
     /// The headers of requests other than typing an address.
     shapes: Arc<Shapes>,
     archive: Option<Archive>,
+    /// Origins whose requests go over HTTP/3, and the connections to them,
+    /// for a profile that has HTTP/3.
+    #[cfg(feature = "http3")]
+    h3: Option<Arc<crate::h3::Routes>>,
+    /// The profile's headers wreq adds to a typed address, which an
+    /// HTTP/3 request has to be given itself.
+    #[cfg(feature = "http3")]
+    default_headers: Arc<HeaderMap>,
+    #[cfg(feature = "http3")]
+    timeout: Duration,
+    #[cfg(feature = "http3")]
+    proxied: bool,
 }
+
+/// Where a request goes instead of wreq's TCP connections: an origin's
+/// HTTP/3 alternative (`host:port`), with what reaches it.
+#[cfg(feature = "http3")]
+type Route = (Arc<crate::h3::Routes>, String);
+#[cfg(not(feature = "http3"))]
+type Route = std::convert::Infallible;
 
 /// The header lines a request went out with, as the client wrote them.
 type Sent = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
@@ -1318,7 +1337,99 @@ impl Fetcher {
                 after_form_redirect: profile.after_form_redirect.clone(),
             }),
             archive: options.archive.clone(),
+            #[cfg(feature = "http3")]
+            h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
+                Some("firefox-160") => {
+                    Some(Arc::new(crate::h3::Routes::new(crate::h3::Trust::new(
+                        options.verify_certificates,
+                        options.ca_certificates.as_deref(),
+                    )?)))
+                }
+                Some(other) => {
+                    return Err(FetchError::invalid(format!(
+                        "profile {}: unknown HTTP/3 stack {other:?}",
+                        profile.name
+                    )));
+                }
+                None => None,
+            },
+            #[cfg(feature = "http3")]
+            default_headers: Arc::new(
+                profile
+                    .default_headers()
+                    .map_err(|e| FetchError::invalid(e.to_string()))?,
+            ),
+            #[cfg(feature = "http3")]
+            timeout: options.timeout,
+            #[cfg(feature = "http3")]
+            proxied: options.proxy.is_some(),
         })
+    }
+
+    /// Sends every request to `origin` (`https://host[:port]`) over HTTP/3
+    /// to `alternative` (`host:port`), as Firefox does once the origin has
+    /// advertised it with `Alt-Svc: h3="alternative"`. Each request then
+    /// carries `Alt-Used`, as Firefox's do.
+    ///
+    /// Known limit: nothing calls this yet but tests. Learning alternatives
+    /// from Alt-Svc, racing TCP and falling back to it are the fetcher's
+    /// to do (netweir#389).
+    #[cfg(feature = "http3")]
+    pub fn use_http3(&self, origin: &str, alternative: &str) -> Result<(), FetchError> {
+        let Some(routes) = &self.h3 else {
+            return Err(FetchError::invalid(format!(
+                "the {} profile has no HTTP/3",
+                self.shapes.profile
+            )));
+        };
+        // Firefox never sends QUIC through a proxy; nor does netweir.
+        if self.proxied {
+            return Err(FetchError::invalid(
+                "no HTTP/3 through a proxy, as in Firefox".to_string(),
+            ));
+        }
+        let url = parse_url(origin)?;
+        if url.scheme() != "https" {
+            return Err(FetchError::invalid(format!(
+                "HTTP/3 is for https origins, not {origin}"
+            )));
+        }
+        let (host, port) = alternative
+            .rsplit_once(':')
+            .and_then(|(h, p)| Some((h, p.parse::<u16>().ok()?)))
+            .ok_or_else(|| {
+                FetchError::invalid(format!("an alternative is host:port, not {alternative:?}"))
+            })?;
+        let host = if host.is_empty() {
+            url.host_str().unwrap_or_default()
+        } else {
+            host
+        };
+        routes.add(url.origin().ascii_serialization(), format!("{host}:{port}"));
+        Ok(())
+    }
+
+    /// Closes this Fetcher's HTTP/3 connections, once each has sent what
+    /// it was sending; the next request to one of their origins opens a
+    /// new one, resuming the closed one's TLS session as Firefox does.
+    #[cfg(feature = "http3")]
+    pub async fn close_http3(&self) {
+        if let Some(routes) = &self.h3 {
+            routes.close().await;
+        }
+    }
+
+    /// Where a request to `url` goes over HTTP/3, if it does.
+    fn route(&self, url: &Url) -> Option<Route> {
+        #[cfg(feature = "http3")]
+        if let Some(routes) = &self.h3
+            && url.scheme() == "https"
+            && let Some(alternative) = routes.alternative(&url.origin().ascii_serialization())
+        {
+            return Some((routes.clone(), alternative));
+        }
+        let _ = url;
+        None
     }
 
     /// Whether a request to `url` will go over HTTP/2: never for http://,
@@ -1505,6 +1616,7 @@ impl Fetcher {
             .map_err(|_| FetchError::invalid(format!("bad URL {url:?}")))?;
         let sent: Option<Sent> = self.archive.as_ref().map(|_| Sent::default());
         let view = self.jar_view(&current, outgoing);
+        let route = self.route(&current);
         let (started, clock) = (SystemTime::now(), Instant::now());
         let response = if outgoing.typed() {
             self.send_typed(
@@ -1514,6 +1626,7 @@ impl Fetcher {
                 sent.as_ref(),
                 outgoing.policy.timeout,
                 view,
+                route,
             )
             .await?
         } else {
@@ -1525,6 +1638,7 @@ impl Fetcher {
                 hop > 0,
                 sent.as_ref(),
                 view,
+                route,
             )
             .await?
         };
@@ -1630,6 +1744,7 @@ impl Fetcher {
         Ok(Hop::Redirect(next.into(), then, cookies))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_typed(
         &self,
         uri: &Uri,
@@ -1638,6 +1753,7 @@ impl Fetcher {
         sent: Option<&Sent>,
         timeout: Option<Duration>,
         view: Option<JarView>,
+        route: Option<Route>,
     ) -> Result<wreq::Response, FetchError> {
         let base = if redirected {
             &self.redirect_order
@@ -1672,6 +1788,17 @@ impl Fetcher {
         for (_, name, value) in caller {
             request = request.header(name.clone(), value.clone());
         }
+        #[cfg(not(feature = "http3"))]
+        let _ = route;
+        #[cfg(feature = "http3")]
+        if let Some(route) = route {
+            let h3 = H3 {
+                typed: true,
+                body: None,
+                timeout,
+            };
+            return self.send_h3(route, request, order, sent, view, h3).await;
+        }
         dispatch(request, order, sent, view).await
     }
 
@@ -1688,6 +1815,7 @@ impl Fetcher {
         redirected: bool,
         sent: Option<&Sent>,
         view: Option<JarView>,
+        route: Option<Route>,
     ) -> Result<wreq::Response, FetchError> {
         let shapes = &self.shapes;
         let (shape, what, without) = match outgoing.kind {
@@ -1817,8 +1945,122 @@ impl Fetcher {
         if let Some(body) = &outgoing.body {
             request = request.body(body.clone());
         }
+        #[cfg(not(feature = "http3"))]
+        let _ = route;
+        #[cfg(feature = "http3")]
+        if let Some(route) = route {
+            let h3 = H3 {
+                typed: false,
+                body: outgoing.body.clone().map(Bytes::from),
+                timeout: outgoing.policy.timeout,
+            };
+            return self.send_h3(route, request, order, sent, view, h3).await;
+        }
         dispatch(request, order, sent, view).await
     }
+
+    /// Sends a request built for wreq over HTTP/3 instead, its headers
+    /// handed over as Firefox hands its own to neqo: the HTTP/1.1 lines in
+    /// order, lowercase, without the ones HTTP/3 forbids (Firefox's
+    /// `is_excluded_header`), and with `Alt-Used` where Connection was.
+    /// Cookies go in one field, as Firefox's do; the jar keeps what the
+    /// response sets, and the body is decompressed as wreq would.
+    #[cfg(feature = "http3")]
+    async fn send_h3(
+        &self,
+        (routes, alternative): Route,
+        request: wreq::RequestBuilder,
+        order: OrigHeaderMap,
+        sent: Option<&Sent>,
+        view: Option<JarView>,
+        h3: H3,
+    ) -> Result<wreq::Response, FetchError> {
+        use wreq::cookie::CookieStore;
+        use wreq_proto::ext::OnPreserveHeaderCallback;
+        let (_, request) = request.build_split();
+        let request = request?;
+        let uri = request.uri().clone();
+        let mut headers = if h3.typed {
+            (*self.default_headers).clone()
+        } else {
+            HeaderMap::new()
+        };
+        for name in request.headers().keys() {
+            headers.remove(name);
+        }
+        for (name, value) in request.headers() {
+            headers.append(name, value.clone());
+        }
+        // wreq writes Content-Length from the body; Firefox's lines have it.
+        if let Some(body) = &h3.body {
+            headers.insert(wreq::header::CONTENT_LENGTH, HeaderValue::from(body.len()));
+        }
+        if let Some(view) = &view
+            && let wreq::cookie::Cookies::Compressed(cookie) = view.cookies(&uri, Version::HTTP_11)
+        {
+            headers.insert(wreq::header::COOKIE, cookie);
+        }
+        order.call(&mut headers);
+        let host = uri.host().unwrap_or_default().to_string();
+        let alt_used = match alternative.strip_suffix(":443") {
+            Some(default_port) => default_port.to_string(),
+            None => alternative.clone(),
+        };
+        let mut lines: Vec<(String, Vec<u8>)> = Vec::with_capacity(headers.len() + 1);
+        for (name, value) in &headers {
+            match name.as_str() {
+                "connection" => lines.push(("alt-used".into(), alt_used.clone().into_bytes())),
+                "host" | "keep-alive" | "proxy-connection" | "te" | "transfer-encoding"
+                | "upgrade" | "sec-websocket-key" => {}
+                other => lines.push((other.to_string(), value.as_bytes().to_vec())),
+            }
+        }
+        if !headers.contains_key(wreq::header::CONNECTION) {
+            lines.push(("alt-used".into(), alt_used.into_bytes()));
+        }
+        if let Some(sent) = sent {
+            *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines.clone();
+        }
+        let accept_encoding = headers.get(wreq::header::ACCEPT_ENCODING).cloned();
+        let authority = match uri.port_u16() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.clone(),
+        };
+        let deadline = tokio::time::Instant::now() + h3.timeout.unwrap_or(self.timeout);
+        let request = crate::h3::Request {
+            method: request.method().as_str().to_string(),
+            authority,
+            path: uri
+                .path_and_query()
+                .map_or("/".to_string(), |p| p.as_str().to_string()),
+            headers: lines,
+            body: h3.body,
+        };
+        let answer = tokio::time::timeout_at(
+            deadline,
+            routes.send(&host, &alternative, request, deadline),
+        )
+        .await
+        .map_err(|_| {
+            FetchError::new(
+                FetchErrorKind::Timeout,
+                format!("{uri}: no answer over HTTP/3 in time"),
+            )
+        })??;
+        if let Some(view) = &view {
+            view.set_cookies(&mut answer.headers().get_all(SET_COOKIE).iter(), &uri);
+        }
+        Ok(crate::h3::decompressed(answer, accept_encoding).await)
+    }
+}
+
+/// What a request over HTTP/3 needs besides what wreq's request holds.
+#[cfg(feature = "http3")]
+struct H3 {
+    /// A typed address, which gets the profile's headers by default.
+    typed: bool,
+    body: Option<Bytes>,
+    timeout: Option<Duration>,
 }
 
 fn parse_url(url: &str) -> Result<Url, FetchError> {

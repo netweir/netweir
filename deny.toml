@@ -64,8 +64,15 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The unreleased wreq and btls commits pinned in Cargo.toml's [patch.crates-io].
-allow-git = ["https://github.com/0x676e67/wreq", "https://github.com/0x676e67/btls"]
+# The unreleased wreq and btls commits pinned in Cargo.toml's [patch.crates-io],
+# and Mozilla's neqo and nss-rs, which Firefox takes from git too (netweir-core's
+# http3 feature, at the tag and commit Firefox 160 pins).
+allow-git = [
+    "https://github.com/0x676e67/wreq",
+    "https://github.com/0x676e67/btls",
+    "https://github.com/mozilla/neqo",
+    "https://github.com/mozilla/nss-rs",
+]
 
 [advisories]
 ignore = [
@@ -74,4 +81,8 @@ ignore = [
     # parquet moves off chrono or onto a maintained fork; check with
     # `cargo tree -i chrono`. Other unmaintained notices still fail.
     { id = "RUSTSEC-2026-0543", reason = "only via parquet, which has no release without chrono yet" },
+    # humantime is unmaintained. Only neqo's qlog pulls it in, with the
+    # http3 feature, and Firefox ships the same; qlog stays off. Drop this
+    # once qlog moves off it (`cargo tree -i humantime --all-features`).
+    { id = "RUSTSEC-2026-0542", reason = "only via neqo's qlog, as in Firefox; qlog is never turned on" },
 ]

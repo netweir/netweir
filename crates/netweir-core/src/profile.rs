@@ -115,6 +115,20 @@ pub struct Profile {
     /// The GET after a form submission is answered with a redirect.
     #[serde(default)]
     pub after_form_redirect: Option<Shape>,
+    /// How the browser sends HTTP/3, for a profile netweir can send it
+    /// with.
+    #[serde(default)]
+    pub http3: Option<Http3>,
+}
+
+/// A profile's HTTP/3. The headers are the profile's own, as the browser
+/// sends them over HTTP/3.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Http3 {
+    /// The QUIC and HTTP/3 stack, set up as the browser sets it up:
+    /// "firefox-160" is neqo and NSS as Firefox 160 configures them.
+    pub stack: String,
 }
 
 /// What the browser sends for one kind of request, captured as `headers`
@@ -450,6 +464,18 @@ impl Profile {
         // No header order: every request sets its own (Fetcher), and a
         // client-wide one would take the place of the hook that records
         // what a request was sent with.
+        Ok(Emulation::builder()
+            .tls_options(tls.build())
+            .http2_options(http2.build())
+            .headers(self.default_headers()?)
+            .build(Group::new(self.name.clone())))
+    }
+
+    /// The headers every request carries unless it says otherwise.
+    pub(crate) fn default_headers(&self) -> Result<HeaderMap, ProfileError> {
+        let bad = |what: &str, v: &str| {
+            ProfileError(format!("profile {}: unknown {what} {v:?}", self.name))
+        };
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             // Host comes from the URL; an empty value only holds a position.
@@ -461,11 +487,7 @@ impl Profile {
             let value = HeaderValue::from_str(v).map_err(|_| bad("header value", v))?;
             headers.insert(name, value);
         }
-        Ok(Emulation::builder()
-            .tls_options(tls.build())
-            .http2_options(http2.build())
-            .headers(headers)
-            .build(Group::new(self.name.clone())))
+        Ok(headers)
     }
 }
 

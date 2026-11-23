@@ -4,7 +4,10 @@
 //! [`Profile`]'s browser sends: the same TLS ClientHello, HTTP/2 settings
 //! and header order.
 
-#![forbid(unsafe_code)]
+// Unsafe code only in src/h3.rs, which sets NSS up as Firefox does over
+// its C API, and only with the http3 feature.
+#![cfg_attr(not(feature = "http3"), forbid(unsafe_code))]
+#![cfg_attr(feature = "http3", deny(unsafe_code))]
 
 mod archive;
 mod cache;
@@ -16,6 +19,8 @@ mod crawl;
 mod decode;
 pub mod deltafetch;
 mod fetch;
+#[cfg(feature = "http3")]
+mod h3;
 pub mod install;
 mod profile;
 pub mod queue;

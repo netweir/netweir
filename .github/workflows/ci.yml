@@ -296,6 +296,77 @@ jobs:
       - run: uv run pytest -q --durations=10 tests/test_browser.py tests/test_crawl_browser.py
         timeout-minutes: 15
 
+  # HTTP/3 with the Firefox profile (netweir-core's http3 feature): NSS
+  # built by scripts/nss.sh, then the tests that hold each request over
+  # HTTP/3 to Firefox 160's recording. Every system and architecture a
+  # wheel is built for builds it; the x86_64 macOS build runs its tests
+  # under Rosetta. Linux runs them in release builds, which link NSS the
+  # way a wheel would.
+  http3:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, release: --release }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, release: --release }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # NSS builds with gyp and ninja, and on Windows under MSYS2's bash with
+      # MSVC and Mozilla's nsinstall, as Mozilla's own CI builds it.
+      - name: NSS's build tools
+        shell: bash
+        run: |
+          uv tool install gyp-next==0.22.4
+          uv tool install ninja==1.13.0
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - if: matrix.target == 'x86_64-apple-darwin'
+        run: arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - if: runner.os == 'Windows'
+        name: MSYS2 and nsinstall
+        shell: bash
+        run: |
+          mkdir -p "$HOME/bin"
+          curl --fail --silent --show-error -o "$HOME/bin/nsinstall" \
+            https://hg-edge.mozilla.org/releases/mozilla-release/raw-file/FIREFOX_160_0_RELEASE/config/nsinstall.py
+          echo "f88df5591ee50d6e86625efd6e5f9c7b0dd4cba61e27ab533b1990115e100caf  $HOME/bin/nsinstall" | sha256sum -c -
+          sed -i '1i #! /usr/bin/env python3' "$HOME/bin/nsinstall"
+          chmod +x "$HOME/bin/nsinstall"
+          python3 -m pip install mozfile==3.0.0
+          { echo C:/msys64/usr/bin; echo C:/msys64/mingw64/bin; echo "$HOME/bin"; } >> "$GITHUB_PATH"
+          case "${VSCMD_VER%%.*}" in 17) year=2022 ;; 18) year=2026 ;; *) year= ;; esac
+          if [ -n "$year" ]; then
+            { echo "VSPATH=$VSINSTALLDIR"
+              echo "GYP_MSVS_OVERRIDE_PATH=$VSINSTALLDIR"
+              echo "GYP_MSVS_VERSION=$year"; } >> "$GITHUB_ENV"
+          fi
+          # MSYS2's link.exe would shadow MSVC's.
+          rm -f /usr/bin/link.exe
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/nss/${{ matrix.target }}
+          key: nss-${{ matrix.target }}-${{ hashFiles('scripts/nss.sh') }}
+      - name: NSS
+        shell: bash
+        run: scripts/nss.sh ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo clippy -p netweir-core --features http3 --all-targets -- -D warnings
+      - run: cargo test ${{ matrix.release }} -p netweir-core --features http3 --target ${{ matrix.target }} --lib --test http3 --test fingerprint
+
   # Chrome's suites of actions, pages, events and steps again, on Firefox,
   # and the browser from Python and in a crawl.
   # A test that can't pass there yet is listed in tests/common/mod.rs,
