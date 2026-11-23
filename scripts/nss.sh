@@ -106,9 +106,18 @@ if [ ! -f "$out/done" ]; then
     crux pqcwrap_static ghash-aes-x86_c_lib ghash-aes-aarch64_c_lib intel-gcm-wrap_c_lib
     aarch64-gcm-wrap_c_lib sqlite)
   map="$out/freebl-symbols.txt"
+  # NSPR's own names stay as they are. On Windows freebl carries a copy
+  # of some (PR_CeilingLog2), and renaming NSPR's definition leaves
+  # plds's dllimport reference, __imp_PR_CeilingLog2, with nothing to
+  # bind to. BoringSSL defines no PR_ or PL_ names, so nothing clashes.
+  nspr_names="$out/nspr-symbols.txt"
+  for f in nspr4 plc4 plds4 nspr4_s plc4_s plds4_s; do
+    [ ! -f "$lib/$a_pre$f.$a_ext" ] || defined "$lib/$a_pre$f.$a_ext"
+  done | tr -d '\r' | sort -u > "$nspr_names"
   for f in "${freebl[@]}"; do
     [ ! -f "$lib/$a_pre$f.$a_ext" ] || defined "$lib/$a_pre$f.$a_ext"
   done | tr -d '\r' | sort -u | grep -v "^${under}FREEBL_GetVector\$" \
+    | { if [ -s "$nspr_names" ]; then grep -vxFf "$nspr_names"; else cat; fi; } \
     | awk -v u="$under" '{
         if (u != "" && substr($1, 1, 1) == u) print $1, u "netweir_nss_" substr($1, 2)
         else print $1, "netweir_nss_" $1
