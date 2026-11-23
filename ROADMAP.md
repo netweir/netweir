@@ -11,8 +11,8 @@ us something more urgent. Ideas and objections are welcome in
 browser it claims to be. Netweir's fetcher speaks HTTP/1.1 and HTTP/2,
 which is what a browser falls back to when a site offers no HTTP/3.
 
-**Firefox's gaps.** A few options raise `BrowserError` on Firefox,
-where its WebDriver BiDi has no command for them yet.
+**Firefox's gaps.** A few options still raise `BrowserError` on Firefox,
+mostly where its WebDriver BiDi has no command for them.
 [docs/browser.md](docs/browser.md#starting-firefox) lists them.
 
 **WebKit,** once Safari can be driven without `navigator.webdriver` saying
