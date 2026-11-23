@@ -347,15 +347,17 @@ jobs:
           sed -i '1i #! /usr/bin/env python3' "$HOME/bin/nsinstall"
           chmod +x "$HOME/bin/nsinstall"
           python3 -m pip install mozfile==3.0.0
-          { echo C:/msys64/usr/bin; echo C:/msys64/mingw64/bin; echo "$HOME/bin"; } >> "$GITHUB_PATH"
+          { echo C:/msys64/usr/bin; echo C:/msys64/mingw64/bin; cygpath -m "$HOME/bin"; } >> "$GITHUB_PATH"
           case "${VSCMD_VER%%.*}" in 17) year=2022 ;; 18) year=2026 ;; *) year= ;; esac
           if [ -n "$year" ]; then
             { echo "VSPATH=$VSINSTALLDIR"
               echo "GYP_MSVS_OVERRIDE_PATH=$VSINSTALLDIR"
               echo "GYP_MSVS_VERSION=$year"; } >> "$GITHUB_ENV"
           fi
-          # MSYS2's link.exe would shadow MSVC's.
-          rm -f /usr/bin/link.exe
+      # From here on `bash` is MSYS2's, whose link.exe would shadow MSVC's.
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: rm -f /usr/bin/link.exe
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/nss/${{ matrix.target }}
