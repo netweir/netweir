@@ -34,9 +34,9 @@ class browser:
     Chrome ``netweir install chrome`` installed, then the usual install
     paths for Chrome, Chrome for Testing and Chromium. ``timeout``
     (seconds) is the default limit for navigations and actions. ``proxy``
-    (``http://``, ``https://`` or ``socks5://``) carries everything Chrome
-    fetches; an HTTP(S) proxy's URL may hold a login, a SOCKS proxy's
-    can't.
+    (``http://``, ``https://`` or ``socks5://``; Firefox takes
+    ``socks4://`` too) carries everything the browser fetches; an HTTP(S)
+    proxy's URL may hold a login, a SOCKS proxy's can't.
 
     ``connect`` drives a browser that's already running instead of
     starting one: a ``ws://`` DevTools URL, or ``http://host:port``.
@@ -67,7 +67,7 @@ class browser:
     driven, as with Chrome. ``stealth=False`` drives any Firefox in its
     automation mode, which pages can tell (``navigator.webdriver`` is
     true); it's the only way to drive a Firefox Netweir didn't install.
-    Firefox has no ``proxy``, ``connect`` or ``worker_header_order``, and
+    Firefox has no ``connect`` or ``worker_header_order``, and
     a ``user_data_dir`` must be a profile Netweir made: those raise.
 
     ``worker_header_order=True`` sends each dedicated and shared worker's

@@ -4289,17 +4289,13 @@ async fn content(page: &netweir_browser::Page) -> Result<String, FetchError> {
     }
 }
 
-/// How to start Chrome for this crawl: through the crawl's proxy, login
-/// and all, so the cookies Chrome earns come from the address the HTTP
+/// How to start the crawl's browser: through the crawl's proxy, login
+/// and all, so the cookies it earns come from the address the HTTP
 /// client uses. With per_request or per_host rotation there's no crawl
-/// proxy, and Chrome takes the next healthy one of `proxies`: it has one
-/// proxy for all its pages, so rotation stops at its door.
+/// proxy, and the browser takes the next healthy one of `proxies`: it has
+/// one proxy for all its pages, so rotation stops at its door.
 fn browser_launch(shared: &Shared) -> LaunchOptions {
     let mut launch = shared.settings.browser_launch.clone();
-    if launch.engine == netweir_browser::Engine::Firefox {
-        // Firefox takes no proxy here, and has no client hints to brand.
-        return launch;
-    }
     let mut state = shared.lock();
     if launch.proxy.is_none() {
         launch.proxy = match shared.settings.proxy_rotation {
@@ -4308,8 +4304,9 @@ fn browser_launch(shared: &Shared) -> LaunchOptions {
                 let picked = pick_where(shared, &mut state, None, chrome_can_use);
                 if picked.is_none() && !state.warned_chrome_proxy {
                     state.warned_chrome_proxy = true;
-                    let message = "Chrome can't log in to a SOCKS proxy, and every one of \
-                                   proxies is one with a login, so Chrome goes out without a proxy"
+                    let message = "a browser can't log in to a SOCKS proxy, and every one of \
+                                   proxies is one with a login, so the browser goes out without a \
+                                   proxy"
                         .to_string();
                     shared.push_event(&mut state, Event::Warning { message });
                 }
@@ -4319,13 +4316,14 @@ fn browser_launch(shared: &Shared) -> LaunchOptions {
     }
     state.chrome_proxy = launch.proxy.clone();
     drop(state);
-    if launch.brands.is_none() {
+    // Firefox has no client hints to brand.
+    if launch.engine == netweir_browser::Engine::Chrome && launch.brands.is_none() {
         launch.brands = Some(Arc::new(Profile::chrome_brands));
     }
     launch
 }
 
-/// Whether Chrome can go through `proxy`: it can't log in to a SOCKS one.
+/// Whether a browser can go through `proxy`: it can't log in to a SOCKS one.
 fn chrome_can_use(proxy: &str) -> bool {
     let socks = proxy.to_ascii_lowercase().starts_with("socks");
     let login = proxy

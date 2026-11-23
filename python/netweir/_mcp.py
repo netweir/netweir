@@ -68,8 +68,6 @@ def server(
     a tool asks for it."""
     if engine not in ("chrome", "firefox"):
         raise ValueError(f'engine must be "chrome" or "firefox", not {engine!r}')
-    if engine == "firefox" and proxy:
-        raise ValueError("a proxy can't go with Firefox yet: Firefox takes no proxy")
     import netweir
     from netweir import Blocked, BrowserError, FetchError
     from netweir._cli import _utf8

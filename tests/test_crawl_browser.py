@@ -166,21 +166,54 @@ def test_browser_settings_are_checked():
         netweir.Settings(browser_engine="safari")
 
 
-@pytest.mark.parametrize(
-    "proxy", [{"proxy": "http://127.0.0.1:1"}, {"proxies": ("http://127.0.0.1:1",)}]
-)
-@pytest.mark.parametrize(
-    "engine", [{"browser_engine": "firefox"}, {"browser_engine": "match", "profile": "firefox"}]
-)
-def test_firefox_isnt_taken_through_a_crawls_proxy(proxy, engine):
+class Proxy(BaseHTTPRequestHandler):
+    """Wants the login user:secret, and answers every request itself."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if self.headers.get("Proxy-Authorization") != "Basic dXNlcjpzZWNyZXQ=":
+            self.send_response(407)
+            self.send_header("Proxy-Authenticate", 'Basic realm="test"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = f"<p id=via>{self.path}</p>".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.mark.parametrize("rotation", [None, "per_request"])
+def test_the_crawls_browser_goes_through_its_proxy(base, rotation):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    proxy = f"http://user:secret@127.0.0.1:{server.server_port}"
+    seen = []
+
     class Shop(netweir.Spider):
         async def start(self):
-            yield netweir.Request("http://127.0.0.1:1/", browser=True)
+            # Not a loopback address, which the browser would fetch directly.
+            yield netweir.Request("http://shop.test/item", browser=True)
+
+        async def parse(self, page):
+            seen.append(page.css("#via::text").get())
 
     spider = Shop()
-    spider.settings = netweir.Settings(**proxy, **engine)
-    with pytest.raises(ValueError, match="Firefox can't go through a proxy in a crawl yet"):
-        spider.run()
+    # The crawl's proxy, or with rotation the next one of its proxies.
+    given = (
+        {"proxy": proxy} if rotation is None else {"proxies": (proxy,), "proxy_rotation": rotation}
+    )
+    spider.settings = settings(**given)
+    try:
+        assert spider.run()["browser_fetches"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == ["http://shop.test/item"]
 
 
 @pytest.mark.skipif(ENGINE != "firefox", reason="Firefox's own: it needs Firefox installed")

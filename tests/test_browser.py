@@ -11,6 +11,7 @@ import json
 import os
 import re
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -227,14 +228,18 @@ class Proxy(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        self.server.asked += "shop.test" in self.path
         if self.headers.get("Proxy-Authorization") != "Basic dXNlcjpzZWNyZXQ=":
+            body = b"<p>who are you?</p>"
             self.send_response(407)
             self.send_header("Proxy-Authenticate", 'Basic realm="test"')
-            self.send_header("Content-Length", "0")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
             return
         body = f"<p id=via>{self.path}</p>".encode()
         self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -543,29 +548,116 @@ async def test_the_engine_is_chosen_by_name_and_firefox_refuses_what_it_lacks():
         await netweir.browser(engine="safari")
     with pytest.raises(ValueError, match="stealth: false is for Firefox"):
         await netweir.browser(stealth=False)
-    with pytest.raises(netweir.BrowserError, match="proxy isn't available on Firefox"):
-        await netweir.browser(engine="firefox", proxy="http://127.0.0.1:1")
     with pytest.raises(netweir.BrowserError, match="connect isn't available on Firefox"):
         await netweir.browser(engine="firefox", connect="ws://127.0.0.1:1/")
 
 
-@chrome_only("a proxy, which Netweir doesn't give Firefox yet")
-async def test_a_proxy_with_a_login_carries_the_pages():
+@contextlib.contextmanager
+def proxy_server():
+    """The login-wanting proxy, on a free port, counting what it's asked."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    server.asked = 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        try:
-            b = await netweir.browser(proxy=f"http://user:secret@127.0.0.1:{server.server_port}")
-        except netweir.BrowserError as e:
-            if "no Chrome found" in str(e) and not os.environ.get("NETWEIR_REQUIRE_CHROME"):
-                pytest.skip(str(e))
-            raise
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def proxied(proxy, **options):
+    try:
+        return await netweir.browser(proxy=proxy, engine=ENGINE, **options)
+    except netweir.BrowserError as e:
+        skip_if_missing(e)
+        raise
+
+
+async def test_a_proxy_with_a_login_carries_the_pages():
+    with proxy_server() as server:
+        b = await proxied(f"http://user:secret@127.0.0.1:{server.server_port}")
         async with b:
             page = await b.new_page()
-            # Not a loopback address, which Chrome would fetch directly.
+            # Not a loopback address, which the browser would fetch directly.
             response = await page.goto("http://shop.test/item")
             assert response.status == 200
             assert (await page.parse()).css("#via::text").get() == "http://shop.test/item"
+            # The page's own fetch, and a page of another context, too.
+            fetched = await page.evaluate("fetch('http://shop.test/api').then(r => r.text())")
+            assert "http://shop.test/api" in fetched
+            async with await b.new_context() as context:
+                other = await context.new_page()
+                assert (await other.goto("http://shop.test/other")).status == 200
+
+
+@pytest.mark.skipif(ENGINE != "firefox", reason="Firefox's own: its automation mode")
+async def test_firefox_in_automation_mode_gives_the_proxy_its_login_too():
+    # The session answers the proxy there, where a stealth start's
+    # mozilla.cfg does.
+    with proxy_server() as server:
+        b = await proxied(f"http://user:secret@127.0.0.1:{server.server_port}", stealth=False)
+        async with b:
+            page = await b.new_page()
+            assert (await page.goto("http://shop.test/item")).status == 200
+
+
+async def test_a_proxy_refusing_the_login_gives_its_407_without_asking_forever():
+    with proxy_server() as server:
+        b = await proxied(f"http://user:wrong@127.0.0.1:{server.server_port}")
+        async with b:
+            page = await b.new_page()
+            # Chrome tries the login some 30 times, then gives up; Firefox
+            # once, then fails as when its login prompt is cancelled.
+            failure = {"chrome": "ERR_TOO_MANY_RETRIES", "firefox": "ERR_PROXY_CONNECTION_FAILED"}
+            with pytest.raises(netweir.FetchError, match=failure[ENGINE]):
+                await page.goto("http://shop.test/item")
+            if ENGINE == "firefox":
+                assert server.asked == 2, "asked, then given the login once"
+
+
+class Socks5(socketserver.StreamRequestHandler):
+    """A SOCKS5 proxy without a login that answers every request itself,
+    keeping the address each CONNECT named and how (3 for a name)."""
+
+    def handle(self):
+        version, methods = self.rfile.read(2)
+        self.rfile.read(methods)
+        self.wfile.write(b"\x05\x00")
+        _, command, _, kind = self.rfile.read(4)
+        if kind == 3:
+            host = self.rfile.read(self.rfile.read(1)[0]).decode()
+        else:
+            host = socket.inet_ntop(
+                socket.AF_INET if kind == 1 else socket.AF_INET6,
+                self.rfile.read(4 if kind == 1 else 16),
+            )
+        self.rfile.read(2)
+        self.server.named.append((kind, host))
+        self.wfile.write(b"\x05\x00\x00\x01" + bytes(6))
+        while self.rfile.readline() not in (b"\r\n", b""):
+            pass
+        body = f"<p id=via>{host}</p>".encode()
+        self.wfile.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+
+
+async def test_a_socks5_proxy_looks_up_the_names_itself():
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Socks5)
+    server.daemon_threads = True
+    server.named = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        b = await proxied(f"socks5://127.0.0.1:{server.server_address[1]}")
+        async with b:
+            page = await b.new_page()
+            # A name no DNS has: only the proxy can answer for it.
+            assert (await page.goto("http://shop.test/item")).status == 200
+            assert (await page.parse()).css("#via::text").get() == "shop.test"
+        assert (3, "shop.test") in server.named, server.named
+        assert all(kind == 3 for kind, _ in server.named), server.named
     finally:
         server.shutdown()
         server.server_close()

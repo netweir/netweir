@@ -45,10 +45,11 @@ pub struct LaunchOptions {
     pub args: Vec<String>,
     /// The default limit for navigations and actions.
     pub timeout: Duration,
-    /// An `http://`, `https://` or `socks5://` proxy for everything Chrome
-    /// fetches. For an HTTP(S) proxy, a username and password in it are
-    /// given when it asks; Chrome can't log in to a SOCKS proxy, so one
-    /// with a login is refused.
+    /// An `http://`, `https://` or `socks5://` proxy for everything the
+    /// browser fetches (Firefox takes `socks4://` too). For an HTTP(S)
+    /// proxy, a username and password in it are given when it asks;
+    /// neither browser can log in to a SOCKS proxy, so one with a login is
+    /// refused.
     pub proxy: Option<String>,
     /// The brands pages present. Chrome for Testing calls itself Chromium
     /// alone, where Google Chrome of the same version lists itself too.
@@ -644,7 +645,6 @@ impl Browser {
         // Each is Chrome's, or not done on Firefox yet: refused rather
         // than quietly left out.
         let given = [
-            ("LaunchOptions.proxy", options.proxy.is_some()),
             ("LaunchOptions.brands", options.brands.is_some()),
             (
                 "LaunchOptions.worker_header_order",
@@ -657,13 +657,24 @@ impl Browser {
                 feature: feature.to_string(),
             });
         }
+        let (proxy, proxy_login) = match &options.proxy {
+            Some(proxy) => {
+                let (server, login) = split_proxy(proxy)?;
+                crate::firefox::proxy_prefs(&server)?;
+                (Some(server), login)
+            }
+            None => (None, None),
+        };
         // A Firefox dropped with this profile may still be quitting, and
         // holds its lock until it has.
         if let Some(dir) = &options.user_data_dir {
             Quitting::wait_for(dir).await;
         }
-        let started = crate::firefox::start(&options).await?;
-        let collector = crate::page::bidi::watch_browser(&started.conn).await?;
+        let started =
+            crate::firefox::start(&options, proxy.as_deref(), proxy_login.as_ref()).await?;
+        // A stealth start gives the proxy its login from mozilla.cfg.
+        let session_login = proxy_login.clone().filter(|_| !started.stealth);
+        let collector = crate::page::bidi::watch_browser(&started.conn, session_login).await?;
         let (environment, screen, screen_scale) = bare(&options);
         let inner = Inner {
             conn: started.conn,
@@ -678,7 +689,7 @@ impl Browser {
             identity: None,
             timeout: options.timeout,
             pause: options.dialog_pause,
-            proxy_login: None,
+            proxy_login: proxy_login.filter(|_| !started.stealth),
             said: Some(started.process.said),
             pages: Arc::default(),
             attaching: Arc::default(),
@@ -2133,7 +2144,7 @@ fn split_proxy(proxy: &str) -> Result<(String, Option<(String, String)>)> {
     }
     if scheme.starts_with("socks") {
         return Err(Error::Invalid(format!(
-            "Chrome can't log in to a SOCKS proxy ({shown}); a login works for http:// and \
+            "a browser can't log in to a SOCKS proxy ({shown}); a login works for http:// and \
              https:// proxies"
         )));
     }
@@ -2473,7 +2484,7 @@ mod tests {
     }
 
     #[test]
-    fn chrome_cant_log_in_to_a_socks_proxy_so_it_isnt_asked_to() {
+    fn a_browser_cant_log_in_to_a_socks_proxy_so_it_isnt_asked_to() {
         let err = split_proxy("socks5://ann:secret@10.0.0.1:1080").unwrap_err();
         assert!(err.to_string().contains("SOCKS"), "{err}");
     }

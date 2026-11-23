@@ -44,6 +44,7 @@ const EVENTS: &[&str] = &[
     "browsingContext.userPromptClosed",
     "browsingContext.downloadWillBegin",
     "browsingContext.downloadEnd",
+    "network.authRequired",
 ];
 
 /// The channel [`WATCH`] tells netweir on.
@@ -134,7 +135,20 @@ pub(super) async fn open(
 /// Page::body, as Chrome does on its own, up to Chrome's limit for one.
 /// None of it is anything a page can see. A request paused in a context
 /// no page of netweir's holds goes on unchanged. Returns the collector.
-pub(crate) async fn watch_browser(conn: &crate::conn::Connection) -> Result<String> {
+/// With a proxy `login`, every request the proxy asks for one is paused
+/// for it, which page script can't see either.
+pub(crate) async fn watch_browser(
+    conn: &crate::conn::Connection,
+    login: Option<(String, String)>,
+) -> Result<String> {
+    if login.is_some() {
+        conn.call(
+            "",
+            "network.addIntercept",
+            json!({"phases": ["authRequired"]}),
+        )
+        .await?;
+    }
     // Request bodies are kept too, for routes (a HAR file matching a
     // POST's, say): Firefox doesn't put them in its events.
     let collected = conn
@@ -146,7 +160,11 @@ pub(crate) async fn watch_browser(conn: &crate::conn::Connection) -> Result<Stri
         .await?;
     let collector = str_of(&collected, "collector");
     let (unheld, kept) = (conn.clone(), collector.clone());
+    let asked = Asked::default();
     let handler: Handler = Arc::new(move |method, params| {
+        if method == "network.authRequired" {
+            answer_auth(&unheld, login.as_ref(), &asked, params);
+        }
         if method == "network.beforeRequestSent" {
             let request = str_of(&params["request"], "request");
             if params["isBlocked"] == true {
@@ -169,6 +187,42 @@ pub(crate) async fn watch_browser(conn: &crate::conn::Connection) -> Result<Stri
     )
     .await?;
     Ok(collector)
+}
+
+/// The requests a proxy was already given the login for.
+type Asked = std::sync::Mutex<std::collections::HashSet<String>>;
+
+/// Answers a request paused for a login (`params`, its
+/// `network.authRequired`): a proxy's with `login`, once, since a proxy
+/// asking again has refused it and would be asked forever; that request
+/// gets the proxy's 407, as it would in Chrome. A site's login is
+/// Firefox's to ask for, as it would be undriven.
+fn answer_auth(
+    conn: &crate::conn::Connection,
+    login: Option<&(String, String)>,
+    asked: &Asked,
+    params: &Value,
+) {
+    if params["isBlocked"] != true {
+        return;
+    }
+    let request = str_of(&params["request"], "request");
+    let reply = match login {
+        Some((username, password)) if params["response"]["status"] == 407 => {
+            let mut asked = asked.lock().unwrap_or_else(|e| e.into_inner());
+            if asked.len() >= LOADING {
+                asked.clear();
+            }
+            if asked.insert(request.clone()) {
+                json!({"request": request, "action": "provideCredentials", "credentials":
+                    {"type": "password", "username": username, "password": password}})
+            } else {
+                json!({"request": request, "action": "cancel"})
+            }
+        }
+        _ => json!({"request": request, "action": "default"}),
+    };
+    conn.send("", "network.continueWithAuth", reply);
 }
 
 /// Lets go of the body Firefox kept for a request no route will read
@@ -1009,7 +1063,12 @@ pub(super) fn handler(
 ) -> Handler {
     let (conn, timeout, pause) = (browser.conn.clone(), browser.timeout, browser.pause);
     let (downloads, pages) = (browser.downloads.clone(), browser.pages.clone());
+    let (login, asked) = (browser.proxy_login.clone(), Asked::default());
     Arc::new(move |method, params| {
+        if method == "network.authRequired" {
+            answer_auth(&conn, login.as_ref(), &asked, params);
+            return;
+        }
         // A popup the page or one of its frames opened, which the
         // connection hands the opener: it's taken on now, before
         // Firefox's next message is read, so it hears its own first

@@ -88,7 +88,7 @@ The options:
 | `headless` | `True` | `False` opens a window |
 | `args` | `()` | more Chrome command-line switches; with your own `--user-agent=`, pages say that and keep Chrome's behaviour under the flag: high-entropy client hints empty, and Chrome's own brands even where Netweir would present Google Chrome's |
 | `timeout` | `30.0` | the default limit, in seconds, for navigations and actions, and for Chrome to answer anything Netweir asks it |
-| `proxy` | `None` | an `http://`, `https://` or `socks5://` proxy for everything Chrome fetches; for an HTTP(S) proxy, a username and password in it are given when it asks (Chrome can't log in to a SOCKS proxy) |
+| `proxy` | `None` | an `http://`, `https://` or `socks5://` proxy for everything the browser fetches (Firefox takes `socks4://` too); for an HTTP(S) proxy, a username and password in it are given when it asks (neither browser can log in to a SOCKS proxy). Through a SOCKS5 proxy, the proxy looks up every name. |
 | `connect` | `None` | drive a browser that's already running, instead of starting one: a `ws://` DevTools URL, or `http://host:port` |
 | `user_data_dir` | `None` | a profile folder to use and keep, so cookies and storage are still there next time |
 
@@ -206,12 +206,19 @@ make, `stealth=False` or not, so it never changes a person's own.
 A kept profile keeps its cookies and storage in the container Netweir's
 pages use, so logins from the profile's normal tabs aren't there.
 
+A `proxy` becomes Firefox's own proxy setting, so everything Firefox
+fetches goes through it, its own requests as well as the pages'. A login
+in it is given the way Firefox gives one it saved, without a prompt; one
+the proxy refuses fails the page with `ERR_PROXY_CONNECTION_FAILED`
+instead of being tried again. Through a SOCKS5 proxy, Firefox looks up no
+names itself. An `https://` proxy, which Firefox's own setting can't
+name, is given to it as a one-line PAC script.
+
 What Firefox doesn't do, which raises `BrowserError` naming the feature,
 where Chrome would do it:
 
 | Feature | On Firefox |
 |---|---|
-| `proxy` | not given to Firefox yet |
 | `connect` | Netweir starts its own Firefox; it doesn't attach to one |
 | `worker_header_order` | Chrome's only |
 | a phone's environment, `is_mobile`, `has_touch` | Chrome's only |
@@ -1043,8 +1050,8 @@ instead, the one `netweir install firefox` installed. Cookies it earns go
 back to the HTTP client with Netweir's profile for that Firefox version,
 as Chrome's do with Chrome's. `browser_engine="match"` picks the browser
 the crawl's requests already look like: Firefox when `profile` is a
-Firefox one, Chrome otherwise. A crawl with `proxy` or `proxies` refuses
-Firefox for now, since Netweir can't send Firefox through a proxy yet.
+Firefox one, Chrome otherwise. Firefox goes through the crawl's proxy as
+Chrome does.
 
 Chrome is started the first time the crawl needs it, and again if it
 dies. If it can't start, browser requests fail, each saying why, and it's

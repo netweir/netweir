@@ -709,12 +709,6 @@ def _engine_option(parser: argparse.ArgumentParser, help: str) -> None:
     parser.add_argument("--engine", choices=["chrome", "firefox"], help=help)
 
 
-def _no_proxy_for_firefox(args) -> None:
-    """Refuses --proxy with Firefox, which Netweir can't send through one yet."""
-    if args.engine == "firefox" and args.proxy:
-        raise _Usage("--proxy can't go with --engine firefox yet: Firefox takes no proxy")
-
-
 def _page_command(args) -> int:
     from netweir import BrowserError, FetchError
 
@@ -830,8 +824,6 @@ class _Session:
             raise _Usage(
                 "--browser fetches as the browser itself: --profile and --header don't apply"
             )
-        if self.browser:
-            _no_proxy_for_firefox(args)
         # Made now, so a bad profile or timeout is a command-line mistake.
         self.fetcher = Fetcher(args.profile or "chrome", args.proxy, args.timeout)
 

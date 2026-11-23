@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::LaunchOptions;
@@ -196,15 +197,107 @@ user_pref("browser.pagethumbnails.capturing_disabled", true);
 user_pref("geo.prompt.open_system_prefs", false);
 "#;
 
-/// `user.js` for the profile at `profile`. Public only for the stealth
-/// test, whose undriven Firefox must start as Netweir's does.
+/// `user.js` for the profile at `profile`, going through `proxy` (a
+/// `scheme://host:port` with no login) if there is one. Public only for
+/// the stealth test, whose undriven Firefox must start as Netweir's does.
 #[doc(hidden)]
-pub fn user_js(profile: &Path) -> String {
+pub fn user_js(profile: &Path, proxy: Option<&str>) -> Result<String> {
     let downloads = profile.join("downloads");
-    // As a JSON string, which is a JavaScript one: Windows' backslashes
-    // escaped.
-    let dir = serde_json::to_string(&downloads.display().to_string()).expect("a string serialises");
-    format!("{USER_JS}user_pref(\"browser.download.dir\", {dir});\n")
+    let dir = js_string(&downloads.display().to_string());
+    let proxy = match proxy {
+        Some(proxy) => proxy_prefs(proxy)?,
+        // Firefox's own default, written all the same: a kept profile
+        // would otherwise go on through the last launch's proxy.
+        None => "user_pref(\"network.proxy.type\", 5);\n".into(),
+    };
+    Ok(format!(
+        "{USER_JS}user_pref(\"browser.download.dir\", {dir});\n{proxy}"
+    ))
+}
+
+/// As a JSON string, which is a JavaScript one: Windows' backslashes
+/// escaped.
+fn js_string(s: &str) -> String {
+    serde_json::to_string(s).expect("a string serialises")
+}
+
+/// The prefs that send everything Firefox fetches through `proxy`, a
+/// `scheme://host:port` URL as Chrome's --proxy-server takes it. An HTTP
+/// or SOCKS proxy is Firefox's manual setting, in which a SOCKS5 proxy
+/// looks up every name and Firefox looks up none itself. Firefox's manual
+/// setting has no proxy reached over TLS, so an `https://` one is a PAC
+/// script naming it. Loopback addresses go direct, as Chrome's do.
+pub(crate) fn proxy_prefs(proxy: &str) -> Result<String> {
+    let bad = || Error::Invalid(format!("not a proxy URL Firefox can use: {proxy}"));
+    let (scheme, authority) = proxy.split_once("://").ok_or_else(bad)?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => 80,
+        "https" => 443,
+        "socks4" | "socks5" => 1080,
+        _ => {
+            return Err(Error::Invalid(format!(
+                "Firefox takes an http://, https://, socks4:// or socks5:// proxy, not {proxy}"
+            )));
+        }
+    };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.contains(']') => {
+            (host, port.parse::<u16>().map_err(|_| bad())?)
+        }
+        _ => (authority, default_port),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() || port == 0 || host.contains(['/', '@', '"', '\'', '\\']) {
+        return Err(bad());
+    }
+    let mut prefs = String::new();
+    let mut pref = |name: &str, value: String| {
+        prefs.push_str(&format!("user_pref(\"network.proxy.{name}\", {value});\n"));
+    };
+    match scheme.as_str() {
+        "https" => {
+            let pac = format!(
+                "function FindProxyForURL(url, host) {{ return \"HTTPS {host}:{port}\"; }}"
+            );
+            let pac = base64::engine::general_purpose::STANDARD.encode(pac);
+            pref("type", "2".into());
+            pref(
+                "autoconfig_url",
+                js_string(&format!(
+                    "data:application/x-ns-proxy-autoconfig;base64,{pac}"
+                )),
+            );
+        }
+        "http" => {
+            pref("type", "1".into());
+            for which in ["http", "ssl"] {
+                pref(which, js_string(host));
+                pref(&format!("{which}_port"), port.to_string());
+            }
+            pref("socks", "\"\"".into());
+        }
+        socks => {
+            pref("type", "1".into());
+            pref("http", "\"\"".into());
+            pref("ssl", "\"\"".into());
+            pref("socks", js_string(host));
+            pref("socks_port", port.to_string());
+            pref(
+                "socks_version",
+                if socks == "socks4" { "4" } else { "5" }.into(),
+            );
+            // SOCKS4 can't take a name, so Firefox looks it up, as Chrome
+            // does; SOCKS5 looks up every name itself.
+            pref("socks_remote_dns", "false".into());
+            pref("socks5_remote_dns", "true".into());
+        }
+    }
+    pref("no_proxies_on", "\"\"".into());
+    // A request of Firefox's own (not a page's) whose proxy fails would
+    // otherwise go again without it, from the machine's own address.
+    pref("failover_direct", "false".into());
+    Ok(prefs)
 }
 
 /// A Firefox started and spoken to: what [`crate::Browser`] is made from.
@@ -225,15 +318,20 @@ pub(crate) struct Started {
 
 /// Starts Firefox as `options` ask: the stealth start for a Firefox
 /// Netweir installed, automation mode only when `stealth` is false.
-pub(crate) async fn start(options: &LaunchOptions) -> Result<Started> {
-    let started = start_once(options).await?;
+/// `proxy` is the launch's without its login, which is `login`.
+pub(crate) async fn start(
+    options: &LaunchOptions,
+    proxy: Option<&str>,
+    login: Option<&(String, String)>,
+) -> Result<Started> {
+    let started = start_once(options, proxy, login).await?;
     if names_its_windows(&started.conn).await? {
         return Ok(started);
     }
     // A Firefox on Windows can start unable to name any of its windows, and
     // then no page opens in it: end it and start another.
     end(started);
-    let again = start_once(options).await?;
+    let again = start_once(options, proxy, login).await?;
     if names_its_windows(&again.conn).await? {
         return Ok(again);
     }
@@ -280,7 +378,11 @@ fn end(started: Started) {
     drop(temp);
 }
 
-async fn start_once(options: &LaunchOptions) -> Result<Started> {
+async fn start_once(
+    options: &LaunchOptions,
+    proxy: Option<&str>,
+    login: Option<&(String, String)>,
+) -> Result<Started> {
     // A person's profile is refused first, whatever Firefox there is.
     if let Some(dir) = &options.user_data_dir {
         if dir.as_os_str().to_string_lossy().trim().is_empty() {
@@ -330,9 +432,10 @@ async fn start_once(options: &LaunchOptions) -> Result<Started> {
         }
     };
     let port_file = profile.join(PORT_FILE);
+    let prefs = user_js(&profile, proxy)?;
     let prepared = std::fs::create_dir_all(&profile)
         .and_then(|()| std::fs::write(profile.join(PROFILE_MARK), ""))
-        .and_then(|()| std::fs::write(profile.join("user.js"), user_js(&profile)));
+        .and_then(|()| std::fs::write(profile.join("user.js"), prefs));
     prepared.map_err(|e| {
         Error::Launch(format!(
             "can't prepare the profile {}: {e}",
@@ -374,11 +477,16 @@ async fn start_once(options: &LaunchOptions) -> Result<Started> {
         args.push("--remote-debugging-port=0".into());
     }
     args.extend(options.args.iter().cloned());
-    let envs: Vec<(&str, &std::ffi::OsStr)> = if stealth {
-        vec![("NETWEIR_FIREFOX_PORT_FILE", port_file.as_os_str())]
-    } else {
-        Vec::new()
-    };
+    // The proxy's login is given by mozilla.cfg, so only to a stealth
+    // start; in automation mode the session gives it to pages' requests.
+    let login = login.map(|l| std::ffi::OsString::from(json!([l.0, l.1]).to_string()));
+    let mut envs: Vec<(&str, &std::ffi::OsStr)> = Vec::new();
+    if stealth {
+        envs.push(("NETWEIR_FIREFOX_PORT_FILE", port_file.as_os_str()));
+        if let Some(login) = &login {
+            envs.push(("NETWEIR_FIREFOX_PROXY_LOGIN", login.as_os_str()));
+        }
+    }
     let mut process = crate::launch::spawn(&executable, &args, &envs, "Firefox", None)?;
     let said = process.said.clone();
 
@@ -631,6 +739,71 @@ mod tests {
         );
         assert_eq!(installed_firefox(&home.join("nothing")), None);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_proxy_is_firefoxs_manual_setting_or_a_pac_for_tls() {
+        let http = proxy_prefs("http://10.0.0.1:3128").unwrap();
+        for line in [
+            r#"user_pref("network.proxy.type", 1);"#,
+            r#"user_pref("network.proxy.http", "10.0.0.1");"#,
+            r#"user_pref("network.proxy.ssl_port", 3128);"#,
+            r#"user_pref("network.proxy.failover_direct", false);"#,
+        ] {
+            assert!(http.contains(line), "{line} in {http}");
+        }
+        let socks = proxy_prefs("socks5://[::1]").unwrap();
+        assert!(
+            socks.contains(r#"user_pref("network.proxy.socks", "::1");"#),
+            "{socks}"
+        );
+        assert!(socks.contains(r#"user_pref("network.proxy.socks_port", 1080);"#));
+        assert!(socks.contains(r#"user_pref("network.proxy.socks_version", 5);"#));
+        assert!(socks.contains(r#"user_pref("network.proxy.socks5_remote_dns", true);"#));
+        assert!(
+            proxy_prefs("socks4://h:1")
+                .unwrap()
+                .contains("socks_version\", 4")
+        );
+        let https = proxy_prefs("https://proxy.example:8443").unwrap();
+        assert!(
+            https.contains(r#"user_pref("network.proxy.type", 2);"#),
+            "{https}"
+        );
+        let pac = https
+            .split("base64,")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let pac = base64::engine::general_purpose::STANDARD
+            .decode(pac)
+            .unwrap();
+        assert!(
+            String::from_utf8(pac)
+                .unwrap()
+                .contains(r#"return "HTTPS proxy.example:8443";"#)
+        );
+        for bad in [
+            "ftp://h:1",
+            "socks://h:1",
+            "http://h:x",
+            "http://:80",
+            "http://h:0",
+            "h:80",
+        ] {
+            assert!(proxy_prefs(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn without_a_proxy_a_kept_profile_drops_the_last_ones() {
+        let js = user_js(Path::new("/p"), None).unwrap();
+        assert!(
+            js.ends_with("user_pref(\"network.proxy.type\", 5);\n"),
+            "{js}"
+        );
     }
 
     #[test]

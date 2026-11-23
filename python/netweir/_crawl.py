@@ -224,8 +224,6 @@ class Settings:
     #: (the one ``netweir install firefox`` installed), or "match", which
     #: is Firefox when ``profile`` is a Firefox one and Chrome otherwise,
     #: so a site sees the same browser the crawl's requests look like.
-    #: Firefox can't go through the crawl's proxy yet, so it can't be
-    #: chosen with one.
     browser_engine: str = "chrome"
     #: Chrome pages open at once.
     browser_pages: int = 4

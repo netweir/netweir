@@ -129,7 +129,11 @@ struct Undriven(std::process::Child);
 impl Undriven {
     fn start(executable: &Path, profile: &Path, headless: bool, url: &str) -> Undriven {
         std::fs::create_dir_all(profile).unwrap();
-        std::fs::write(profile.join("user.js"), netweir_browser::user_js(profile)).unwrap();
+        std::fs::write(
+            profile.join("user.js"),
+            netweir_browser::user_js(profile, None).unwrap(),
+        )
+        .unwrap();
         let mut command = std::process::Command::new(executable);
         command
             .arg("-profile")

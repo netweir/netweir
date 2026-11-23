@@ -1453,12 +1453,6 @@ impl Crawler {
         if firefox {
             // Asked for by any request with browser=True, whatever
             // `browser` says.
-            if options.proxy.is_some() || !settings.proxies.is_empty() {
-                return Err(PyValueError::new_err(
-                    "Firefox can't go through a proxy in a crawl yet, so a crawl with a proxy or \
-                     proxies uses browser_engine=\"chrome\"",
-                ));
-            }
             settings.browser_launch.engine = netweir_browser::Engine::Firefox;
         }
         // The scheduler runs on the shared runtime.

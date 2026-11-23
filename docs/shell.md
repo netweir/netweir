@@ -108,8 +108,7 @@ Chrome sends its own headers, so `--browser` can't be combined with
 `browser 200`, followed by the headers Chrome received.
 
 `--engine firefox` loads the page in the Firefox `netweir install firefox`
-installed instead, and needs no `--browser` of its own. Netweir can't send
-Firefox through a proxy yet, so `--engine firefox` can't go with `--proxy`.
+installed instead, and needs no `--browser` of its own.
 
 ```
 netweir fetch --engine firefox https://quotes.toscrape.com/js/

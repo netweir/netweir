@@ -208,8 +208,6 @@ def test_the_browser_is_the_engine_asked_for(monkeypatch):
 
     assert not asyncio.run(go("firefox")).is_error
     assert asked == ["firefox"]
-    with pytest.raises(ValueError, match="a proxy can't go with Firefox"):
-        _mcp.server(proxy="http://127.0.0.1:1", engine="firefox")
     with pytest.raises(ValueError, match='engine must be "chrome" or "firefox"'):
         _mcp.server(engine="safari")
 
