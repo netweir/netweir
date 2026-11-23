@@ -48,9 +48,9 @@ mod firefox {
     pub const MAX_DATA: u64 = 25_165_824;
     /// network.http.http3.max_stream_data
     pub const MAX_STREAM_DATA: u64 = 12_582_912;
-    /// network.http.http3.default_qpack_table_size
+    /// network.http.http3.default-qpack-table-size (all.js)
     pub const QPACK_TABLE_SIZE: u64 = 65_536;
-    /// network.http.http3.default_max_stream_blocked
+    /// network.http.http3.default-max-stream-blocked (all.js)
     pub const MAX_BLOCKED_STREAMS: u16 = 20;
     /// network.http.http3.idle_timeout, in seconds
     pub const IDLE_TIMEOUT: u64 = 30;
