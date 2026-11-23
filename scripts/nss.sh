@@ -132,7 +132,13 @@ if [ ! -f "$out/done" ]; then
   # An archive with no members, which every linker takes as nothing.
   empty() { printf '!<arch>\n' > "$1"; }
   case "$(uname -s)" in
-    MINGW* | MSYS* | CYGWIN*) ;;
+    MINGW* | MSYS* | CYGWIN*)
+      # nss-rs links NSPR's static libraries on Windows as libnspr4,
+      # libplc4 and libplds4; NSPR's build names them nspr4_s and so on.
+      for name in nspr4 plc4 plds4; do
+        cp "$lib/${name}_s.lib" "$lib/lib$name.lib"
+      done
+      ;;
     *)
       # What nss-rs links statically (its build.rs, static_link), as one
       # archive in place of the shared libraries.
