@@ -1,4 +1,6 @@
 use crate::client_hello::{ClientHello, is_grease};
+use crate::h3::{Http3, is_h3_grease};
+use crate::quic::{Frame, Quic};
 use crate::server::Capture;
 
 const PRE_SHARED_KEY: u16 = 0x0029;
@@ -11,7 +13,14 @@ const PRE_SHARED_KEY: u16 = 0x0029;
 /// resumed (the pre_shared_key extension, which also changes JA4), since
 /// that depends on connection history, not on the browser. The `:authority`,
 /// `:path` and `Host` values are ignored because they name the test server
-/// and its port, and so is the port in `Origin` and `Referer`.
+/// and its port, and so is the port in `Origin`, `Referer` and `Alt-Used`.
+///
+/// Over HTTP/3, the first QUIC flight and the HTTP/3 connection are
+/// compared too (see `quic_differences` and `http3_differences`), leaving
+/// out what a browser picks at random for each connection: the connection
+/// IDs, the first packet number, GREASE, and the transport parameters'
+/// order, which `transport_parameter_order_differs` compares for a browser
+/// that keeps one.
 ///
 /// Where GREASE goes is not ignored: a browser that GREASEs must be matched
 /// GREASE for GREASE, and one that doesn't, by none. Nor is its shape (see
@@ -148,6 +157,25 @@ pub fn differences(expected: &Capture, actual: &Capture) -> Vec<String> {
             format!("{}", a2.is_some()),
         ),
     }
+    let mut transport = Vec::new();
+    match (&expected.quic, &actual.quic) {
+        (Some(eq), Some(aq)) => transport.extend(quic_differences(eq, aq)),
+        (None, None) => {}
+        (eq, aq) => transport.push(format!(
+            "quic: expected {}, got {}",
+            eq.is_some(),
+            aq.is_some()
+        )),
+    }
+    match (&expected.http3, &actual.http3) {
+        (Some(e3), Some(a3)) => transport.extend(http3_differences(e3, a3)),
+        (None, None) => {}
+        (e3, a3) => transport.push(format!(
+            "http3: expected {}, got {}",
+            e3.is_some(),
+            a3.is_some()
+        )),
+    }
     let names = |c: &Capture| c.headers.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>();
     check(
         "header order",
@@ -158,7 +186,10 @@ pub fn differences(expected: &Capture, actual: &Capture) -> Vec<String> {
         if matches!(k.as_str(), ":authority" | ":path") || k.eq_ignore_ascii_case("host") {
             continue;
         }
-        if k.eq_ignore_ascii_case("origin") || k.eq_ignore_ascii_case("referer") {
+        if k.eq_ignore_ascii_case("origin")
+            || k.eq_ignore_ascii_case("referer")
+            || k.eq_ignore_ascii_case("alt-used")
+        {
             check(&format!("header {k}"), portless(ev), portless(av));
         } else {
             check(&format!("header {k}"), ev.clone(), av.clone());
@@ -169,7 +200,266 @@ pub fn differences(expected: &Capture, actual: &Capture) -> Vec<String> {
         check("method", expected.method.clone(), actual.method.clone());
         check("body", expected.body.clone(), actual.body.clone());
     }
+    out.extend(transport);
     out.extend(grease_shape(a));
+    out
+}
+
+/// How `actual`'s first QUIC flight differs from `expected`'s. Compared:
+/// the version, the Source Connection ID's length, the token, every
+/// datagram's size, the packets in each and their frames, how the CRYPTO
+/// frames cut the ClientHello (which pieces go where, and how long each
+/// is), that each packet's number follows the last, and the transport parameters as a set, with their values.
+///
+/// Left out, as a browser draws them per connection: the Destination
+/// Connection ID and its length, the first packet number, the Source
+/// Connection ID's bytes (in initial_source_connection_id), GREASE versions
+/// in version_information, and a GREASE transport parameter's id and
+/// value. A reserved id that is the same in both (Firefox's min_ack_delay,
+/// 0xff02de1a) is compared like any other. Where the CRYPTO frames cut the
+/// ClientHello is left out too: Firefox cuts it inside the server name at
+/// a random point (neqo's SNI slicing).
+pub fn quic_differences(expected: &Quic, actual: &Quic) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut check = |what: &str, a: String, b: String| {
+        if a != b {
+            out.push(format!("quic {what}: expected {a}, got {b}"));
+        }
+    };
+    check(
+        "version",
+        format!("{:#x}", expected.version),
+        format!("{:#x}", actual.version),
+    );
+    check(
+        "source connection id length",
+        expected.scid_len.to_string(),
+        actual.scid_len.to_string(),
+    );
+    check("token", expected.token.clone(), actual.token.clone());
+    check(
+        "datagrams",
+        format!("{:?}", datagram_shapes(expected)),
+        format!("{:?}", datagram_shapes(actual)),
+    );
+    check(
+        "packet numbers",
+        format!("{:?}", numbering(expected)),
+        format!("{:?}", numbering(actual)),
+    );
+    check(
+        "transport parameters",
+        format!("{:?}", parameter_set(expected)),
+        format!("{:?}", parameter_set(actual)),
+    );
+    out
+}
+
+/// For a browser that sends its transport parameters in a fixed order
+/// (Firefox: neqo encodes them in the order of its enum), whether the
+/// order matches too. GREASE ids count by place.
+pub fn transport_parameter_order_differs(expected: &Quic, actual: &Quic) -> Option<String> {
+    let order = |q: &Quic, other: &Quic| -> Vec<String> {
+        q.transport_parameters
+            .iter()
+            .map(|p| {
+                if p.grease && !other.transport_parameters.iter().any(|o| o.id == p.id) {
+                    "GREASE".to_string()
+                } else {
+                    format!("{:#x}", p.id)
+                }
+            })
+            .collect()
+    };
+    let (e, a) = (order(expected, actual), order(actual, expected));
+    (e != a).then(|| format!("transport parameter order: expected {e:?}, got {a:?}"))
+}
+
+/// Each datagram as its size and its packets: an Initial as its frames,
+/// a CRYPTO frame as which piece of the ClientHello it holds ("start" at
+/// offset 0, "end" reaching the last byte, "middle" otherwise) and its
+/// length unless it holds the cut piece around the server name; padding
+/// after the packets as "zeros".
+fn datagram_shapes(q: &Quic) -> Vec<(usize, Vec<String>)> {
+    let total = q
+        .datagrams
+        .iter()
+        .flat_map(|d| &d.packets)
+        .flat_map(|p| &p.frames)
+        .filter_map(|f| match f {
+            Frame::Crypto { offset, length } => Some(offset + *length as u64),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    q.datagrams
+        .iter()
+        .map(|d| {
+            let packets = d
+                .packets
+                .iter()
+                .map(|p| {
+                    let frames: Vec<String> = p
+                        .frames
+                        .iter()
+                        .map(|f| match f {
+                            Frame::Crypto { offset, length } => {
+                                let place = if *offset == 0 {
+                                    "start"
+                                } else if offset + *length as u64 == total {
+                                    "end"
+                                } else {
+                                    "middle"
+                                };
+                                if place == "middle" {
+                                    format!("crypto {place} {length}")
+                                } else {
+                                    format!("crypto {place}")
+                                }
+                            }
+                            Frame::Padding { length } => format!("padding {length}"),
+                            other => format!("{other:?}"),
+                        })
+                        .collect();
+                    if frames.is_empty() {
+                        p.kind.clone()
+                    } else {
+                        format!("{} [{}]", p.kind, frames.join(", "))
+                    }
+                })
+                .collect();
+            (d.size, packets)
+        })
+        .chain(std::iter::once((
+            total as usize,
+            vec!["ClientHello bytes".to_string()],
+        )))
+        .collect()
+}
+
+/// Whether each Initial's packet number is the one after the last. (How
+/// many bytes encode it follows from the number, which is random.)
+fn numbering(q: &Quic) -> Vec<&'static str> {
+    let mut last: Option<u64> = None;
+    let mut out = Vec::new();
+    for p in q.datagrams.iter().flat_map(|d| &d.packets) {
+        if let Some(n) = p.packet_number {
+            let follows = last.is_none_or(|l| n == l + 1);
+            out.push(if follows { "next" } else { "out of order" });
+            last = Some(n);
+        }
+    }
+    out
+}
+
+/// The transport parameters sorted by id, each with its value, less what
+/// changes per connection.
+fn parameter_set(q: &Quic) -> Vec<(String, String)> {
+    const INITIAL_SCID: u64 = 0x0f;
+    const VERSION_INFORMATION: u64 = 0x11;
+    let mut set: Vec<(String, String)> = q
+        .transport_parameters
+        .iter()
+        .map(|p| match p.id {
+            INITIAL_SCID => (
+                format!("{:#x}", p.id),
+                format!("{} bytes", p.value.len() / 2),
+            ),
+            VERSION_INFORMATION => (format!("{:#x}", p.id), versions(&p.value)),
+            // Which reserved id, and what it holds, is drawn per
+            // connection; Firefox's min_ack_delay is the one fixed id.
+            id if p.grease && id != 0xff02_de1a => ("GREASE".to_string(), String::new()),
+            id => (format!("{id:#x}"), p.value.clone()),
+        })
+        .collect();
+    set.sort();
+    set
+}
+
+/// version_information's versions in order (chosen first), a reserved
+/// one (RFC 9000 §15: 0x?a?a?a?a) as "GREASE".
+fn versions(hex: &str) -> String {
+    let words: Vec<String> = (0..hex.len() / 8)
+        .map(|i| {
+            let v = u32::from_str_radix(&hex[i * 8..i * 8 + 8], 16).unwrap_or(0);
+            if v & 0x0f0f_0f0f == 0x0a0a_0a0a {
+                "GREASE".to_string()
+            } else {
+                format!("{v:#x}")
+            }
+        })
+        .collect();
+    words.join(" ")
+}
+
+/// How `actual`'s HTTP/3 connection differs from `expected`'s: the
+/// unidirectional streams it opened, SETTINGS in order, and the frames on
+/// its control stream and on the request's stream. A GREASE setting, frame
+/// or stream type counts by place; which reserved value it is, and a
+/// GREASE frame's payload, are drawn per connection.
+pub fn http3_differences(expected: &Http3, actual: &Http3) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut check = |what: &str, a: String, b: String| {
+        if a != b {
+            out.push(format!("http3 {what}: expected {a}, got {b}"));
+        }
+    };
+    let grease = |v: u64| {
+        if is_h3_grease(v) {
+            "GREASE".to_string()
+        } else {
+            format!("{v:#x}")
+        }
+    };
+    let streams = |h: &Http3| -> Vec<(u64, String)> {
+        h.streams
+            .iter()
+            .map(|&(id, kind)| (id, grease(kind)))
+            .collect()
+    };
+    check(
+        "streams",
+        format!("{:?}", streams(expected)),
+        format!("{:?}", streams(actual)),
+    );
+    let settings = |h: &Http3| -> Vec<String> {
+        h.settings
+            .iter()
+            .map(|s| {
+                if s.grease {
+                    "GREASE".to_string()
+                } else {
+                    format!("{:#x}={}", s.id, s.value)
+                }
+            })
+            .collect()
+    };
+    check(
+        "settings",
+        format!("{:?}", settings(expected)),
+        format!("{:?}", settings(actual)),
+    );
+    let frames = |f: &[(u64, String)]| -> Vec<String> {
+        f.iter()
+            .map(|(kind, payload)| {
+                if is_h3_grease(*kind) {
+                    "GREASE".to_string()
+                } else {
+                    format!("{kind:#x} {payload}")
+                }
+            })
+            .collect()
+    };
+    check(
+        "control stream frames",
+        format!("{:?}", frames(&expected.control_frames)),
+        format!("{:?}", frames(&actual.control_frames)),
+    );
+    check(
+        "request stream frames",
+        format!("{:?}", frames(&expected.request_frames)),
+        format!("{:?}", frames(&actual.request_frames)),
+    );
     out
 }
 
@@ -387,6 +677,109 @@ mod tests {
         let last = extensions.pop().unwrap();
         extensions.insert(3, last);
         assert!(!super::differences(&expected, &actual).is_empty());
+    }
+
+    fn firefox_over_http3(connection: u64, path: &str) -> Capture {
+        let all: Vec<Capture> = serde_json::from_str(include_str!(
+            "../../../profiles/firefox-160-macos.h3.capture.json"
+        ))
+        .unwrap();
+        all.into_iter()
+            .find(|c| c.connection == connection && c.path == path)
+            .unwrap()
+    }
+
+    #[test]
+    fn two_firefox_connections_differ_only_in_what_is_random() {
+        // Connections 1 and 7 of the recording: other connection IDs (13
+        // and 8 bytes), packet numbers, CRYPTO cut points, extension order,
+        // version_information GREASE and control stream GREASE frame.
+        let (one, other) = (
+            firefox_over_http3(1, "/image"),
+            firefox_over_http3(7, "/image"),
+        );
+        assert_ne!(one.quic, other.quic);
+        assert_ne!(one.http3, other.http3);
+        assert_eq!(super::differences(&one, &other), Vec::<String>::new());
+        let (q1, q7) = (one.quic.as_ref().unwrap(), other.quic.as_ref().unwrap());
+        assert_eq!(super::transport_parameter_order_differs(q1, q7), None);
+    }
+
+    #[test]
+    fn what_a_firefox_connection_keeps_is_compared() {
+        let expected = firefox_over_http3(1, "/image");
+        let changed = |change: fn(&mut Capture)| {
+            let mut actual = expected.clone();
+            change(&mut actual);
+            super::differences(&expected, &actual)
+        };
+        // A transport parameter's value; one left out.
+        assert_eq!(
+            changed(|c| c.quic.as_mut().unwrap().transport_parameters[0].value = "80003a98".into())
+                .len(),
+            1
+        );
+        assert_eq!(
+            changed(|c| {
+                c.quic.as_mut().unwrap().transport_parameters.remove(11);
+            })
+            .len(),
+            1
+        );
+        // One datagram, not two; no padding after the Initial.
+        assert!(
+            !changed(|c| {
+                c.quic.as_mut().unwrap().datagrams.pop();
+            })
+            .is_empty()
+        );
+        assert!(
+            !changed(|c| {
+                c.quic.as_mut().unwrap().datagrams[0].packets.pop();
+            })
+            .is_empty()
+        );
+        // The ClientHello in one CRYPTO frame.
+        assert!(
+            !changed(|c| {
+                let frames = &mut c.quic.as_mut().unwrap().datagrams[0].packets[0].frames;
+                frames.swap(0, 1);
+            })
+            .is_empty()
+        );
+        // An empty Source Connection ID, as Chrome's.
+        assert_eq!(changed(|c| c.quic.as_mut().unwrap().scid_len = 0).len(), 1);
+        // SETTINGS in another order, or a stream not opened.
+        assert_eq!(
+            changed(|c| c.http3.as_mut().unwrap().settings.swap(0, 1)).len(),
+            1
+        );
+        assert_eq!(
+            changed(|c| {
+                c.http3.as_mut().unwrap().streams.pop();
+            })
+            .len(),
+            1
+        );
+        // No GREASE frame on the control stream.
+        assert_eq!(
+            changed(|c| c.http3.as_mut().unwrap().control_frames.clear()).len(),
+            1
+        );
+        // The parameters in another order: the same set, but not Firefox's.
+        let mut actual = expected.clone();
+        actual
+            .quic
+            .as_mut()
+            .unwrap()
+            .transport_parameters
+            .swap(0, 1);
+        assert_eq!(super::differences(&expected, &actual), Vec::<String>::new());
+        let (e, a) = (
+            expected.quic.as_ref().unwrap(),
+            actual.quic.as_ref().unwrap(),
+        );
+        assert!(super::transport_parameter_order_differs(e, a).is_some());
     }
 
     #[test]

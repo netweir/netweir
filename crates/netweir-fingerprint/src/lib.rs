@@ -16,7 +16,10 @@ mod quic;
 mod server;
 
 pub use client_hello::{ClientHello, is_grease};
-pub use compare::{differences, extension_order_differs};
+pub use compare::{
+    differences, extension_order_differs, http3_differences, quic_differences,
+    transport_parameter_order_differs,
+};
 pub use h2::Http2;
 pub use h3::{Http3, Setting, is_h3_grease};
 pub use ja4::{ja4, ja4_quic};
