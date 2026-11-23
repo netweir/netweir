@@ -3,8 +3,10 @@
 //! headers. Each response body is the recorded request as JSON.
 //!
 //! Requests can ask for behaviour through the query string:
-//! `?set=NAME` adds `Set-Cookie: NAME=1; Path=/`, and
-//! `/redirect?to=URL` answers 302 to URL, and `/loop` redirects to itself
+//! `?set=NAME` adds `Set-Cookie: NAME=1; Path=/`, `?alt-svc=VALUE` adds
+//! `Alt-Svc: VALUE` (percent-decoded) in place of the one
+//! [`Server::start_h3`] sends, `/redirect?to=URL` answers 302 to URL,
+//! and `/loop` redirects to itself
 //! with a relative `Location`. `/form` serves a page whose script submits a
 //! form, POST to `/submitted`; `/fetch` serves one whose script POSTs JSON
 //! to `/api` with `fetch()`. `/form-redirect` is a form that POSTs to a 302
@@ -283,6 +285,26 @@ fetch(o + "/api", {method: "POST", headers: {"Content-Type": "application/json"}
 
 /// What to answer a request with, from its path and query, and whether it
 /// carried Authorization.
+/// `s` with each `%XX` turned into its byte.
+fn percent_decoded(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        let hex = |b: Option<u8>| (b? as char).to_digit(16);
+        out.push(match b {
+            b'%' => {
+                let (hi, lo) = (hex(bytes.next()), hex(bytes.next()));
+                match hi.zip(lo) {
+                    Some((hi, lo)) => (hi * 16 + lo) as u8,
+                    None => b'%',
+                }
+            }
+            b => b,
+        });
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn route(path: &str, authorized: bool) -> Answer {
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     let param = |name: &str| {
@@ -297,6 +319,9 @@ fn route(path: &str, authorized: bool) -> Answer {
     let mut headers = Vec::new();
     if let Some(cookie) = param("set") {
         headers.push(("set-cookie", format!("{cookie}=1; Path=/")));
+    }
+    if let Some(alt_svc) = param("alt-svc") {
+        headers.push(("alt-svc", percent_decoded(&alt_svc)));
     }
     let html = |headers: &mut Vec<(&'static str, String)>, page: &str| {
         headers.push(("content-type", "text/html; charset=utf-8".to_string()));
@@ -589,7 +614,9 @@ async fn handle(
             let authorized = req.headers.iter().any(|(k, _)| k == "authorization");
             let capture = capture_of(Some(req.http2), method, path.clone(), req.headers, req.body);
             let (status, mut headers, page) = route(&path, authorized);
-            headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
+            if !headers.iter().any(|(k, _)| *k == "alt-svc") {
+                headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
+            }
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
@@ -616,7 +643,9 @@ async fn handle(
                 .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
             let capture = capture_of(None, method, path.clone(), headers, request_body);
             let (status, mut reply_headers, page) = route(&path, authorized);
-            reply_headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
+            if !reply_headers.iter().any(|(k, _)| *k == "alt-svc") {
+                reply_headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
+            }
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);

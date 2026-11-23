@@ -636,7 +636,10 @@ impl Warc {
 
         // The request went out as HTTP/1.1 even to a server that answered
         // in 1.0.
-        let request_protocol = if protocol == "h2" { "h2" } else { "http/1.1" };
+        let request_protocol = match protocol {
+            "h2" | "h3" => protocol,
+            _ => "http/1.1",
+        };
         let request = Record {
             kind: "request",
             id: &request_id,
@@ -1068,7 +1071,10 @@ fn write_entry(out: &mut dyn Write, e: &Exchange) -> io::Result<()> {
         "url": e.url,
         // HTTP/1.1 even to a server that answered in 1.0, as the WARC
         // request record has it.
-        "httpVersion": if e.version == "HTTP/2" { "HTTP/2" } else { "HTTP/1.1" },
+        "httpVersion": match e.version {
+            "HTTP/2" | "HTTP/3" => e.version,
+            _ => "HTTP/1.1",
+        },
         "cookies": [],
         "headers": pairs(&e.request_headers),
         "queryString": query,
@@ -1382,6 +1388,9 @@ mod tests {
         assert_eq!(entry(&e)["response"]["httpVersion"], "HTTP/1.0");
         e.version = "HTTP/2";
         assert_eq!(entry(&e)["request"]["httpVersion"], "HTTP/2");
+        e.version = "HTTP/3";
+        assert_eq!(entry(&e)["request"]["httpVersion"], "HTTP/3");
+        assert_eq!(entry(&e)["response"]["httpVersion"], "HTTP/3");
         assert!(entry(&e)["response"]["content"].get("_truncated").is_none());
         e.truncated = true;
         assert_eq!(entry(&e)["response"]["content"]["_truncated"], true);
