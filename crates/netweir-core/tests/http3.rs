@@ -174,9 +174,9 @@ async fn a_second_connection_resumes_like_firefox_and_shuffles_anew() {
     let port = server.port;
     let origin = format!("https://localhost:{port}");
     let first = fetcher();
-    first
-        .use_http3(&origin, &format!("localhost:{port}"))
-        .unwrap();
+    // Firefox only resumed over IPv6 in the recording, so this test goes
+    // to ::1 rather than wherever `localhost` resolves first.
+    first.use_http3(&origin, &format!("[::1]:{port}")).unwrap();
     first.get(&format!("{origin}/"), &[]).await.unwrap();
     let fresh = server.next().await.unwrap();
     // The same Fetcher's next connection resumes with the ticket the
