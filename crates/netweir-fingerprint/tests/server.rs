@@ -48,7 +48,7 @@ impl ServerCertVerifier for AcceptAnything {
     }
 }
 
-async fn connect(port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
+fn client_config(alpn: &[u8]) -> rustls::ClientConfig {
     let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -57,7 +57,12 @@ async fn connect(port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
     .dangerous()
     .with_custom_certificate_verifier(Arc::new(AcceptAnything))
     .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
+    config
+}
+
+async fn connect(port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
+    let config = client_config(b"http/1.1");
     let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from("localhost").unwrap(), tcp)
@@ -212,6 +217,119 @@ async fn serves_pages_whose_scripts_post() {
     );
     let fetch = exchange(&mut tls, "/fetch").await;
     assert!(fetch.contains("fetch(\"/api\""), "{fetch}");
+}
+
+/// An HTTP/3 frame, from values below 64 so each varint is one byte.
+fn h3_frame(kind: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![kind, payload.len() as u8];
+    out.extend_from_slice(payload);
+    out
+}
+
+#[tokio::test]
+async fn records_the_first_quic_flight_and_http3_request() {
+    let mut server = Server::start_h3(0, None).await.unwrap();
+    let mut client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_config(b"h3")).unwrap();
+    client.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+    let conn = client
+        .connect(([127, 0, 0, 1], server.port).into(), "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+
+    // The control stream: SETTINGS QPACK_MAX_TABLE_CAPACITY 0,
+    // H3_DATAGRAM 1, and the reserved id 0x21 set to 7.
+    let mut control = conn.open_uni().await.unwrap();
+    let mut opening = vec![0x00];
+    opening.extend(h3_frame(0x04, &[0x01, 0x00, 0x33, 0x01, 0x21, 0x07]));
+    control.write_all(&opening).await.unwrap();
+
+    // GET /h3 with ":method GET" and ":scheme https" from the static
+    // table, ":authority" and ":path" by static name, then a literal
+    // "priority: u=0, i".
+    let mut block = vec![0x00, 0x00, 0xd1, 0xd7, 0x50, 9];
+    block.extend_from_slice(b"localhost");
+    block.extend_from_slice(&[0x51, 3]);
+    block.extend_from_slice(b"/h3");
+    block.extend_from_slice(&[0x27, 0x01]);
+    block.extend_from_slice(b"priority");
+    block.push(6);
+    block.extend_from_slice(b"u=0, i");
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let mut request = h3_frame(0x21, &[]); // a reserved frame type first
+    request.extend(h3_frame(0x01, &block));
+    send.write_all(&request).await.unwrap();
+    send.finish().unwrap();
+    let response = recv.read_to_end(1 << 20).await.unwrap();
+
+    let capture = server.next().await.unwrap();
+    assert_eq!(capture.protocol, "h3");
+    assert!(capture.ja4.starts_with("q13d"), "{}", capture.ja4);
+    assert!(capture.ja4.contains("h3_"), "{}", capture.ja4);
+    assert_eq!(capture.client_hello.alpn, ["h3"]);
+    assert!(
+        String::from_utf8_lossy(&response).contains(&capture.ja4),
+        "the body echoes the capture"
+    );
+
+    let quic = capture.quic.as_ref().unwrap();
+    assert_eq!(quic.version, 1);
+    assert!(quic.dcid_len >= 8, "{}", quic.dcid_len);
+    let first = &quic.datagrams[0];
+    assert!(
+        first.size >= 1200,
+        "an Initial datagram is padded: {}",
+        first.size
+    );
+    assert_eq!(first.packets[0].kind, "initial");
+    assert!(
+        first.packets[0]
+            .frames
+            .iter()
+            .any(|f| matches!(f, netweir_fingerprint::Frame::Crypto { offset: 0, .. }))
+    );
+    let ids: Vec<u64> = quic.transport_parameters.iter().map(|p| p.id).collect();
+    assert!(
+        ids.contains(&0x0f),
+        "initial_source_connection_id: {ids:x?}"
+    );
+    assert!(
+        quic.transport_parameters.iter().any(|p| p.grease),
+        "quinn sends a reserved parameter: {ids:x?}"
+    );
+
+    let http3 = capture.http3.as_ref().unwrap();
+    assert_eq!(http3.streams.first().map(|s| s.1), Some(0x00));
+    let settings: Vec<(u64, u64, bool)> = http3
+        .settings
+        .iter()
+        .map(|s| (s.id, s.value, s.grease))
+        .collect();
+    assert_eq!(
+        settings,
+        [(0x01, 0, false), (0x33, 1, false), (0x21, 7, true)]
+    );
+    assert_eq!(http3.request_frames, [(0x21, String::new())]);
+    let names: Vec<&str> = capture.headers.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        names,
+        [":method", ":scheme", ":authority", ":path", "priority"]
+    );
+    assert_eq!(
+        (capture.method.as_str(), capture.path.as_str()),
+        ("GET", "/h3")
+    );
+}
+
+#[tokio::test]
+async fn the_tcp_side_points_browsers_at_http3() {
+    let server = Server::start_h3(0, None).await.unwrap();
+    let response = request(server.port).await;
+    let alt_svc = format!("alt-svc: h3=\":{}\"; ma=86400\r\n", server.port);
+    assert!(response.contains(&alt_svc), "{response}");
+    let plain = Server::start().await.unwrap();
+    assert!(!request(plain.port).await.contains("alt-svc"));
 }
 
 #[test]

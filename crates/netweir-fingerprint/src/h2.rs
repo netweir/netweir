@@ -350,7 +350,7 @@ fn akamai(
 
 /// HPACK integer with an `n`-bit prefix (RFC 7541 §5.1); `flags` fills the
 /// bits above the prefix in the first byte.
-fn hpack_int(out: &mut Vec<u8>, flags: u8, n: u32, mut value: usize) {
+pub(crate) fn hpack_int(out: &mut Vec<u8>, flags: u8, n: u32, mut value: usize) {
     let max = (1usize << n) - 1;
     if value < max {
         out.push(flags | value as u8);
@@ -365,7 +365,7 @@ fn hpack_int(out: &mut Vec<u8>, flags: u8, n: u32, mut value: usize) {
     out.push(value as u8);
 }
 
-fn hpack_string(out: &mut Vec<u8>, s: &[u8]) {
+pub(crate) fn hpack_string(out: &mut Vec<u8>, s: &[u8]) {
     hpack_int(out, 0, 7, s.len());
     out.extend_from_slice(s);
 }

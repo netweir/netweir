@@ -5,7 +5,18 @@ use sha2::{Digest, Sha256};
 
 use crate::client_hello::{ClientHello, is_grease};
 
+/// JA4 of a ClientHello sent over TCP.
 pub fn ja4(hello: &ClientHello) -> String {
+    ja4_over('t', hello)
+}
+
+/// JA4 of a ClientHello sent in QUIC's CRYPTO frames, which JA4 marks with
+/// a leading `q`.
+pub fn ja4_quic(hello: &ClientHello) -> String {
+    ja4_over('q', hello)
+}
+
+fn ja4_over(transport: char, hello: &ClientHello) -> String {
     let version = hello
         .supported_versions
         .iter()
@@ -49,7 +60,7 @@ pub fn ja4(hello: &ClientHello) -> String {
     };
     let alpn = alpn_chars(first);
     let a = format!(
-        "t{version}{sni}{:02}{:02}{alpn}",
+        "{transport}{version}{sni}{:02}{:02}{alpn}",
         ciphers.len().min(99),
         extensions.len().min(99)
     );
@@ -145,6 +156,7 @@ mod tests {
             trust_anchors: None,
             grease_extension_lengths: vec![],
             grease_key_share_lengths: vec![],
+            quic_transport_parameters: vec![],
         };
         let first = ja4(&hello);
         hello.signature_algorithms[0] = 0xdada;

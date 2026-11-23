@@ -1,0 +1,7802 @@
+[
+  {
+    "connection": 0,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        27,
+        0,
+        65037,
+        51764,
+        45,
+        10,
+        43,
+        13,
+        51,
+        17613,
+        57
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1213,
+                  "length": 298
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1741,
+                  "length": 233
+                },
+                {
+                  "type": "padding",
+                  "length": 6
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 28,
+                  "length": 14
+                },
+                {
+                  "type": "padding",
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1511,
+                  "length": 32
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1543,
+                  "length": 184
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1048,
+                  "length": 21
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 42,
+                  "length": 17
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1727,
+                  "length": 14
+                },
+                {
+                  "type": "padding",
+                  "length": 55
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1069,
+                  "length": 144
+                },
+                {
+                  "type": "padding",
+                  "length": 58
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 172,
+                  "length": 5
+                },
+                {
+                  "type": "padding",
+                  "length": 117
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 210,
+                  "length": 3
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 222,
+                  "length": 31
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 215,
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 182,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 59,
+                  "length": 113
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 265,
+                  "length": 588
+                },
+                {
+                  "type": "padding",
+                  "length": 17
+                },
+                {
+                  "type": "crypto",
+                  "offset": 177,
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 36
+                },
+                {
+                  "type": "crypto",
+                  "offset": 213,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 253,
+                  "length": 12
+                },
+                {
+                  "type": "crypto",
+                  "offset": 853,
+                  "length": 195
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 17,
+          "value": "000000018abaaa0a00000001",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 4050451663436969981,
+          "value": "616ecd835b4e49",
+          "grease": true
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        }
+      ]
+    },
+    "path": "",
+    "method": "",
+    "body": "",
+    "headers": []
+  },
+  {
+    "connection": 1,
+    "request": 0,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        57,
+        0,
+        51764,
+        43,
+        51,
+        10,
+        65037,
+        13,
+        16,
+        45,
+        27,
+        17613,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 29
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1955,
+                  "length": 12
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1564,
+                  "length": 154
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1307,
+                  "length": 257
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1718,
+                  "length": 136
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1854,
+                  "length": 101
+                },
+                {
+                  "type": "padding",
+                  "length": 89
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1066,
+                  "length": 241
+                },
+                {
+                  "type": "padding",
+                  "length": 17
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 61,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 70
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1967,
+                  "length": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 985,
+                  "length": 18
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 970,
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 80,
+                  "length": 196
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1006,
+                  "length": 60
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 913,
+                  "length": 39
+                },
+                {
+                  "type": "padding",
+                  "length": 99
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1003,
+                  "length": 3
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 18
+                },
+                {
+                  "type": "crypto",
+                  "offset": 276,
+                  "length": 637
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 23
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 65298801071586995,
+          "value": "10de4d53a347d31c6c74bddcf9",
+          "grease": true
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000012aeada3a",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5de0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 114983688783,
+          "value": 2825749851,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          39526953684,
+          "01"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/image",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/image"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 1,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        57,
+        0,
+        51764,
+        43,
+        51,
+        10,
+        65037,
+        13,
+        16,
+        45,
+        27,
+        17613,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 29
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1955,
+                  "length": 12
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1564,
+                  "length": 154
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1307,
+                  "length": 257
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1718,
+                  "length": 136
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1854,
+                  "length": 101
+                },
+                {
+                  "type": "padding",
+                  "length": 89
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1066,
+                  "length": 241
+                },
+                {
+                  "type": "padding",
+                  "length": 17
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 61,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 70
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1967,
+                  "length": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 985,
+                  "length": 18
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 970,
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 80,
+                  "length": 196
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1006,
+                  "length": 60
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 913,
+                  "length": 39
+                },
+                {
+                  "type": "padding",
+                  "length": 99
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1003,
+                  "length": 3
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 18
+                },
+                {
+                  "type": "crypto",
+                  "offset": 276,
+                  "length": 637
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 23
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 65298801071586995,
+          "value": "10de4d53a347d31c6c74bddcf9",
+          "grease": true
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000012aeada3a",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5de0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 114983688783,
+          "value": 2825749851,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          39526953684,
+          "01"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=2, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 2,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        57,
+        0,
+        51764,
+        43,
+        51,
+        10,
+        65037,
+        13,
+        16,
+        45,
+        27,
+        17613,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 29
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1955,
+                  "length": 12
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1564,
+                  "length": 154
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1307,
+                  "length": 257
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1718,
+                  "length": 136
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1854,
+                  "length": 101
+                },
+                {
+                  "type": "padding",
+                  "length": 89
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1066,
+                  "length": 241
+                },
+                {
+                  "type": "padding",
+                  "length": 17
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 61,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 70
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1967,
+                  "length": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 985,
+                  "length": 18
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 970,
+                  "length": 15
+                },
+                {
+                  "type": "crypto",
+                  "offset": 80,
+                  "length": 196
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1006,
+                  "length": 60
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 913,
+                  "length": 39
+                },
+                {
+                  "type": "padding",
+                  "length": 99
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1003,
+                  "length": 3
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 18
+                },
+                {
+                  "type": "crypto",
+                  "offset": 276,
+                  "length": 637
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 23
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 65298801071586995,
+          "value": "10de4d53a347d31c6c74bddcf9",
+          "grease": true
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000012aeada3a",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5de0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 114983688783,
+          "value": 2825749851,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          39526953684,
+          "01"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 2,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        51764,
+        0,
+        10,
+        51,
+        27,
+        57,
+        45,
+        17613,
+        16,
+        13,
+        65037,
+        43
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 59,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1052,
+                  "length": 928
+                },
+                {
+                  "type": "padding",
+                  "length": 13
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 56,
+                  "length": 1
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 57,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 44
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 58,
+                  "length": 1
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 4
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 56
+                },
+                {
+                  "type": "padding",
+                  "length": 85
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 114
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 60,
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 113,
+                  "length": 76
+                },
+                {
+                  "type": "crypto",
+                  "offset": 657,
+                  "length": 94
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 56
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 355,
+                  "length": 53
+                },
+                {
+                  "type": "padding",
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 751,
+                  "length": 301
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 408,
+                  "length": 249
+                },
+                {
+                  "type": "crypto",
+                  "offset": 189,
+                  "length": 166
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "000000019a9a1ada00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 2373631040008934363,
+          "value": "869e777dadbcd4d7665ae5afb5",
+          "grease": true
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "path": "",
+    "method": "",
+    "body": "",
+    "headers": []
+  },
+  {
+    "connection": 3,
+    "request": 0,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        0,
+        65037,
+        43,
+        13,
+        17613,
+        51,
+        10,
+        57,
+        45,
+        51764,
+        27,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1529,
+                  "length": 439
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 26
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1056,
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1105,
+                  "length": 424
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 20
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 51,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1052,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 98
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 46,
+                  "length": 5
+                },
+                {
+                  "type": "padding",
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 824
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 189
+                },
+                {
+                  "type": "crypto",
+                  "offset": 936,
+                  "length": 30
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 966,
+                  "length": 86
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 890,
+                  "length": 46
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 570085524241367366,
+          "value": "36952db798373a222a1f00a0e8",
+          "grease": true
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5504",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "0000000100000001aafadaaa",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 17053976992,
+          "value": 3939976100,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          64882400958,
+          "29e354"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/image",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/image"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 3,
+    "request": 1,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        0,
+        65037,
+        43,
+        13,
+        17613,
+        51,
+        10,
+        57,
+        45,
+        51764,
+        27,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1529,
+                  "length": 439
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 26
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1056,
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1105,
+                  "length": 424
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 20
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 51,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1052,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 98
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 46,
+                  "length": 5
+                },
+                {
+                  "type": "padding",
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 824
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 189
+                },
+                {
+                  "type": "crypto",
+                  "offset": 936,
+                  "length": 30
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 966,
+                  "length": 86
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 890,
+                  "length": 46
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 570085524241367366,
+          "value": "36952db798373a222a1f00a0e8",
+          "grease": true
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5504",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "0000000100000001aafadaaa",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 17053976992,
+          "value": 3939976100,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          64882400958,
+          "29e354"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=2, i"
+      ]
+    ]
+  },
+  {
+    "connection": 3,
+    "request": 2,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        0,
+        65037,
+        43,
+        13,
+        17613,
+        51,
+        10,
+        57,
+        45,
+        51764,
+        27,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1529,
+                  "length": 439
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 26
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1056,
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1105,
+                  "length": 424
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 20
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 51,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1052,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 98
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 46,
+                  "length": 5
+                },
+                {
+                  "type": "padding",
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 824
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 189
+                },
+                {
+                  "type": "crypto",
+                  "offset": 936,
+                  "length": 30
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 966,
+                  "length": 86
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 890,
+                  "length": 46
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 570085524241367366,
+          "value": "36952db798373a222a1f00a0e8",
+          "grease": true
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5504",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "0000000100000001aafadaaa",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 17053976992,
+          "value": 3939976100,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          64882400958,
+          "29e354"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        45,
+        0,
+        51,
+        10,
+        16,
+        51764,
+        13,
+        65037,
+        17613,
+        57,
+        27,
+        43
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 9,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 101
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1927,
+                  "length": 8
+                },
+                {
+                  "type": "padding",
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1049,
+                  "length": 318
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1367,
+                  "length": 263
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1630,
+                  "length": 297
+                },
+                {
+                  "type": "padding",
+                  "length": 35
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 49,
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 366,
+                  "length": 79
+                },
+                {
+                  "type": "crypto",
+                  "offset": 833,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 126
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 938,
+                  "length": 27
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 835,
+                  "length": 103
+                },
+                {
+                  "type": "padding",
+                  "length": 33
+                },
+                {
+                  "type": "crypto",
+                  "offset": 445,
+                  "length": 388
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 287
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 965,
+                  "length": 84
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001da4a8a3a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3696510503891445059,
+          "value": "",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 25758516251,
+          "value": 2023477644,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          89082592777,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/image",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/image"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 1,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        45,
+        0,
+        51,
+        10,
+        16,
+        51764,
+        13,
+        65037,
+        17613,
+        57,
+        27,
+        43
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 9,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 101
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1927,
+                  "length": 8
+                },
+                {
+                  "type": "padding",
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1049,
+                  "length": 318
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1367,
+                  "length": 263
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1630,
+                  "length": 297
+                },
+                {
+                  "type": "padding",
+                  "length": 35
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 49,
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 366,
+                  "length": 79
+                },
+                {
+                  "type": "crypto",
+                  "offset": 833,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 126
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 938,
+                  "length": 27
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 835,
+                  "length": 103
+                },
+                {
+                  "type": "padding",
+                  "length": 33
+                },
+                {
+                  "type": "crypto",
+                  "offset": 445,
+                  "length": 388
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 287
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 965,
+                  "length": 84
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001da4a8a3a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3696510503891445059,
+          "value": "",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 25758516251,
+          "value": 2023477644,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          89082592777,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=2, i"
+      ]
+    ]
+  },
+  {
+    "connection": 4,
+    "request": 2,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        45,
+        0,
+        51,
+        10,
+        16,
+        51764,
+        13,
+        65037,
+        17613,
+        57,
+        27,
+        43
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 9,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 101
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1927,
+                  "length": 8
+                },
+                {
+                  "type": "padding",
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1049,
+                  "length": 318
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 53
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1367,
+                  "length": 263
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1630,
+                  "length": 297
+                },
+                {
+                  "type": "padding",
+                  "length": 35
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 49,
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 366,
+                  "length": 79
+                },
+                {
+                  "type": "crypto",
+                  "offset": 833,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 126
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 938,
+                  "length": 27
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 835,
+                  "length": 103
+                },
+                {
+                  "type": "padding",
+                  "length": 33
+                },
+                {
+                  "type": "crypto",
+                  "offset": 445,
+                  "length": 388
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 287
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 965,
+                  "length": 84
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001da4a8a3a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 3696510503891445059,
+          "value": "",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 25758516251,
+          "value": 2023477644,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          89082592777,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 5,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        51,
+        13,
+        27,
+        57,
+        45,
+        16,
+        65037,
+        43,
+        10,
+        51764,
+        0
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1806,
+                  "length": 67
+                },
+                {
+                  "type": "crypto",
+                  "offset": 5,
+                  "length": 1
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1874,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 11,
+                  "length": 50
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1873,
+                  "length": 1
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 6,
+                  "length": 5
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1875,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1459,
+                  "length": 347
+                },
+                {
+                  "type": "padding",
+                  "length": 120
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1005,
+                  "length": 454
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 79
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "padding",
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 276,
+                  "length": 393
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 61,
+                  "length": 3
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 159
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 29
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 3
+                },
+                {
+                  "type": "crypto",
+                  "offset": 862,
+                  "length": 143
+                },
+                {
+                  "type": "padding",
+                  "length": 3
+                },
+                {
+                  "type": "crypto",
+                  "offset": 80,
+                  "length": 196
+                },
+                {
+                  "type": "padding",
+                  "length": 12
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 669,
+                  "length": 193
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 64,
+                  "length": 12
+                },
+                {
+                  "type": "crypto",
+                  "offset": 76,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 14
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "000000011a9a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 3020817467692912403,
+          "value": "5f67214bbb4085b98bf900c7",
+          "grease": true
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        }
+      ]
+    },
+    "path": "",
+    "method": "",
+    "body": "",
+    "headers": []
+  },
+  {
+    "connection": 6,
+    "request": 0,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        65037,
+        51764,
+        43,
+        51,
+        57,
+        16,
+        27,
+        10,
+        13,
+        0,
+        17613,
+        45,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 58,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 29,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1085,
+                  "length": 949
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 40,
+                  "length": 18
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 149
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 36,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 64,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 24,
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 24
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 1044,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 978
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1061,
+                  "length": 17
+                },
+                {
+                  "type": "padding",
+                  "length": 109
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1078,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1046,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1045,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 3803979387422755157,
+          "value": "6dd34afe0064d84b0f923bc057b848",
+          "grease": true
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5cb5",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001aa4a5a6a00000001",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 35027745403,
+          "value": 4150110902,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          67646172013,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/image",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/image"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 6,
+    "request": 1,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        65037,
+        51764,
+        43,
+        51,
+        57,
+        16,
+        27,
+        10,
+        13,
+        0,
+        17613,
+        45,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 58,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 29,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1085,
+                  "length": 949
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 40,
+                  "length": 18
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 149
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 36,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 64,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 24,
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 24
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 1044,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 978
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1061,
+                  "length": 17
+                },
+                {
+                  "type": "padding",
+                  "length": 109
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1078,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1046,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1045,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 3803979387422755157,
+          "value": "6dd34afe0064d84b0f923bc057b848",
+          "grease": true
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5cb5",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001aa4a5a6a00000001",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 35027745403,
+          "value": 4150110902,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          67646172013,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=2, i"
+      ]
+    ]
+  },
+  {
+    "connection": 6,
+    "request": 2,
+    "ja4": "q13d0313h3_55b375c5d22e_b0954bf1abdf",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        65037,
+        51764,
+        43,
+        51,
+        57,
+        16,
+        27,
+        10,
+        13,
+        0,
+        17613,
+        45,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 58,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 29,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 65,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1085,
+                  "length": 949
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 40,
+                  "length": 18
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 149
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 36,
+                  "length": 4
+                },
+                {
+                  "type": "padding",
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 64,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 24,
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 24
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 1044,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 66,
+                  "length": 978
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1061,
+                  "length": 17
+                },
+                {
+                  "type": "padding",
+                  "length": 109
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1078,
+                  "length": 7
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1046,
+                  "length": 15
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 5
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1045,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 3803979387422755157,
+          "value": "6dd34afe0064d84b0f923bc057b848",
+          "grease": true
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 12583,
+          "value": "5cb5",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001aa4a5a6a00000001",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 35027745403,
+          "value": 4150110902,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          67646172013,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 7,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        65037,
+        51764,
+        45,
+        43,
+        57,
+        27,
+        0,
+        10,
+        13,
+        51,
+        17613
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 75,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 40
+                },
+                {
+                  "type": "crypto",
+                  "offset": 78,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 81,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 73,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 41,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 74,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 21
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1060,
+                  "length": 890
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 50,
+                  "length": 23
+                },
+                {
+                  "type": "crypto",
+                  "offset": 76,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 74
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 614,
+                  "length": 338
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 86
+                },
+                {
+                  "type": "crypto",
+                  "offset": 278,
+                  "length": 220
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 559,
+                  "length": 27
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1038,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 586,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 540,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 4
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 608,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 509,
+                  "length": 31
+                },
+                {
+                  "type": "crypto",
+                  "offset": 83,
+                  "length": 195
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 498,
+                  "length": 11
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 176
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000018ada1a2a",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1454186568875646578,
+          "value": "344b7559867202621a6cc50f84a129",
+          "grease": true
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 111055803775,
+          "value": 3083299745,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          74574309220,
+          "19"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/image",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/image"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 7,
+    "request": 1,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        65037,
+        51764,
+        45,
+        43,
+        57,
+        27,
+        0,
+        10,
+        13,
+        51,
+        17613
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 75,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 40
+                },
+                {
+                  "type": "crypto",
+                  "offset": 78,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 81,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 73,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 41,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 74,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 21
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1060,
+                  "length": 890
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 50,
+                  "length": 23
+                },
+                {
+                  "type": "crypto",
+                  "offset": 76,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 74
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 614,
+                  "length": 338
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 86
+                },
+                {
+                  "type": "crypto",
+                  "offset": 278,
+                  "length": 220
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 559,
+                  "length": 27
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1038,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 586,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 540,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 4
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 608,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 509,
+                  "length": 31
+                },
+                {
+                  "type": "crypto",
+                  "offset": 83,
+                  "length": 195
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 498,
+                  "length": 11
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 176
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000018ada1a2a",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1454186568875646578,
+          "value": "344b7559867202621a6cc50f84a129",
+          "grease": true
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 111055803775,
+          "value": 3083299745,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          74574309220,
+          "19"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=2, i"
+      ]
+    ]
+  },
+  {
+    "connection": 7,
+    "request": 2,
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        16,
+        65037,
+        51764,
+        45,
+        43,
+        57,
+        27,
+        0,
+        10,
+        13,
+        51,
+        17613
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 49
+                },
+                {
+                  "type": "crypto",
+                  "offset": 75,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 40
+                },
+                {
+                  "type": "crypto",
+                  "offset": 78,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 81,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 32,
+                  "length": 9
+                },
+                {
+                  "type": "crypto",
+                  "offset": 73,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 41,
+                  "length": 9
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 74,
+                  "length": 1
+                },
+                {
+                  "type": "padding",
+                  "length": 21
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1060,
+                  "length": 890
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 32
+                },
+                {
+                  "type": "crypto",
+                  "offset": 79,
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 50,
+                  "length": 23
+                },
+                {
+                  "type": "crypto",
+                  "offset": 76,
+                  "length": 2
+                },
+                {
+                  "type": "padding",
+                  "length": 74
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1250,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1250,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 614,
+                  "length": 338
+                },
+                {
+                  "type": "crypto",
+                  "offset": 952,
+                  "length": 86
+                },
+                {
+                  "type": "crypto",
+                  "offset": 278,
+                  "length": 220
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 559,
+                  "length": 27
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1038,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 586,
+                  "length": 22
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 540,
+                  "length": 19
+                },
+                {
+                  "type": "padding",
+                  "length": 4
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 608,
+                  "length": 6
+                },
+                {
+                  "type": "crypto",
+                  "offset": 509,
+                  "length": 31
+                },
+                {
+                  "type": "crypto",
+                  "offset": 83,
+                  "length": 195
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 498,
+                  "length": 11
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 176
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f524947",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001000000018ada1a2a",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 1454186568875646578,
+          "value": "344b7559867202621a6cc50f84a129",
+          "grease": true
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 111055803775,
+          "value": 3083299745,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          74574309220,
+          "19"
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d322c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": []
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:8453"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:8453/image"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  }
+]

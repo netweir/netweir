@@ -42,6 +42,11 @@ pub struct ClientHello {
     /// captures from before it was kept.
     #[serde(default)]
     pub grease_key_share_lengths: Vec<usize>,
+    /// The raw quic_transport_parameters extension (0x39), which a QUIC
+    /// ClientHello carries. Not kept in saved captures; the QUIC capture
+    /// keeps it parsed.
+    #[serde(skip)]
+    pub quic_transport_parameters: Vec<u8>,
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -95,8 +100,13 @@ impl ClientHello {
     /// `records` is the raw bytes read from the socket, starting at the
     /// first record header.
     pub fn parse(records: &[u8]) -> Option<ClientHello> {
-        let handshake = handshake_bytes(records)?;
-        let mut r = Reader(&handshake);
+        ClientHello::parse_handshake(&handshake_bytes(records)?)
+    }
+
+    /// Parses a ClientHello handshake message on its own, as QUIC's CRYPTO
+    /// frames carry it, without TLS records around it.
+    pub fn parse_handshake(handshake: &[u8]) -> Option<ClientHello> {
+        let mut r = Reader(handshake);
         if r.u8()? != 1 {
             return None; // not a ClientHello
         }
@@ -127,6 +137,7 @@ impl ClientHello {
             trust_anchors: None,
             grease_extension_lengths: Vec::new(),
             grease_key_share_lengths: Vec::new(),
+            quic_transport_parameters: Vec::new(),
         };
         let mut exts = Reader(r.vec16().unwrap_or(&[]));
         while let Some(id) = exts.u16() {
@@ -167,6 +178,7 @@ impl ClientHello {
                         hello.key_share_groups.push(group);
                     }
                 }
+                0x0039 => hello.quic_transport_parameters = data.to_vec(),
                 0x4469 | 0x44cd => hello.alps = Reader(d.vec16()?).names(),
                 0xca34 => {
                     hello.trust_anchors = Some(data.iter().map(|b| format!("{b:02x}")).collect())

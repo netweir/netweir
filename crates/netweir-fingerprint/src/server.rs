@@ -13,12 +13,19 @@
 //! Authorization, then serves a page that loads an image, POSTs JSON with
 //! `fetch()` and submits a form, so each kind of request a browser sends
 //! with the login it holds is captured.
+//!
+//! [`Server::start_h3`] also listens on UDP, on the same port, and its TCP
+//! replies carry `Alt-Svc: h3`, so a browser moves to HTTP/3 as it would
+//! for a real site. A capture over HTTP/3 adds the client's first QUIC
+//! flight and what it sent on the HTTP/3 connection.
 
-use std::io;
+use std::collections::HashMap;
+use std::io::{self, IoSliceMut};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +36,9 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::client_hello::{ClientHello, bytes_needed};
 use crate::h2::{self, Http2};
-use crate::ja4::ja4;
+use crate::h3::{self, Http3};
+use crate::ja4::{ja4, ja4_quic};
+use crate::quic::{self, Quic};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capture {
@@ -39,9 +48,18 @@ pub struct Capture {
     pub request: u32,
     pub ja4: String,
     pub client_hello: ClientHello,
-    /// "h2" or "http/1.1".
+    /// "h3", "h2" or "http/1.1".
     pub protocol: String,
     pub http2: Option<Http2>,
+    /// The client's first QUIC flight, for a request over HTTP/3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic: Option<Quic>,
+    /// What the client sent on the HTTP/3 connection and this request's
+    /// stream, for a request over HTTP/3. A QUIC connection that closes
+    /// without a request still gives one capture, with no `http3`, an
+    /// empty method and path, and its first flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http3: Option<Http3>,
     /// Path and query of the request.
     pub path: String,
     /// "GET", "POST" and so on. Empty in captures made before it was kept.
@@ -85,31 +103,60 @@ impl Server {
         } else {
             &[b"h2", b"http/1.1"]
         };
-        Server::bind_with(port, alpn, Some(lasting_certificate(dir)?)).await
+        Server::bind_with(port, alpn, Some(lasting_certificate(dir)?), false).await
+    }
+
+    /// Like `start_on`, and listens for QUIC on the same UDP port, on
+    /// 127.0.0.1 and ::1, with every TCP reply carrying
+    /// `Alt-Svc: h3=":PORT"`. The certificate is the one in `dir` if given
+    /// (see [`lasting_certificate`]), else a new self-signed one.
+    pub async fn start_h3(port: u16, dir: Option<&Path>) -> io::Result<Server> {
+        let certificate = dir.map(lasting_certificate).transpose()?;
+        Server::bind_with(port, &[b"h2", b"http/1.1"], certificate, true).await
     }
 
     async fn bind(port: u16, alpn: &[&[u8]]) -> io::Result<Server> {
-        Server::bind_with(port, alpn, None).await
+        Server::bind_with(port, alpn, None, false).await
     }
 
     async fn bind_with(
         port: u16,
         alpn: &[&[u8]],
         certificate: Option<(Vec<u8>, Vec<u8>)>,
+        h3: bool,
     ) -> io::Result<Server> {
         let listener = TcpListener::bind(("127.0.0.1", port)).await?;
         let port = listener.local_addr()?.port();
-        let acceptor = TlsAcceptor::from(Arc::new(tls_config(alpn, certificate)));
+        let certificate = certificate.unwrap_or_else(|| {
+            let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+            let made = rcgen::generate_simple_self_signed(names).expect("self-signed cert");
+            (made.cert.der().to_vec(), made.signing_key.serialize_der())
+        });
         let (tx, captures) = mpsc::unbounded_channel();
         let connections = Arc::new(AtomicU64::new(0));
+        let alt_svc = if h3 {
+            let config = tls_config(&[b"h3"], certificate.clone());
+            let v4 = SocketAddr::from(([127, 0, 0, 1], port));
+            listen_quic(v4, config.clone(), connections.clone(), tx.clone())?;
+            // Chrome sends QUIC for `localhost` to ::1 and doesn't fall
+            // back to 127.0.0.1 as it does over TCP. A machine without
+            // IPv6 just doesn't get this one.
+            let v6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+            let _ = listen_quic(v6, config, connections.clone(), tx.clone());
+            Some(format!("h3=\":{port}\"; ma=86400"))
+        } else {
+            None
+        };
+        let acceptor = TlsAcceptor::from(Arc::new(tls_config(alpn, certificate)));
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let acceptor = acceptor.clone();
                 let tx = tx.clone();
+                let alt_svc = alt_svc.clone();
                 let id = connections.fetch_add(1, Ordering::Relaxed);
                 tokio::spawn(async move {
                     // A broken or non-TLS connection is just dropped.
-                    let _ = handle(id, stream, acceptor, tx).await;
+                    let _ = handle(id, stream, acceptor, tx, alt_svc).await;
                 });
             }
         });
@@ -174,12 +221,7 @@ fn today() -> (i32, u8, u8) {
     (year as i32, month as u8, day as u8)
 }
 
-fn tls_config(alpn: &[&[u8]], certificate: Option<(Vec<u8>, Vec<u8>)>) -> rustls::ServerConfig {
-    let (cert_der, key_der) = certificate.unwrap_or_else(|| {
-        let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-        let made = rcgen::generate_simple_self_signed(names).expect("self-signed cert");
-        (made.cert.der().to_vec(), made.signing_key.serialize_der())
-    });
+fn tls_config(alpn: &[&[u8]], (cert_der, key_der): (Vec<u8>, Vec<u8>)) -> rustls::ServerConfig {
     let cert = rustls::pki_types::CertificateDer::from(cert_der);
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key_der.into());
     let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -304,11 +346,181 @@ fn route(path: &str, authorized: bool) -> Answer {
     }
 }
 
+/// Every datagram that opens with a long header, by sender, kept until
+/// its connection's first flight has been read from them.
+type Seen = Arc<Mutex<HashMap<SocketAddr, Vec<Vec<u8>>>>>;
+
+/// A UDP socket that copies what it receives into `seen` before quinn
+/// reads it, so the client's first flight can be read back as it was sent.
+#[derive(Debug)]
+struct Tee {
+    inner: Arc<dyn quinn::AsyncUdpSocket>,
+    seen: Seen,
+}
+
+impl quinn::AsyncUdpSocket for Tee {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn quinn::UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+    fn try_send(&self, transmit: &quinn::udp::Transmit) -> io::Result<()> {
+        self.inner.try_send(transmit)
+    }
+    fn poll_recv(
+        &self,
+        cx: &mut Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [quinn::udp::RecvMeta],
+    ) -> Poll<io::Result<usize>> {
+        let poll = self.inner.poll_recv(cx, bufs, meta);
+        if let Poll::Ready(Ok(n)) = poll {
+            let mut seen = self.seen.lock().unwrap();
+            for (buf, meta) in bufs.iter().zip(meta.iter()).take(n) {
+                // One buffer can hold several datagrams of `stride` bytes.
+                for datagram in buf[..meta.len].chunks(meta.stride.max(1)) {
+                    if datagram.first().is_none_or(|b| b & 0x80 == 0) {
+                        continue;
+                    }
+                    // A test tool's bound on what clients that never finish
+                    // a handshake can make it hold.
+                    if seen.len() > 1024 {
+                        seen.clear();
+                    }
+                    let kept = seen.entry(meta.addr).or_default();
+                    if kept.len() < 16 {
+                        kept.push(datagram.to_vec());
+                    }
+                }
+            }
+        }
+        poll
+    }
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+    fn max_receive_segments(&self) -> usize {
+        self.inner.max_receive_segments()
+    }
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
+}
+
+/// Serves QUIC on UDP `addr`: each connection's first flight is read from
+/// what the socket received, and its HTTP/3 requests are answered as the
+/// TCP side answers them.
+fn listen_quic(
+    addr: SocketAddr,
+    tls: rustls::ServerConfig,
+    connections: Arc<AtomicU64>,
+    tx: mpsc::UnboundedSender<Capture>,
+) -> io::Result<()> {
+    let crypto =
+        quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
+    let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let runtime = Arc::new(quinn::TokioRuntime);
+    let seen = Seen::default();
+    let socket = Arc::new(Tee {
+        inner: quinn::Runtime::wrap_udp_socket(&*runtime, std::net::UdpSocket::bind(addr)?)?,
+        seen: seen.clone(),
+    });
+    let endpoint = quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(config),
+        socket,
+        runtime,
+    )?;
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let (seen, connections, tx) = (seen.clone(), connections.clone(), tx.clone());
+            tokio::spawn(async move {
+                let addr = incoming.remote_address();
+                let _ = handle_quic(incoming, &seen, &connections, tx).await;
+                seen.lock().unwrap().remove(&addr);
+            });
+        }
+    });
+    Ok(())
+}
+
+async fn handle_quic(
+    incoming: quinn::Incoming,
+    seen: &Seen,
+    connections: &AtomicU64,
+    tx: mpsc::UnboundedSender<Capture>,
+) -> io::Result<()> {
+    let (addr, odcid) = (incoming.remote_address(), incoming.orig_dst_cid());
+    let conn = incoming.await.map_err(io::Error::other)?;
+    // The handshake is done, so the whole ClientHello has arrived.
+    let datagrams = seen.lock().unwrap().remove(&addr).unwrap_or_default();
+    let (quic, client_hello) = quic::first_flight(&datagrams, &odcid)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    let connection = connections.fetch_add(1, Ordering::Relaxed);
+    let ja4 = ja4_quic(&client_hello);
+    let mut request = 0u32;
+    let capture_of = |request, http3, method, path, headers, body: &[u8]| Capture {
+        connection,
+        request,
+        ja4: ja4.clone(),
+        client_hello: client_hello.clone(),
+        protocol: "h3".to_string(),
+        http2: None,
+        quic: Some(quic.clone()),
+        http3,
+        path,
+        method,
+        body: String::from_utf8_lossy(body).into_owned(),
+        headers,
+    };
+    let served = h3::serve(conn, |req| {
+        let pseudo = |name: &str| {
+            req.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let (method, path) = (pseudo(":method"), pseudo(":path"));
+        let authorized = req.headers.iter().any(|(k, _)| k == "authorization");
+        let capture = capture_of(
+            request,
+            Some(req.http3),
+            method,
+            path.clone(),
+            req.headers,
+            &req.body,
+        );
+        request += 1;
+        let (status, headers, page) = route(&path, authorized);
+        let body =
+            page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
+        let _ = tx.send(capture);
+        (status, headers, body)
+    })
+    .await;
+    // Browsers open connections they never send a request on (Chrome's
+    // next one then resumes its session); this keeps their first flights.
+    if request == 0 {
+        let _ = tx.send(capture_of(
+            0,
+            None,
+            String::new(),
+            String::new(),
+            Vec::new(),
+            &[],
+        ));
+    }
+    served
+}
+
 async fn handle(
     connection: u64,
     mut stream: TcpStream,
     acceptor: TlsAcceptor,
     tx: mpsc::UnboundedSender<Capture>,
+    alt_svc: Option<String>,
 ) -> io::Result<()> {
     let mut hello_bytes = Vec::with_capacity(2048);
     let mut buf = [0u8; 4096];
@@ -353,6 +565,8 @@ async fn handle(
             client_hello: client_hello.clone(),
             protocol: protocol.to_string(),
             http2,
+            quic: None,
+            http3: None,
             path,
             method,
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -374,7 +588,8 @@ async fn handle(
             let (method, path) = (pseudo(":method"), pseudo(":path"));
             let authorized = req.headers.iter().any(|(k, _)| k == "authorization");
             let capture = capture_of(Some(req.http2), method, path.clone(), req.headers, req.body);
-            let (status, headers, page) = route(&path, authorized);
+            let (status, mut headers, page) = route(&path, authorized);
+            headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
@@ -401,6 +616,7 @@ async fn handle(
                 .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
             let capture = capture_of(None, method, path.clone(), headers, request_body);
             let (status, mut reply_headers, page) = route(&path, authorized);
+            reply_headers.extend(alt_svc.clone().map(|v| ("alt-svc", v)));
             let body =
                 page.unwrap_or_else(|| serde_json::to_vec(&capture).expect("capture serialises"));
             let _ = tx.send(capture);
