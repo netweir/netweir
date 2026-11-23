@@ -416,12 +416,14 @@ def failed(p: dict) -> bool:
     return "failure" in p or "difference" in p
 
 
-REDUCE = {"panic": "panic", "crash": "panic", "hang": "hang"}
+# parsec-reduce's --check names; a hang is a parse past src/main.rs's BUDGET.
+REDUCE = {"panic": "panic", "crash": "panic", "hang": "hang:10000"}
 
 
 def reduce_command(p: dict) -> str:
-    check = REDUCE.get(p.get("failure", {}).get("kind"), "html5ever")
-    return f"cargo run -p parsec-reduce -- {CACHE / (key(p['url']) + '.html')} --check {check}"
+    check = REDUCE.get(p.get("failure", {}).get("kind"), "differs-from-html5ever")
+    page = CACHE / (key(p["url"]) + ".html")
+    return f"cargo run --release -p parsec-reduce -- {page} --check {check}"
 
 
 def report(pages: list, listed: int, started: str) -> tuple[dict, str]:

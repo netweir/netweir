@@ -52,4 +52,16 @@ def test_the_report_counts_failures_and_not_allowlisted_differences():
     assert (h["parsed"], h["hangs"], h["trees_differ"], h["robots_disallowed"]) == (4, 1, 1, 1)
     assert h["trees_differ_allowlisted"] == {"processing-instructions": 1}
     assert "hang in ?: https://c.example/" in md
-    assert "--check hang" in md and "--check html5ever" in md
+    assert "--check hang:10000" in md and "--check differs-from-html5ever" in md
+
+
+def test_each_failure_gets_a_reduce_command_parsec_reduce_accepts():
+    def check(failure=None):
+        page = {"url": "https://a.example/"}
+        if failure:
+            page["failure"] = {"kind": failure}
+        return run.reduce_command(page).split("--check ")[1]
+
+    assert check("panic") == check("crash") == "panic"
+    assert check("hang") == "hang:10000"
+    assert check() == "differs-from-html5ever"
