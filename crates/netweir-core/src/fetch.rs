@@ -1143,13 +1143,6 @@ tokio::task_local! {
     static RACE: Arc<std::sync::atomic::AtomicU8>;
 }
 
-#[cfg(feature = "http3")]
-tokio::task_local! {
-    /// Set for a connection made only to prove an `h2` alternative: told
-    /// it's up, it goes no further.
-    static PROVING: Arc<std::sync::atomic::AtomicBool>;
-}
-
 /// A racing request's TCP connection is being made.
 #[cfg(feature = "http3")]
 const RACING: u8 = 1;
@@ -1229,7 +1222,7 @@ where
     S: tower::Service<R>,
     S::Future: Send + 'static,
     S::Response: Send + 'static,
-    S::Error: Send + 'static + From<tokio::task::JoinError> + From<&'static str>,
+    S::Error: Send + 'static + From<tokio::task::JoinError>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -1255,22 +1248,6 @@ where
         }
         let mut telling = Telling(tell);
         let connecting = self.0.call(request);
-        #[cfg(feature = "http3")]
-        if let Ok(proving) = PROVING.try_with(Arc::clone) {
-            // AltSvcTransaction: the TLS handshake, with a certificate for
-            // the origin, is the proof; no request follows.
-            // Known limit: whether it agreed on h2 isn't checked
-            // (MaybeValidate insists on it), as wreq keeps the ALPN result
-            // to itself.
-            return Box::pin(async move {
-                let made = connecting.await;
-                drop(telling);
-                if made.is_ok() {
-                    proving.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                made.and(Err(S::Error::from("only proving an h2 alternative")))
-            });
-        }
         #[cfg(feature = "http3")]
         if let Ok(race) = RACE.try_with(Arc::clone) {
             use std::sync::atomic::Ordering;
@@ -2489,21 +2466,17 @@ async fn send_h2(
 }
 
 /// Proves an `h2` alternative `to` for `origin` with `client`'s TCP
-/// connections: a connection of its own (its own pool group, so none is
-/// shared), made and then dropped.
+/// connections, as Firefox's AltSvcTransaction does: a connection to it
+/// with no request, which has to agree on HTTP/2 with a certificate for
+/// the origin (MaybeValidate). It then waits in the pool for the origin's
+/// requests; one that agreed on anything else is closed (DontReuse).
 #[cfg(feature = "http3")]
 async fn prove_h2(client: wreq::Client, origin: Url, to: String) -> bool {
-    static PROOFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = PROOFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let request = client
-        .get(origin.as_str())
-        .group(wreq::Group::new(format!("alt-svc proof {n}")));
-    let Some(request) = routed(request, &to) else {
+    let Some(request) = routed(client.get(origin.as_str()), &to) else {
         return false;
     };
-    let proved = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _ = PROVING.scope(proved.clone(), request.send()).await;
-    proved.load(std::sync::atomic::Ordering::Relaxed)
+    let proof = request.connect_only(Some(Version::HTTP_2)).send().await;
+    proof.is_ok_and(|r| r.version() == Version::HTTP_2)
 }
 
 /// What a request over HTTP/3 needs besides what wreq's request holds.

@@ -773,11 +773,46 @@ async fn an_h2_alternative_carries_the_origins_requests_once_proved() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     // Proving it sent nothing: the first request it saw is the routed one,
-    // for the origin.
+    // for the origin, on the connection that proved it, which waited in
+    // the pool as Firefox's AltSvcTransaction leaves its connection.
     let first = alternative.next().await.unwrap();
     assert_eq!(first.path, "/");
+    assert_eq!(first.connection, 0);
     let authority = first.headers.iter().find(|(k, _)| k == ":authority");
     assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
+}
+
+#[tokio::test]
+async fn an_h2_alternative_that_doesnt_agree_on_http2_is_never_used() {
+    // AltSvcTransaction::MaybeValidate insists the connection agreed on
+    // HTTP/2: one that only speaks HTTP/1.1 stays unproved, and the
+    // origin keeps its requests.
+    let origin_server = Server::start().await.unwrap();
+    let alternative = Server::start_http1(0).await.unwrap();
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![
+        (
+            "origin.test".into(),
+            ([127, 0, 0, 1], origin_server.port).into(),
+        ),
+        ("alt.test".into(), ([127, 0, 0, 1], 9).into()),
+    ];
+    let fetcher = Fetcher::new(options).unwrap();
+    let to = format!("alt.test:{}", alternative.port);
+    fetcher
+        .get(
+            &offering("https://origin.test", &format!("h2=\"{to}\"")),
+            &[],
+        )
+        .await
+        .unwrap();
+    for _ in 0..10 {
+        let response = fetcher.get("https://origin.test/", &[]).await.unwrap();
+        assert_eq!(alt_used(&response), None);
+        assert_eq!(response.version, "HTTP/2");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]

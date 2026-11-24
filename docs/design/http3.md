@@ -151,12 +151,14 @@ default preferences; Chrome's rules are
 - Proving it. As `AltSvcCache::UpdateAltServiceMapping` does, the
   fetcher connects to a new alternative at once, with no request, and
   only uses it once that connection is up with a certificate that checks
-  out. Requests meanwhile stay on TCP. The connection then carries the
-  origin's next requests, as Firefox's does. A header that repeats an
-  alternative already in use only renews its lifetime. One that names a
-  new alternative for an origin that has a proved one is proved the same
-  way, and the old one carries the origin's requests until it is: Firefox
-  stores the replacement only once it validates
+  out, and, for an `h2` one, has agreed on HTTP/2
+  (`AltSvcTransaction::MaybeValidate`); one that agreed on anything else
+  is closed. Requests meanwhile stay on TCP. The connection then
+  carries the origin's next requests, as Firefox's does. A header that
+  repeats an alternative already in use only renews its lifetime. One
+  that names a new alternative for an origin that has a proved one is
+  proved the same way, and the old one carries the origin's requests
+  until it is: Firefox stores the replacement only once it validates
   (`AltSvcMapping::SetSyncOnlyOnSuccess`). An alternative whose connection
   fails stays unproved and holds off another offer of it for two seconds
   (`AltSvcMappingValidator::OnTransactionDestroy`).
@@ -223,9 +225,6 @@ What's not the same as Firefox:
   connection sends HTTP/2's preface and waits in the pool. Netweir's
   finishes its TLS handshake and closes, as wreq can't keep a connection
   it made for a request it no longer sends.
-- `h2` alternatives are proved by a TCP connection whose TLS handshake
-  and certificate check out; Firefox also insists the connection agreed
-  on HTTP/2, which wreq doesn't tell.
 
 ## Chrome through netweir's quiche
 
