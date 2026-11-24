@@ -745,6 +745,59 @@ pub(crate) fn choose(
     }
 }
 
+/// The record a fast fallback's TCP connection goes to
+/// (nsHttpTransaction::PrepareFastFallbackConnInfo:
+/// GetServiceModeRecordWithCname with HTTP/3 ruled out). None: there's
+/// none, and the fallback goes to the origin.
+pub(crate) fn choose_tcp(
+    records: &Records,
+    origin_host: &str,
+    origin_port: u16,
+    cname: Option<&str>,
+) -> Option<Route> {
+    let host = qname_host(origin_host, origin_port);
+    let (svcb, alpn) = service_mode(&records.records, &host, cname, true, true, &|_| false)?;
+    Some(route(svcb, alpn, origin_host, origin_port))
+}
+
+/// The records a request may go on to after one with ECH failed, in
+/// order, and whether every record has ECH
+/// (DNSHTTPSSVCRecordBase::GetAllRecordsInternal, only records with ECH,
+/// HTTP/3 ruled out as it is once it has failed). Empty unless they all do.
+// shortcut: Firefox rules HTTP/3 out only once it failed to connect over
+// it; a TCP record's failure here never goes on to an HTTP/3 one.
+pub(crate) fn all_with_ech(
+    records: &Records,
+    origin_host: &str,
+    origin_port: u16,
+    cname: Option<&str>,
+) -> (bool, Vec<Route>) {
+    let Some(first) = records.records.first() else {
+        return (false, Vec::new());
+    };
+    let mut all = first.ech.is_some();
+    let mut out = Vec::new();
+    let host = qname_host(origin_host, origin_port);
+    let (flat, _) = flatten(&host, &records.records);
+    for (r, alpn) in flat {
+        all &= r.ech.is_some();
+        if !all {
+            return (false, Vec::new());
+        }
+        if r.priority == 0
+            || cname.is_some_and(|c| !c.is_empty() && r.target != c)
+            || port_of(r) == Some(0)
+            || alpn
+                .as_ref()
+                .is_some_and(|(_, rank)| matches!(rank, Rank::No | Rank::H3))
+        {
+            continue;
+        }
+        out.push(route(r, alpn, origin_host, origin_port));
+    }
+    (all, out)
+}
+
 /// The host Firefox's record set is keyed by (DNSHTTPSSVCRecordBase::mHost):
 /// the query name, port prefix and all.
 fn qname_host(host: &str, port: u16) -> String {
@@ -1699,6 +1752,61 @@ mod tests {
         );
         // The owner matches case-insensitively, and with a trailing dot.
         assert_eq!(records(parse(&p, "EXAMPLE.com.")).len(), 1);
+    }
+
+    #[test]
+    fn records_to_retry_after_ech_failed_are_all_with_ech_and_no_h3() {
+        // GetAllRecordsInternal with only records with ECH: the h3 one is
+        // ruled out, the others come in order with their routes, and one
+        // record without ECH makes the list empty (the origin is next).
+        let svcb = |priority, target: &str, alpn: &[&str], ech: Option<u8>| Svcb {
+            priority,
+            target: target.into(),
+            alpn: alpn.iter().map(|a| a.to_string()).collect(),
+            port: Some(8443),
+            ech: ech.map(|e| vec![e]),
+            ..Svcb::default()
+        };
+        let with = |records| Records {
+            records,
+            ttl: Duration::from_secs(60),
+            aliased: false,
+        };
+        let all = with(vec![
+            svcb(1, "a.example.net", &["h3"], Some(1)),
+            svcb(2, "b.example.net", &["h2"], Some(2)),
+            svcb(3, "c.example.net", &["http/1.1"], Some(3)),
+        ]);
+        let (every, list) = all_with_ech(&all, "example.com", 443, None);
+        assert!(every);
+        // FlattenRecords: each record's default ALPN ("") is an entry of
+        // its own, an h3-only record's too.
+        let routes: Vec<_> = list
+            .iter()
+            .map(|r| (r.host.as_str(), r.alpn.as_str(), r.ech.clone()))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("a.example.net", "", Some(vec![1])),
+                ("b.example.net", "", Some(vec![2])),
+                ("c.example.net", "http/1.1", Some(vec![3])),
+                ("c.example.net", "", Some(vec![3])),
+            ]
+        );
+        assert!(list.iter().all(|r| r.port == 8443));
+        let some = with(vec![
+            svcb(1, "a.example.net", &["h2"], Some(1)),
+            svcb(2, "b.example.net", &["h2"], None),
+        ]);
+        assert_eq!(
+            all_with_ech(&some, "example.com", 443, None),
+            (false, Vec::new())
+        );
+        // The fast fallback's record: the best one without h3.
+        let tcp = choose_tcp(&all, "example.com", 443, None).unwrap();
+        assert_eq!(tcp.host, "a.example.net");
+        assert_ne!(tcp.alpn, "h3");
     }
 
     #[test]

@@ -918,6 +918,184 @@ async fn an_https_record_moves_requests_to_http3_without_alt_svc() {
     assert_eq!(alt_used(&response), None);
 }
 
+type Records<'a> = &'a [(u16, &'a str, &'a [(u16, Vec<u8>)])];
+
+/// A Fetcher whose origin.test is `origin`'s port on 127.0.0.1, with
+/// these HTTPS records for it, which send its requests to `target` once
+/// they're in.
+async fn fetcher_with_records(origin: u16, records: Records<'_>, target: &mut Server) -> Fetcher {
+    let record = netweir_core::https_answer("origin.test", records, 300);
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], origin).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    // A request doesn't wait for the records, and its TCP connection to
+    // the origin may be up before they are; once they're in, the next
+    // ones find them at once.
+    let started = Instant::now();
+    loop {
+        fetcher.get("https://origin.test/warm", &[]).await.unwrap();
+        let reached = tokio::time::timeout(Duration::from_millis(100), target.next()).await;
+        if reached.is_ok() {
+            return fetcher;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the records never took"
+        );
+    }
+}
+
+/// A TCP port on 127.0.0.1 that passes each connection on to `to`, and
+/// writes down the server name of each ClientHello it passes.
+async fn hello_names(to: u16) -> (u16, Arc<std::sync::Mutex<Vec<Option<String>>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let names = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = names.clone();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let mut hello = vec![0; 5];
+                if client.read_exact(&mut hello).await.is_err() {
+                    return;
+                }
+                let len = u16::from_be_bytes([hello[3], hello[4]]) as usize;
+                hello.resize(5 + len, 0);
+                if client.read_exact(&mut hello[5..]).await.is_err() {
+                    return;
+                }
+                let name =
+                    netweir_fingerprint::ClientHello::parse(&hello).and_then(|h| h.server_name);
+                seen.lock().unwrap().push(name);
+                let Ok(mut site) = tokio::net::TcpStream::connect(("127.0.0.1", to)).await else {
+                    return;
+                };
+                let _ = site.write_all(&hello).await;
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut site).await;
+            });
+        }
+    });
+    (port, names)
+}
+
+/// The capture of the first request to `path` that `server` answers.
+async fn answered(server: &mut Server, path: &str) -> Capture {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let capture = server.next().await.unwrap();
+            if capture.path == path {
+                return capture;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{path} never reached the server"))
+}
+
+#[tokio::test]
+async fn an_https_record_that_sends_tcp_to_another_port_is_followed() {
+    // An h2 record with a port of its own: Firefox's transaction adopts it
+    // as it would an h3 one (OnHTTPSRRAvailable, CloneAndAdoptHTTPSSVCRecord),
+    // and its TCP connection goes to that port, with no Alt-Used.
+    let origin = Server::start().await.unwrap();
+    let mut target = Server::start().await.unwrap();
+    let alpn = b"\x02h2".to_vec();
+    let port = target.port.to_be_bytes().to_vec();
+    let fetcher = fetcher_with_records(
+        origin.port,
+        &[(1, ".", &[(1, alpn), (3, port)])],
+        &mut target,
+    )
+    .await;
+    let response = fetcher.get("https://origin.test/again", &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/2");
+    assert_eq!(alt_used(&response), None);
+    let capture = answered(&mut target, "/again").await;
+    let authority = capture.headers.iter().find(|(k, _)| k == ":authority");
+    assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
+}
+
+/// An ECHConfigList from BoringSSL's `bssl generate-ech`, public name
+/// ech.com, that no test server holds the key to.
+const ECH_CONFIG_LIST: &str = "003efe0d003a0000200020bb2f29e3e3057e0419d52fc5f44118776f8db61cea4fdf76079b93606c5a62480008000100010001000300076563682e636f6d0000";
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_record_with_ech_is_followed_over_tcp_and_tried_again_without_it() {
+    // The record's ECH goes into the TCP ClientHello too
+    // (nsSocketTransport::InitiateSocket), so the outer hello names the
+    // config's public name. This server knows no ECH and answers that
+    // hello, so the handshake fails as one whose ECH was rejected with
+    // nothing to retry with, and Firefox connects again without ECH
+    // (PrepareConnInfoForRetry, SSL_ERROR_ECH_RETRY_WITHOUT_ECH).
+    let origin = Server::start().await.unwrap();
+    let mut target = Server::start().await.unwrap();
+    let (port, names) = hello_names(target.port).await;
+    let alpn = b"\x02h2".to_vec();
+    let fetcher = fetcher_with_records(
+        origin.port,
+        &[(
+            1,
+            ".",
+            &[
+                (1, alpn),
+                (3, port.to_be_bytes().to_vec()),
+                (5, hex(ECH_CONFIG_LIST)),
+            ],
+        )],
+        &mut target,
+    )
+    .await;
+    names.lock().unwrap().clear();
+    let response = fetcher.get("https://origin.test/again", &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/2");
+    let capture = answered(&mut target, "/again").await;
+    assert_eq!(
+        capture.client_hello.server_name.as_deref(),
+        Some("origin.test")
+    );
+    // ECH again, rejected again, and then the connection without ECH
+    // that the requests before left in the pool.
+    let names = names.lock().unwrap().clone();
+    assert_eq!(names, [Some("ech.com".to_string())]);
+}
+
+#[tokio::test]
+async fn a_fast_fallback_goes_to_the_best_record_without_h3() {
+    // The h3 record's port has no QUIC server, so after 50 ms its fast
+    // fallback opens a TCP connection, which Firefox sends to the best
+    // record without h3 (PrepareFastFallbackConnInfo) rather than the
+    // origin.
+    let origin = Server::start().await.unwrap();
+    let mut target = Server::start().await.unwrap();
+    let quiet = relay(None).await;
+    let h3 = [
+        (1, b"\x02h3".to_vec()),
+        (3, quiet.port.to_be_bytes().to_vec()),
+    ];
+    let h2 = [
+        (1, b"\x02h2".to_vec()),
+        (3, target.port.to_be_bytes().to_vec()),
+    ];
+    let fetcher =
+        fetcher_with_records(origin.port, &[(1, ".", &h3), (2, ".", &h2)], &mut target).await;
+    let response = fetcher.get("https://origin.test/again", &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/2");
+    let capture = answered(&mut target, "/again").await;
+    let authority = capture.headers.iter().find(|(k, _)| k == ":authority");
+    assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

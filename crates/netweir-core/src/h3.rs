@@ -626,6 +626,65 @@ pub(crate) struct Route {
     /// From an HTTPS record, with its ECH configuration if it has one:
     /// used without proving it, and without Alt-Used.
     pub record: Option<Option<Vec<u8>>>,
+    /// The records a route from an HTTPS record came from, for where its
+    /// TCP connection goes (Firefox's routes only).
+    pub from: Option<Arc<FromRecords>>,
+}
+
+/// The HTTPS records a request's route came from, and its origin: where
+/// its TCP connections go when they don't go to the origin.
+pub(crate) struct FromRecords {
+    found: Found,
+    host: String,
+    port: u16,
+    /// For a request over TCP, the record it goes to
+    /// (nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord).
+    pub tcp: Option<crate::https_rr::Route>,
+}
+
+impl FromRecords {
+    /// Where a fast fallback's TCP connection goes, for an HTTP/3 route
+    /// that `ech_used` or not (nsHttpTransaction::PrepareFastFallbackConnInfo):
+    /// the best record without h3, which has to have ECH if the HTTP/3 one
+    /// did. `Some(None)` is the origin; None is no fallback connection at
+    /// all, when ECH was used and no record without h3 has it.
+    pub(crate) fn fast_fallback(&self, ech_used: bool) -> Option<Option<crate::https_rr::Route>> {
+        let records = self.found.records.as_ref()?;
+        let tcp = crate::https_rr::choose_tcp(
+            records,
+            &self.host,
+            self.port,
+            self.found.cname.as_deref(),
+        )
+        .filter(|r| !ech_used || r.ech.is_some());
+        match tcp {
+            Some(r) => Some(Some(r)),
+            None if ech_used => None,
+            None => Some(None),
+        }
+    }
+
+    /// The records a request goes on to after a connection with ECH
+    /// failed, and whether every record has ECH
+    /// (nsHttpTransaction::PrepareSVCBRecordsForRetry): those after the
+    /// failed one, in order, but none to the same target with the same
+    /// ALPN.
+    pub(crate) fn retries(
+        &self,
+        failed: &crate::https_rr::Route,
+    ) -> (bool, Vec<crate::https_rr::Route>) {
+        let Some(records) = self.found.records.as_ref() else {
+            return (false, Vec::new());
+        };
+        let (all, mut list) = crate::https_rr::all_with_ech(
+            records,
+            &self.host,
+            self.port,
+            self.found.cname.as_deref(),
+        );
+        list.retain(|r| r.host != failed.host || r.alpn != failed.alpn);
+        (all, list)
+    }
 }
 
 /// What an origin's HTTPS records came to, once its lookup is done: the
@@ -993,6 +1052,7 @@ impl Routes {
             forced: false,
             h3: true,
             record: None,
+            from: None,
         })
     }
 
@@ -1368,13 +1428,12 @@ impl Routes {
         })
     }
 
-    /// Where `lookup`'s records send a request, once they're in: over
-    /// HTTP/3 to the record Firefox picks (HTTPSSVC.cpp
-    /// GetServiceModeRecordWithCname, nsHttpConnectionInfo::
-    /// CloneAndAdoptHTTPSSVCRecord) when that one offers h3. None: no
-    /// record, or none for HTTP/3.
-    // Known limit: a record that sends TCP elsewhere (another port, or
-    // ECH over TCP) isn't followed; the request goes to the origin.
+    /// Where `lookup`'s records send a request, once they're in: to the
+    /// record Firefox picks (HTTPSSVC.cpp GetServiceModeRecordWithCname,
+    /// nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord), over HTTP/3
+    /// when that one offers h3, else over TCP to its target and port,
+    /// with its ECH configuration. None: no record, or one that changes
+    /// nothing, the origin itself with no ECH and no ALPN of its own.
     fn adopt(&self, lookup: &Lookup, found: &Found) -> Option<Route> {
         let records = found.records.as_ref()?;
         let (host, port) = (
@@ -1399,18 +1458,38 @@ impl Routes {
                 forced: false,
                 h3: true,
                 record: Some(ech),
+                from: None,
             });
         }
         let chosen =
             crate::https_rr::choose(records, host, port, found.cname.as_deref(), &|target| {
                 self.excluded(target)
             })?;
-        (chosen.alpn == "h3" && chosen.port != 0).then(|| Route {
+        let h3 = chosen.alpn == "h3";
+        // Chrome's and Safari's TCP connections stay with the origin.
+        if !h3 && self.is_chrome() {
+            return None;
+        }
+        let nothing_new = !h3
+            && chosen.host.eq_ignore_ascii_case(host)
+            && chosen.port == port
+            && chosen.ech.is_none()
+            && chosen.alpn.is_empty();
+        if chosen.port == 0 || nothing_new {
+            return None;
+        }
+        Some(Route {
             partition: lookup.partition.clone(),
             alternative: format!("{}:{}", chosen.host, chosen.port),
             forced: false,
-            h3: true,
-            record: Some(chosen.ech),
+            h3,
+            record: Some(chosen.ech.clone()),
+            from: Some(Arc::new(FromRecords {
+                found: found.clone(),
+                host: host.to_string(),
+                port,
+                tcp: (!h3).then_some(chosen),
+            })),
         })
     }
 
@@ -1461,6 +1540,7 @@ impl Routes {
                     forced: known.forced,
                     h3,
                     record: None,
+                    from: None,
                 });
             }
         }

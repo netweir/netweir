@@ -133,12 +133,27 @@ default preferences; Chrome's rules are
   `GetServiceModeRecordWithCname` do (`src/https_rr.rs`), and kept for
   its TTL and then the 600 s grace, or 300 s if there was none. The
   request doesn't wait for it: one whose TCP connection is still being
-  made when a record offering h3 comes in moves to HTTP/3, as a
+  made when a record comes in takes the record's route, as a
   transaction not yet on a connection does
   (`nsHttpTransaction::OnHTTPSRRAvailable`), the connection going on to
-  wait in the pool, and later requests use the record at once. The route isn't proved first, carries no `Alt-Used`,
-  takes the record's ECH configuration in place of ECH GREASE, and races
-  TCP after `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms. An
+  wait in the pool, and later requests use the record at once. The
+  route isn't proved first, carries no `Alt-Used`, and takes the
+  record's ECH configuration in place of ECH GREASE
+  (`CloneAndAdoptHTTPSSVCRecord`). A record that offers h3 sends the
+  request over HTTP/3, racing TCP after
+  `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms; that TCP
+  connection goes to the best record without h3, which must have ECH if
+  the h3 one did, else to the origin, or nowhere if ECH was used and no
+  such record has it (`PrepareFastFallbackConnInfo`). Any other record
+  sends it over TCP to the record's target and port, with its ECH, and
+  a connection that doesn't agree on the ALPN the record names is
+  dropped (`nsHttpConnection`'s NPN token check). A connection from a
+  record that fails goes on as `PrepareConnInfoForRetry` does: without
+  ECH, to the origin; with it, again with the configurations a server
+  that rejected it sends back, or without ECH if it sent none, else to
+  the next record with ECH over TCP, to the origin only if some record
+  has none, and nowhere once they're all tried
+  (`network.dns.echconfig.fallback_to_origin_when_all_failed` is off). An
   http URL isn't upgraded to https from a record: with TRR off, Firefox
   doesn't (`nsHttpChannel::MaybeUseHTTPSRRForUpgrade`).
 - `h2` alternatives. Firefox takes those too, each one (`h2` on the
@@ -212,13 +227,13 @@ as if proved, ignores Alt-Svc for it, and never races or falls back.
 
 What's not the same as Firefox:
 
-- HTTPS records that send TCP somewhere else (another port, or ECH over
-  TCP) aren't followed; those requests go to the origin. A record's h3
-  route is followed, ECH included.
-- The losing TCP connection of a fast fallback goes to the origin, where
-  Firefox takes the best record without h3 if there is one
-  (`PrepareFastFallbackConnInfo`); with the canonical-name check, that is
-  almost always the origin anyway.
+- After a record's connection fails, Firefox may go on to a record
+  that offers h3 if HTTP/3 hasn't failed for the request yet; Netweir
+  goes on only to records over TCP. And an HTTP/3 connection whose ECH
+  the server rejects isn't tried again with the configurations it sends
+  back: the request goes on as after any other failure.
+- ECH over TCP: BoringSSL builds the inner and outer ClientHellos, where
+  Firefox has NSS, and Netweir hasn't compared the two.
 - The canonical name the record check needs comes from a lookup of its
   own (getaddrinfo with `AI_CANONNAME`, as NSPR asks for Firefox),
   alongside wreq's; a system with no caching resolver may send the
