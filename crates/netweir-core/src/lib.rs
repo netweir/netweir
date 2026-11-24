@@ -5,7 +5,7 @@
 //! and header order.
 
 // Unsafe code only in src/h3.rs, which sets NSS up as Firefox does over
-// its C API, and only with the http3 feature.
+// its C API, and only with the http3 feature. src/h3_chrome.rs has none.
 #![cfg_attr(not(feature = "http3"), forbid(unsafe_code))]
 #![cfg_attr(feature = "http3", deny(unsafe_code))]
 
@@ -21,6 +21,8 @@ pub mod deltafetch;
 mod fetch;
 #[cfg(feature = "http3")]
 mod h3;
+#[cfg(feature = "http3")]
+mod h3_chrome;
 pub mod install;
 mod profile;
 pub mod queue;

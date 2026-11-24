@@ -265,3 +265,14 @@ headers = [
 http2_headers = [
     ["priority", "u=0, i"],
 ]
+
+# Over HTTP/3 Chrome sends the headers above in the same order, lowercase,
+# without Host and Connection, after :method :authority :scheme :path,
+# and repeats each request's priority in a PRIORITY_UPDATE frame. The QUIC
+# and TLS side is netweir's quiche fork on btls, set up as Chrome 157's
+# QUIC sets itself up (crates/netweir-core/src/h3_chrome.rs), with the
+# groups, key shares, ALPS codepoint, certificate compression, ECH GREASE,
+# extension shuffling and trust anchors of [tls] above. Recorded in
+# chrome-157-macos.h3.capture.json.
+[http3]
+stack = "chrome-157"

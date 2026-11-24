@@ -57,6 +57,21 @@ async def test_firefox_moves_to_http3(capture):
     assert protocol(second) == "h3"
 
 
+async def test_chrome_moves_to_http3(capture):
+    url = f"https://localhost:{capture}/"
+    async with netweir.Client(profile="chrome", verify=False) as client:
+        first = await client.get(url)
+        assert protocol(first) != "h3"
+        # Chrome races QUIC against TCP from the next request on; on
+        # localhost either may win the first race, and QUIC the ones after.
+        for _ in range(20):
+            if protocol(await client.get(url)) == "h3":
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("Chrome never moved to HTTP/3")
+
+
 async def test_http3_off_stays_on_tcp(capture):
     url = f"https://localhost:{capture}/"
     async with netweir.Client(profile="firefox", verify=False, http3=False) as client:

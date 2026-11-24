@@ -310,7 +310,11 @@ async fn certificates_are_checked_over_http3() {
 
 #[test]
 fn http3_only_for_a_profile_that_has_it_and_never_through_a_proxy() {
-    let chrome = Fetcher::new(FetchOptions::new(Profile::named("chrome").unwrap())).unwrap();
+    // An older Chrome, with no HTTP/3 recording.
+    let chrome = Fetcher::new(FetchOptions::new(
+        Profile::named("chrome-156-macos").unwrap(),
+    ))
+    .unwrap();
     assert!(
         chrome
             .use_http3("https://example.com", "example.com:443")
@@ -792,8 +796,8 @@ async fn a_proxied_fetch_never_sends_a_udp_packet() {
 }
 
 #[tokio::test]
-async fn chrome_safari_and_http3_off_never_send_quic() {
-    for profile in ["chrome", "safari", PROFILE] {
+async fn older_chrome_safari_and_http3_off_never_send_quic() {
+    for profile in ["chrome-156-macos", "safari", PROFILE] {
         let mut options = FetchOptions::new(Profile::named(profile).unwrap());
         options.verify_certificates = false;
         options.http3 = false;

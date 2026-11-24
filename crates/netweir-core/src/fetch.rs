@@ -1388,12 +1388,22 @@ impl Fetcher {
             // netweir, the system's included.
             #[cfg(feature = "http3")]
             h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
-                Some("firefox-160") if !options.http3 || options.proxy.is_some() => None,
-                Some("firefox-160") => {
-                    Some(Arc::new(crate::h3::Routes::new(crate::h3::Trust::new(
-                        options.verify_certificates,
-                        options.ca_certificates.as_deref(),
-                    )?)))
+                Some("firefox-160" | "chrome-157") if !options.http3 || options.proxy.is_some() => {
+                    None
+                }
+                Some(stack @ ("firefox-160" | "chrome-157")) => {
+                    let stack = if stack == "firefox-160" {
+                        crate::h3::Stack::Firefox
+                    } else {
+                        crate::h3::Stack::Chrome(Arc::new(profile.tls.clone()))
+                    };
+                    Some(Arc::new(crate::h3::Routes::new(
+                        crate::h3::Trust::new(
+                            options.verify_certificates,
+                            options.ca_certificates.as_deref(),
+                        )?,
+                        stack,
+                    )))
                 }
                 Some(other) => {
                     return Err(FetchError::invalid(format!(
@@ -1508,8 +1518,7 @@ impl Fetcher {
         if let Some(routes) = &self.h3
             && url.scheme() == "https"
             && self.direct(url)
-            && response.status().as_u16() < 500
-            && response.status().as_u16() != 421
+            && routes.learns_from(response.status().as_u16())
         {
             let values: Vec<&str> = response
                 .headers()
@@ -2104,15 +2113,20 @@ impl Fetcher {
             None => route.alternative.clone(),
         };
         let mut lines: Vec<(String, Vec<u8>)> = Vec::with_capacity(headers.len() + 1);
+        // Chrome sends no Alt-Used (it drops Connection as HTTP/3 forbids).
+        let with_alt_used = routes.alt_used();
         for (name, value) in &headers {
             match name.as_str() {
-                "connection" => lines.push(("alt-used".into(), alt_used.clone().into_bytes())),
+                "connection" if with_alt_used => {
+                    lines.push(("alt-used".into(), alt_used.clone().into_bytes()))
+                }
+                "connection" => {}
                 "host" | "keep-alive" | "proxy-connection" | "te" | "transfer-encoding"
                 | "upgrade" | "sec-websocket-key" => {}
                 other => lines.push((other.to_string(), value.as_bytes().to_vec())),
             }
         }
-        if !headers.contains_key(wreq::header::CONNECTION) {
+        if with_alt_used && !headers.contains_key(wreq::header::CONNECTION) {
             lines.push(("alt-used".into(), alt_used.into_bytes()));
         }
         if let Some(sent) = sent {
@@ -2163,11 +2177,20 @@ impl Fetcher {
                         tokio::pin!(over_tcp);
                         tokio::select! {
                             biased;
-                            done = &mut over_tcp => return done,
+                            done = &mut over_tcp => {
+                                if done.is_ok() {
+                                    routes.tcp_answered(&route, &host);
+                                }
+                                return done;
+                            }
                             up = pending.up() => {
                                 let racing = state.load(std::sync::atomic::Ordering::Relaxed);
                                 if !up || racing != RACING {
-                                    return over_tcp.await;
+                                    let done = over_tcp.await;
+                                    if done.is_ok() {
+                                        routes.tcp_answered(&route, &host);
+                                    }
+                                    return done;
                                 }
                             }
                         }
@@ -2200,7 +2223,13 @@ impl Fetcher {
         let answer = match (answer, tcp) {
             (Ok(answer), _) => answer,
             (Err(Some(e)), _) => return Err(e),
-            (Err(None), Some(tcp)) => return dispatch(tcp, order, sent, view).await,
+            (Err(None), Some(tcp)) => {
+                let done = dispatch(tcp, order, sent, view).await;
+                if done.is_ok() {
+                    routes.tcp_answered(&route, &host);
+                }
+                return done;
+            }
             (Err(None), None) => {
                 return Err(FetchError::new(
                     FetchErrorKind::Connect,

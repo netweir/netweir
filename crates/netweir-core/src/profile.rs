@@ -127,7 +127,9 @@ pub struct Profile {
 #[serde(deny_unknown_fields)]
 pub struct Http3 {
     /// The QUIC and HTTP/3 stack, set up as the browser sets it up:
-    /// "firefox-160" is neqo and NSS as Firefox 160 configures them.
+    /// "firefox-160" is neqo and NSS as Firefox 160 configures them,
+    /// "chrome-157" netweir's quiche on btls as Chrome 157 configures its
+    /// own QUIC.
     pub stack: String,
 }
 
@@ -491,7 +493,7 @@ impl Profile {
     }
 }
 
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
