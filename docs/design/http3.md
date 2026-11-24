@@ -114,6 +114,13 @@ preferences.
   is one Firefox never connects to (the 82 in `gBadPortList`,
   `netwerk/base/nsIOService.cpp`, which `NS_CheckPortSafety` reads);
   draft versions such as `h3-29` are ignored, as Firefox 160 ignores them.
+- `h2` alternatives. Firefox takes those too, each one (`h2` on the
+  origin's own host and port is none, and clears the origin's others, as
+  `AltSvcMapping`'s constructor makes it one with no lifetime). Once one
+  is proved by a TCP connection to it, with no request, the origin's
+  requests go there over HTTP/2, for the origin's name, with `Alt-Used`
+  (`nsHttpChannel::BeginConnect`), on connections of their own. An `h3`
+  alternative comes first (`AltSvcCache::GetAltServiceMapping`).
 - Proving it. As `AltSvcCache::UpdateAltServiceMapping` does, the
   fetcher connects to a new alternative at once, with no request, and
   only uses it once that connection is up with a certificate that checks
@@ -183,8 +190,11 @@ What's not the same as Firefox:
   connection sends HTTP/2's preface and waits in the pool. Netweir's
   finishes its TLS handshake and closes, as wreq can't keep a connection
   it made for a request it no longer sends.
-- `h2` alternatives, which Firefox uses to send HTTP/2 to another host,
-  are ignored.
+- `h2` alternatives are proved by a TCP connection whose TLS handshake
+  and certificate check out; Firefox also insists the connection agreed
+  on HTTP/2, which wreq doesn't tell. And an origin whose URL has a port
+  can't have its HTTP/2 sent to another port, as wreq connects to the
+  port the URL gives, so such an alternative is ignored.
 
 ## Building it
 

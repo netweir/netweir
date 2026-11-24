@@ -1,6 +1,6 @@
 //! Making requests that look like the profile's browser made them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -54,6 +54,11 @@ pub struct FetchOptions {
     /// every request on TCP. Only builds with the `http3` feature have
     /// HTTP/3 at all.
     pub http3: bool,
+    /// Names resolved to these addresses rather than by the system's
+    /// resolver, as curl's `--resolve` does: for tests, or to send a site's
+    /// requests to one of its servers. A port in the address is used for
+    /// URLs that give none.
+    pub resolve: Vec<(String, std::net::SocketAddr)>,
 }
 
 impl FetchOptions {
@@ -70,6 +75,7 @@ impl FetchOptions {
             system_proxy: true,
             archive: None,
             http3: true,
+            resolve: Vec::new(),
         }
     }
 }
@@ -1122,6 +1128,16 @@ tokio::task_local! {
     static RACE: Arc<std::sync::atomic::AtomicU8>;
 }
 
+#[cfg(feature = "http3")]
+tokio::task_local! {
+    /// Set for a request to an `h2` alternative: the `host` and `port` its
+    /// connection goes to in place of the origin's.
+    static ALT: (String, u16);
+    /// Set for a connection made only to prove an `h2` alternative: told
+    /// it's up, it goes no further.
+    static PROVING: Arc<std::sync::atomic::AtomicBool>;
+}
+
 /// A racing request's TCP connection is being made.
 #[cfg(feature = "http3")]
 const RACING: u8 = 1;
@@ -1201,7 +1217,7 @@ where
     S: tower::Service<R>,
     S::Future: Send + 'static,
     S::Response: Send + 'static,
-    S::Error: Send + 'static + From<tokio::task::JoinError>,
+    S::Error: Send + 'static + From<tokio::task::JoinError> + From<&'static str>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -1227,6 +1243,22 @@ where
         }
         let mut telling = Telling(tell);
         let connecting = self.0.call(request);
+        #[cfg(feature = "http3")]
+        if let Ok(proving) = PROVING.try_with(Arc::clone) {
+            // AltSvcTransaction: the TLS handshake, with a certificate for
+            // the origin, is the proof; no request follows.
+            // Known limit: whether it agreed on h2 isn't checked
+            // (MaybeValidate insists on it), as wreq keeps the ALPN result
+            // to itself.
+            return Box::pin(async move {
+                let made = connecting.await;
+                drop(telling);
+                if made.is_ok() {
+                    proving.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                made.and(Err(S::Error::from("only proving an h2 alternative")))
+            });
+        }
         #[cfg(feature = "http3")]
         if let Ok(race) = RACE.try_with(Arc::clone) {
             use std::sync::atomic::Ordering;
@@ -1258,6 +1290,38 @@ where
             }
             made
         })
+    }
+}
+
+/// The system's resolver, as wreq's own (getaddrinfo), but with the
+/// addresses `FetchOptions::resolve` gives, and for a request to an `h2`
+/// alternative the alternative's host and port in place of the origin's.
+struct Resolver {
+    hosts: Arc<HashMap<String, Vec<std::net::SocketAddr>>>,
+}
+
+impl wreq::dns::Resolve for Resolver {
+    fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
+        #[cfg(feature = "http3")]
+        let routed = ALT.try_with(Clone::clone).ok();
+        #[cfg(not(feature = "http3"))]
+        let routed: Option<(String, u16)> = None;
+        let (name, port) = match routed {
+            Some((host, port)) => (wreq::dns::Name::new(host.into()), port),
+            None => (name, 0),
+        };
+        let with_port = move |mut a: std::net::SocketAddr| {
+            if port != 0 {
+                a.set_port(port);
+            }
+            a
+        };
+        if let Some(given) = self.hosts.get(name.as_str()) {
+            let addrs: Vec<_> = given.iter().copied().map(with_port).collect();
+            return Box::pin(async move { Ok(Box::new(addrs.into_iter()) as wreq::dns::Addrs) });
+        }
+        let resolving = wreq::dns::GaiResolver::default().resolve(name);
+        Box::pin(async move { Ok(Box::new(resolving.await?.map(with_port)) as wreq::dns::Addrs) })
     }
 }
 
@@ -1297,6 +1361,14 @@ impl Fetcher {
             .as_deref()
             .map(ca_store)
             .transpose()?;
+        let mut hosts: HashMap<String, Vec<std::net::SocketAddr>> = HashMap::new();
+        for (name, addr) in &options.resolve {
+            hosts
+                .entry(name.to_ascii_lowercase())
+                .or_default()
+                .push(*addr);
+        }
+        let hosts = Arc::new(hosts);
         let build = |emulation| -> Result<wreq::Client, FetchError> {
             let mut builder = wreq::Client::builder()
                 .emulation(emulation)
@@ -1322,7 +1394,9 @@ impl Fetcher {
             if let Some(cas) = &cas {
                 builder = builder.tls_cert_store(cas.clone());
             }
-            builder = builder.connector_layer(Told);
+            builder = builder.connector_layer(Told).dns_resolver(Resolver {
+                hosts: hosts.clone(),
+            });
             if options.proxy.is_none() && !options.system_proxy {
                 builder = builder.no_proxy();
             }
@@ -1361,7 +1435,7 @@ impl Fetcher {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Fetcher {
-            client,
+            client: client.clone(),
             max_body: options.max_body,
             max_redirects: options.max_redirects,
             script_client,
@@ -1390,10 +1464,21 @@ impl Fetcher {
             h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
                 Some("firefox-160") if !options.http3 || options.proxy.is_some() => None,
                 Some("firefox-160") => {
-                    Some(Arc::new(crate::h3::Routes::new(crate::h3::Trust::new(
-                        options.verify_certificates,
-                        options.ca_certificates.as_deref(),
-                    )?)))
+                    let proving = client.clone();
+                    let validate: crate::h3::Validate =
+                        Arc::new(move |origin, to| Box::pin(prove_h2(proving.clone(), origin, to)));
+                    let ips = hosts
+                        .iter()
+                        .map(|(name, addrs)| (name.clone(), addrs.iter().map(|a| a.ip()).collect()))
+                        .collect();
+                    Some(Arc::new(crate::h3::Routes::new(
+                        crate::h3::Trust::new(
+                            options.verify_certificates,
+                            options.ca_certificates.as_deref(),
+                        )?,
+                        validate,
+                        Arc::new(ips),
+                    )))
                 }
                 Some(other) => {
                     return Err(FetchError::invalid(format!(
@@ -2073,6 +2158,9 @@ impl Fetcher {
     ) -> Result<wreq::Response, FetchError> {
         use wreq::cookie::CookieStore;
         use wreq_proto::ext::OnPreserveHeaderCallback;
+        if !route.h3 {
+            return send_h2(route, request, order, sent, view).await;
+        }
         let tcp = request.try_clone();
         let (_, request) = request.build_split();
         let request = request?;
@@ -2213,6 +2301,72 @@ impl Fetcher {
         }
         Ok(crate::h3::decompressed(answer, accept_encoding).await)
     }
+}
+
+/// Sends a request to an `h2` alternative: over TCP to its host and port,
+/// for the origin (its server name, certificate and `:authority`), with
+/// `Alt-Used` (nsHttpChannel::BeginConnect) where Connection would be, as
+/// over HTTP/3. Its connections are pooled apart from the origin's, as
+/// Firefox's routed connection info hashes apart.
+#[cfg(feature = "http3")]
+async fn send_h2(
+    route: crate::h3::Route,
+    request: wreq::RequestBuilder,
+    order: OrigHeaderMap,
+    sent: Option<&Sent>,
+    view: Option<JarView>,
+) -> Result<wreq::Response, FetchError> {
+    let Some((host, port)) = route
+        .alternative
+        .rsplit_once(':')
+        .and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?)))
+    else {
+        return dispatch(request, order, sent, view).await;
+    };
+    let alt_used = match port {
+        443 => host.clone(),
+        _ => route.alternative.clone(),
+    };
+    let mut placed = OrigHeaderMap::new();
+    let mut put = false;
+    for (name, _) in order.iter() {
+        if name == wreq::header::CONNECTION {
+            placed.insert("alt-used");
+            put = true;
+        }
+        placed.insert(name.clone());
+    }
+    if !put {
+        placed.insert("alt-used");
+    }
+    let request = request
+        .header("alt-used", alt_used)
+        .group(wreq::Group::new(format!("alt-svc {}", route.alternative)));
+    ALT.scope((host, port), dispatch(request, placed, sent, view))
+        .await
+}
+
+/// Proves an `h2` alternative `to` for `origin` with `client`'s TCP
+/// connections: a connection of its own (its own pool group, so none is
+/// shared), made and then dropped.
+#[cfg(feature = "http3")]
+async fn prove_h2(client: wreq::Client, origin: Url, to: String) -> bool {
+    static PROOFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some((host, port)) = to
+        .rsplit_once(':')
+        .and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?)))
+    else {
+        return false;
+    };
+    let n = PROOFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let request = client
+        .get(origin.as_str())
+        .group(wreq::Group::new(format!("alt-svc proof {n}")));
+    let proved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _ = PROVING
+        .scope(proved.clone(), ALT.scope((host, port), request.send()))
+        .await;
+    proved.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// What a request over HTTP/3 needs besides what wreq's request holds.
