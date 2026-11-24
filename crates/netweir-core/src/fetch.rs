@@ -1592,6 +1592,16 @@ impl Fetcher {
         }
     }
 
+    /// Takes every origin's TCP connection as closed, as Safari's rules
+    /// do once wreq's 90 s idle timeout has passed: for tests.
+    #[cfg(feature = "http3")]
+    #[doc(hidden)]
+    pub fn expire_tcp(&self) {
+        if let Some(routes) = &self.h3 {
+            routes.expire_tcp();
+        }
+    }
+
     /// Whether requests to `url` skip the system's proxy, as they must to
     /// go over HTTP/3.
     #[cfg(feature = "http3")]

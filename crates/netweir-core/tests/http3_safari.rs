@@ -350,3 +350,23 @@ async fn a_new_connection_after_http3_goes_over_quic_again() {
     let next = fetcher.get("https://origin.test/next", &[]).await.unwrap();
     assert_eq!(next.version, "HTTP/3", "a new QUIC connection carries it");
 }
+
+#[tokio::test]
+async fn an_alt_svc_route_stays_on_http3_once_it_moves() {
+    // Safari learned h3 from Alt-Svc over HTTP/2, moved on a new
+    // connection, and from then on opened no TCP connection to the
+    // origin: not while QUIC was up, and not when it opened a new one.
+    let server = Server::start_h3(0, None).await.unwrap();
+    let origin = format!("https://localhost:{}", server.port);
+    let fetcher = fetcher();
+    let first = fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert_eq!(first.version, "HTTP/2");
+    fetcher.expire_tcp();
+    for path in ["/moved", "/second", "/third"] {
+        let response = fetcher.get(&format!("{origin}{path}"), &[]).await.unwrap();
+        assert_eq!(response.version, "HTTP/3", "{path}");
+    }
+    fetcher.close_http3().await;
+    let next = fetcher.get(&format!("{origin}/next"), &[]).await.unwrap();
+    assert_eq!(next.version, "HTTP/3", "a new QUIC connection carries it");
+}

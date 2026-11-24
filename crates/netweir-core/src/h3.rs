@@ -1144,6 +1144,15 @@ impl Routes {
         recent
     }
 
+    /// Takes every origin's TCP connection as closed, as if
+    /// [`safari::TCP_KEPT`] had passed since its last response.
+    pub(crate) fn expire_tcp(&self) {
+        self.tcp_used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
     /// Chrome's main-job delay for a request to `alternative`.
     fn chrome_delay(&self, partition: &str, host: &str, alternative: &str) -> Duration {
         let worked = self.quic_worked.load(std::sync::atomic::Ordering::Relaxed);
