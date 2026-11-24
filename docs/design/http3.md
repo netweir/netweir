@@ -561,7 +561,9 @@ macOS, and a guess where they say so.
   for a new one. Netweir can't see wreq's connection pool, so it takes
   an origin's TCP connection as open for 90 seconds after its last TCP
   response, wreq's idle timeout, and sends the origin's requests over
-  TCP until then. An HTTP/3 connection already up is used either way.
+  TCP until then. A response over HTTP/3 doesn't count: once QUIC
+  carried the origin, Safari opened no TCP connection to keep it on
+  (#419). An HTTP/3 connection already up is used either way.
 - HTTPS records. Apple's Tommy Pauly wrote (DNSOP, September 2020) that
   the stack queries them alongside the addresses on every connection and
   races QUIC first when one offers h3. A Safari request with no

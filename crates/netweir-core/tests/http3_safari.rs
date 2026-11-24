@@ -297,3 +297,56 @@ async fn a_silent_alternative_loses_the_race_after_250_ms() {
     assert_eq!(again.version, "HTTP/2");
     assert!(started.elapsed() < Duration::from_millis(250));
 }
+
+#[tokio::test]
+async fn a_connection_up_over_http3_from_a_record_keeps_the_origin() {
+    // Safari opened no TCP connection once QUIC was up first: the next
+    // requests went on the QUIC connection, whatever Alt-Svc it answered.
+    // cloudflare-quic.com's record carries an ECH configuration too,
+    // which Safari's QUIC hello doesn't use.
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let mut options = options();
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], tcp.port).into())];
+    let alpn = b"\x02h3".to_vec();
+    let ech = vec![0, 4, 0xfe, 0x0d, 0, 0];
+    options.https_records.insert(
+        "origin.test".into(),
+        netweir_core::https_answer(
+            "origin.test",
+            &[(
+                1,
+                ".",
+                &[(1, alpn), (3, h3.port.to_be_bytes().to_vec()), (5, ech)],
+            )],
+            300,
+        ),
+    );
+    let fetcher = Fetcher::new(options).unwrap();
+    for path in ["/", "/second", "/third"] {
+        let response = fetcher
+            .get(&format!("https://origin.test{path}"), &[])
+            .await
+            .unwrap();
+        assert_eq!(response.version, "HTTP/3", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_new_connection_after_http3_goes_over_quic_again() {
+    // Safari went back to QUIC first on each new connection: a response
+    // over HTTP/3 leaves no TCP connection open to keep the origin on.
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let mut options = options();
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], tcp.port).into())];
+    options
+        .https_records
+        .insert("origin.test".into(), h3_record(h3.port));
+    let fetcher = Fetcher::new(options).unwrap();
+    let first = fetcher.get("https://origin.test/", &[]).await.unwrap();
+    assert_eq!(first.version, "HTTP/3");
+    fetcher.close_http3().await;
+    let next = fetcher.get("https://origin.test/next", &[]).await.unwrap();
+    assert_eq!(next.version, "HTTP/3", "a new QUIC connection carries it");
+}

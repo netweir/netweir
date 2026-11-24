@@ -843,6 +843,16 @@ pub(crate) enum Stack {
     Safari(Arc<crate::profile::Tls>),
 }
 
+/// What a connection to `alternative` for `host` in `partition`, with
+/// `ech`, is kept under.
+fn connection_key(partition: &str, host: &str, alternative: &str, ech: Option<&[u8]>) -> String {
+    let mut key = format!("{partition} {host} {alternative}");
+    if let Some(ech) = ech {
+        key.push_str(&format!(" ech {}", data_encoding::HEXLOWER.encode(ech)));
+    }
+    key
+}
+
 /// Where each origin's requests go over HTTP/3, and the connections to
 /// them, shared by every clone of a Fetcher.
 pub(crate) struct Routes {
@@ -1082,9 +1092,10 @@ impl Routes {
 
     /// A response from `origin` came, over TCP if `tcp`. Safari's next
     /// requests stay there while that connection would still be open, and
-    /// Chrome's don't wait for a QUIC connection from an HTTPS record.
+    /// Chrome's don't wait for a QUIC connection from an HTTPS record. One
+    /// over HTTP/3 leaves no TCP connection open.
     pub(crate) fn tcp_used(&self, partition: &str, origin: &Url, tcp: bool) {
-        if self.is_safari() || (tcp && self.alt_svc_first()) {
+        if tcp && self.is_chrome() {
             self.tcp_used
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1109,11 +1120,12 @@ impl Routes {
         else {
             return false;
         };
+        let ech = route.record.as_ref().and_then(Option::as_deref);
         let up = self
             .connections
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&format!("{partition} {host} {}", route.alternative))
+            .get(&connection_key(partition, &host, &route.alternative, ech))
             .is_some_and(|h| h.usable() && *h.state.borrow() == State::Connected);
         self.tcp_recent(partition, origin) && !up
     }
@@ -1616,10 +1628,7 @@ impl Routes {
         alternative: &str,
         ech: Option<&[u8]>,
     ) -> Handle {
-        let mut key = format!("{partition} {host} {alternative}");
-        if let Some(ech) = ech {
-            key.push_str(&format!(" ech {}", data_encoding::HEXLOWER.encode(ech)));
-        }
+        let key = connection_key(partition, host, alternative, ech);
         let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = connections.get(&key)
             && handle.usable()
