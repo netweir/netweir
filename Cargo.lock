@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-browser"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64 0.23.1",
  "btls",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "brotli",
  "btls",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-dom"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "memchr",
  "netweir-html",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-fingerprint"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "fluke-hpack",
  "quinn",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-html"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "memchr",
  "serde_json",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-py"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "csv",
  "netweir-browser",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "netweir-xpath"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "netweir-html",
  "stacker",
