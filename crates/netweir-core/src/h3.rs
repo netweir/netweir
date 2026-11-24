@@ -62,6 +62,15 @@ mod firefox {
     /// for an HTTP/3 connection still being made before it goes over TCP
     /// instead (nsHttpTransaction::OnHttp3BackupTimer).
     pub const BACKUP_TIMER: std::time::Duration = std::time::Duration::from_millis(100);
+    /// network.dns.httpssvc.http3_fast_fallback_timeout: the same for a
+    /// connection made from an HTTPS record.
+    pub const FAST_FALLBACK: std::time::Duration = std::time::Duration::from_millis(50);
+    /// network.dnsCacheExpirationGracePeriod: how long past its TTL Firefox
+    /// still uses a record it has (nsHostRecord::SetExpiration).
+    pub const DNS_GRACE: std::time::Duration = std::time::Duration::from_secs(600);
+    /// network.dns.negative_ttl_for_type_record: how long a lookup that
+    /// found no HTTPS record stands.
+    pub const DNS_NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
     /// An Alt-Svc alternative's lifetime without `ma=`, in seconds
     /// (AltSvcMapping::ProcessHeader).
     pub const ALT_SVC_MAX_AGE: i64 = 86_400;
@@ -72,13 +81,18 @@ mod firefox {
     /// (gBadPortList in netwerk/base/nsIOService.cpp, which
     /// NS_CheckPortSafety reads; nsHttpHandler::AllowPort overrides none,
     /// and network.security.ports.banned adds none by default).
-    pub const BANNED_PORTS: [u16; 82] = [
+    pub(crate) const BANNED_PORTS: [u16; 82] = [
         1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101,
         102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389,
         427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636,
         989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665,
         6666, 6667, 6668, 6669, 6679, 6697, 10080,
     ];
+}
+
+/// Whether Firefox refuses to connect to `port` (NS_CheckPortSafety).
+pub(crate) fn banned_port(port: u16) -> bool {
+    port == 0 || firefox::BANNED_PORTS.contains(&port)
 }
 
 /// The connection settings Firefox 160 makes, line for line in the order
@@ -88,6 +102,7 @@ fn firefox_client(
     local: SocketAddr,
     remote: SocketAddr,
     resume: Option<&ResumptionToken>,
+    ech: Option<&[u8]>,
 ) -> Result<Http3Client, String> {
     nss_rs::init().map_err(|e| format!("NSS: {e:?}"))?;
     gecko::defaults()?;
@@ -157,10 +172,13 @@ fn firefox_client(
     conn.set_certificate_compression::<Brotli>()
         .map_err(|e| format!("{e:?}"))?;
     let mut client = Http3Client::new_with_conn(conn, settings);
-    // Http3Session::Init: with no ECH configuration for the host,
+    // Http3Session::Init: the ECH configuration of the HTTPS record the
+    // connection came from (DoSetEchConfig); with none,
     // security.tls.ech.grease_http3 (true) and grease_probability (100)
     // make every connection GREASE ECH, which an empty configuration does.
-    client.enable_ech([]).map_err(|e| format!("{e:?}"))?;
+    client
+        .enable_ech(ech.unwrap_or_default())
+        .map_err(|e| format!("{e:?}"))?;
     // Then, network.http.http3.enable_0rtt being true, the session ticket
     // the last connection to this server left, if it hasn't expired.
     if let Some(token) = resume.filter(|t| t.expiration_time() > Instant::now()) {
@@ -572,14 +590,47 @@ struct Alternative {
     next: Option<(String, Instant)>,
 }
 
-/// Where a request goes over HTTP/3.
+/// Where a request goes over HTTP/3, or over HTTP/2 to an `h2`
+/// alternative.
 pub(crate) struct Route {
     /// The request's network partition.
     pub partition: String,
     /// `host:port`.
     pub alternative: String,
     pub forced: bool,
+    /// HTTP/3, not an `h2` alternative.
+    pub h3: bool,
+    /// From an HTTPS record, with its ECH configuration if it has one:
+    /// used without proving it, and without Alt-Used.
+    pub record: Option<Option<Vec<u8>>>,
 }
+
+/// What an origin's HTTPS records came to, once its lookup is done: the
+/// records and the canonical name, if any, and when it stops standing.
+#[derive(Clone)]
+pub(crate) struct Found {
+    records: Option<crate::https_rr::Records>,
+    cname: Option<String>,
+    expires: Instant,
+}
+
+/// An origin's HTTPS record lookup, done or under way.
+pub(crate) struct Lookup {
+    found: watch::Receiver<Option<Found>>,
+    origin: Url,
+    partition: String,
+}
+
+/// An origin's alternatives are kept by partition, origin and whether
+/// they're HTTP/3 ones, as AltSvcMapping::MakeHashKey keys them.
+type Key = (String, String, bool);
+
+/// Proves an `h2` alternative (`host:port`) for an origin: a TCP and TLS
+/// connection to it, with a certificate for the origin
+/// (AltSvcTransaction::MaybeValidate). Given by the fetcher, whose TCP
+/// connections these are.
+pub(crate) type Validate =
+    Arc<dyn Fn(Url, String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 /// The hosts HTTP/3 failed to reach, as Firefox's mExcludedHttp3Origins
 /// keeps them: until the network changes (nsHttpHandler::Observe on
@@ -632,6 +683,25 @@ impl Excluded {
             self.network = now();
         }
         self.hosts.insert(host.to_string());
+    }
+}
+
+/// `known` once proving `to` for it has ended: proved, it's in use, in
+/// place of the one it was to replace if any; not, it stays unproved and
+/// holds off another offer of it for two seconds, or the one it was to
+/// replace stays.
+fn settled(known: &mut Alternative, to: &str, ok: bool) {
+    if known.to == to && !known.validated {
+        if ok {
+            known.validated = true;
+        } else {
+            known.expires = Instant::now() + firefox::ALT_SVC_RETRY;
+        }
+    }
+    if let Some((_, expires)) = known.next.take_if(|(next, _)| next == to)
+        && ok
+    {
+        (known.to, known.expires) = (to.to_string(), expires);
     }
 }
 
@@ -698,8 +768,17 @@ pub(crate) struct Routes {
     /// partition key when network state is partitioned, as it is by
     /// default. They live as long as the Fetcher, as in a private window:
     /// nothing is written to disk.
-    alternatives: Mutex<HashMap<(String, String), Alternative>>,
+    alternatives: Mutex<HashMap<Key, Alternative>>,
     excluded: Mutex<Excluded>,
+    validate: Validate,
+    /// Addresses given for names, in place of the system's resolver.
+    hosts: Arc<HashMap<String, Vec<IpAddr>>>,
+    /// HTTPS record lookups by origin (`host:port`), kept as Firefox's
+    /// host cache keeps them: for the records' TTL and then the grace
+    /// period, and an empty answer for its negative TTL and the grace.
+    records: Mutex<HashMap<String, watch::Receiver<Option<Found>>>>,
+    /// Given answers to HTTPS queries, for tests.
+    seam: Option<Arc<crate::https_rr::Seam>>,
     /// Connections by partition, server name and alternative.
     connections: Mutex<HashMap<String, Handle>>,
     /// The newest session ticket from each server, for the next
@@ -731,12 +810,22 @@ type Tickets = Arc<Mutex<HashMap<String, ResumptionToken>>>;
 type ChromeAlternatives = Vec<(crate::h3_chrome::AltSvc, Instant)>;
 
 impl Routes {
-    pub(crate) fn new(trust: Trust, stack: Stack) -> Routes {
+    pub(crate) fn new(
+        trust: Trust,
+        validate: Validate,
+        hosts: Arc<HashMap<String, Vec<IpAddr>>>,
+        seam: Option<Arc<crate::https_rr::Seam>>,
+        stack: Stack,
+    ) -> Routes {
         Routes {
             stack,
             trust,
             alternatives: Mutex::default(),
             excluded: Mutex::default(),
+            validate,
+            hosts,
+            records: Mutex::default(),
+            seam,
             connections: Mutex::default(),
             tickets: Tickets::default(),
             chrome_tickets: crate::h3_chrome::Tickets::default(),
@@ -761,11 +850,12 @@ impl Routes {
             return;
         };
         let key = (partition.to_string(), origin.origin().ascii_serialization());
+        let forced = (key.0.clone(), key.1.clone(), true);
         if self
             .alternatives
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
+            .get(&forced)
             .is_some_and(|a| a.forced)
         {
             return;
@@ -863,6 +953,8 @@ impl Routes {
             partition: partition.to_string(),
             alternative,
             forced: false,
+            h3: true,
+            record: None,
         })
     }
 
@@ -960,16 +1052,17 @@ impl Routes {
         self.alternatives
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((partition, origin), alternative);
+            .insert((partition, origin, true), alternative);
     }
 
     /// Takes in an `Alt-Svc` header that came with a response from
     /// `origin` to a request in `partition`, as Firefox's
     /// AltSvcMapping::ProcessHeader and AltSvcCache::UpdateAltServiceMapping
-    /// do: `clear` forgets the origin's alternative; the first `h3` one
-    /// whose host HTTP/3 hasn't failed to reach is kept for its `ma=`
-    /// seconds (a day without one), and a connection is made to it at
-    /// once, which the origin's requests use once it is up.
+    /// do: `clear` forgets the origin's alternatives; the first `h3` one
+    /// whose host HTTP/3 hasn't failed to reach, and each `h2` one, is kept
+    /// for its `ma=` seconds (a day without one), and proved at once: a
+    /// connection is made to it, and the origin's requests use it once
+    /// that is up.
     pub(crate) fn learn(self: &Arc<Self>, partition: &str, origin: &Url, header: &str) {
         if self.is_chrome() {
             return self.learn_chrome(partition, origin, header);
@@ -977,23 +1070,24 @@ impl Routes {
         let (Some(host), Some(port)) = (origin.host_str(), origin.port_or_known_default()) else {
             return;
         };
-        let key = (partition.to_string(), origin.origin().ascii_serialization());
+        let serialized = origin.origin().ascii_serialization();
+        let key = |h3| (partition.to_string(), serialized.clone(), h3);
+        // AltSvcCache::ClearHostMapping: HTTP/3 and HTTP/2 alike.
         let forget = || {
             let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-            if alternatives.get(&key).is_some_and(|a| !a.forced) {
-                alternatives.remove(&key);
+            for h3 in [true, false] {
+                if alternatives.get(&key(h3)).is_some_and(|a| !a.forced) {
+                    alternatives.remove(&key(h3));
+                }
             }
         };
-        let mut chosen = None;
+        let (mut h3, mut h2) = (None, Vec::new());
         for entry in alt_svc(header) {
             let Some(((protocol, authority), parameters)) = entry.split_first() else {
                 continue;
             };
             if protocol == "clear" {
                 forget();
-                continue;
-            }
-            if protocol != "h3" {
                 continue;
             }
             // Firefox takes the port after the first colon, as atoi reads
@@ -1004,10 +1098,16 @@ impl Routes {
             };
             let to_host = if to_host.is_empty() { host } else { to_host };
             // NS_CheckPortSafety: a port, and not one Firefox bans.
-            let Ok(to_port) = u16::try_from(to_port) else {
+            let Some(to_port) = u16::try_from(to_port).ok().filter(|&p| !banned_port(p)) else {
                 continue;
             };
-            if to_port == 0 || firefox::BANNED_PORTS.contains(&to_port) || self.excluded(to_host) {
+            let is_h3 = protocol == "h3";
+            if !(is_h3 && !self.excluded(to_host) || protocol == "h2") {
+                continue;
+            }
+            // Known limit: wreq connects to the port a URL gives, so an
+            // origin with one can't have its HTTP/2 sent to another.
+            if !is_h3 && origin.port().is_some_and(|p| p != to_port) {
                 continue;
             }
             let max_age = parameters
@@ -1015,99 +1115,229 @@ impl Routes {
                 .rev()
                 .find(|(k, _)| k == "ma")
                 .map_or(firefox::ALT_SVC_MAX_AGE, |(_, v)| leading_number(v));
-            if max_age <= 0 {
-                // Firefox clears what was there, as accepting it would.
+            // HTTP/2 to the origin itself is no alternative, and Firefox
+            // treats it as one with no lifetime (AltSvcMapping's
+            // constructor): either clears what was there, as accepting it
+            // would.
+            let itself = !is_h3 && to_port == port && to_host.eq_ignore_ascii_case(host);
+            if max_age <= 0 || itself {
                 forget();
                 continue;
             }
-            if chosen.is_none() {
-                let max_age = Duration::from_secs(max_age.unsigned_abs());
-                chosen = Some((format!("{to_host}:{to_port}"), max_age));
+            let chosen = (
+                format!("{to_host}:{to_port}"),
+                Instant::now() + Duration::from_secs(max_age.unsigned_abs()),
+            );
+            if !is_h3 {
+                h2.push(chosen);
+            } else if h3.is_none() {
+                h3 = Some(chosen);
             }
         }
-        let Some((to, max_age)) = chosen else {
-            return;
-        };
-        let now = Instant::now();
-        let expires = now + max_age;
+        if let Some((to, expires)) = h3
+            && self.update(&key(true), &to, expires)
         {
-            let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-            let new = match alternatives.get_mut(&key) {
-                Some(known) if known.forced => return,
-                // An expired one is as good as none (AltSvcCache::LookupMapping).
-                Some(known) if now >= known.expires => true,
-                Some(known) if known.validated && known.to == to => {
-                    known.expires = expires;
-                    return;
-                }
-                Some(known) if known.validated && expires < known.expires => return,
-                // A new alternative is proved before it takes over.
-                Some(known) if known.validated => {
-                    known.next = Some((to.clone(), expires));
-                    false
-                }
-                // Its connection is still being made.
-                Some(_) => return,
-                None => true,
-            };
-            if new {
-                alternatives.insert(
-                    key,
-                    Alternative {
-                        to: to.clone(),
-                        expires,
-                        validated: false,
-                        forced: false,
-                        next: None,
-                    },
-                );
+            let handle = self.connection(partition, host, &to, None);
+            if *handle.state.borrow() == State::Connected {
+                self.proved(partition, host, &to);
             }
         }
-        let handle = self.connection(partition, host, &to);
-        if *handle.state.borrow() == State::Connected {
-            self.proved(partition, host, &to);
+        for (to, expires) in h2 {
+            if self.update(&key(false), &to, expires) {
+                let (routes, key, proving) = (Arc::downgrade(self), key(false), to.clone());
+                let proof = (self.validate)(origin.clone(), to);
+                tokio::spawn(async move {
+                    let ok = proof.await;
+                    if let Some(routes) = Weak::upgrade(&routes) {
+                        routes.settle(&key, &proving, ok);
+                    }
+                });
+            }
         }
+    }
+
+    /// Takes in a new alternative `to` for `key` as
+    /// AltSvcCache::UpdateAltServiceMapping does, and says whether to prove
+    /// it now. A repeat of the one in use only renews it; one that
+    /// expires sooner than it is ignored; any other is proved, and takes
+    /// over once it is; nothing new is taken while one is being proved.
+    fn update(&self, key: &Key, to: &str, expires: Instant) -> bool {
+        let now = Instant::now();
+        let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
+        match alternatives.get_mut(key) {
+            Some(known) if known.forced => false,
+            // An expired one is as good as none (AltSvcCache::LookupMapping).
+            Some(known) if known.validated && now < known.expires => {
+                if known.to == to {
+                    known.expires = expires;
+                    false
+                } else if expires < known.expires {
+                    false
+                } else {
+                    known.next = Some((to.to_string(), expires));
+                    true
+                }
+            }
+            // Its connection is still being made.
+            Some(known) if now < known.expires => false,
+            _ => {
+                let fresh = Alternative {
+                    to: to.to_string(),
+                    expires,
+                    validated: false,
+                    forced: false,
+                    next: None,
+                };
+                alternatives.insert(key.clone(), fresh);
+                true
+            }
+        }
+    }
+
+    /// How proving `to` for `key` ended: it takes over, or is held off
+    /// for two seconds (AltSvcMappingValidator::OnTransactionDestroy).
+    fn settle(&self, key: &Key, to: &str, ok: bool) {
+        let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(known) = alternatives.get_mut(key) {
+            settled(known, to, ok);
+        }
+    }
+
+    /// The HTTPS records of `origin`, looked up as Firefox's nsHttpTransaction
+    /// looks them up for each request (HTTPSRecordResolver, with
+    /// network.dns.use_https_rr_as_altsvc): the HTTPS query and an address
+    /// lookup for the canonical name, side by side, answered from the cache
+    /// while they stand.
+    pub(crate) fn lookup(self: &Arc<Self>, partition: &str, origin: &Url) -> Option<Lookup> {
+        let (host, port) = (origin.host_str()?, origin.port_or_known_default()?);
+        let key = format!("{host}:{port}");
+        let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
+        let standing = records.get(&key).filter(|found| {
+            found
+                .borrow()
+                .as_ref()
+                .is_none_or(|f| Instant::now() < f.expires)
+        });
+        let found = match standing {
+            Some(found) => found.clone(),
+            None => {
+                let (tell, found) = watch::channel(None);
+                records.insert(key, found.clone());
+                let (host, seam) = (host.to_string(), self.seam.clone());
+                tokio::spawn(async move {
+                    let (records, cname) = tokio::join!(
+                        crate::https_rr::query(&host, port, seam.as_deref()),
+                        crate::https_rr::canonical_name(&host),
+                    );
+                    let stands = records
+                        .as_ref()
+                        .map_or(firefox::DNS_NEGATIVE_TTL, |r| r.ttl);
+                    let expires = Instant::now() + stands.saturating_add(firefox::DNS_GRACE);
+                    tell.send_replace(Some(Found {
+                        records,
+                        cname,
+                        expires,
+                    }));
+                });
+                found
+            }
+        };
+        Some(Lookup {
+            found,
+            origin: origin.clone(),
+            partition: partition.to_string(),
+        })
+    }
+
+    /// Where `lookup`'s records send a request, once they're in: over
+    /// HTTP/3 to the record Firefox picks (HTTPSSVC.cpp
+    /// GetServiceModeRecordWithCname, nsHttpConnectionInfo::
+    /// CloneAndAdoptHTTPSSVCRecord) when that one offers h3. None: no
+    /// record, or none for HTTP/3.
+    // Known limit: a record that sends TCP elsewhere (another port, or
+    // ECH over TCP) isn't followed; the request goes to the origin.
+    fn adopt(&self, lookup: &Lookup, found: &Found) -> Option<Route> {
+        let records = found.records.as_ref()?;
+        let (host, port) = (
+            lookup.origin.host_str()?,
+            lookup.origin.port_or_known_default()?,
+        );
+        let chosen =
+            crate::https_rr::choose(records, host, port, found.cname.as_deref(), &|target| {
+                self.excluded(target)
+            })?;
+        (chosen.alpn == "h3" && chosen.port != 0).then(|| Route {
+            partition: lookup.partition.clone(),
+            alternative: format!("{}:{}", chosen.host, chosen.port),
+            forced: false,
+            h3: true,
+            record: Some(chosen.ech),
+        })
+    }
+
+    /// The route `lookup` gives now if it's done, or `Err` with it if not.
+    pub(crate) fn adopted(&self, lookup: Lookup) -> Result<Option<Route>, Box<Lookup>> {
+        let found = lookup.found.borrow().clone();
+        match found {
+            Some(found) => Ok(self.adopt(&lookup, &found)),
+            None => Err(Box::new(lookup)),
+        }
+    }
+
+    /// Waits for `lookup` to be done, and gives the route it gives.
+    pub(crate) async fn adopt_when_found(&self, mut lookup: Box<Lookup>) -> Option<Route> {
+        let found = lookup.found.wait_for(Option::is_some).await.ok()?.clone()?;
+        self.adopt(&lookup, &found)
     }
 
     /// The alternative of a request to `origin` in `partition`, if it has
     /// a proved one that hasn't expired, to a host HTTP/3 hasn't failed to
     /// reach (AltSvcCache::LookupMapping).
     pub(crate) fn alternative(&self, partition: &str, origin: &str) -> Option<Route> {
-        let key = (partition.to_string(), origin.to_string());
         let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-        if self.is_chrome() && alternatives.get(&key).is_none_or(|a| !a.forced) {
+        let forced = |h3: bool| {
+            alternatives
+                .get(&(partition.to_string(), origin.to_string(), h3))
+                .is_some_and(|a| a.forced)
+        };
+        if self.is_chrome() && !forced(true) && !forced(false) {
             drop(alternatives);
             return self.alternative_chrome(partition, origin);
         }
-        let known = alternatives.get(&key)?;
-        if !known.forced && (Instant::now() >= known.expires || self.excluded(host_of(&known.to))) {
-            alternatives.remove(&key);
-            return None;
+        // HTTP/3 first, then HTTP/2 (AltSvcCache::GetAltServiceMapping).
+        for h3 in [true, false] {
+            let key = (partition.to_string(), origin.to_string(), h3);
+            let Some(known) = alternatives.get(&key) else {
+                continue;
+            };
+            let gone = Instant::now() >= known.expires || h3 && self.excluded(host_of(&known.to));
+            if !known.forced && gone {
+                alternatives.remove(&key);
+                continue;
+            }
+            if known.validated {
+                return Some(Route {
+                    partition: partition.to_string(),
+                    alternative: known.to.clone(),
+                    forced: known.forced,
+                    h3,
+                    record: None,
+                });
+            }
         }
-        known.validated.then(|| Route {
-            partition: partition.to_string(),
-            alternative: known.to.clone(),
-            forced: known.forced,
-        })
+        None
     }
 
     /// A connection to `alternative` made up from `host`'s alternatives
     /// is up: they're proved.
     fn proved(&self, partition: &str, host: &str, alternative: &str) {
         let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-        for ((p, origin), known) in alternatives.iter_mut() {
+        for ((p, origin, h3), known) in alternatives.iter_mut() {
             let same_host = Url::parse(origin)
                 .ok()
                 .is_some_and(|u| u.host_str() == Some(host));
-            if p != partition || !same_host {
-                continue;
-            }
-            if known.to == alternative {
-                known.validated = true;
-            }
-            if let Some((_, expires)) = known.next.take_if(|(to, _)| to == alternative) {
-                (known.to, known.expires, known.validated) =
-                    (alternative.to_string(), expires, true);
+            if *h3 && p == partition && same_host {
+                settled(known, alternative, true);
             }
         }
     }
@@ -1121,13 +1351,11 @@ impl Routes {
         if exclude {
             self.exclude(alternative);
         }
-        let retry = Instant::now() + firefox::ALT_SVC_RETRY;
         let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-        for known in alternatives.values_mut() {
-            if !known.validated && known.to == alternative {
-                known.expires = retry;
+        for ((_, _, h3), known) in alternatives.iter_mut() {
+            if *h3 {
+                settled(known, alternative, false);
             }
-            known.next.take_if(|(to, _)| to == alternative);
         }
     }
 
@@ -1142,19 +1370,43 @@ impl Routes {
     /// The connection to `alternative` for `host` in `partition`, opened
     /// if there's none that is up or coming up. A new one is watched until
     /// it's up or has failed.
-    fn connection(self: &Arc<Self>, partition: &str, host: &str, alternative: &str) -> Handle {
-        let key = format!("{partition} {host} {alternative}");
+    fn connection(
+        self: &Arc<Self>,
+        partition: &str,
+        host: &str,
+        alternative: &str,
+        ech: Option<&[u8]>,
+    ) -> Handle {
+        let mut key = format!("{partition} {host} {alternative}");
+        if let Some(ech) = ech {
+            key.push_str(&format!(" ech {}", data_encoding::HEXLOWER.encode(ech)));
+        }
         let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = connections.get(&key)
             && handle.usable()
         {
             return handle.clone();
         }
+        let given = self
+            .hosts
+            .get(host_of(alternative))
+            .and_then(|a| a.first().copied());
         let handle = match &self.stack {
-            Stack::Firefox => open(host, alternative, &key, self.trust.clone(), &self.tickets),
+            Stack::Firefox => open(
+                host,
+                alternative,
+                given,
+                ech.map(<[u8]>::to_vec),
+                &key,
+                self.trust.clone(),
+                &self.tickets,
+            ),
+            // Chrome: no ECH configuration from an HTTPS record (Netweir
+            // never routes a Chrome request by one).
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
                 alternative,
+                given,
                 &key,
                 tls.clone(),
                 self.trust.clone(),
@@ -1258,20 +1510,22 @@ impl Routes {
         idempotent: bool,
     ) -> Result<Answer, FetchError> {
         let alternative = route.alternative.as_str();
-        // How long the request waits for a connection still coming up
-        // before TCP races it: Firefox's backup timer, Chrome's main-job
-        // delay.
-        let wait = if self.is_chrome() {
-            self.chrome_delay(&route.partition, host, alternative)
-        } else {
-            firefox::BACKUP_TIMER
-        };
-        let handle = self.connection(&route.partition, host, alternative);
+        let ech = route.record.as_ref().and_then(Option::as_deref);
+        let handle = self.connection(&route.partition, host, alternative, ech);
         let mut state = handle.state.clone();
+        // How long the request waits for a connection still coming up
+        // before TCP races it: Chrome's main-job delay; Firefox's backup
+        // timer, sooner for a route from an HTTPS record
+        // (nsHttpTransaction::OnFastFallbackTimer).
+        let timer = match route.record {
+            _ if self.is_chrome() => self.chrome_delay(&route.partition, host, alternative),
+            Some(_) => firefox::FAST_FALLBACK,
+            None => firefox::BACKUP_TIMER,
+        };
         let up = route.forced
             || matches!(
                 tokio::time::timeout(
-                    wait,
+                    timer,
                     state.wait_for(|s| *s != State::Connecting),
                 )
                 .await,
@@ -1396,7 +1650,17 @@ pub(crate) fn leading_number(s: &str) -> i64 {
         .min(i64::from(i32::MAX))
 }
 
-fn open(host: &str, alternative: &str, key: &str, trust: Trust, tickets: &Tickets) -> Handle {
+/// Opens a connection to `alternative`, at the address `given` for its
+/// host if there is one.
+fn open(
+    host: &str,
+    alternative: &str,
+    given: Option<IpAddr>,
+    ech: Option<Vec<u8>>,
+    key: &str,
+    trust: Trust,
+    tickets: &Tickets,
+) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
     let (host, alternative) = (host.to_string(), alternative.to_string());
@@ -1423,7 +1687,16 @@ fn open(host: &str, alternative: &str, key: &str, trust: Trust, tickets: &Ticket
                 key,
                 tickets,
             };
-            runtime.block_on(run(host, alternative, trust, ticket, queue, &state));
+            runtime.block_on(run(
+                host,
+                alternative,
+                given,
+                ech,
+                trust,
+                ticket,
+                queue,
+                &state,
+            ));
             // However it ended, it isn't coming up any more.
             state.send_modify(|s| {
                 *s = match *s {
@@ -1509,22 +1782,39 @@ struct Ticket {
     tickets: Tickets,
 }
 
+#[allow(clippy::too_many_arguments, reason = "each is the connection's own")]
 async fn run(
     host: String,
     alternative: String,
+    given: Option<IpAddr>,
+    ech: Option<Vec<u8>>,
     trust: Trust,
     ticket: Ticket,
     mut queue: mpsc::UnboundedReceiver<Job>,
     state: &watch::Sender<State>,
 ) {
     let connect = || -> Result<(Socket, Http3Client), String> {
-        let remote = alternative
-            .to_socket_addrs()
-            .map_err(|e| format!("{alternative}: {e}"))?
-            .next()
-            .ok_or_else(|| format!("{alternative}: no address"))?;
+        let given = given.zip(
+            alternative
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.parse().ok()),
+        );
+        let remote = match given {
+            Some((ip, port)) => SocketAddr::new(ip, port),
+            None => alternative
+                .to_socket_addrs()
+                .map_err(|e| format!("{alternative}: {e}"))?
+                .next()
+                .ok_or_else(|| format!("{alternative}: no address"))?,
+        };
         let socket = Socket::bind(remote).map_err(|e| e.to_string())?;
-        let client = firefox_client(&host, socket.local, remote, ticket.used.as_ref())?;
+        let client = firefox_client(
+            &host,
+            socket.local,
+            remote,
+            ticket.used.as_ref(),
+            ech.as_deref(),
+        )?;
         Ok((socket, client))
     };
     let (socket, mut client) = match connect() {

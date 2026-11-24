@@ -68,7 +68,15 @@ ipnet = { version = "2.12", optional = true }
 # Requests over HTTP/3 with a Firefox profile (src/h3.rs) or a Chrome one
 # (src/h3_chrome.rs). Off by default:
 # it needs NSS built (scripts/nss.sh) and NSS_DIR set.
-http3 = ["dep:quiche", "dep:neqo-common", "dep:neqo-http3", "dep:neqo-transport", "dep:neqo-udp", "dep:nss-rs", "dep:quinn-udp", "dep:chromium-roots", "dep:tower-http", "dep:http-body", "dep:ipnet"]
+http3 = ["dep:quiche", "dep:neqo-common", "dep:neqo-http3", "dep:neqo-transport", "dep:neqo-udp", "dep:nss-rs", "dep:quinn-udp", "dep:chromium-roots", "dep:tower-http", "dep:http-body", "dep:ipnet", "dep:libc", "dep:windows-sys"]
+
+# HTTPS DNS records through the system resolver, as Firefox queries them
+# (src/https_rr.rs).
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_Registry", "Win32_System_SystemInformation"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

@@ -234,6 +234,7 @@ fn priority(headers: &[(String, Vec<u8>)]) -> (u8, bool) {
 pub(crate) fn open(
     host: &str,
     alternative: &str,
+    given: Option<IpAddr>,
     key: &str,
     tls: Arc<Tls>,
     trust: Trust,
@@ -263,6 +264,7 @@ pub(crate) fn open(
             let connection = Connection {
                 host,
                 alternative,
+                given,
                 tls,
                 trust,
                 ticket,
@@ -288,6 +290,8 @@ pub(crate) fn open(
 struct Connection {
     host: String,
     alternative: String,
+    /// The address to use instead of resolving the alternative's host.
+    given: Option<IpAddr>,
     tls: Arc<Tls>,
     trust: Trust,
     ticket: Option<Ticket>,
@@ -318,12 +322,22 @@ impl Stream {
 
 impl Connection {
     fn connect(&self) -> Result<(tokio::net::UdpSocket, SocketAddr, quiche::Connection), String> {
-        let peer = self
-            .alternative
-            .to_socket_addrs()
-            .map_err(|e| format!("{}: {e}", self.alternative))?
-            .next()
-            .ok_or_else(|| format!("{}: no address", self.alternative))?;
+        let peer = match self.given {
+            Some(ip) => {
+                let port = self
+                    .alternative
+                    .rsplit_once(':')
+                    .and_then(|(_, p)| p.parse::<u16>().ok())
+                    .ok_or_else(|| format!("{}: no port", self.alternative))?;
+                SocketAddr::new(ip, port)
+            }
+            None => self
+                .alternative
+                .to_socket_addrs()
+                .map_err(|e| format!("{}: {e}", self.alternative))?
+                .next()
+                .ok_or_else(|| format!("{}: no address", self.alternative))?,
+        };
         let any = match peer {
             SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),

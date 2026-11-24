@@ -736,6 +736,72 @@ async fn an_alternative_on_a_port_firefox_bans_is_never_tried() {
     assert!(datagrams_sent(&fetcher).await > 0);
 }
 
+#[tokio::test]
+async fn an_h2_alternative_carries_the_origins_requests_once_proved() {
+    // Firefox follows `h2` alternatives too: proved by a TLS connection,
+    // then the origin's requests go to them over HTTP/2, with Alt-Used.
+    // The origin has no port in its URL, so its name is given here.
+    let origin_server = Server::start().await.unwrap();
+    let mut alternative = Server::start().await.unwrap();
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![
+        (
+            "origin.test".into(),
+            ([127, 0, 0, 1], origin_server.port).into(),
+        ),
+        ("alt.test".into(), ([127, 0, 0, 1], 9).into()),
+    ];
+    let fetcher = Fetcher::new(options).unwrap();
+    let to = format!("alt.test:{}", alternative.port);
+    let offered = fetcher
+        .get(
+            &offering("https://origin.test", &format!("h2=\"{to}\"")),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(alt_used(&offered), None);
+    let started = Instant::now();
+    loop {
+        let response = fetcher.get("https://origin.test/", &[]).await.unwrap();
+        if alt_used(&response).as_deref() == Some(to.as_str()) {
+            assert_eq!(response.version, "HTTP/2");
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "never moved");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Proving it sent nothing: the first request it saw is the routed one,
+    // for the origin.
+    let first = alternative.next().await.unwrap();
+    assert_eq!(first.path, "/");
+    let authority = first.headers.iter().find(|(k, _)| k == ":authority");
+    assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
+}
+
+#[tokio::test]
+async fn an_https_record_moves_requests_to_http3_without_alt_svc() {
+    // origin.test's HTTPS record says h3 on the HTTP/3 server's port; its
+    // TCP server never sends Alt-Svc. Firefox goes to HTTP/3 from the
+    // record alone, with no Alt-Used (nsHttpTransaction::OnHTTPSRRAvailable).
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let alpn = b"\x02h3".to_vec();
+    let port = h3.port.to_be_bytes().to_vec();
+    let record =
+        netweir_core::https_answer("origin.test", &[(1, ".", &[(1, alpn), (3, port)])], 300);
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], tcp.port).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    until_http3(&fetcher, "https://origin.test/").await;
+    let response = fetcher.get("https://origin.test/again", &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    assert_eq!(alt_used(&response), None);
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
