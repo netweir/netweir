@@ -15,8 +15,10 @@ codegen-units = 1
 
 # Chrome's handshake since 154 (ML-DSA and GREASE signature algorithms, trust
 # anchors) needs wreq and btls commits that are not on crates.io yet. These
-# are the exact revisions their maintainer pins for the same purpose.
+# are the exact revisions their maintainer pins for the same purpose; wreq
+# comes from netweir's fork, at that revision plus connect_to,
+# ech_config_list and connect_only (branch netweir, see its README).
 [patch.crates-io]
-wreq = { git = "https://github.com/0x676e67/wreq", rev = "cd76bcdf1307153de289d34e072528bdf0510a3b" }
+wreq = { git = "https://github.com/netweir/wreq", rev = "3219c712193e3fafed0ee6a1641e7a085a3a8d66" }
 btls = { git = "https://github.com/0x676e67/btls", rev = "129887582a538b8f4dcf371d15c953335312ca37" }
 btls-sys = { git = "https://github.com/0x676e67/btls", rev = "129887582a538b8f4dcf371d15c953335312ca37" }

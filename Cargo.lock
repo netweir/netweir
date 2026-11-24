@@ -2023,7 +2023,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2036,7 +2036,7 @@ dependencies = [
  "libc",
  "log",
  "socket2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3279,7 +3279,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wreq"
 version = "0.16.1"
-source = "git+https://github.com/0x676e67/wreq?rev=cd76bcdf1307153de289d34e072528bdf0510a3b#cd76bcdf1307153de289d34e072528bdf0510a3b"
+source = "git+https://github.com/netweir/wreq?rev=3219c712193e3fafed0ee6a1641e7a085a3a8d66#3219c712193e3fafed0ee6a1641e7a085a3a8d66"
 dependencies = [
  "btls",
  "btls-sys",
