@@ -55,7 +55,7 @@ quinn-udp = { version = "0.6", default-features = false, features = ["log", "fas
 # on btls, the BoringSSL the TCP connections use, with Chrome's transport
 # parameters, Initial packets, HTTP/3 SETTINGS and QPACK decoding added
 # (branch chrome-157; see its README).
-quiche = { git = "https://github.com/netweir/quiche", rev = "5b9b11f1f339190e84362a4fdc40cc2216f626cf", features = ["custom-client-dcid"], optional = true }
+quiche = { git = "https://github.com/netweir/quiche", rev = "abd732e14563274b51b484c051aeda6d1181ddd4", features = ["custom-client-dcid"], optional = true }
 # The roots wreq checks TCP connections' certificates against.
 chromium-roots = { version = "0.1.2", optional = true }
 # wreq's own response decompression, for responses over HTTP/3.

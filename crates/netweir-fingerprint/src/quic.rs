@@ -296,7 +296,8 @@ fn open(keys: &Keys, packet: &[u8], pn_offset: usize) -> Option<(u64, usize, Vec
 /// order, and returns it with the ClientHello its CRYPTO frames carry.
 /// `odcid` is the Destination Connection ID of the client's first Initial;
 /// datagrams before the first that starts with an Initial to it are
-/// skipped, and reading stops at the datagram that completes the hello.
+/// skipped, Initials after it are read whatever connection ID they carry,
+/// and reading stops at the datagram that completes the hello.
 /// `None` if the hello never completes or isn't one.
 pub fn first_flight(datagrams: &[Vec<u8>], odcid: &[u8]) -> Option<(Quic, ClientHello)> {
     let mut quic: Option<Quic> = None;
@@ -361,7 +362,10 @@ pub fn first_flight(datagrams: &[Vec<u8>], odcid: &[u8]) -> Option<(Quic, Client
                     transport_parameters: Vec::new(),
                 });
             }
-            if let (Some(keys), "initial", true) = (&keys, kind, dcid == odcid)
+            // A resent Initial goes to the server's connection ID once the
+            // client has its reply, still under the first one's keys (RFC
+            // 9001, Section 5.2).
+            if let (Some(keys), "initial") = (&keys, kind)
                 && let Some((truncated, len, plain)) = open(keys, &start[..end], pn_offset)
             {
                 let pn = packet_number(largest, truncated, len);

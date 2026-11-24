@@ -431,7 +431,8 @@ async fn until_http3(fetcher: &Fetcher, url: &str) {
 /// A UDP port on 127.0.0.1 that passes datagrams on to `to` and back
 /// while `drop` is false, and drops them all while it's true, as a network
 /// that blocks QUIC; `seen` counts what reached it from the client.
-/// [`slow_relay`] holds each datagram back a while, each way.
+/// [`slow_relay`] holds each datagram back a while, each way, and loses
+/// the client's first `lost`.
 struct Relay {
     port: u16,
     // Every test here keeps the relay dropping from the start.
@@ -441,10 +442,10 @@ struct Relay {
 }
 
 async fn relay(to: Option<u16>) -> Relay {
-    slow_relay(to, Duration::ZERO).await
+    slow_relay(to, Duration::ZERO, 0).await
 }
 
-async fn slow_relay(to: Option<u16>, delay: Duration) -> Relay {
+async fn slow_relay(to: Option<u16>, delay: Duration, lost: usize) -> Relay {
     let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let port = socket.local_addr().unwrap().port();
     let (drop, seen) = (
@@ -468,8 +469,8 @@ async fn slow_relay(to: Option<u16>, delay: Duration) -> Relay {
                     Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
                     Err(_) => return,
                 };
-                seen.fetch_add(1, Ordering::Relaxed);
-                if !drop.load(Ordering::Relaxed) {
+                let earlier = seen.fetch_add(1, Ordering::Relaxed);
+                if !drop.load(Ordering::Relaxed) && earlier >= lost {
                     *client.lock().unwrap() = Some(from);
                     let (upstream, datagram) = (upstream.clone(), buf[..n].to_vec());
                     tokio::spawn(async move {
@@ -536,6 +537,23 @@ async fn tunnel() -> String {
         }
     });
     format!("http://127.0.0.1:{port}")
+}
+
+/// Chrome's first flight is two Initial packets, the first carrying the
+/// start and the end of the ClientHello. With it lost, the resent
+/// ClientHello still has to reach the server whole.
+#[tokio::test]
+async fn a_lost_first_initial_packet_still_connects() {
+    let server = Server::start_h3(0, None).await.unwrap();
+    let udp = slow_relay(Some(server.port), Duration::ZERO, 1).await;
+    let origin = format!("https://localhost:{}", server.port);
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{}", udp.port))
+        .unwrap();
+    let response = fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    assert!(udp.seen.load(Ordering::Relaxed) > 2, "the hello was resent");
 }
 
 #[tokio::test]
