@@ -604,6 +604,7 @@ fn windows_records(list: &[WinRecord], host: &str, ttl: &mut u32) -> Res<Lookup>
 
 /// What DNSServiceQueryRecord's callback gathers (PlatformDNSMac.cpp::
 /// DNSContext).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct MacAnswer {
     fail: Option<Fail>,
     records: Option<Vec<Svcb>>,
@@ -611,6 +612,7 @@ struct MacAnswer {
     ttl: u32,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl MacAnswer {
     /// One callback (PlatformDNSMac.cpp::QueryCallback).
     fn record(&mut self, error: i32, fullname: &[u8], kind: u16, rdata: &[u8], ttl: u32) {
@@ -925,22 +927,24 @@ mod os {
         hints.ai_family = libc::AF_UNSPEC;
         hints.ai_socktype = libc::SOCK_STREAM;
         hints.ai_flags = libc::AI_ADDRCONFIG | libc::AI_CANONNAME;
-        let mut found = std::ptr::null_mut();
+        let mut list = std::ptr::null_mut();
         // SAFETY: valid C strings and hints; the list is freed below.
-        if unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut found) } != 0
-            || found.is_null()
-        {
+        let failed =
+            unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut list) };
+        if failed != 0 {
             return None;
         }
-        // SAFETY: getaddrinfo succeeded, so `found` is a valid list.
+        let first = std::ptr::NonNull::new(list)?;
+        // SAFETY: getaddrinfo succeeded and gave a list, so `first` points
+        // at its first entry until freeaddrinfo; the name is copied first.
         unsafe {
-            let first = &*found;
-            let name = (!first.ai_canonname.is_null()).then(|| {
-                std::ffi::CStr::from_ptr(first.ai_canonname)
+            let canonname = first.as_ref().ai_canonname;
+            let name = (!canonname.is_null()).then(|| {
+                std::ffi::CStr::from_ptr(canonname)
                     .to_string_lossy()
                     .into_owned()
             });
-            libc::freeaddrinfo(found);
+            libc::freeaddrinfo(first.as_ptr());
             name
         }
     }
