@@ -475,7 +475,8 @@ Netweir copies both. Two cookies with the same path go out newest first.
 And once a site has answered over HTTP/1.1, Safari stops offering it
 HTTP/2 on new connections, so Netweir does the same.
 
-Firefox goes over HTTP/3 too. When a site offers it in `Alt-Svc`, the
+Firefox goes over HTTP/3 too. When a site offers it in `Alt-Svc` or its
+HTTPS DNS record, which Netweir asks the system for as Firefox does, the
 next requests leave on neqo, the QUIC stack Firefox itself runs, set up
 with Firefox 160's settings, and a test holds the QUIC Initial, the
 ClientHello inside it and the HTTP/3 settings to a recording of the real

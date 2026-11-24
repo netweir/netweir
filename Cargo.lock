@@ -1524,6 +1524,7 @@ dependencies = [
  "tower",
  "tower-http",
  "url",
+ "windows-sys 0.61.2",
  "wreq",
  "wreq-proto",
  "zip",

@@ -776,6 +776,28 @@ async fn an_h2_alternative_carries_the_origins_requests_once_proved() {
     assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
 }
 
+#[tokio::test]
+async fn an_https_record_moves_requests_to_http3_without_alt_svc() {
+    // origin.test's HTTPS record says h3 on the HTTP/3 server's port; its
+    // TCP server never sends Alt-Svc. Firefox goes to HTTP/3 from the
+    // record alone, with no Alt-Used (nsHttpTransaction::OnHTTPSRRAvailable).
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let alpn = b"\x02h3".to_vec();
+    let port = h3.port.to_be_bytes().to_vec();
+    let record =
+        netweir_core::https_answer("origin.test", &[(1, ".", &[(1, alpn), (3, port)])], 300);
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], tcp.port).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    until_http3(&fetcher, "https://origin.test/").await;
+    let response = fetcher.get("https://origin.test/again", &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    assert_eq!(alt_used(&response), None);
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

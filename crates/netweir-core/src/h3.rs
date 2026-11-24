@@ -62,6 +62,15 @@ mod firefox {
     /// for an HTTP/3 connection still being made before it goes over TCP
     /// instead (nsHttpTransaction::OnHttp3BackupTimer).
     pub const BACKUP_TIMER: std::time::Duration = std::time::Duration::from_millis(100);
+    /// network.dns.httpssvc.http3_fast_fallback_timeout: the same for a
+    /// connection made from an HTTPS record.
+    pub const FAST_FALLBACK: std::time::Duration = std::time::Duration::from_millis(50);
+    /// network.dnsCacheExpirationGracePeriod: how long past its TTL Firefox
+    /// still uses a record it has (nsHostRecord::SetExpiration).
+    pub const DNS_GRACE: std::time::Duration = std::time::Duration::from_secs(600);
+    /// network.dns.negative_ttl_for_type_record: how long a lookup that
+    /// found no HTTPS record stands.
+    pub const DNS_NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
     /// An Alt-Svc alternative's lifetime without `ma=`, in seconds
     /// (AltSvcMapping::ProcessHeader).
     pub const ALT_SVC_MAX_AGE: i64 = 86_400;
@@ -93,6 +102,7 @@ fn firefox_client(
     local: SocketAddr,
     remote: SocketAddr,
     resume: Option<&ResumptionToken>,
+    ech: Option<&[u8]>,
 ) -> Result<Http3Client, String> {
     nss_rs::init().map_err(|e| format!("NSS: {e:?}"))?;
     gecko::defaults()?;
@@ -162,10 +172,13 @@ fn firefox_client(
     conn.set_certificate_compression::<Brotli>()
         .map_err(|e| format!("{e:?}"))?;
     let mut client = Http3Client::new_with_conn(conn, settings);
-    // Http3Session::Init: with no ECH configuration for the host,
+    // Http3Session::Init: the ECH configuration of the HTTPS record the
+    // connection came from (DoSetEchConfig); with none,
     // security.tls.ech.grease_http3 (true) and grease_probability (100)
     // make every connection GREASE ECH, which an empty configuration does.
-    client.enable_ech([]).map_err(|e| format!("{e:?}"))?;
+    client
+        .enable_ech(ech.unwrap_or_default())
+        .map_err(|e| format!("{e:?}"))?;
     // Then, network.http.http3.enable_0rtt being true, the session ticket
     // the last connection to this server left, if it hasn't expired.
     if let Some(token) = resume.filter(|t| t.expiration_time() > Instant::now()) {
@@ -567,6 +580,25 @@ pub(crate) struct Route {
     pub forced: bool,
     /// HTTP/3, not an `h2` alternative.
     pub h3: bool,
+    /// From an HTTPS record, with its ECH configuration if it has one:
+    /// used without proving it, and without Alt-Used.
+    pub record: Option<Option<Vec<u8>>>,
+}
+
+/// What an origin's HTTPS records came to, once its lookup is done: the
+/// records and the canonical name, if any, and when it stops standing.
+#[derive(Clone)]
+pub(crate) struct Found {
+    records: Option<crate::https_rr::Records>,
+    cname: Option<String>,
+    expires: Instant,
+}
+
+/// An origin's HTTPS record lookup, done or under way.
+pub(crate) struct Lookup {
+    found: watch::Receiver<Option<Found>>,
+    origin: Url,
+    partition: String,
 }
 
 /// An origin's alternatives are kept by partition, origin and whether
@@ -710,6 +742,12 @@ pub(crate) struct Routes {
     validate: Validate,
     /// Addresses given for names, in place of the system's resolver.
     hosts: Arc<HashMap<String, Vec<IpAddr>>>,
+    /// HTTPS record lookups by origin (`host:port`), kept as Firefox's
+    /// host cache keeps them: for the records' TTL and then the grace
+    /// period, and an empty answer for its negative TTL and the grace.
+    records: Mutex<HashMap<String, watch::Receiver<Option<Found>>>>,
+    /// Given answers to HTTPS queries, for tests.
+    seam: Option<Arc<crate::https_rr::Seam>>,
     /// Connections by partition, server name and alternative.
     connections: Mutex<HashMap<String, Handle>>,
     /// The newest session ticket from each server, for the next
@@ -725,6 +763,7 @@ impl Routes {
         trust: Trust,
         validate: Validate,
         hosts: Arc<HashMap<String, Vec<IpAddr>>>,
+        seam: Option<Arc<crate::https_rr::Seam>>,
     ) -> Routes {
         Routes {
             trust,
@@ -732,6 +771,8 @@ impl Routes {
             excluded: Mutex::default(),
             validate,
             hosts,
+            records: Mutex::default(),
+            seam,
             connections: Mutex::default(),
             tickets: Tickets::default(),
         }
@@ -839,7 +880,7 @@ impl Routes {
         if let Some((to, expires)) = h3
             && self.update(&key(true), &to, expires)
         {
-            let handle = self.connection(partition, host, &to);
+            let handle = self.connection(partition, host, &to, None);
             if *handle.state.borrow() == State::Connected {
                 self.proved(partition, host, &to);
             }
@@ -905,6 +946,93 @@ impl Routes {
         }
     }
 
+    /// The HTTPS records of `origin`, looked up as Firefox's nsHttpTransaction
+    /// looks them up for each request (HTTPSRecordResolver, with
+    /// network.dns.use_https_rr_as_altsvc): the HTTPS query and an address
+    /// lookup for the canonical name, side by side, answered from the cache
+    /// while they stand.
+    pub(crate) fn lookup(self: &Arc<Self>, partition: &str, origin: &Url) -> Option<Lookup> {
+        let (host, port) = (origin.host_str()?, origin.port_or_known_default()?);
+        let key = format!("{host}:{port}");
+        let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
+        let standing = records.get(&key).filter(|found| {
+            found
+                .borrow()
+                .as_ref()
+                .is_none_or(|f| Instant::now() < f.expires)
+        });
+        let found = match standing {
+            Some(found) => found.clone(),
+            None => {
+                let (tell, found) = watch::channel(None);
+                records.insert(key, found.clone());
+                let (host, seam) = (host.to_string(), self.seam.clone());
+                tokio::spawn(async move {
+                    let (records, cname) = tokio::join!(
+                        crate::https_rr::query(&host, port, seam.as_deref()),
+                        crate::https_rr::canonical_name(&host),
+                    );
+                    let stands = records
+                        .as_ref()
+                        .map_or(firefox::DNS_NEGATIVE_TTL, |r| r.ttl);
+                    let expires = Instant::now() + stands.saturating_add(firefox::DNS_GRACE);
+                    tell.send_replace(Some(Found {
+                        records,
+                        cname,
+                        expires,
+                    }));
+                });
+                found
+            }
+        };
+        Some(Lookup {
+            found,
+            origin: origin.clone(),
+            partition: partition.to_string(),
+        })
+    }
+
+    /// Where `lookup`'s records send a request, once they're in: over
+    /// HTTP/3 to the record Firefox picks (HTTPSSVC.cpp
+    /// GetServiceModeRecordWithCname, nsHttpConnectionInfo::
+    /// CloneAndAdoptHTTPSSVCRecord) when that one offers h3. None: no
+    /// record, or none for HTTP/3.
+    // Known limit: a record that sends TCP elsewhere (another port, or
+    // ECH over TCP) isn't followed; the request goes to the origin.
+    fn adopt(&self, lookup: &Lookup, found: &Found) -> Option<Route> {
+        let records = found.records.as_ref()?;
+        let (host, port) = (
+            lookup.origin.host_str()?,
+            lookup.origin.port_or_known_default()?,
+        );
+        let chosen =
+            crate::https_rr::choose(records, host, port, found.cname.as_deref(), &|target| {
+                self.excluded(target)
+            })?;
+        (chosen.alpn == "h3" && chosen.port != 0).then(|| Route {
+            partition: lookup.partition.clone(),
+            alternative: format!("{}:{}", chosen.host, chosen.port),
+            forced: false,
+            h3: true,
+            record: Some(chosen.ech),
+        })
+    }
+
+    /// The route `lookup` gives now if it's done, or `Err` with it if not.
+    pub(crate) fn adopted(&self, lookup: Lookup) -> Result<Option<Route>, Box<Lookup>> {
+        let found = lookup.found.borrow().clone();
+        match found {
+            Some(found) => Ok(self.adopt(&lookup, &found)),
+            None => Err(Box::new(lookup)),
+        }
+    }
+
+    /// Waits for `lookup` to be done, and gives the route it gives.
+    pub(crate) async fn adopt_when_found(&self, mut lookup: Box<Lookup>) -> Option<Route> {
+        let found = lookup.found.wait_for(Option::is_some).await.ok()?.clone()?;
+        self.adopt(&lookup, &found)
+    }
+
     /// The alternative of a request to `origin` in `partition`, if it has
     /// a proved one that hasn't expired, to a host HTTP/3 hasn't failed to
     /// reach (AltSvcCache::LookupMapping).
@@ -927,6 +1055,7 @@ impl Routes {
                     alternative: known.to.clone(),
                     forced: known.forced,
                     h3,
+                    record: None,
                 });
             }
         }
@@ -975,8 +1104,17 @@ impl Routes {
     /// The connection to `alternative` for `host` in `partition`, opened
     /// if there's none that is up or coming up. A new one is watched until
     /// it's up or has failed.
-    fn connection(self: &Arc<Self>, partition: &str, host: &str, alternative: &str) -> Handle {
-        let key = format!("{partition} {host} {alternative}");
+    fn connection(
+        self: &Arc<Self>,
+        partition: &str,
+        host: &str,
+        alternative: &str,
+        ech: Option<&[u8]>,
+    ) -> Handle {
+        let mut key = format!("{partition} {host} {alternative}");
+        if let Some(ech) = ech {
+            key.push_str(&format!(" ech {}", data_encoding::HEXLOWER.encode(ech)));
+        }
         let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = connections.get(&key)
             && handle.usable()
@@ -991,6 +1129,7 @@ impl Routes {
             host,
             alternative,
             given,
+            ech.map(<[u8]>::to_vec),
             &key,
             self.trust.clone(),
             &self.tickets,
@@ -1067,12 +1206,19 @@ impl Routes {
         idempotent: bool,
     ) -> Result<Answer, FetchError> {
         let alternative = route.alternative.as_str();
-        let handle = self.connection(&route.partition, host, alternative);
+        let ech = route.record.as_ref().and_then(Option::as_deref);
+        let handle = self.connection(&route.partition, host, alternative, ech);
         let mut state = handle.state.clone();
+        // A route from an HTTPS record races TCP sooner
+        // (nsHttpTransaction::OnFastFallbackTimer).
+        let timer = match route.record {
+            Some(_) => firefox::FAST_FALLBACK,
+            None => firefox::BACKUP_TIMER,
+        };
         let up = route.forced
             || matches!(
                 tokio::time::timeout(
-                    firefox::BACKUP_TIMER,
+                    timer,
                     state.wait_for(|s| *s != State::Connecting),
                 )
                 .await,
@@ -1199,6 +1345,7 @@ fn open(
     host: &str,
     alternative: &str,
     given: Option<IpAddr>,
+    ech: Option<Vec<u8>>,
     key: &str,
     trust: Trust,
     tickets: &Tickets,
@@ -1229,7 +1376,16 @@ fn open(
                 key,
                 tickets,
             };
-            runtime.block_on(run(host, alternative, given, trust, ticket, queue, &state));
+            runtime.block_on(run(
+                host,
+                alternative,
+                given,
+                ech,
+                trust,
+                ticket,
+                queue,
+                &state,
+            ));
             // However it ended, it isn't coming up any more.
             state.send_modify(|s| {
                 *s = match *s {
@@ -1315,10 +1471,12 @@ struct Ticket {
     tickets: Tickets,
 }
 
+#[allow(clippy::too_many_arguments, reason = "each is the connection's own")]
 async fn run(
     host: String,
     alternative: String,
     given: Option<IpAddr>,
+    ech: Option<Vec<u8>>,
     trust: Trust,
     ticket: Ticket,
     mut queue: mpsc::UnboundedReceiver<Job>,
@@ -1339,7 +1497,13 @@ async fn run(
                 .ok_or_else(|| format!("{alternative}: no address"))?,
         };
         let socket = Socket::bind(remote).map_err(|e| e.to_string())?;
-        let client = firefox_client(&host, socket.local, remote, ticket.used.as_ref())?;
+        let client = firefox_client(
+            &host,
+            socket.local,
+            remote,
+            ticket.used.as_ref(),
+            ech.as_deref(),
+        )?;
         Ok((socket, client))
     };
     let (socket, mut client) = match connect() {

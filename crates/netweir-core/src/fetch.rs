@@ -59,6 +59,11 @@ pub struct FetchOptions {
     /// requests to one of its servers. A port in the address is used for
     /// URLs that give none.
     pub resolve: Vec<(String, std::net::SocketAddr)>,
+    /// Answers to HTTPS record queries by query name, as the raw DNS
+    /// responses the system's resolver would give, in place of asking it:
+    /// for tests.
+    #[doc(hidden)]
+    pub https_records: HashMap<String, Vec<u8>>,
 }
 
 impl FetchOptions {
@@ -76,6 +81,7 @@ impl FetchOptions {
             archive: None,
             http3: true,
             resolve: Vec::new(),
+            https_records: HashMap::new(),
         }
     }
 }
@@ -175,7 +181,16 @@ pub struct Fetcher {
 /// Where a request goes instead of wreq's TCP connections: what reaches
 /// HTTP/3, and where over it.
 #[cfg(feature = "http3")]
-type Route = (Arc<crate::h3::Routes>, crate::h3::Route);
+type Route = (Arc<crate::h3::Routes>, Way);
+
+/// Where a request goes: a route already known, or the origin's HTTPS
+/// records, still being looked up, which it races its TCP connection
+/// against.
+#[cfg(feature = "http3")]
+enum Way {
+    Go(crate::h3::Route),
+    Lookup(Box<crate::h3::Lookup>),
+}
 #[cfg(not(feature = "http3"))]
 type Route = std::convert::Infallible;
 
@@ -1478,6 +1493,8 @@ impl Fetcher {
                         )?,
                         validate,
                         Arc::new(ips),
+                        (!options.https_records.is_empty())
+                            .then(|| Arc::new(options.https_records.clone())),
                     )))
                 }
                 Some(other) => {
@@ -1573,13 +1590,31 @@ impl Fetcher {
     fn route(&self, url: &Url, outgoing: &Outgoing) -> Option<Route> {
         #[cfg(feature = "http3")]
         if let Some(routes) = &self.h3
-            && url.scheme() == "https"
+            && self.direct(url)
         {
-            let route = routes.alternative(
-                &partition(outgoing, url),
-                &url.origin().ascii_serialization(),
-            )?;
-            return Some((routes.clone(), route));
+            let partition = partition(outgoing, url);
+            if url.scheme() != "https" {
+                // nsHttpChannel::MaybeStartDNSPrefetch asks for an http
+                // URL's HTTPS records too, under the port it names.
+                let mut https = url.clone();
+                let _ = https.set_scheme("https");
+                let _ = https.set_port(url.port());
+                drop(routes.lookup(&partition, &https));
+                return None;
+            }
+            let origin = url.origin().ascii_serialization();
+            let alternative = routes.alternative(&partition, &origin);
+            if alternative.as_ref().is_some_and(|a| a.forced) {
+                return alternative.map(|a| (routes.clone(), Way::Go(a)));
+            }
+            // Records answered before the request is on a connection
+            // replace its route (nsHttpTransaction::OnHTTPSRRAvailable).
+            let way = match routes.lookup(&partition, url).map(|l| routes.adopted(l)) {
+                Some(Ok(Some(record))) => Way::Go(record),
+                Some(Err(lookup)) if alternative.is_none() => Way::Lookup(lookup),
+                _ => Way::Go(alternative?),
+            };
+            return Some((routes.clone(), way));
         }
         let _ = (url, outgoing);
         None
@@ -2149,8 +2184,8 @@ impl Fetcher {
     #[cfg(feature = "http3")]
     async fn send_h3(
         &self,
-        (routes, route): Route,
-        request: wreq::RequestBuilder,
+        (routes, way): Route,
+        mut request: wreq::RequestBuilder,
         order: OrigHeaderMap,
         sent: Option<&Sent>,
         view: Option<JarView>,
@@ -2158,6 +2193,34 @@ impl Fetcher {
     ) -> Result<wreq::Response, FetchError> {
         use wreq::cookie::CookieStore;
         use wreq_proto::ext::OnPreserveHeaderCallback;
+        let route = match way {
+            Way::Go(route) => route,
+            Way::Lookup(lookup) => {
+                // The TCP connection starts now; records that come in while
+                // it's being made, and send the request over HTTP/3, take it.
+                let Some(racing) = request.try_clone() else {
+                    return dispatch(request, order, sent, view).await;
+                };
+                let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+                let over_tcp = RACE.scope(
+                    state.clone(),
+                    dispatch(request, order.clone(), sent, view.clone()),
+                );
+                tokio::pin!(over_tcp);
+                let adopted = tokio::select! {
+                    biased;
+                    done = &mut over_tcp => return done,
+                    route = routes.adopt_when_found(lookup) => route,
+                };
+                match adopted {
+                    Some(route) if state.load(std::sync::atomic::Ordering::Relaxed) == RACING => {
+                        request = racing;
+                        route
+                    }
+                    _ => return over_tcp.await,
+                }
+            }
+        };
         if !route.h3 {
             return send_h2(route, request, order, sent, view).await;
         }
@@ -2187,20 +2250,32 @@ impl Fetcher {
         }
         order.call(&mut headers);
         let host = uri.host().unwrap_or_default().to_string();
-        let alt_used = match route.alternative.strip_suffix(":443") {
-            Some(default_port) => default_port.to_string(),
-            None => route.alternative.clone(),
-        };
+        // Only for an Alt-Svc alternative (nsHttpChannel::BeginConnect), not
+        // a route from an HTTPS record.
+        let alt_used =
+            route
+                .record
+                .is_none()
+                .then(|| match route.alternative.strip_suffix(":443") {
+                    Some(default_port) => default_port.to_string(),
+                    None => route.alternative.clone(),
+                });
         let mut lines: Vec<(String, Vec<u8>)> = Vec::with_capacity(headers.len() + 1);
         for (name, value) in &headers {
             match name.as_str() {
-                "connection" => lines.push(("alt-used".into(), alt_used.clone().into_bytes())),
+                "connection" => lines.extend(
+                    alt_used
+                        .clone()
+                        .map(|a| ("alt-used".to_string(), a.into_bytes())),
+                ),
                 "host" | "keep-alive" | "proxy-connection" | "te" | "transfer-encoding"
                 | "upgrade" | "sec-websocket-key" => {}
                 other => lines.push((other.to_string(), value.as_bytes().to_vec())),
             }
         }
-        if !headers.contains_key(wreq::header::CONNECTION) {
+        if !headers.contains_key(wreq::header::CONNECTION)
+            && let Some(alt_used) = alt_used
+        {
             lines.push(("alt-used".into(), alt_used.into_bytes()));
         }
         if let Some(sent) = sent {

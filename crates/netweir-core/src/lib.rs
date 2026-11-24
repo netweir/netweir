@@ -4,8 +4,9 @@
 //! [`Profile`]'s browser sends: the same TLS ClientHello, HTTP/2 settings
 //! and header order.
 
-// Unsafe code only in src/h3.rs, which sets NSS up as Firefox does over
-// its C API, and only with the http3 feature.
+// Unsafe code only with the http3 feature: in src/h3.rs, which sets NSS
+// up as Firefox does over its C API, and src/https_rr.rs, which asks the
+// system's resolver for HTTPS records as Firefox does.
 #![cfg_attr(not(feature = "http3"), forbid(unsafe_code))]
 #![cfg_attr(feature = "http3", deny(unsafe_code))]
 
@@ -21,6 +22,8 @@ pub mod deltafetch;
 mod fetch;
 #[cfg(feature = "http3")]
 mod h3;
+#[cfg(feature = "http3")]
+mod https_rr;
 pub mod install;
 mod profile;
 pub mod queue;
@@ -42,6 +45,9 @@ pub use fetch::{
     Auth, FetchError, FetchErrorKind, FetchOptions, Fetcher, Hop, Kind, MAX_REDIRECTS, Outgoing,
     Policy, Response, auth_domain, check_proxy, masked,
 };
+#[cfg(feature = "http3")]
+#[doc(hidden)]
+pub use https_rr::https_answer;
 pub use profile::{
     DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, built_in as built_in_profiles,
 };

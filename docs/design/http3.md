@@ -114,6 +114,29 @@ preferences.
   is one Firefox never connects to (the 82 in `gBadPortList`,
   `netwerk/base/nsIOService.cpp`, which `NS_CheckPortSafety` reads);
   draft versions such as `h3-29` are ignored, as Firefox 160 ignores them.
+- HTTPS records. As Firefox 160 does with TRR off
+  (`network.dns.native_https_query`, `use_https_rr_as_altsvc`), each
+  request to an https origin also asks the system's resolver for its
+  HTTPS record, the way Firefox asks on that system:
+  `res_nquery` on Linux, `DNSServiceQueryRecord` on macOS, `DnsQuery_A`
+  on Windows 11 (not 10, where Firefox doesn't), under `_PORT._https.host`
+  for a port other than 443, and never for an address, `localhost`,
+  `.local`, a name in the hosts file or under a search domain. An http URL
+  is asked about too, as Firefox's DNS prefetch asks. Alongside goes an
+  address lookup for the canonical name, which a record's target has to
+  match (`network.dns.https_rr.check_record_with_cname`). The answer is
+  parsed, sorted and picked as `DNSPacket`, `HTTPSSVC.cpp` and
+  `GetServiceModeRecordWithCname` do (`src/https_rr.rs`), and kept for
+  its TTL and then the 600 s grace, or 300 s if there was none. The
+  request doesn't wait for it: one whose TCP connection is still being
+  made when a record offering h3 comes in moves to HTTP/3, as a
+  transaction not yet on a connection does
+  (`nsHttpTransaction::OnHTTPSRRAvailable`), and later requests use the
+  record at once. The route isn't proved first, carries no `Alt-Used`,
+  takes the record's ECH configuration in place of ECH GREASE, and races
+  TCP after `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms. An
+  http URL isn't upgraded to https from a record: with TRR off, Firefox
+  doesn't (`nsHttpChannel::MaybeUseHTTPSRRForUpgrade`).
 - `h2` alternatives. Firefox takes those too, each one (`h2` on the
   origin's own host and port is none, and clears the origin's others, as
   `AltSvcMapping`'s constructor makes it one with no lifetime). Once one
@@ -181,11 +204,17 @@ as if proved, ignores Alt-Svc for it, and never races or falls back.
 
 What's not the same as Firefox:
 
-- HTTPS DNS records. Firefox 160 also looks for an HTTPS record
-  (`network.dns.native_https_query`, `network.dns.use_https_rr_as_altsvc`)
-  and can go to HTTP/3 on its first request from one. Netweir resolves
-  names through the system's resolver, which doesn't return them, so it
-  moves only after Alt-Svc.
+- HTTPS records that send TCP somewhere else (another port, or ECH over
+  TCP) aren't followed; those requests go to the origin. A record's h3
+  route is followed, ECH included.
+- The losing TCP connection of a fast fallback goes to the origin, where
+  Firefox takes the best record without h3 if there is one
+  (`PrepareFastFallbackConnInfo`); with the canonical-name check, that is
+  almost always the origin anyway.
+- The canonical name the record check needs comes from a lookup of its
+  own (getaddrinfo with `AI_CANONNAME`, as NSPR asks for Firefox),
+  alongside wreq's; a system with no caching resolver may send the
+  address queries twice. On Windows the check is skipped.
 - The race's losing TCP connection. When HTTP/3 wins, Firefox's backup
   connection sends HTTP/2's preface and waits in the pool. Netweir's
   finishes its TLS handshake and closes, as wreq can't keep a connection
