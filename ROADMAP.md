@@ -7,13 +7,13 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**HTTP/3 for Chrome and Safari.** Firefox's ships: a Firefox profile
-moves to HTTP/3 when a site offers it, on the QUIC stack Firefox runs.
-Chrome's ([#388](https://github.com/netweir/netweir/issues/388)) and
-Safari's ([#390](https://github.com/netweir/netweir/issues/390)) are next,
-each once its first QUIC packet looks exactly like that browser's. Until
-then they stay on HTTP/2 and HTTP/1.1, which is what a browser falls back
-to when a site offers no HTTP/3.
+**HTTP/3 for Safari.** Firefox's and Chrome's ship: a Firefox or Chrome
+profile moves to HTTP/3 when a site offers it, with that browser's first
+QUIC packets. Safari's
+([#390](https://github.com/netweir/netweir/issues/390)) is next, on the
+Chrome engine with Safari's settings, once its first packet looks
+exactly like Safari's. Until then it stays on HTTP/2 and HTTP/1.1, which
+is what a browser falls back to when a site offers no HTTP/3.
 
 **Firefox's gaps.** A few options still raise `BrowserError` on Firefox,
 mostly where its WebDriver BiDi has no command for them.

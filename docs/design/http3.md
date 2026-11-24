@@ -1,12 +1,13 @@
-# HTTP/3: Firefox through neqo
+# HTTP/3: Firefox through neqo, Chrome through quiche
 
 A request over HTTP/3 has to look like the browser's from its first UDP
 datagram: the QUIC Initial carries the ClientHello, and anyone on the path
 can read it. For Firefox, Netweir doesn't imitate that. It runs the code
 Firefox runs.
 
-This is issue #387. When the fetcher moves to it, races TCP and falls
-back, the way Firefox does, is #389, under
+This is issue #387, and Chrome's, further down, is
+[#388](#chrome-through-netweirs-quiche). When the fetcher moves to it,
+races TCP and falls back, the way Firefox does, is #389, under
 [When a request goes over HTTP/3](#when-a-request-goes-over-http3).
 Both are in netweir-core's `http3` feature, which netweir-py's own
 `http3` feature turns on. The wheels have it (#400); a build from the
@@ -100,10 +101,11 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 ## When a request goes over HTTP/3
 
 Only a profile with an `[http3]` section moves to HTTP/3: today that's
-`firefox-160-macos`. Chrome and Safari stay on TCP until their own stacks
-are in (#388, #390), and so do the older Firefox profiles, which have no
-HTTP/3 recording. The rest follows Firefox 160.0.1's source and default
-preferences.
+`firefox-160-macos` and `chrome-157-macos`. Safari stays on TCP until its
+own stack is in (#390), and so do the older Firefox and Chrome profiles,
+which have no HTTP/3 recording. This section is Firefox's, following
+Firefox 160.0.1's source and default preferences; Chrome's rules are
+[their own](#when-chrome-moves-to-http3).
 
 - Alt-Svc. An `Alt-Svc` header on an https response that isn't a 421 or
   a 5xx (`nsHttpChannel::ProcessAltService`) is read as
@@ -186,12 +188,147 @@ What's not the same as Firefox:
 - `h2` alternatives, which Firefox uses to send HTTP/2 to another host,
   are ignored.
 
+## Chrome through netweir's quiche
+
+Chrome's QUIC is Google's QUICHE, in C++, and building it into the
+wheels would mean abseil and bazel on six targets. Netweir runs
+Cloudflare's quiche instead, in Rust, forked to
+[netweir/quiche](https://github.com/netweir/quiche) on the `chrome-157`
+branch, pinned by commit in netweir-core's Cargo.toml. The fork does two
+things.
+
+It links btls, the patched BoringSSL Netweir's TCP connections already
+use, in place of the `boring` crate. Both declare `links = "boringssl"`,
+so only one of them can be in a build, and with btls the ClientHello in
+the QUIC Initial comes from the same library, set up from the same
+profile, as the TCP one.
+
+And it adds what quiche did differently from Chrome, each a commit on
+that branch, each ported from or checked against QUICHE's source:
+
+- transport parameters in a new random order on every connection, one
+  GREASE parameter (31 × N + 27, 0 to 15 random bytes), version
+  information with a GREASE version at a random place, and integer
+  parameters left out at their defaults
+  (`SerializeTransportParameters`);
+- the Initial flight: a port of QUICHE's chaos protection
+  (`QuicChaosProtector` and `MultiPacketChaosProtect`), which spreads the
+  ClientHello over two packets and splits each share into CRYPTO frames
+  shuffled among PING frames and runs of PADDING; packets filled to 1250
+  bytes with PADDING frames, packet numbers from 1;
+- the BoringSSL handle per connection, for ECH GREASE, key shares and
+  ALPS;
+- HTTP/3: SETTINGS in identifier order with a GREASE setting, a GREASE
+  frame after them, no QPACK or GREASE streams until there's something to
+  send on one, and Chrome's `u=0, i` in PRIORITY_UPDATE;
+- QPACK: quiche dropped whatever a server put in the dynamic table, and
+  Chrome offers servers a 64 KiB one, so the decoder now fills and reads
+  it, holds back headers that wait for entries, and acknowledges them as
+  Chromium's `QpackDecoder` does.
+
+`crates/netweir-core/src/h3_chrome.rs` sets each connection up from the
+profile, the way Chromium's QUIC sets up its own: TLS 1.3 only, with no
+TLS GREASE and BoringSSL's own signature algorithms, as QUICHE sets
+none; the profile's groups, key shares, ALPS codepoint, brotli
+certificate compression, ECH GREASE, extension shuffling and trust
+anchors; ALPN and ALPS `h3`.
+
+### What matches, and how it's tested
+
+`crates/netweir-core/tests/http3_chrome.rs` sends a typed navigation and
+an image through it to the fingerprint server and holds each to
+`profiles/chrome-157-macos.h3.capture.json` with `compare::differences`.
+
+Exactly as Chrome sends them, on every run:
+
+- the ClientHello: JA4 `q13d0312h3_55b375c5d22e_178839b6cec1`, and
+  `q13d0313h3_55b375c5d22e_b0954bf1abdf` on a resumed connection, with
+  its ciphers, groups, key shares, signature algorithms, ALPS, brotli,
+  trust anchors and extensions;
+- QUIC v1, an 8-byte Destination Connection ID and no Source Connection
+  ID, no token, two Initial datagrams of 1250 bytes over IPv4 (1230 over
+  IPv6) with nothing after the packet, numbered 1 and 2 in one and two
+  bytes, no ACK;
+- the transport parameters as a set, with Chrome's values, and
+  initial_rtt only on a resumed connection;
+- HTTP/3: only the control stream, SETTINGS 1:65536, 6:262144, 7:100,
+  0x33:1 and a GREASE setting in that order, a GREASE frame, then one
+  PRIORITY_UPDATE for each request that repeats its priority;
+- each request: `:method :authority :scheme :path`, then the TCP
+  profile's headers in its order, lowercase, without Host and
+  Connection, and no Alt-Used.
+
+Random per connection, and checked over many connections to vary and to
+stay in the range Chrome draws from: the order of the transport
+parameters and of the ClientHello's extensions, the GREASE parameter,
+version, setting and frame, and the CRYPTO layout (3 to 23 CRYPTO frames
+and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
+
+### What isn't Chrome's
+
+- After the first round trips, loss recovery, congestion control, pacing
+  and ACK timing are quiche's, not Chrome's. Only Google's QUICHE would
+  copy them, and it's the build cost above. A server that studies how a
+  connection behaves under loss can tell.
+- QPACK the other way: Chrome's encoder may put request headers in a
+  server's dynamic table; quiche's encodes from the static table only.
+  The fingerprint server offers no table, so this isn't in the
+  recording, but a server that offers one sees the difference.
+- 0-RTT. Chrome sends a request in 0-RTT on a resumed connection when
+  the server's ticket allows it. Netweir resumes and waits.
+- Packet numbers after the second: Netweir writes them in at least two
+  bytes, which is what Chrome's congestion window gives at the start;
+  Chrome's own length then follows its window.
+- Addresses: the first one a name resolves to, where Chrome would also
+  race IPv4 and IPv6 for TCP.
+- Certificates are checked after the handshake, against the TCP
+  connections' roots, rather than by Chrome's verifier during it.
+
+### When Chrome moves to HTTP/3
+
+Chrome's rules differ from Firefox's, and the Chrome profile follows
+Chromium's `net/` source:
+
+- Alt-Svc. Read on every final response from an https origin but a 421
+  (`HttpNetworkTransaction::ProcessAltSvcHeader`), parsed as QUICHE's
+  `SpdyAltSvcWireFormat::ParseHeaderFieldValue` does. A header it can't
+  parse, `ma=0` included, changes nothing. One it can replaces the
+  origin's whole list (`HttpServerProperties::SetAlternativeServices`);
+  `clear`, or a list of nothing Chrome uses, such as only `h3-29`,
+  forgets it. `ma` defaults to a day.
+- No proving. Chrome uses an alternative from the next request on: the
+  first `h3` entry that hasn't expired, isn't broken, and isn't on a port
+  Chrome refuses or a high port for a low one, unless a later one already
+  has a connection up (`JobController::GetAdvertisedAltSvcInternal`).
+  Other hosts are fine.
+- Racing. The QUIC connection and a TCP one start together, and the
+  request goes over whichever is ready first. TCP waits only once QUIC
+  has worked on this network and the alternative wasn't recently broken,
+  and then for one and a half times the server's RTT, or 450 ms without
+  one, at most 3 s (`QuicSessionPool::GetTimeDelayForWaitingJob`). A
+  QUIC connection that loses keeps going, and carries the next requests.
+- Broken. When the QUIC connection fails and the TCP one worked, the
+  alternative is broken for 10 s, then 20, 40 and so on up to 30 minutes
+  (`BrokenAlternativeServices`, with Chrome's field trial defaults). A
+  handshake gives up after 10 s. When the mark expires the alternative is
+  gone, and the site has to offer it again; a handshake that completes
+  clears the count.
+- Falling back. A request that a QUIC error cuts off before its
+  response goes again over TCP, whatever its method
+  (`HttpNetworkTransaction::HandleIOError`).
+- Proxies, and `http3 = false`, as for Firefox: no QUIC at all.
+
+Not the same as Chrome's: Netweir's network is the Fetcher, so "QUIC
+has worked" and the broken marks live as long as it does, where Chrome
+keeps them on disk and forgets the first on a network change. Chrome
+also tries HTTP/3 from an HTTPS DNS record, which the system resolver
+doesn't give Netweir.
+
 ## Building it
 
-The `http3` feature of netweir-core is off by default, and the wheels are
-built without it. Turning it on there means building NSS in every wheel
-job, inside the manylinux containers included, and in a build from the
-sdist; that's its own change. With the feature, NSS has to come first:
+The `http3` feature of netweir-core is off by default. The wheels turn
+it on (#400); a build from the sdist doesn't unless it's asked for. With
+the feature, NSS has to come first:
 
 ```
 pip install gyp-next ninja      # NSS builds with gyp and ninja
@@ -218,6 +355,9 @@ built, all in `scripts/nss.sh`:
 - nss-rs links NSS's shared libraries in a release build outside Windows,
   and a wheel can't carry them. The script deletes them and puts static
   archives under their names.
+
+Chrome's quiche needs nothing more: it links the BoringSSL the TCP side
+already builds.
 
 CI's `http3` job builds NSS and runs the tests on every system and
 architecture a wheel is built for: Linux x86_64 and aarch64 (in release

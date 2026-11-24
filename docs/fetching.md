@@ -97,12 +97,18 @@ to the browser's recorded one.
 
 ## HTTP/3
 
-A site that offers HTTP/3 says so in an `Alt-Svc` header, and Firefox
-takes it up: the first request goes over TCP, and the ones after it over
-QUIC. With a Firefox profile, Netweir does the same, through the QUIC
-stack Firefox itself runs. If the HTTP/3 connection isn't up yet, a
-request waits 100 ms for it and then goes over TCP. If it fails, the site
-stays on TCP, as in Firefox.
+A site that offers HTTP/3 says so in an `Alt-Svc` header, and browsers
+take it up: the first request goes over TCP, the ones after it over
+QUIC. Netweir does the same with a Firefox profile, through the QUIC
+stack Firefox itself runs, and with a Chrome one, through a fork of
+Cloudflare's quiche that sends Chrome's first packets.
+
+Each browser moves its own way, and so does Netweir. Firefox proves the
+alternative with a connection first, then gives that connection 100 ms
+before a request goes over TCP instead; if it fails, the site stays on
+TCP. Chrome starts the QUIC and TCP connections together from the next
+request on and takes whichever is ready first; if QUIC fails, it's left
+alone for 10 seconds, then longer each time, up to half an hour.
 
 ```python
 async with netweir.Client(profile="firefox") as client:
@@ -112,16 +118,20 @@ async with netweir.Client(profile="firefox") as client:
 
 Since it's the next request that moves, HTTP/3 shows up on a Client or a
 crawl, which remember what a site offered, more than in one
-`netweir.get()`. Chrome and Safari profiles stay on HTTP/2 and HTTP/1.1
-for now. A `proxy`, or a system proxy for https, keeps every request on
-TCP, as Firefox never sends QUIC through one. So does `http3=False`, on
-`netweir.get()`, a Client, or in [settings](settings.md#fetching).
+`netweir.get()`. Safari profiles, and Chrome and Firefox profiles older
+than the newest, stay on HTTP/2 and HTTP/1.1 for now. A `proxy`, or a
+system proxy for https, keeps every request on TCP, as neither browser
+sends QUIC through one. So does `http3=False`, on `netweir.get()`, a
+Client, or in [settings](settings.md#fetching).
 
-Not everything is Firefox's yet: Firefox sends a request in 0-RTT on a
-resumed connection and Netweir waits for the handshake, and Netweir tries
-only the first address a name resolves to where Firefox races IPv4 and
-IPv6. [design/http3.md](design/http3.md#what-doesnt-match-yet) lists each
-difference.
+Not everything is the browser's yet. Both send a request in 0-RTT on a
+resumed connection where Netweir waits for the handshake, and Netweir
+tries only the first address a name resolves to. With Chrome, what
+happens after the first round trips (congestion control, pacing, ACK
+timing) is quiche's, not Chrome's. [design/http3.md](design/http3.md)
+lists each difference, for
+[Firefox](design/http3.md#what-doesnt-match-yet) and
+[Chrome](design/http3.md#what-isnt-chromes).
 
 HTTP/3 comes in the wheels `pip install netweir` installs. A build from
 the source distribution leaves it out unless it's asked for

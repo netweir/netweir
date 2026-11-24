@@ -36,8 +36,8 @@ Working today:
 - Fetching that is indistinguishable from Chrome 157, Firefox 160 or
   Safari 27 on the wire, over HTTP/2 and HTTP/1.1, with cookies and
   redirects. Below: how that's proved, and the one known exception.
-- HTTP/3 the way Firefox does it: once a site offers it, a Firefox profile
-  moves there on Firefox's own QUIC stack.
+- HTTP/3 the way Chrome and Firefox do it: once a site offers it, the
+  profile moves there, with the browser's own first QUIC packets.
 - Forms, logins and JSON APIs: POST and any other method, sent the way
   Chrome, Firefox or Safari sends a form or a page's own script, and forms read off
   a page the way a browser submits them. See
@@ -482,7 +482,22 @@ ClientHello inside it and the HTTP/3 settings to a recording of the real
 browser. What isn't Firefox's yet, 0-RTT for one, is listed in
 [docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
 proxy it stays on TCP, as Firefox does, and `http3=False` turns it
-off. Chrome and Safari stay on HTTP/2 until their own QUIC is in.
+off.
+
+Chrome does too, through a fork of Cloudflare's quiche,
+[netweir/quiche](https://github.com/netweir/quiche), built on the same
+patched BoringSSL as Netweir's TCP connections. The fork sends what
+Chrome 157 sends that quiche didn't: its transport parameters, shuffled
+with fresh GREASE on every connection, its ClientHello split across two
+Initial packets among PING and PADDING frames, its HTTP/3 SETTINGS. A
+test holds that to a recording of Chrome, JA4 and all, and checks over
+many connections that what Chrome draws at random varies as Chrome's
+does. Chrome races QUIC against TCP and backs off a broken alternative,
+and the fetcher follows those rules for a Chrome profile. What isn't
+exact: after the first round trips, congestion control and pacing are
+quiche's, not Chrome's
+([docs/design/http3.md](docs/design/http3.md#what-isnt-chromes)).
+Safari stays on HTTP/2 until its own QUIC is in.
 
 One known difference: Chrome sends a `priority` header only over HTTP/2,
 and Netweir can't tell a server lacks HTTP/2 until it has answered once. So
