@@ -25,6 +25,7 @@ const PROFILE: &str = "chrome-157-macos";
 const PRE_SHARED_KEY: u16 = 0x0029;
 const INITIAL_RTT: u64 = 0x3127;
 const VERSION_INFORMATION: u64 = 0x11;
+const PRIORITY_UPDATE: u64 = 0xf0700;
 
 fn recording() -> Vec<Capture> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -161,6 +162,16 @@ fn chaos_in_range(q: &Quic, what: &str) -> Layout {
 /// layout, checked against its range instead.
 fn check(expected: &Capture, actual: &Capture, what: &str) -> Layout {
     let (mut expected, mut actual) = (expected.clone(), actual.clone());
+    // The server snapshots the control stream when a request comes in,
+    // and reads the two on separate tasks, so the request's own
+    // PRIORITY_UPDATE may not be in yet: they're checked once all are in
+    // (see `requests_over_http3_are_chromes`).
+    for c in [&mut expected, &mut actual] {
+        if let Some(h3) = c.http3.as_mut() {
+            h3.control_frames
+                .retain(|(kind, _)| *kind != PRIORITY_UPDATE);
+        }
+    }
     settle(expected.quic.as_mut().unwrap());
     settle(actual.quic.as_mut().unwrap());
     let diff: Vec<String> = differences(&expected, &actual)
@@ -247,8 +258,12 @@ async fn requests_over_http3_are_chromes() {
     for (actual, path) in [(&navigation, "/image"), (&image, "/picture.png")] {
         check(recorded(&recording, path, false), actual, path);
     }
+    // One more request, after the three PRIORITY_UPDATEs are surely in.
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    let last = server.next().await.unwrap();
+    assert_eq!(last.connection, navigation.connection);
     assert_eq!(
-        priority_updates(&favicon),
+        priority_updates(&last)[..3],
         [
             "0xf0700 00753d302c2069",
             "0xf0700 04753d322c2069",
