@@ -1498,6 +1498,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "ipnet",
  "libc",
  "neqo-common",
  "neqo-http3",

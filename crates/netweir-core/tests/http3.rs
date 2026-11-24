@@ -366,6 +366,7 @@ async fn until_http3(fetcher: &Fetcher, url: &str) {
 /// A UDP port on 127.0.0.1 that passes datagrams on to `to` and back
 /// while `drop` is false, and drops them all while it's true, as a network
 /// that blocks QUIC; `seen` counts what reached it from the client.
+/// [`slow_relay`] holds each datagram back a while, each way.
 struct Relay {
     port: u16,
     drop: Arc<AtomicBool>,
@@ -373,6 +374,10 @@ struct Relay {
 }
 
 async fn relay(to: Option<u16>) -> Relay {
+    slow_relay(to, Duration::ZERO).await
+}
+
+async fn slow_relay(to: Option<u16>, delay: Duration) -> Relay {
     let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let port = socket.local_addr().unwrap().port();
     let (drop, seen) = (
@@ -399,7 +404,11 @@ async fn relay(to: Option<u16>) -> Relay {
                 seen.fetch_add(1, Ordering::Relaxed);
                 if !drop.load(Ordering::Relaxed) {
                     *client.lock().unwrap() = Some(from);
-                    let _ = upstream.send(&buf[..n]).await;
+                    let (upstream, datagram) = (upstream.clone(), buf[..n].to_vec());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _ = upstream.send(&datagram).await;
+                    });
                 }
             }
         });
@@ -418,7 +427,11 @@ async fn relay(to: Option<u16>) -> Relay {
                 if let Some(to) = to
                     && !drop.load(Ordering::Relaxed)
                 {
-                    let _ = socket.send_to(&buf[..n], to).await;
+                    let (socket, datagram) = (socket.clone(), buf[..n].to_vec());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _ = socket.send_to(&datagram, to).await;
+                    });
                 }
             }
         });
@@ -538,6 +551,185 @@ async fn a_network_that_drops_udp_falls_back_to_tcp_and_stops_trying_http3() {
         tried,
         "QUIC was tried again"
     );
+}
+
+/// A TCP port on 127.0.0.1 that connects each client to `to` only after
+/// `delay`, as a slow network would, and cuts the connection `lasting`
+/// after that, so no idle connection to it outlives a test step.
+async fn slow_tcp(to: u16, delay: Duration, lasting: Duration) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let Ok(mut site) = tokio::net::TcpStream::connect(("127.0.0.1", to)).await else {
+                    return;
+                };
+                let _ = tokio::time::timeout(
+                    lasting,
+                    tokio::io::copy_bidirectional(&mut client, &mut site),
+                )
+                .await;
+            });
+        }
+    });
+    port
+}
+
+/// The Alt-Used header the test server saw, from the capture it answers
+/// with.
+fn alt_used(response: &netweir_core::Response) -> Option<String> {
+    let capture: Capture = serde_json::from_slice(&response.body).ok()?;
+    capture
+        .headers
+        .into_iter()
+        .find(|(k, _)| k == "alt-used")
+        .map(|(_, v)| v)
+}
+
+#[tokio::test]
+async fn an_http3_connection_that_comes_up_before_tcp_wins_the_race() {
+    // TCP takes 1.5 s to connect; QUIC's datagrams 150 ms each way, so a
+    // resumed handshake is up in about 300 ms: after Firefox's 100 ms
+    // backup timer, before the TCP connection it opens then.
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let slow = slow_tcp(
+        tcp.port,
+        Duration::from_millis(1500),
+        Duration::from_secs(2),
+    )
+    .await;
+    let udp = slow_relay(Some(h3.port), Duration::from_millis(150)).await;
+    let origin = format!("https://localhost:{slow}");
+    let plain = format!("{origin}/");
+    let fetcher = fetcher();
+    fetcher
+        .get(
+            &offering(&origin, &format!("h3=\"127.0.0.1:{}\"", udp.port)),
+            &[],
+        )
+        .await
+        .unwrap();
+    until_http3(&fetcher, &plain).await;
+    // A new HTTP/3 connection for the next request, and no TCP one left.
+    fetcher.close_http3().await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let started = Instant::now();
+    let response = fetcher.get(&plain, &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "waited for TCP: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_new_alternative_takes_over_only_once_it_is_proved() {
+    let tcp = Server::start().await.unwrap();
+    let (first, second) = (
+        Server::start_h3(0, None).await.unwrap(),
+        Server::start_h3(0, None).await.unwrap(),
+    );
+    let origin = format!("https://localhost:{}", tcp.port);
+    let plain = format!("{origin}/");
+    let udp = relay(Some(second.port)).await;
+    udp.drop.store(true, Ordering::Relaxed);
+    let fetcher = fetcher();
+    let to_first = format!("localhost:{}", first.port);
+    let to_second = format!("127.0.0.1:{}", udp.port);
+    fetcher
+        .get(&offering(&origin, &format!("h3=\"{to_first}\"")), &[])
+        .await
+        .unwrap();
+    until_http3(&fetcher, &plain).await;
+
+    // A second alternative that can't be reached yet: the first one goes
+    // on carrying the origin's requests.
+    let offer = offering(&origin, &format!("h3=\"{to_second}\""));
+    fetcher.get(&offer, &[]).await.unwrap();
+    for _ in 0..3 {
+        let response = fetcher.get(&plain, &[]).await.unwrap();
+        assert_eq!(response.version, "HTTP/3");
+        assert_eq!(alt_used(&response).as_deref(), Some(to_first.as_str()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Once its connection is up, it takes over.
+    udp.drop.store(false, Ordering::Relaxed);
+    let started = Instant::now();
+    loop {
+        let response = fetcher.get(&plain, &[]).await.unwrap();
+        if alt_used(&response).as_deref() == Some(to_second.as_str()) {
+            assert_eq!(response.version, "HTTP/3");
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "never moved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_connection_closed_with_an_error_stops_http3_to_its_host() {
+    // Closed with H3_NO_ERROR (0x100), HTTP/3 carries on on a new
+    // connection; with H3_GENERAL_PROTOCOL_ERROR (0x101), the host is
+    // excluded, as Firefox's Http3Session::Shutdown excludes it.
+    for (code, excluded) in [(0x100, false), (0x101, true)] {
+        let server = Server::start_h3(0, None).await.unwrap();
+        let origin = format!("https://localhost:{}", server.port);
+        let plain = format!("{origin}/");
+        let fetcher = fetcher();
+        fetcher.get(&plain, &[]).await.unwrap();
+        until_http3(&fetcher, &plain).await;
+        let closing = fetcher
+            .get(&format!("{origin}/close?code={code}"), &[])
+            .await;
+        assert_eq!(closing.unwrap().version, "HTTP/3");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if excluded {
+            // The server goes on offering it; it isn't taken.
+            for _ in 0..5 {
+                let response = fetcher.get(&plain, &[]).await.unwrap();
+                assert_eq!(response.version, "HTTP/2", "error {code:#x}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        } else {
+            until_http3(&fetcher, &plain).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_alternative_on_a_port_firefox_bans_is_never_tried() {
+    // Of Firefox's banned ports, the first above 1024 this machine has
+    // free for UDP.
+    let banned = [
+        1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668,
+        6669, 6679, 6697, 10080,
+    ];
+    let mut socket = None;
+    for port in banned {
+        if let Ok(s) = tokio::net::UdpSocket::bind(("127.0.0.1", port)).await {
+            socket = Some(s);
+            break;
+        }
+    }
+    let socket = socket.expect("a banned port free for UDP");
+    let port = socket.local_addr().unwrap().port();
+    let tcp = Server::start().await.unwrap();
+    let origin = format!("https://localhost:{}", tcp.port);
+    let fetcher = fetcher();
+    for _ in 0..3 {
+        let offer = offering(&origin, &format!("h3=\"127.0.0.1:{port}\""));
+        assert_eq!(fetcher.get(&offer, &[]).await.unwrap().version, "HTTP/2");
+    }
+    let mut buf = [0u8; 2048];
+    let got = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await;
+    assert!(got.is_err(), "QUIC was sent to banned port {port}");
+    // The same offer on another port is tried.
+    assert!(datagrams_sent(&fetcher).await > 0);
 }
 
 /// A proxy that tunnels each CONNECT to where it asks.

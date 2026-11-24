@@ -6,7 +6,8 @@
 //! `?set=NAME` adds `Set-Cookie: NAME=1; Path=/`, `?alt-svc=VALUE` adds
 //! `Alt-Svc: VALUE` (percent-decoded) in place of the one
 //! [`Server::start_h3`] sends, `/redirect?to=URL` answers 302 to URL,
-//! and `/loop` redirects to itself
+//! `/close?code=N` over HTTP/3 answers, then closes the QUIC connection
+//! with application error N, and `/loop` redirects to itself
 //! with a relative `Location`. `/form` serves a page whose script submits a
 //! form, POST to `/submitted`; `/fetch` serves one whose script POSTs JSON
 //! to `/api` with `fetch()`. `/form-redirect` is a form that POSTs to a 302

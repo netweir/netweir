@@ -400,6 +400,13 @@ where
                 }
             }
             let headers = fields.ok_or_else(|| failed("request without HEADERS"))?;
+            // `/close?code=N`: answered, then the connection closed with
+            // application error N.
+            let close = headers
+                .iter()
+                .find(|(k, _)| k == ":path")
+                .and_then(|(_, p)| p.strip_prefix("/close?code="))
+                .and_then(|code| code.parse::<u32>().ok());
             // A request can beat the control stream in; wait a moment for
             // its SETTINGS, as they belong in every capture.
             let _ = tokio::time::timeout(Duration::from_secs(2), settings_in.wait_for(|&in_| in_))
@@ -416,6 +423,12 @@ where
             put_frame(&mut out, DATA, &reply);
             if send.write_all(&out).await.is_ok() {
                 let _ = send.finish();
+            }
+            if let Some(code) = close {
+                // Once the client has the answer.
+                let _ = tokio::time::timeout(Duration::from_secs(2), send.stopped()).await;
+                conn.close(code.into(), b"");
+                break;
             }
         }
         Ok(())

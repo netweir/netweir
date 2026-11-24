@@ -65,6 +65,20 @@ mod firefox {
     /// An Alt-Svc alternative's lifetime without `ma=`, in seconds
     /// (AltSvcMapping::ProcessHeader).
     pub const ALT_SVC_MAX_AGE: i64 = 86_400;
+    /// How long an alternative whose connection failed holds off another
+    /// offer of it (AltSvcMappingValidator::OnTransactionDestroy).
+    pub const ALT_SVC_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+    /// The ports Firefox never connects to, an alternative's included
+    /// (gBadPortList in netwerk/base/nsIOService.cpp, which
+    /// NS_CheckPortSafety reads; nsHttpHandler::AllowPort overrides none,
+    /// and network.security.ports.banned adds none by default).
+    pub const BANNED_PORTS: [u16; 82] = [
+        1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101,
+        102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389,
+        427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636,
+        989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665,
+        6666, 6667, 6668, 6669, 6679, 6697, 10080,
+    ];
 }
 
 /// The connection settings Firefox 160 makes, line for line in the order
@@ -495,6 +509,12 @@ enum State {
     },
     /// It connected, and has closed since.
     Closed,
+    /// It connected, then closed with an HTTP/3 or QUIC error, which
+    /// stops HTTP/3 to the alternative's host as a failure to connect
+    /// does (Http3Session::ProcessEvents sets
+    /// NS_ERROR_NET_HTTP3_PROTOCOL_ERROR on ConnectionClosing, and
+    /// Http3Session::Shutdown excludes the host for it).
+    Broken,
 }
 
 /// An open HTTP/3 connection, or one opening.
@@ -525,6 +545,11 @@ struct Alternative {
     /// Set by `Fetcher::use_http3`: kept whatever Alt-Svc says, and used
     /// without racing TCP or falling back to it.
     forced: bool,
+    /// A newer alternative being proved, `host:port` and its expiry. This
+    /// one stays in use until that one's connection is up, as Firefox
+    /// syncs a replacement only once it validates
+    /// (AltSvcCache::UpdateAltServiceMapping, SetSyncOnlyOnSuccess).
+    next: Option<(String, Instant)>,
 }
 
 /// Where a request goes over HTTP/3.
@@ -605,6 +630,31 @@ pub(crate) enum Answer {
     /// within the backup timer, or never came up, or closed under a request
     /// that is safe to repeat.
     Tcp,
+    /// The connection was still being made when the backup timer fired:
+    /// the request goes to whichever comes up first, it or a TCP
+    /// connection opened now (nsHttpTransaction::OnHttp3BackupTimer,
+    /// OnBackupConnectionReady).
+    Race(Pending),
+}
+
+/// A request waiting for an HTTP/3 connection still being made.
+pub(crate) struct Pending {
+    request: Request,
+    state: watch::Receiver<State>,
+}
+
+impl Pending {
+    /// Waits for the connection: whether it came up, or failed.
+    pub(crate) async fn up(&mut self) -> bool {
+        matches!(
+            self.state.wait_for(|s| *s != State::Connecting).await,
+            Ok(s) if *s == State::Connected
+        )
+    }
+
+    pub(crate) fn request(self) -> Request {
+        self.request
+    }
 }
 
 /// Where each origin's requests go over HTTP/3, and the connections to
@@ -655,6 +705,7 @@ impl Routes {
             expires: Instant::now() + Duration::from_secs(365 * 86_400),
             validated: true,
             forced: true,
+            next: None,
         };
         self.alternatives
             .lock()
@@ -699,12 +750,11 @@ impl Routes {
                 None => ("", i64::from(port)),
             };
             let to_host = if to_host.is_empty() { host } else { to_host };
-            // shortcut: NS_CheckPortSafety's list of banned TCP ports isn't
-            // copied, only the range; copy it if a site ever points QUIC at one.
+            // NS_CheckPortSafety: a port, and not one Firefox bans.
             let Ok(to_port) = u16::try_from(to_port) else {
                 continue;
             };
-            if to_port == 0 || self.excluded(to_host) {
+            if to_port == 0 || firefox::BANNED_PORTS.contains(&to_port) || self.excluded(to_host) {
                 continue;
             }
             let max_age = parameters
@@ -725,32 +775,40 @@ impl Routes {
         let Some((to, max_age)) = chosen else {
             return;
         };
-        let expires = Instant::now() + max_age;
+        let now = Instant::now();
+        let expires = now + max_age;
         {
             let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
-            match alternatives.get_mut(&key) {
+            let new = match alternatives.get_mut(&key) {
                 Some(known) if known.forced => return,
+                // An expired one is as good as none (AltSvcCache::LookupMapping).
+                Some(known) if now >= known.expires => true,
                 Some(known) if known.validated && known.to == to => {
                     known.expires = expires;
                     return;
                 }
                 Some(known) if known.validated && expires < known.expires => return,
+                // A new alternative is proved before it takes over.
+                Some(known) if known.validated => {
+                    known.next = Some((to.clone(), expires));
+                    false
+                }
                 // Its connection is still being made.
-                Some(known) if !known.validated && Instant::now() < known.expires => return,
-                // shortcut: a validated alternative that's being replaced
-                // goes at once, where Firefox keeps it until the new one is
-                // proved; upgrade if sites are seen moving theirs often.
-                _ => {}
+                Some(_) => return,
+                None => true,
+            };
+            if new {
+                alternatives.insert(
+                    key,
+                    Alternative {
+                        to: to.clone(),
+                        expires,
+                        validated: false,
+                        forced: false,
+                        next: None,
+                    },
+                );
             }
-            alternatives.insert(
-                key,
-                Alternative {
-                    to: to.clone(),
-                    expires,
-                    validated: false,
-                    forced: false,
-                },
-            );
         }
         let handle = self.connection(partition, host, &to);
         if *handle.state.borrow() == State::Connected {
@@ -784,26 +842,44 @@ impl Routes {
             let same_host = Url::parse(origin)
                 .ok()
                 .is_some_and(|u| u.host_str() == Some(host));
-            if p == partition && same_host && known.to == alternative {
+            if p != partition || !same_host {
+                continue;
+            }
+            if known.to == alternative {
                 known.validated = true;
+            }
+            if let Some((_, expires)) = known.next.take_if(|(to, _)| to == alternative) {
+                (known.to, known.expires, known.validated) =
+                    (alternative.to_string(), expires, true);
             }
         }
     }
 
     /// A connection to `alternative` never came up: its unproved
-    /// alternatives go (AltSvcMappingValidator, on a failed validation),
-    /// and so does HTTP/3 to its host if Firefox would exclude it.
+    /// alternatives stay unproved, and hold off another offer of the same
+    /// for two seconds (AltSvcMappingValidator::OnTransactionDestroy); one
+    /// that was to replace a proved alternative goes, leaving that one.
+    /// HTTP/3 to its host stops too if Firefox would exclude it.
     fn failed(&self, alternative: &str, exclude: bool) {
         if exclude {
-            self.excluded
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .add(host_of(alternative), network);
+            self.exclude(alternative);
         }
-        self.alternatives
+        let retry = Instant::now() + firefox::ALT_SVC_RETRY;
+        let mut alternatives = self.alternatives.lock().unwrap_or_else(|e| e.into_inner());
+        for known in alternatives.values_mut() {
+            if !known.validated && known.to == alternative {
+                known.expires = retry;
+            }
+            known.next.take_if(|(to, _)| to == alternative);
+        }
+    }
+
+    /// Stops HTTP/3 to `alternative`'s host (nsHttpHandler::ExcludeHttp3).
+    fn exclude(&self, alternative: &str) {
+        self.excluded
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, known| known.validated || known.to != alternative);
+            .add(host_of(alternative), network);
     }
 
     /// The connection to `alternative` for `host` in `partition`, opened
@@ -830,13 +906,22 @@ impl Routes {
                 .wait_for(|s| *s != State::Connecting)
                 .await
                 .map_or(State::Failed { exclude: false }, |s| *s);
-            let Some(routes) = Weak::upgrade(&routes) else {
+            let Some(now) = Weak::upgrade(&routes) else {
                 return;
             };
             match outcome {
-                State::Connected => routes.proved(&partition, &host, &alternative),
-                State::Failed { exclude } => routes.failed(&alternative, exclude),
-                State::Connecting | State::Closed => {}
+                State::Connected => now.proved(&partition, &host, &alternative),
+                State::Failed { exclude } => return now.failed(&alternative, exclude),
+                State::Connecting | State::Closed | State::Broken => return,
+            }
+            drop(now);
+            // Then, once it's up, whether it goes down with an error.
+            let broken = state
+                .wait_for(|s| matches!(s, State::Closed | State::Broken))
+                .await
+                .is_ok_and(|s| *s == State::Broken);
+            if broken && let Some(now) = Weak::upgrade(&routes) {
+                now.exclude(&alternative);
             }
         });
         handle
@@ -868,8 +953,8 @@ impl Routes {
     /// Sends `request` to `alternative` for `host`, on the connection
     /// already up to it if there is one, as Firefox does. A connection
     /// still being made gets the backup timer's 100 ms to come up before
-    /// the request goes over TCP instead; one that fails sends it there
-    /// too, and so does one that closes under a request that is safe to
+    /// the request races a TCP connection for it; one that fails sends it
+    /// to TCP, and so does one that closes under a request that is safe to
     /// repeat before any of its response came. A forced route waits for
     /// its connection, and fails with it.
     pub(crate) async fn send(
@@ -883,10 +968,6 @@ impl Routes {
         let alternative = route.alternative.as_str();
         let handle = self.connection(&route.partition, host, alternative);
         let mut state = handle.state.clone();
-        // shortcut: the request moves to TCP when the backup timer fires,
-        // where Firefox opens a TCP connection then and moves it only once
-        // that one is up, so an HTTP/3 connection that comes up in between
-        // still carries it. wreq can't connect without sending.
         let up = route.forced
             || matches!(
                 tokio::time::timeout(
@@ -897,6 +978,9 @@ impl Routes {
                 Ok(Ok(s)) if *s == State::Connected
             );
         if !up {
+            if *state.borrow() == State::Connecting {
+                return Ok(Answer::Race(Pending { request, state }));
+            }
             return Ok(Answer::Tcp);
         }
         let (head, answer) = oneshot::channel();
@@ -935,6 +1019,26 @@ impl Routes {
             Err(_) => repeat(closed()),
         }
     }
+}
+
+/// Whether a connection that closes for `reason` closed with an error, as
+/// Http3Session::ProcessEvents reads ConnectionClosing: anything but a
+/// stateless reset, no error at either layer (H3_NO_ERROR for HTTP/3), or
+/// a server asking to retry with ECH.
+fn protocol_error(reason: &neqo_transport::CloseReason) -> bool {
+    use neqo_transport::{CloseReason, Error};
+    !matches!(
+        reason,
+        CloseReason::Transport(
+            Error::None
+                | Error::IdleTimeout
+                | Error::StatelessReset
+                | Error::Peer(0)
+                | Error::PeerApplication(0x100)
+                | Error::EchRetry(_)
+                | Error::Crypto(nss_rs::Error::EchRetry(_))
+        ) | CloseReason::Application(0x100)
+    )
 }
 
 /// An `Alt-Svc` value as Firefox's ParsedHeaderValueListList reads it:
@@ -1156,8 +1260,11 @@ async fn run(
                         .insert(ticket.key.clone(), token);
                 }
                 Http3ClientEvent::StateChange(
-                    Http3State::Closing(reason) | Http3State::Closed(reason),
+                    closed @ (Http3State::Closing(_) | Http3State::Closed(_)),
                 ) => {
+                    let (Http3State::Closing(reason) | Http3State::Closed(reason)) = &closed else {
+                        unreachable!()
+                    };
                     let why = format!("HTTP/3 connection to {alternative} closed: {reason:?}");
                     let kind = if ready {
                         FetchErrorKind::Body
@@ -1166,12 +1273,17 @@ async fn run(
                     } else {
                         FetchErrorKind::Connect
                     };
-                    state.send_replace(if ready {
-                        State::Closed
-                    } else {
-                        State::Failed {
+                    // Only a close Firefox didn't start, seen while closing
+                    // rather than after (ConnectionClosing, not Closed).
+                    let broken = matches!(closed, Http3State::Closing(_))
+                        && !closing
+                        && protocol_error(reason);
+                    state.send_replace(match (ready, broken) {
+                        (true, true) => State::Broken,
+                        (true, false) => State::Closed,
+                        (false, _) => State::Failed {
                             exclude: kind != FetchErrorKind::Tls,
-                        }
+                        },
                     });
                     for (_, s) in streams.drain() {
                         end(s, FetchError::new(kind, why.clone()));

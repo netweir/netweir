@@ -76,6 +76,7 @@ impl FetchOptions {
 
 /// A jar as one request sees it: what the request's context lets it
 /// carry and set, in the order the profile's browser sends cookies.
+#[derive(Clone)]
 struct JarView {
     jar: Arc<Jar>,
     newest_first: bool,
@@ -153,6 +154,10 @@ pub struct Fetcher {
     /// for a profile that has HTTP/3.
     #[cfg(feature = "http3")]
     h3: Option<Arc<crate::h3::Routes>>,
+    /// With a system proxy for https, the hosts it leaves direct, which
+    /// alone may move to HTTP/3.
+    #[cfg(feature = "http3")]
+    proxied: Option<Arc<NoProxy>>,
     /// The profile's headers wreq adds to a typed address, which an
     /// HTTP/3 request has to be given itself.
     #[cfg(feature = "http3")]
@@ -1110,6 +1115,20 @@ tokio::task_local! {
     static TOLD: ConnectTold;
 }
 
+#[cfg(feature = "http3")]
+tokio::task_local! {
+    /// Set for a request racing an HTTP/3 connection: how far its TCP
+    /// connection has got, [`RACING`] or [`RACED`].
+    static RACE: Arc<std::sync::atomic::AtomicU8>;
+}
+
+/// A racing request's TCP connection is being made.
+#[cfg(feature = "http3")]
+const RACING: u8 = 1;
+/// It's made: the request goes over it.
+#[cfg(feature = "http3")]
+const RACED: u8 = 2;
+
 /// Runs `future` with `tell` hearing of each new connection its requests
 /// open: when one starts and when it's made, which is when the request's
 /// bytes go out. A crawl spaces its requests to a site by that, not by
@@ -1181,6 +1200,8 @@ impl<S, R> tower::Service<R> for TellingConnector<S>
 where
     S: tower::Service<R>,
     S::Future: Send + 'static,
+    S::Response: Send + 'static,
+    S::Error: Send + 'static + From<tokio::task::JoinError>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -1206,6 +1227,27 @@ where
         }
         let mut telling = Telling(tell);
         let connecting = self.0.call(request);
+        #[cfg(feature = "http3")]
+        if let Ok(race) = RACE.try_with(Arc::clone) {
+            use std::sync::atomic::Ordering;
+            race.store(RACING, Ordering::Relaxed);
+            // Made to the end even if HTTP/3 wins and the request is
+            // dropped, as Firefox's backup connection is.
+            let connecting = tokio::spawn(connecting);
+            return Box::pin(async move {
+                let made = connecting.await.map_err(S::Error::from).and_then(|m| m);
+                if made.is_ok() {
+                    race.store(RACED, Ordering::Relaxed);
+                }
+                if let Some(tell) = telling.0.take() {
+                    tell(match &made {
+                        Ok(_) => Connect::Ready(Instant::now()),
+                        Err(_) => Connect::Failed,
+                    });
+                }
+                made
+            });
+        }
         Box::pin(async move {
             let made = connecting.await;
             if let Some(tell) = telling.0.take() {
@@ -1346,13 +1388,7 @@ impl Fetcher {
             // netweir, the system's included.
             #[cfg(feature = "http3")]
             h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
-                Some("firefox-160")
-                    if !options.http3
-                        || options.proxy.is_some()
-                        || (options.system_proxy && proxy_in_environment()) =>
-                {
-                    None
-                }
+                Some("firefox-160") if !options.http3 || options.proxy.is_some() => None,
                 Some("firefox-160") => {
                     Some(Arc::new(crate::h3::Routes::new(crate::h3::Trust::new(
                         options.verify_certificates,
@@ -1367,6 +1403,11 @@ impl Fetcher {
                 }
                 None => None,
             },
+            #[cfg(feature = "http3")]
+            proxied: (options.system_proxy && options.proxy.is_none())
+                .then(system_proxy)
+                .flatten()
+                .map(Arc::new),
             #[cfg(feature = "http3")]
             default_headers: Arc::new(
                 profile
@@ -1400,6 +1441,11 @@ impl Fetcher {
                 "HTTP/3 is for https origins, not {origin}"
             )));
         }
+        if !self.direct(&url) {
+            return Err(FetchError::invalid(format!(
+                "{origin} goes through the system's proxy, and Firefox never sends QUIC through one"
+            )));
+        }
         let (host, port) = alternative
             .rsplit_once(':')
             .and_then(|(h, p)| Some((h, p.parse::<u16>().ok()?)))
@@ -1429,6 +1475,15 @@ impl Fetcher {
         }
     }
 
+    /// Whether requests to `url` skip the system's proxy, as they must to
+    /// go over HTTP/3.
+    #[cfg(feature = "http3")]
+    fn direct(&self, url: &Url) -> bool {
+        self.proxied
+            .as_ref()
+            .is_none_or(|no| url.host_str().is_some_and(|host| no.contains(host)))
+    }
+
     /// Where `outgoing` to `url` goes over HTTP/3, if it does.
     fn route(&self, url: &Url, outgoing: &Outgoing) -> Option<Route> {
         #[cfg(feature = "http3")]
@@ -1452,6 +1507,7 @@ impl Fetcher {
         #[cfg(feature = "http3")]
         if let Some(routes) = &self.h3
             && url.scheme() == "https"
+            && self.direct(url)
             && response.status().as_u16() < 500
             && response.status().as_u16() != 421
         {
@@ -2062,6 +2118,8 @@ impl Fetcher {
         if let Some(sent) = sent {
             *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines.clone();
         }
+        // Put back if a race's TCP request had begun recording its own.
+        let recorded = sent.map(|_| lines.clone());
         let accept_encoding = headers.get(wreq::header::ACCEPT_ENCODING).cloned();
         let authority = match uri.port_u16() {
             Some(port) => format!("{host}:{port}"),
@@ -2088,10 +2146,62 @@ impl Fetcher {
                 format!("{uri}: no answer over HTTP/3 in time"),
             )
         })??;
+        let answer = match answer {
+            crate::h3::Answer::Race(mut pending) => {
+                // A TCP connection is opened now, as Firefox's backup timer
+                // opens one, and the request goes to whichever is up first:
+                // over TCP once its connection is made (or at once, on one
+                // already open), over HTTP/3 if that came up while it was
+                // still being made.
+                let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+                let won = match tcp.as_ref().and_then(wreq::RequestBuilder::try_clone) {
+                    Some(racing) => {
+                        let over_tcp = RACE.scope(
+                            state.clone(),
+                            dispatch(racing, order.clone(), sent, view.clone()),
+                        );
+                        tokio::pin!(over_tcp);
+                        tokio::select! {
+                            biased;
+                            done = &mut over_tcp => return done,
+                            up = pending.up() => {
+                                let racing = state.load(std::sync::atomic::Ordering::Relaxed);
+                                if !up || racing != RACING {
+                                    return over_tcp.await;
+                                }
+                            }
+                        }
+                        true
+                    }
+                    None => pending.up().await,
+                };
+                if won && let (Some(sent), Some(lines)) = (sent, recorded) {
+                    *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
+                }
+                let request = pending.request();
+                match tokio::time::timeout_at(
+                    deadline,
+                    routes.send(&route, &host, request, deadline, h3.idempotent),
+                )
+                .await
+                {
+                    Ok(Ok(crate::h3::Answer::Response(answer))) => Ok(answer),
+                    Ok(Ok(_)) => Err(None),
+                    Ok(Err(e)) => Err(Some(e)),
+                    Err(_) => Err(Some(FetchError::new(
+                        FetchErrorKind::Timeout,
+                        format!("{uri}: no answer over HTTP/3 in time"),
+                    ))),
+                }
+            }
+            crate::h3::Answer::Response(answer) => Ok(answer),
+            crate::h3::Answer::Tcp => Err(None),
+        };
         let answer = match (answer, tcp) {
-            (crate::h3::Answer::Response(answer), _) => answer,
-            (crate::h3::Answer::Tcp, Some(tcp)) => return dispatch(tcp, order, sent, view).await,
-            (crate::h3::Answer::Tcp, None) => {
+            (Ok(answer), _) => answer,
+            (Err(Some(e)), _) => return Err(e),
+            (Err(None), Some(tcp)) => return dispatch(tcp, order, sent, view).await,
+            (Err(None), None) => {
                 return Err(FetchError::new(
                     FetchErrorKind::Connect,
                     format!("{uri}: HTTP/3 failed, and the request can't be sent again"),
@@ -2126,15 +2236,81 @@ fn partition(outgoing: &Outgoing, url: &Url) -> String {
         .unwrap_or_default()
 }
 
-/// Whether the system's proxy settings, which wreq reads from the
-/// environment, send https requests through a proxy.
-// shortcut: NO_PROXY isn't consulted, so a host it exempts still gets no
-// HTTP/3; fine while netweir errs towards TCP.
+/// The system proxy https requests go through, as wreq reads it (its
+/// `proxy::matcher::Builder::from_env`, the only source without wreq's
+/// `system-proxy` feature): the first of HTTPS_PROXY and https_proxy that
+/// is set, else of ALL_PROXY and all_proxy, if it's a proxy URL wreq can
+/// use, and none at all under CGI (REQUEST_METHOD set). Given as the hosts
+/// NO_PROXY (or no_proxy) leaves direct, which Firefox's
+/// AltSvcMapping::AcceptableProxy lets move to HTTP/3.
 #[cfg(feature = "http3")]
-fn proxy_in_environment() -> bool {
-    ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"]
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+fn system_proxy() -> Option<NoProxy> {
+    let first = |names: [&str; 2]| names.iter().find_map(|n| std::env::var(n).ok());
+    let usable = |value: Option<String>| {
+        let uri = value?.parse::<Uri>().ok()?;
+        let scheme = uri.scheme_str().unwrap_or("http");
+        let known = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"];
+        (known.contains(&scheme) && uri.authority().is_some()).then_some(())
+    };
+    if std::env::var_os("REQUEST_METHOD").is_some() {
+        return None;
+    }
+    usable(first(["HTTPS_PROXY", "https_proxy"]))
+        .or_else(|| usable(first(["ALL_PROXY", "all_proxy"])))?;
+    Some(NoProxy::new(
+        &first(["NO_PROXY", "no_proxy"]).unwrap_or_default(),
+    ))
+}
+
+/// A NO_PROXY list, matched as wreq's `proxy::matcher::NoProxy` matches it
+/// (curl's rules): comma-separated addresses and networks, and domains
+/// that cover their subdomains, a leading dot or not; `*` covers all.
+#[cfg(feature = "http3")]
+#[derive(Debug, Default)]
+struct NoProxy {
+    networks: Vec<ipnet::IpNet>,
+    domains: Vec<String>,
+}
+
+#[cfg(feature = "http3")]
+impl NoProxy {
+    fn new(list: &str) -> NoProxy {
+        let mut no = NoProxy::default();
+        for part in list.split(',').map(str::trim) {
+            if let Ok(net) = part.parse::<ipnet::IpNet>() {
+                no.networks.push(net);
+            } else if let Ok(ip) = part.parse::<std::net::IpAddr>() {
+                no.networks.push(ip.into());
+            } else if !part.is_empty() {
+                no.domains.push(part.to_string());
+            }
+        }
+        no
+    }
+
+    fn contains(&self, host: &str) -> bool {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            return self.networks.iter().any(|net| net.contains(&ip));
+        }
+        let tail = |d: &str| {
+            host.len() >= d.len()
+                && host.as_bytes()[host.len() - d.len()..].eq_ignore_ascii_case(d.as_bytes())
+        };
+        self.domains.iter().any(|d| {
+            d.eq_ignore_ascii_case(host)
+                || d.strip_prefix('.')
+                    .is_some_and(|s| s.eq_ignore_ascii_case(host))
+                || (tail(d)
+                    && (d.starts_with('.')
+                        || host.as_bytes().get(host.len().wrapping_sub(d.len() + 1))
+                            == Some(&b'.')))
+                || d == "*"
+        })
+    }
 }
 
 fn parse_url(url: &str) -> Result<Url, FetchError> {
@@ -2252,6 +2428,27 @@ async fn into_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "http3")]
+    #[test]
+    fn no_proxy_is_read_as_wreq_reads_it() {
+        let no = NoProxy::new(" .example.com, intranet,10.0.0.0/8, ::1 ,");
+        for direct in [
+            "example.com",
+            "WWW.Example.com",
+            "intranet",
+            "a.intranet",
+            "10.1.2.3",
+            "[::1]",
+        ] {
+            assert!(no.contains(direct), "{direct}");
+        }
+        for proxied in ["notexample.com", "xintranet", "11.0.0.1", "::2", "com"] {
+            assert!(!no.contains(proxied), "{proxied}");
+        }
+        assert!(NoProxy::new("*").contains("anywhere.test"));
+        assert!(!NoProxy::new("").contains("anywhere.test"));
+    }
     use wreq::cookie::CookieStore;
 
     #[test]

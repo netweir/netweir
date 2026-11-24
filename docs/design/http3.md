@@ -110,14 +110,22 @@ preferences.
   `AltSvcMapping::ProcessHeader` reads it: `clear` forgets the origin's
   alternative, `ma=` gives an alternative's lifetime in seconds, a day
   without one, and `ma=0` clears too. Of the `h3` alternatives the first
-  is kept, unless its host is one HTTP/3 has failed to reach; draft
-  versions such as `h3-29` are ignored, as Firefox 160 ignores them.
+  is kept, unless its host is one HTTP/3 has failed to reach or its port
+  is one Firefox never connects to (the 82 in `gBadPortList`,
+  `netwerk/base/nsIOService.cpp`, which `NS_CheckPortSafety` reads);
+  draft versions such as `h3-29` are ignored, as Firefox 160 ignores them.
 - Proving it. As `AltSvcCache::UpdateAltServiceMapping` does, the
   fetcher connects to a new alternative at once, with no request, and
   only uses it once that connection is up with a certificate that checks
   out. Requests meanwhile stay on TCP. The connection then carries the
   origin's next requests, as Firefox's does. A header that repeats an
-  alternative already in use only renews its lifetime.
+  alternative already in use only renews its lifetime. One that names a
+  new alternative for an origin that has a proved one is proved the same
+  way, and the old one carries the origin's requests until it is: Firefox
+  stores the replacement only once it validates
+  (`AltSvcMapping::SetSyncOnlyOnSuccess`). An alternative whose connection
+  fails stays unproved and holds off another offer of it for two seconds
+  (`AltSvcMappingValidator::OnTransactionDestroy`).
 - Partitions. Alternatives are kept per origin and per top-level site,
   the network partition Firefox keys them by (the origin attributes in
   `AltSvcMapping::MakeHashKey`), and HTTP/3 connections and session
@@ -125,12 +133,21 @@ preferences.
   window; Firefox's normal windows also keep them on disk
   (AlternateServices.bin) across restarts.
 - Racing TCP. A request whose alternative's connection is still being
-  made waits `network.http.http3.backup_timer_delay`, 100 ms, then goes
-  over TCP (`nsHttpTransaction::OnHttp3BackupTimer`), without
-  `Alt-Used`. The HTTP/3 connection keeps trying, for the next requests.
+  made waits `network.http.http3.backup_timer_delay`, 100 ms, then opens
+  a TCP connection too (`nsHttpTransaction::OnHttp3BackupTimer`). It goes
+  over whichever is up first: TCP, without `Alt-Used`, once that
+  connection is made or at once on one already open
+  (`OnBackupConnectionReady`); HTTP/3 if its connection came up while the
+  TCP one was still being made. Either way the other keeps going: the
+  HTTP/3 connection for the next requests, the TCP one to the end of its
+  TLS handshake.
 - Failing. A connection that never comes up, for any reason but a TLS
   error, stops HTTP/3 to its alternative's host (`Http3Session::Shutdown`,
-  `nsHttpHandler::ExcludeHttp3`). Firefox has no timer for that: the
+  `nsHttpHandler::ExcludeHttp3`). So does one that was up and closes with
+  an error the server or neqo raised, which `Http3Session::ProcessEvents`
+  reads as `NS_ERROR_NET_HTTP3_PROTOCOL_ERROR`: anything but a stateless
+  reset, no error at either layer (`H3_NO_ERROR` for HTTP/3), a server
+  asking to retry with ECH, or a close Netweir started itself. Firefox has no timer for that: the
   exclusion lasts until the network changes, when every exclusion goes
   (`nsHttpHandler::Observe` on `NS_NETWORK_LINK_TOPIC`). Netweir gets no
   notice of a network change, so it checks, before trusting an
@@ -140,12 +157,14 @@ preferences.
   before any of its response came is sent again over TCP if its method
   is safe to repeat; a POST fails instead (`nsHttpTransaction::Close`).
   A request that never went out on HTTP/3 always goes over TCP.
-- Proxies. With a `proxy`, or a system proxy for https in the
-  environment (`HTTPS_PROXY`, `ALL_PROXY`), the Fetcher never learns an
-  alternative and sends no UDP at all, as Firefox's
-  `AltSvcMapping::AcceptableProxy` and `UpdateAltServiceMapping` refuse
-  HTTP/3 behind one. `NO_PROXY` isn't read for this, so a host it exempts
-  still gets no HTTP/3.
+- Proxies. With a `proxy`, the Fetcher never learns an alternative and
+  sends no UDP at all, as Firefox's `AltSvcMapping::AcceptableProxy` and
+  `UpdateAltServiceMapping` refuse HTTP/3 behind one. A system proxy is
+  read as wreq reads it, from the environment: the first of `HTTPS_PROXY`
+  and `https_proxy` that is set, else of `ALL_PROXY` and `all_proxy`, if
+  wreq can use it, and none under CGI. Behind one, only the hosts
+  `NO_PROXY` exempts, which wreq sends direct, move to HTTP/3, matched by
+  wreq's rules (addresses, networks, and domains with their subdomains).
 - Off. `FetchOptions::http3 = false` keeps a Fetcher on TCP whatever its
   profile.
 
@@ -160,19 +179,12 @@ What's not the same as Firefox:
   and can go to HTTP/3 on its first request from one. Netweir resolves
   names through the system's resolver, which doesn't return them, so it
   moves only after Alt-Svc.
-- The race. Firefox opens the TCP connection when the backup timer fires
-  and moves the request only once that connection is up, so an HTTP/3
-  connection that comes up in between still carries it. Netweir's TCP
-  client can't connect without sending, so the request goes over TCP when
-  the timer fires.
-- A new alternative for an origin that already has a proved one replaces
-  it at once; Firefox keeps the old one until the new one is proved.
-- Firefox also stops HTTP/3 to a host whose connection closed with an
-  HTTP/3 protocol error after it was up. Netweir doesn't yet.
+- The race's losing TCP connection. When HTTP/3 wins, Firefox's backup
+  connection sends HTTP/2's preface and waits in the pool. Netweir's
+  finishes its TLS handshake and closes, as wreq can't keep a connection
+  it made for a request it no longer sends.
 - `h2` alternatives, which Firefox uses to send HTTP/2 to another host,
   are ignored.
-- Ports. Firefox refuses alternatives on the ports `NS_CheckPortSafety`
-  bans; Netweir only checks that the port is a port.
 
 ## Building it
 
