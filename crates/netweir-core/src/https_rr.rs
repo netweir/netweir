@@ -1015,22 +1015,96 @@ mod os {
         };
         const MAXDNSRCH: usize = 6;
 
+        /// The resolver's functions, found when first needed: glibc 2.34
+        /// and later export `res_nquery` and the rest from libc, keeping
+        /// `__res_nquery` only for old binaries, which nothing can link
+        /// to; older glibc and FreeBSD have only `__res_nquery`, in
+        /// libresolv or libc. A wheel built on one runs on the other.
         #[cfg(not(target_os = "macos"))]
-        #[cfg_attr(target_os = "linux", link(name = "resolv"))]
-        unsafe extern "C" {
-            #[link_name = "__res_ninit"]
-            fn res_ninit(state: *mut ResState) -> c_int;
-            #[link_name = "__res_nclose"]
-            fn res_nclose(state: *mut ResState);
-            #[link_name = "__res_nquery"]
-            fn res_nquery(
-                state: *mut ResState,
-                name: *const c_char,
-                class: c_int,
-                kind: c_int,
-                answer: *mut u8,
-                len: c_int,
-            ) -> c_int;
+        type Ninit = unsafe extern "C" fn(*mut ResState) -> c_int;
+        #[cfg(not(target_os = "macos"))]
+        type Nclose = unsafe extern "C" fn(*mut ResState);
+        #[cfg(not(target_os = "macos"))]
+        type Nquery = unsafe extern "C" fn(
+            *mut ResState,
+            *const c_char,
+            c_int,
+            c_int,
+            *mut u8,
+            c_int,
+        ) -> c_int;
+
+        #[cfg(not(target_os = "macos"))]
+        struct Resolv {
+            ninit: Ninit,
+            nclose: Nclose,
+            nquery: Nquery,
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        fn resolv() -> Option<&'static Resolv> {
+            static RESOLV: std::sync::OnceLock<Option<Resolv>> = std::sync::OnceLock::new();
+            RESOLV
+                .get_or_init(|| {
+                    // SAFETY: dlopen and dlsym with NUL-terminated names; the
+                    // library stays loaded for the process's life.
+                    unsafe {
+                        let library = libc::dlopen(c"libresolv.so.2".as_ptr(), libc::RTLD_NOW);
+                        let find = |name: &CStr| {
+                            let old = format!("__{}", name.to_str().ok()?);
+                            let old = std::ffi::CString::new(old).ok()?;
+                            // A library that didn't load is null, which
+                            // dlsym reads as the default search again.
+                            [libc::RTLD_DEFAULT, library]
+                                .into_iter()
+                                .flat_map(|h| {
+                                    [name.as_ptr(), old.as_ptr()].map(|n| libc::dlsym(h, n))
+                                })
+                                .find(|p| !p.is_null())
+                        };
+                        Some(Resolv {
+                            ninit: std::mem::transmute::<*mut libc::c_void, Ninit>(find(
+                                c"res_ninit",
+                            )?),
+                            nclose: std::mem::transmute::<*mut libc::c_void, Nclose>(find(
+                                c"res_nclose",
+                            )?),
+                            nquery: std::mem::transmute::<*mut libc::c_void, Nquery>(find(
+                                c"res_nquery",
+                            )?),
+                        })
+                    }
+                })
+                .as_ref()
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        unsafe fn res_ninit(state: *mut ResState) -> c_int {
+            // SAFETY: as the caller's, with the function glibc gives.
+            resolv().map_or(-1, |r| unsafe { (r.ninit)(state) })
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        unsafe fn res_nclose(state: *mut ResState) {
+            if let Some(r) = resolv() {
+                // SAFETY: as the caller's.
+                unsafe { (r.nclose)(state) }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        unsafe fn res_nquery(
+            state: *mut ResState,
+            name: *const c_char,
+            class: c_int,
+            kind: c_int,
+            answer: *mut u8,
+            len: c_int,
+        ) -> c_int {
+            // SAFETY: as the caller's.
+            resolv().map_or(-1, |r| unsafe {
+                (r.nquery)(state, name, class, kind, answer, len)
+            })
         }
 
         #[cfg(target_os = "macos")]
