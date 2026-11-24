@@ -869,7 +869,8 @@ impl Routes {
 
     /// Whether the Fetcher follows Chrome's rules, as Safari's profiles
     /// also do, with the exceptions `is_safari` marks.
-    fn is_chrome(&self) -> bool {
+    /// Whether the Fetcher follows Chrome's rules (Chrome's or Safari's).
+    pub(crate) fn is_chrome(&self) -> bool {
         matches!(self.stack, Stack::Chrome(_) | Stack::Safari(_))
     }
 

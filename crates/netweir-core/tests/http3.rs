@@ -631,6 +631,52 @@ async fn an_http3_connection_that_comes_up_before_tcp_wins_the_race() {
 }
 
 #[tokio::test]
+async fn the_tcp_connection_that_loses_a_race_waits_for_the_next_request() {
+    // As above, TCP takes 1.5 s to connect and a resumed QUIC handshake
+    // about 300 ms, and each TCP connection lasts 1.5 s once made. Once
+    // HTTP/3 has won a race, Firefox's backup connection goes on to send
+    // HTTP/2's preface and waits in the pool. The next race's backup timer
+    // finds it there, and the request goes over it at once
+    // (nsHttpConnectionMgr::DoFallbackConnection, availableForDispatchNow).
+    let h3 = Server::start_h3(0, None).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let slow = slow_tcp(
+        tcp.port,
+        Duration::from_millis(1500),
+        Duration::from_millis(1500),
+    )
+    .await;
+    let udp = slow_relay(Some(h3.port), Duration::from_millis(150)).await;
+    let origin = format!("https://localhost:{slow}");
+    let plain = format!("{origin}/");
+    let fetcher = fetcher();
+    fetcher
+        .get(
+            &offering(&origin, &format!("h3=\"127.0.0.1:{}\"", udp.port)),
+            &[],
+        )
+        .await
+        .unwrap();
+    until_http3(&fetcher, &plain).await;
+    // A race that HTTP/3 wins, with no TCP connection left from before.
+    fetcher.close_http3().await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let response = fetcher.get(&plain, &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    // Its backup connection is made by now, and still open.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    fetcher.close_http3().await;
+    let started = Instant::now();
+    let response = fetcher.get(&plain, &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/2");
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "made a new TCP connection: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn a_new_alternative_takes_over_only_once_it_is_proved() {
     let tcp = Server::start().await.unwrap();
     let (first, second) = (

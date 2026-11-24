@@ -1138,8 +1138,8 @@ tokio::task_local! {
 
 #[cfg(feature = "http3")]
 tokio::task_local! {
-    /// Set for a request racing an HTTP/3 connection: how far its TCP
-    /// connection has got, [`RACING`] or [`RACED`].
+    /// Set for a request racing an HTTP/3 connection with Chrome's rules:
+    /// how far its TCP connection has got, [`RACING`] or [`RACED`].
     static RACE: Arc<std::sync::atomic::AtomicU8>;
 }
 
@@ -1253,7 +1253,7 @@ where
             use std::sync::atomic::Ordering;
             race.store(RACING, Ordering::Relaxed);
             // Made to the end even if HTTP/3 wins and the request is
-            // dropped, as Firefox's backup connection is.
+            // dropped.
             let connecting = tokio::spawn(connecting);
             return Box::pin(async move {
                 let made = connecting.await.map_err(S::Error::from).and_then(|m| m);
@@ -2188,7 +2188,7 @@ impl Fetcher {
     async fn send_h3(
         &self,
         (routes, way): Route,
-        mut request: wreq::RequestBuilder,
+        request: wreq::RequestBuilder,
         order: OrigHeaderMap,
         sent: Option<&Sent>,
         view: Option<JarView>,
@@ -2220,27 +2220,30 @@ impl Fetcher {
             }
             Way::Lookup(lookup) => {
                 // The TCP connection starts now; records that come in while
-                // it's being made, and send the request over HTTP/3, take it.
-                let Some(racing) = request.try_clone() else {
+                // it's being made, and send the request over HTTP/3, take it
+                // (nsHttpTransaction::OnHTTPSRRAvailable). The connection
+                // goes on to wait in the pool, as Firefox's half-open one
+                // does once no transaction is left for it
+                // (DnsAndConnectSocket::SetupConn).
+                let Some(mut connecting) = preconnect(&request) else {
                     return dispatch(request, order, sent, view).await;
                 };
-                let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
-                let over_tcp = RACE.scope(
-                    state.clone(),
-                    dispatch(request, order.clone(), sent, view.clone()),
-                );
-                tokio::pin!(over_tcp);
                 let adopted = tokio::select! {
                     biased;
-                    done = &mut over_tcp => return done,
+                    made = &mut connecting => match made {
+                        Ok(Err(e)) => return Err(e.into()),
+                        _ => return dispatch(request, order, sent, view).await,
+                    },
                     route = routes.adopt_when_found(lookup) => route,
                 };
                 match adopted {
-                    Some(route) if state.load(std::sync::atomic::Ordering::Relaxed) == RACING => {
-                        request = racing;
-                        route
+                    Some(route) if !connecting.is_finished() => route,
+                    _ => {
+                        if let Ok(Err(e)) = connecting.await {
+                            return Err(e.into());
+                        }
+                        return dispatch(request, order, sent, view).await;
                     }
-                    _ => return over_tcp.await,
                 }
             }
         };
@@ -2337,12 +2340,16 @@ impl Fetcher {
             )
         })??;
         let answer = match answer {
-            crate::h3::Answer::Race(mut pending) => {
-                // A TCP connection is opened now, as Firefox's backup timer
-                // opens one, and the request goes to whichever is up first:
-                // over TCP once its connection is made (or at once, on one
-                // already open), over HTTP/3 if that came up while it was
-                // still being made.
+            crate::h3::Answer::Race(mut pending) if routes.is_chrome() => {
+                // A TCP connection is opened now, and the request goes to
+                // whichever is up first: over TCP once its connection is
+                // made (or at once, on one already open), over HTTP/3 if
+                // that came up while it was still being made.
+                // Known limit: one that loses finishes its TLS handshake and
+                // closes. Chrome's socket pool keeps it idle
+                // (ClientSocketHandle::Reset leaves its connect job running),
+                // with no HTTP/2 preface until a request uses it, which
+                // wreq can't do.
                 let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
                 let won = match tcp.as_ref().and_then(wreq::RequestBuilder::try_clone) {
                     Some(racing) => {
@@ -2377,21 +2384,65 @@ impl Fetcher {
                 if won && let (Some(sent), Some(lines)) = (sent, recorded) {
                     *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
                 }
-                let request = pending.request();
-                match tokio::time::timeout_at(
+                h3_answer(
+                    routes.send(&route, &host, pending.request(), deadline, h3.idempotent),
                     deadline,
-                    routes.send(&route, &host, request, deadline, h3.idempotent),
+                    &uri,
                 )
                 .await
-                {
-                    Ok(Ok(crate::h3::Answer::Response(answer))) => Ok(answer),
-                    Ok(Ok(_)) => Err(None),
-                    Ok(Err(e)) => Err(Some(e)),
-                    Err(_) => Err(Some(FetchError::new(
-                        FetchErrorKind::Timeout,
-                        format!("{uri}: no answer over HTTP/3 in time"),
-                    ))),
+            }
+            crate::h3::Answer::Race(mut pending) => {
+                // A TCP connection is opened now, as Firefox's backup timer
+                // opens one (nsHttpTransaction::OnHttp3BackupTimer, a
+                // FallbackTransaction), and the request goes to whichever is
+                // up first: over TCP once its connection is made (or at
+                // once, on one already open), over HTTP/3 if that came up
+                // while it was still being made. A TCP connection that
+                // fails leaves the request to HTTP/3 (OnBackupConnectionReady
+                // hears only of success). One that loses waits in the pool
+                // for the next request, as Firefox's does.
+                let mut backup = tcp.as_ref().and_then(preconnect);
+                let won = loop {
+                    let Some(connecting) = backup.as_mut() else {
+                        break pending.up().await;
+                    };
+                    tokio::select! {
+                        biased;
+                        made = connecting => match made {
+                            Ok(Ok(())) => {
+                                let tcp = tcp.expect("a backup is made from it");
+                                let done = dispatch(tcp, order, sent, view).await;
+                                if done.is_ok() {
+                                    routes.tcp_answered(&route, &host);
+                                }
+                                return done;
+                            }
+                            _ => backup = None,
+                        },
+                        up = pending.up() => break up,
+                    }
+                };
+                if !won && let Some(tcp) = tcp {
+                    // So the request rides the backup's connection rather
+                    // than opening another beside it.
+                    if let Some(connecting) = backup {
+                        let _ = connecting.await;
+                    }
+                    let done = dispatch(tcp, order, sent, view).await;
+                    if done.is_ok() {
+                        routes.tcp_answered(&route, &host);
+                    }
+                    return done;
                 }
+                if won && let (Some(sent), Some(lines)) = (sent, recorded) {
+                    *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
+                }
+                h3_answer(
+                    routes.send(&route, &host, pending.request(), deadline, h3.idempotent),
+                    deadline,
+                    &uri,
+                )
+                .await
             }
             crate::h3::Answer::Response(answer) => Ok(answer),
             crate::h3::Answer::Tcp => Err(None),
@@ -2420,6 +2471,25 @@ impl Fetcher {
     }
 }
 
+/// A raced request's answer over HTTP/3, sent once its connection is up:
+/// None if it goes over TCP after all.
+#[cfg(feature = "http3")]
+async fn h3_answer(
+    sending: impl std::future::Future<Output = Result<crate::h3::Answer, FetchError>>,
+    deadline: tokio::time::Instant,
+    uri: &Uri,
+) -> Result<http::Response<crate::h3::Body>, Option<FetchError>> {
+    match tokio::time::timeout_at(deadline, sending).await {
+        Ok(Ok(crate::h3::Answer::Response(answer))) => Ok(answer),
+        Ok(Ok(_)) => Err(None),
+        Ok(Err(e)) => Err(Some(e)),
+        Err(_) => Err(Some(FetchError::new(
+            FetchErrorKind::Timeout,
+            format!("{uri}: no answer over HTTP/3 in time"),
+        ))),
+    }
+}
+
 /// `request` over a TCP connection to `to` (`host:port`) in place of its
 /// URL's host and port, for the URL's origin all the same (its server
 /// name, certificate and `:authority`). Such connections are pooled apart
@@ -2427,6 +2497,25 @@ impl Fetcher {
 #[cfg(feature = "http3")]
 fn routed(request: wreq::RequestBuilder, to: &str) -> Option<wreq::RequestBuilder> {
     Some(request.connect_to(to.parse().ok()?))
+}
+
+/// Makes the TCP connection `request` would go over, in the background,
+/// and leaves it idle in the pool, without sending `request`: Firefox's
+/// backup and fallback connections (CreateBackupConnection, a speculative
+/// transaction), which once made wait for the next request even if HTTP/3
+/// carried this one. For HTTP/2 that's after its preface and SETTINGS.
+/// Done once the connection is up, or has failed.
+#[cfg(feature = "http3")]
+fn preconnect(
+    request: &wreq::RequestBuilder,
+) -> Option<tokio::task::JoinHandle<Result<(), wreq::Error>>> {
+    let request = request.try_clone()?.connect_only(None);
+    let connecting = async move { request.send().await.map(drop) };
+    // A crawl hears of it as of its request's own connection.
+    Some(match TOLD.try_with(Arc::clone) {
+        Ok(tell) => tokio::spawn(TOLD.scope(tell, connecting)),
+        Err(_) => tokio::spawn(connecting),
+    })
 }
 
 /// Sends a request to an `h2` alternative: over TCP to its host and port

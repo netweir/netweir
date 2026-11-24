@@ -135,8 +135,8 @@ default preferences; Chrome's rules are
   request doesn't wait for it: one whose TCP connection is still being
   made when a record offering h3 comes in moves to HTTP/3, as a
   transaction not yet on a connection does
-  (`nsHttpTransaction::OnHTTPSRRAvailable`), and later requests use the
-  record at once. The route isn't proved first, carries no `Alt-Used`,
+  (`nsHttpTransaction::OnHTTPSRRAvailable`), the connection going on to
+  wait in the pool, and later requests use the record at once. The route isn't proved first, carries no `Alt-Used`,
   takes the record's ECH configuration in place of ECH GREASE, and races
   TCP after `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms. An
   http URL isn't upgraded to https from a record: with TRR off, Firefox
@@ -175,8 +175,10 @@ default preferences; Chrome's rules are
   connection is made or at once on one already open
   (`OnBackupConnectionReady`); HTTP/3 if its connection came up while the
   TCP one was still being made. Either way the other keeps going: the
-  HTTP/3 connection for the next requests, the TCP one to the end of its
-  TLS handshake.
+  HTTP/3 connection for the next requests, and the TCP one, a speculative
+  connection of its own (`CreateBackupConnection`), to send HTTP/2's
+  preface and wait in the pool. A TCP connection that fails leaves the
+  request to HTTP/3.
 - Failing. A connection that never comes up, for any reason but a TLS
   error, stops HTTP/3 to its alternative's host (`Http3Session::Shutdown`,
   `nsHttpHandler::ExcludeHttp3`). So does one that was up and closes with
@@ -221,10 +223,6 @@ What's not the same as Firefox:
   own (getaddrinfo with `AI_CANONNAME`, as NSPR asks for Firefox),
   alongside wreq's; a system with no caching resolver may send the
   address queries twice. On Windows the check is skipped.
-- The race's losing TCP connection. When HTTP/3 wins, Firefox's backup
-  connection sends HTTP/2's preface and waits in the pool. Netweir's
-  finishes its TLS handshake and closes, as wreq can't keep a connection
-  it made for a request it no longer sends.
 
 ## Chrome through netweir's quiche
 
@@ -405,6 +403,10 @@ Not the same as Chrome's:
   priority.
 - The time the addresses take is timed with `getaddrinfo`, and their TTL
   isn't known, so an answer with no records stands for a minute.
+- The TCP connection that loses a race to QUIC finishes its TLS
+  handshake and closes. Chrome's socket pool keeps it, idle
+  (`ClientSocketHandle::Reset` leaves its connect job running), and sends
+  HTTP/2's preface only once a request uses it, which wreq can't do.
 - An http:// URL whose host has an HTTPS record. Chrome sends a request
   for it to https:// with an internal 307 (`ERR_DNS_NAME_HTTPS_ONLY`);
   Netweir asks for the record and stays on http://.
