@@ -110,7 +110,8 @@ Each browser moves its own way, and so does Netweir. Firefox proves the
 alternative with a connection first, then gives that connection 100 ms
 before a request goes over TCP instead; if it fails, the site stays on
 TCP. Chrome starts the QUIC and TCP connections together from the next
-request on and takes whichever is ready first; if QUIC fails, it's left
+request on and takes whichever is ready first, and from the first request
+when the site's HTTPS DNS record offers HTTP/3; if QUIC fails, it's left
 alone for 10 seconds, then longer each time, up to half an hour. Safari
 stays on the TCP connection it has open and moves only when it opens a
 new one, or straight away when the site's HTTPS DNS record offers

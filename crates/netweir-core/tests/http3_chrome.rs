@@ -711,3 +711,172 @@ async fn the_archive_records_chromes_http3() {
     assert_eq!(entry["response"]["httpVersion"], "HTTP/3");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An HTTPS answer for `host` on `port`, with one record of `priority`
+/// at `target` carrying `params`.
+fn record_for(
+    host: &str,
+    port: u16,
+    priority: u16,
+    target: &str,
+    params: &[(u16, Vec<u8>)],
+) -> (String, Vec<u8>) {
+    let qname = format!("_{port}._https.{host}");
+    let answer = netweir_core::https_answer(&qname, &[(priority, target, params)], 300);
+    (qname, answer)
+}
+
+/// Params for `alpn=h3`.
+fn h3_alpn() -> (u16, Vec<u8>) {
+    (1, b"\x02h3".to_vec())
+}
+
+/// A Chrome fetcher that resolves each of `hosts` to 127.0.0.1:`port` and
+/// is given these HTTPS answers.
+fn fed(port: u16, hosts: &[&str], answers: Vec<(String, Vec<u8>)>) -> Fetcher {
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = hosts
+        .iter()
+        .map(|h| (h.to_string(), ([127, 0, 0, 1], port).into()))
+        .collect();
+    options.https_records.extend(answers);
+    Fetcher::new(options).unwrap()
+}
+
+#[tokio::test]
+async fn an_https_record_alone_moves_chrome_to_http3() {
+    // JobController's DNS_ALPN_H3 job: an h3 record at the origin sends
+    // it over QUIC with no Alt-Svc at all (each answer clears it).
+    let server = Server::start_h3(0, None).await.unwrap();
+    let port = server.port;
+    let fetcher = fed(
+        port,
+        &["origin.test"],
+        vec![record_for(
+            "origin.test",
+            port,
+            1,
+            "origin.test",
+            &[h3_alpn()],
+        )],
+    );
+    until_http3(
+        &fetcher,
+        &format!("https://origin.test:{port}/?alt-svc=clear"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn records_chrome_cant_use_leave_it_on_tcp() {
+    // Chrome reads a record only at the origin's own port and name, drops
+    // every record once one is AliasMode, and all of them when none allows
+    // the default ALPN (ExtractHttpsResults, HostCache::Entry::
+    // GetEndpoints). good.test shows the others would have moved.
+    let server = Server::start_h3(0, None).await.unwrap();
+    let elsewhere = Server::start_h3(0, None).await.unwrap();
+    let port = server.port;
+    let other_port = (3, elsewhere.port.to_be_bytes().to_vec());
+    let hosts = [
+        "good.test",
+        "port.test",
+        "dot.test",
+        "alias.test",
+        "bare.test",
+    ];
+    let fetcher = fed(
+        port,
+        &hosts,
+        vec![
+            record_for("good.test", port, 1, "good.test", &[h3_alpn()]),
+            record_for("port.test", port, 1, "port.test", &[h3_alpn(), other_port]),
+            // "." names the record's owner, _PORT._https.dot.test.
+            record_for("dot.test", port, 1, ".", &[h3_alpn()]),
+            record_for("alias.test", port, 0, "good.test", &[]),
+            record_for(
+                "bare.test",
+                port,
+                1,
+                "bare.test",
+                &[h3_alpn(), (2, Vec::new())],
+            ),
+        ],
+    );
+    until_http3(
+        &fetcher,
+        &format!("https://good.test:{port}/?alt-svc=clear"),
+    )
+    .await;
+    for host in &hosts[1..] {
+        let url = format!("https://{host}:{port}/?alt-svc=clear");
+        for _ in 0..3 {
+            assert_eq!(
+                fetcher.get(&url, &[]).await.unwrap().version,
+                "HTTP/2",
+                "{host}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// An ECHConfigList with one X25519 / HKDF-SHA256 / AES-128-GCM config
+/// for `public_name`.
+fn ech_config_list(public_name: &str) -> Vec<u8> {
+    let mut contents = vec![7, 0x00, 0x20, 0, 32];
+    contents.extend([9; 32]);
+    contents.extend([0, 4, 0, 1, 0, 1]);
+    contents.push(0);
+    contents.push(public_name.len() as u8);
+    contents.extend(public_name.as_bytes());
+    contents.extend([0, 0]);
+    let mut config = vec![0xfe, 0x0d];
+    config.extend((contents.len() as u16).to_be_bytes());
+    config.extend(contents);
+    let mut list = (config.len() as u16).to_be_bytes().to_vec();
+    list.extend(config);
+    list
+}
+
+#[tokio::test]
+async fn an_https_records_ech_config_goes_in_chromes_quic_hello() {
+    // QuicChromiumClientSession::GetSSLConfig hands BoringSSL the record's
+    // ECHConfigList, so the outer hello names its public name instead of
+    // the origin. The QUIC side only listens, on the TCP server's port.
+    let tcp = Server::start().await.unwrap();
+    let port = tcp.port;
+    let udp = tokio::net::UdpSocket::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let ech = (5, ech_config_list("public.test"));
+    let fetcher = fed(
+        port,
+        &["origin.test"],
+        vec![record_for(
+            "origin.test",
+            port,
+            1,
+            "origin.test",
+            &[h3_alpn(), ech],
+        )],
+    );
+    let response = fetcher
+        .get(&format!("https://origin.test:{port}/"), &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        response.version, "HTTP/2",
+        "QUIC never worked: TCP didn't wait"
+    );
+    let mut datagrams = Vec::new();
+    let mut buf = vec![0; 65536];
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(500), udp.recv(&mut buf)).await
+    {
+        datagrams.push(buf[..n].to_vec());
+    }
+    let first = datagrams.first().expect("a QUIC Initial");
+    let odcid = &first[6..6 + usize::from(first[5])];
+    let (_, hello) = netweir_fingerprint::first_flight(&datagrams, odcid).expect("a ClientHello");
+    assert_eq!(hello.server_name.as_deref(), Some("public.test"));
+}

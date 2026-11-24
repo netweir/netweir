@@ -1001,10 +1001,18 @@ impl Routes {
         self.is_safari()
     }
 
-    /// Safari: a response from `origin` came over TCP. Its next requests
-    /// stay there while that connection would still be open.
-    pub(crate) fn tcp_used(&self, partition: &str, origin: &Url) {
-        if self.is_safari() {
+    /// Whether the Fetcher is Chrome's: an Alt-Svc alternative goes before
+    /// an HTTPS record, and a request waits for its origin's records as
+    /// long as Chrome's resolver does.
+    pub(crate) fn alt_svc_first(&self) -> bool {
+        self.is_chrome() && !self.is_safari()
+    }
+
+    /// A response from `origin` came, over TCP if `tcp`. Safari's next
+    /// requests stay there while that connection would still be open, and
+    /// Chrome's don't wait for a QUIC connection from an HTTPS record.
+    pub(crate) fn tcp_used(&self, partition: &str, origin: &Url, tcp: bool) {
+        if self.is_safari() || (tcp && self.alt_svc_first()) {
             self.tcp_used
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1035,6 +1043,12 @@ impl Routes {
             .unwrap_or_else(|e| e.into_inner())
             .get(&format!("{partition} {host} {}", route.alternative))
             .is_some_and(|h| h.usable() && *h.state.borrow() == State::Connected);
+        self.tcp_recent(partition, origin) && !up
+    }
+
+    /// Whether `origin`'s TCP connection is taken as still open: it
+    /// answered within [`safari::TCP_KEPT`], wreq's idle timeout.
+    fn tcp_recent(&self, partition: &str, origin: &str) -> bool {
         let mut used = self.tcp_used.lock().unwrap_or_else(|e| e.into_inner());
         let key = (partition.to_string(), origin.to_string());
         let recent = used
@@ -1043,7 +1057,7 @@ impl Routes {
         if !recent {
             used.remove(&key);
         }
-        recent && !up
+        recent
     }
 
     /// Chrome's main-job delay for a request to `alternative`.
@@ -1315,15 +1329,33 @@ impl Routes {
                 let (tell, found) = watch::channel(None);
                 records.insert(key, found.clone());
                 let (host, seam) = (host.to_string(), self.seam.clone());
+                let chrome = self.alt_svc_first();
+                let given = self.hosts.contains_key(&host);
                 tokio::spawn(async move {
-                    let (records, cname) = tokio::join!(
-                        crate::https_rr::query(&host, port, seam.as_deref()),
-                        crate::https_rr::canonical_name(&host),
-                    );
-                    let stands = records
-                        .as_ref()
-                        .map_or(firefox::DNS_NEGATIVE_TTL, |r| r.ttl);
-                    let expires = Instant::now() + stands.saturating_add(firefox::DNS_GRACE);
+                    let (records, cname) = if chrome {
+                        chrome_resolve(&host, port, seam.as_deref(), given).await
+                    } else {
+                        tokio::join!(
+                            crate::https_rr::query(&host, port, seam.as_deref()),
+                            crate::https_rr::canonical_name(&host),
+                        )
+                    };
+                    let expires = Instant::now()
+                        + match (&records, chrome) {
+                            // Chrome's host cache keeps an answer for its
+                            // TTL, at least a minute, with no grace.
+                            // shortcut: the addresses' TTL, which also
+                            // bounds Chrome's entry, isn't known here, so
+                            // one without records stands for the minimum.
+                            (r, true) => r
+                                .as_ref()
+                                .map_or(Duration::ZERO, |r| r.ttl)
+                                .max(crate::h3_chrome::DNS_MIN_TTL),
+                            (r, false) => r
+                                .as_ref()
+                                .map_or(firefox::DNS_NEGATIVE_TTL, |r| r.ttl)
+                                .saturating_add(firefox::DNS_GRACE),
+                        };
                     tell.send_replace(Some(Found {
                         records,
                         cname,
@@ -1353,6 +1385,26 @@ impl Routes {
             lookup.origin.host_str()?,
             lookup.origin.port_or_known_default()?,
         );
+        // Chrome's DNS_ALPN_H3 job: QUIC to the origin itself, unless that
+        // is broken (JobController::DoCreateJobs).
+        if self.alt_svc_first() {
+            let canonical = found.cname.as_deref().unwrap_or(host);
+            let ech = crate::https_rr::choose_chrome(records, port, canonical)?;
+            let alternative = format!("{host}:{port}");
+            let broken = self
+                .broken
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&(lookup.partition.clone(), alternative.clone()))
+                .is_some_and(|b| b.is_broken(Instant::now()));
+            return (!broken).then(|| Route {
+                partition: lookup.partition.clone(),
+                alternative,
+                forced: false,
+                h3: true,
+                record: Some(ech),
+            });
+        }
         let chosen =
             crate::https_rr::choose(records, host, port, found.cname.as_deref(), &|target| {
                 self.excluded(target)
@@ -1492,12 +1544,11 @@ impl Routes {
                 self.trust.clone(),
                 &self.tickets,
             ),
-            // Chrome: no ECH configuration from an HTTPS record (Netweir
-            // never routes a Chrome request by one).
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
                 alternative,
                 given,
+                ech.map(<[u8]>::to_vec),
                 &key,
                 tls.clone(),
                 crate::h3_chrome::Browser::Chrome,
@@ -1508,6 +1559,7 @@ impl Routes {
                 host,
                 alternative,
                 given,
+                None,
                 &key,
                 tls.clone(),
                 crate::h3_chrome::Browser::Safari,
@@ -1628,6 +1680,17 @@ impl Routes {
         // (nsHttpTransaction::OnFastFallbackTimer).
         let timer = match route.record {
             _ if self.is_safari() => safari::RACE_DELAY,
+            // Chrome's TCP job isn't held for the DNS_ALPN_H3 one when
+            // the origin has a TCP connection open (JobController::
+            // DoCreateJobs).
+            Some(_)
+                if self.alt_svc_first()
+                    && Url::parse(&format!("https://{alternative}")).is_ok_and(|u| {
+                        self.tcp_recent(&route.partition, &u.origin().ascii_serialization())
+                    }) =>
+            {
+                Duration::ZERO
+            }
             _ if self.is_chrome() => self.chrome_delay(&route.partition, host, alternative),
             Some(_) => firefox::FAST_FALLBACK,
             None => firefox::BACKUP_TIMER,
@@ -1687,6 +1750,37 @@ impl Routes {
             Ok(Err(e)) if *handle.state.borrow() == State::Connected => Err(e),
             Ok(Err(e)) => repeat(e),
             Err(_) => repeat(closed()),
+        }
+    }
+}
+
+/// An origin's HTTPS records and canonical name, looked up as Chrome's
+/// HostResolverDnsTask does: the HTTPS query beside the address one, and
+/// given at most [`crate::h3_chrome::https_extra_time`] once the addresses
+/// are in; then it goes without them. Addresses Netweir was `given` are in
+/// at once.
+async fn chrome_resolve(
+    host: &str,
+    port: u16,
+    seam: Option<&crate::https_rr::Seam>,
+    given: bool,
+) -> (Option<crate::https_rr::Records>, Option<String>) {
+    let started = Instant::now();
+    let query = crate::https_rr::query(host, port, seam);
+    let addresses = async {
+        if given {
+            None
+        } else {
+            crate::https_rr::canonical_name(host).await
+        }
+    };
+    tokio::pin!(query, addresses);
+    tokio::select! {
+        biased;
+        records = &mut query => (records, addresses.await),
+        cname = &mut addresses => {
+            let extra = crate::h3_chrome::https_extra_time(started.elapsed());
+            (tokio::time::timeout(extra, query).await.ok().flatten(), cname)
         }
     }
 }

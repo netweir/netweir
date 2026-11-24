@@ -23,5 +23,5 @@ pub use compare::{
 pub use h2::Http2;
 pub use h3::{Http3, Setting, is_h3_grease};
 pub use ja4::{ja4, ja4_quic};
-pub use quic::{Datagram, Frame, Packet, Quic, TransportParameter};
+pub use quic::{Datagram, Frame, Packet, Quic, TransportParameter, first_flight};
 pub use server::{Capture, Server};

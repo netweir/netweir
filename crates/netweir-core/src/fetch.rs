@@ -1483,7 +1483,6 @@ impl Fetcher {
                     None
                 }
                 Some(stack @ ("firefox-160" | "chrome-157" | "safari-27")) => {
-                    let chrome = stack == "chrome-157";
                     let stack = match stack {
                         "chrome-157" => crate::h3::Stack::Chrome(Arc::new(profile.tls.clone())),
                         "safari-27" => {
@@ -1513,9 +1512,7 @@ impl Fetcher {
                         )?,
                         validate,
                         Arc::new(ips),
-                        // Known limit: Chrome's HTTPS-record path
-                        // (JobController's DNS_ALPN_H3 job) isn't Netweir's.
-                        (!chrome && !options.https_records.is_empty())
+                        (!options.https_records.is_empty())
                             .then(|| Arc::new(options.https_records.clone())),
                         stack,
                     )))
@@ -1632,10 +1629,17 @@ impl Fetcher {
             }
             // Records answered before the request is on a connection
             // replace its route (nsHttpTransaction::OnHTTPSRRAvailable).
-            let way = match routes.lookup(&partition, url).map(|l| routes.adopted(l)) {
-                Some(Ok(Some(record))) => Way::Go(record),
-                Some(Err(lookup)) if alternative.is_none() => Way::Lookup(lookup),
-                _ => Way::Go(alternative?),
+            // Chrome's TCP job waits for its Alt-Svc job, when it has one,
+            // and not for its DNS_ALPN_H3 job beside it
+            // (JobController::MaybeResumeMainJob).
+            // shortcut: so the Alt-Svc alternative carries the request, where
+            // Chrome's DNS_ALPN_H3 job to another place could still win.
+            let lookup = routes.lookup(&partition, url);
+            let way = match (alternative, lookup.map(|l| routes.adopted(l))) {
+                (Some(a), _) if routes.alt_svc_first() => Way::Go(a),
+                (_, Some(Ok(Some(record)))) => Way::Go(record),
+                (None, Some(Err(lookup))) => Way::Lookup(lookup),
+                (alternative, _) => Way::Go(alternative?),
             };
             // Safari keeps an origin on the TCP connection it has open.
             if let Way::Go(r) = &way
@@ -1658,7 +1662,11 @@ impl Fetcher {
             && url.scheme() == "https"
             && self.direct(url)
         {
-            routes.tcp_used(&partition(outgoing, url), url);
+            routes.tcp_used(
+                &partition(outgoing, url),
+                url,
+                response.version() != Version::HTTP_3,
+            );
         }
         #[cfg(feature = "http3")]
         if let Some(routes) = &self.h3
@@ -2233,6 +2241,15 @@ impl Fetcher {
             // Safari asks for the records alongside the addresses and
             // connects once both are in, over QUIC first if the records
             // offer h3 (Apple's Tommy Pauly on DNSOP, 2020-09-25).
+            // Chrome's connections all wait for the host resolution, which
+            // gives the HTTPS answer little time past the addresses
+            // (HostResolverDnsTask), and QUIC goes first if it offers h3.
+            Way::Lookup(lookup) if routes.alt_svc_first() => {
+                match routes.adopt_when_found(lookup).await {
+                    Some(route) => route,
+                    None => return dispatch(request, order, sent, view).await,
+                }
+            }
             Way::Lookup(lookup) if routes.waits_for_records() => {
                 match tokio::time::timeout(crate::h3::RECORD_WAIT, routes.adopt_when_found(lookup))
                     .await

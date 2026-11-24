@@ -357,14 +357,65 @@ Chromium's `net/` source:
 - Falling back. A request that a QUIC error cuts off before its
   response goes again over TCP, whatever its method
   (`HttpNetworkTransaction::HandleIOError`).
+- HTTPS records. Chrome 157 asks for an origin's HTTPS record with every
+  address lookup, through its own resolver as well as over DoH: on
+  macOS, Windows and Linux its built-in client sends the query to the
+  system's nameservers (`kAsyncDns`, `kUseDnsHttpsSvcb`, and the
+  `AdditionalDnsQueryTypesEnabled` policy, all on by default). It
+  falls back to `getaddrinfo`, which asks for no HTTPS record, only
+  where it can't read the system's settings: a VPN, a proxy, Name
+  Resolution Policy or Zero Trust DNS on Windows, an `nsswitch.conf` it
+  doesn't understand on Linux. A record that lists `h3` takes the
+  request to QUIC with no Alt-Svc at all: whenever an https request
+  has no proxy, and QUIC to the origin isn't marked broken,
+  `JobController::DoCreateJobs` starts a `DNS_ALPN_H3` job beside the
+  TCP one (`use_dns_https_svcb_alpn` is now always on;
+  the `UseDnsHttpsSvcbAlpn` feature is gone). The QUIC connection goes
+  to the origin's own host and port. Chrome reads a ServiceMode record
+  only if it names no other port and its target is the name the
+  addresses' CNAMEs end at, so `.` works on port 443 and not on others.
+  It ignores every record once one is AliasMode, and all of them when
+  each says `no-default-alpn`. Of the rest, the first by priority that
+  lists `h3` is the one QUIC uses (`ExtractHttpsResults`,
+  `HostCache::Entry::GetEndpoints`, `QuicSessionPool::SelectQuicVersion`).
+- Timing. The HTTPS query goes out with the address ones, and once the
+  addresses are in it gets a fifth of the time they took, at least 5 ms
+  and at most 50 ms, before Chrome goes on without it
+  (`HostResolverDnsTask`). Both connections wait for that. Then QUIC
+  and TCP race as for Alt-Svc, with the same delay for TCP, except that
+  TCP doesn't wait at all if the origin already has a TCP connection
+  open (Netweir counts one as open for 90 seconds after its last TCP
+  answer). A record without `h3` sends the request to TCP at once. An
+  Alt-Svc alternative, when there is one, is the job TCP waits for, so
+  the request goes there. The answer stays in the host cache for its
+  TTL, and at least a minute.
+- ECH. The record's ECH configuration goes into the QUIC ClientHello,
+  which BoringSSL then sends with real ECH in place of GREASE
+  (`QuicChromiumClientSession::GetSSLConfig`). The outer hello names
+  the configuration's public name.
 - Proxies, and `http3 = false`, as for Firefox: no QUIC at all.
 
-Not the same as Chrome's: Netweir's network is the Fetcher, so "QUIC
-has worked" and the broken marks live as long as it does, where Chrome
-keeps them on disk and forgets the first on a network change. Chrome
-also tries HTTP/3 from an HTTPS DNS record, in a job of its own beside
-the Alt-Svc one. Netweir looks those records up the way Firefox does,
-for Firefox profiles only; a Chrome profile moves on Alt-Svc alone.
+Not the same as Chrome's:
+
+- Netweir's network is the Fetcher, so "QUIC has worked" and the broken
+  marks live as long as it does, where Chrome keeps them on disk and
+  forgets the first on a network change.
+- Netweir makes the HTTPS query the way Firefox does on the system
+  (`res_nquery`, `DNSServiceQueryRecord`, `DnsQuery_A`), so the
+  resolver sees Firefox's query, not Chrome's. Netweir reads Firefox's
+  answer too: an unknown key in `mandatory` drops the whole answer, not
+  just that record, and records with ECH come first among those of equal
+  priority.
+- The time the addresses take is timed with `getaddrinfo`, and their TTL
+  isn't known, so an answer with no records stands for a minute.
+- An http:// URL whose host has an HTTPS record. Chrome sends a request
+  for it to https:// with an internal 307 (`ERR_DNS_NAME_HTTPS_ONLY`);
+  Netweir asks for the record and stays on http://.
+- When both Alt-Svc and a record offer HTTP/3 at different places, Chrome
+  races both QUIC connections. Netweir only uses the Alt-Svc one.
+- If every record has ECH, Chrome won't fall back to TCP without it.
+  Netweir's TCP connections don't use ECH from records, so they connect
+  without it.
 
 ## Safari: the closest match
 

@@ -204,6 +204,7 @@ fn tls_per_connection(
     conn: &mut quiche::Connection,
     tls: &Tls,
     browser: Browser,
+    ech: Option<&[u8]>,
 ) -> Result<(), String> {
     let bad = |e: btls::error::ErrorStack| format!("TLS: {e}");
     let shares = tls
@@ -219,6 +220,11 @@ fn tls_per_connection(
         .collect::<Result<Vec<_>, _>>()?;
     let ssl = conn.ssl_mut();
     ssl.set_enable_ech_grease(tls.ech_grease);
+    // An HTTPS record's ECH configuration, which BoringSSL then sends in
+    // place of GREASE (QuicChromiumClientSession::GetSSLConfig).
+    if let Some(ech) = ech {
+        ssl.set_ech_config_list(ech).map_err(bad)?;
+    }
     ssl.set_client_key_shares(&shares).map_err(bad)?;
     if browser == Browser::Chrome {
         ssl.add_application_settings(b"h3").map_err(bad)?;
@@ -353,6 +359,7 @@ pub(crate) fn open(
     host: &str,
     alternative: &str,
     given: Option<IpAddr>,
+    ech: Option<Vec<u8>>,
     key: &str,
     tls: Arc<Tls>,
     browser: Browser,
@@ -384,6 +391,7 @@ pub(crate) fn open(
                 host,
                 alternative,
                 given,
+                ech,
                 tls,
                 browser,
                 trust,
@@ -412,6 +420,8 @@ struct Connection {
     alternative: String,
     /// The address to use instead of resolving the alternative's host.
     given: Option<IpAddr>,
+    /// The ECH configuration from the HTTPS record that routed it here.
+    ech: Option<Vec<u8>>,
     tls: Arc<Tls>,
     browser: Browser,
     trust: Trust,
@@ -478,7 +488,7 @@ impl Connection {
         let mut conn =
             quiche::connect_with_dcid(Some(&self.host), &scid, &dcid, local, peer, &mut config)
                 .map_err(|e| format!("QUIC: {e}"))?;
-        tls_per_connection(&mut conn, &self.tls, self.browser)?;
+        tls_per_connection(&mut conn, &self.tls, self.browser, self.ech.as_deref())?;
         if let Some(ticket) = &self.ticket {
             // A session BoringSSL won't take leaves a fresh handshake.
             let _ = conn.set_session(&ticket.session);
@@ -1089,9 +1099,32 @@ pub(crate) fn main_job_delay(
         .min(Duration::from_secs(3))
 }
 
+/// How long Chrome's DNS task gives an HTTPS query still out once the
+/// address queries are in: a fifth of the time they took, at least 5 ms
+/// and at most 50 (HostResolverDnsTask::MaybeStartTimeoutTimer, with
+/// kUseDnsHttpsSvcb's UseDnsHttpsSvcbInsecureExtraTime* defaults).
+pub(crate) fn https_extra_time(addresses_took: Duration) -> Duration {
+    (addresses_took / 5).clamp(Duration::from_millis(5), Duration::from_millis(50))
+}
+
+/// The least time Chrome's host cache keeps a DNS task's answer, whatever
+/// its TTL (HostResolverManager::Job::OnDnsTaskComplete,
+/// kMinimumTTLSeconds).
+pub(crate) const DNS_MIN_TTL: Duration = Duration::from_secs(60);
+
 #[cfg(test)]
 mod rules {
     use super::*;
+
+    #[test]
+    fn an_https_answer_gets_a_fifth_of_the_address_time_within_5_to_50_ms() {
+        let ms = Duration::from_millis;
+        assert_eq!(https_extra_time(Duration::ZERO), ms(5));
+        assert_eq!(https_extra_time(ms(20)), ms(5));
+        assert_eq!(https_extra_time(ms(100)), ms(20));
+        assert_eq!(https_extra_time(ms(250)), ms(50));
+        assert_eq!(https_extra_time(ms(5000)), ms(50));
+    }
 
     #[test]
     fn alt_svc_is_read_as_chrome_reads_it() {

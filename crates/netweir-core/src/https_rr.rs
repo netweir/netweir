@@ -27,10 +27,13 @@ pub(crate) struct Svcb {
 }
 
 /// A lookup's records, in Firefox's order, and how long they last.
+/// `aliased`: they came through an AliasMode record, which Chrome doesn't
+/// follow.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Records {
     pub records: Vec<Svcb>,
     pub ttl: Duration,
+    pub aliased: bool,
 }
 
 /// What a transaction connects to from a record
@@ -55,12 +58,15 @@ pub(crate) type Seam = HashMap<String, Vec<u8>>;
 /// on this OS. None: no query on this OS or for this host, or it failed.
 pub(crate) async fn query(host: &str, port: u16, seam: Option<&Seam>) -> Option<Records> {
     let qname = qname(host, port)?;
-    let seam = seam.cloned();
+    // A given answer is in at once, as a cached one would be.
+    if let Some(seam) = seam {
+        return resolve(&qname, Some(seam));
+    }
     tokio::task::spawn_blocking(move || {
-        if seam.is_none() && (!os::enabled() || os_excluded(&qname)) {
+        if !os::enabled() || os_excluded(&qname) {
             return None;
         }
-        resolve(&qname, seam.as_ref())
+        resolve(&qname, None)
     })
     .await
     .ok()
@@ -171,11 +177,12 @@ enum Fail {
 
 type Res<T> = Result<T, Fail>;
 
-/// What one platform lookup gives (ResolveHTTPSRecordImpl): records, or a
-/// name to look up next (HTTPSAliasTarget).
+/// What one platform lookup gives (ResolveHTTPSRecordImpl): records, and
+/// whether an AliasMode record led to them; or a name to look up next
+/// (HTTPSAliasTarget).
 #[derive(Debug, PartialEq)]
 enum Lookup {
-    Records(Vec<Svcb>),
+    Records(Vec<Svcb>, bool),
     Alias { name: String, from_alias_mode: bool },
 }
 
@@ -196,7 +203,9 @@ fn resolve(qname: &str, seam: Option<&Seam>) -> Option<Records> {
             None => os::lookup(&host, &mut ttl),
         };
         let alias = match found {
-            Ok(Lookup::Records(records)) => return Some(records_with(records, ttl)),
+            Ok(Lookup::Records(records, aliased)) => {
+                return Some(records_with(records, ttl, aliased || target.is_some()));
+            }
             Ok(Lookup::Alias {
                 name,
                 from_alias_mode,
@@ -221,16 +230,18 @@ fn resolve(qname: &str, seam: Option<&Seam>) -> Option<Records> {
                     ..Svcb::default()
                 }],
                 ttl,
+                true,
             )
         });
     }
     None
 }
 
-fn records_with(records: Vec<Svcb>, ttl: u32) -> Records {
+fn records_with(records: Vec<Svcb>, ttl: u32, aliased: bool) -> Records {
     Records {
         records,
         ttl: Duration::from_secs(ttl.into()),
+        aliased,
     }
 }
 
@@ -512,7 +523,7 @@ fn parse_packet(b: &[u8], host: &str, ttl: &mut u32) -> Res<Lookup> {
             Ok(Decoded {
                 records: Some(records),
                 ..
-            }) => return Ok(Lookup::Records(records)),
+            }) => return Ok(Lookup::Records(records, alias.is_some_and(|a| a.1))),
             Ok(d) => {
                 let from = alias.is_some_and(|a| a.1) || d.cname_is_alias;
                 host.clone_from(&d.cname);
@@ -591,7 +602,7 @@ fn windows_records(list: &[WinRecord], host: &str, ttl: &mut u32) -> Res<Lookup>
             if *ttl == u32::MAX {
                 *ttl = 60;
             }
-            Ok(Lookup::Records(records))
+            Ok(Lookup::Records(records, alias.is_some_and(|a| a.1)))
         }
         None => alias
             .map(|(name, from_alias_mode)| Lookup::Alias {
@@ -654,7 +665,7 @@ impl MacAnswer {
                 if *ttl == u32::MAX {
                     *ttl = 60;
                 }
-                Ok(Lookup::Records(records))
+                Ok(Lookup::Records(records, !self.alias.is_empty()))
             }
             None if !self.alias.is_empty() => Ok(Lookup::Alias {
                 name: self.alias,
@@ -663,6 +674,49 @@ impl MacAnswer {
             None => Err(Fail::UnknownHost),
         }
     }
+}
+
+/// The ECH configuration of the record Chrome 157 goes over QUIC by, if
+/// one sends it there, for an origin on `port` whose addresses' canonical
+/// name is `canonical` (Some(None): a record without one). Chrome reads a
+/// ServiceMode record only at the origin's own port and at that canonical
+/// name, ignores every record once there's an AliasMode one, and all of
+/// them when none allows the default ALPN (dns_response_result_extractor.cc
+/// ExtractHttpsResults, HostCache::Entry::GetEndpoints); then it takes the
+/// first by priority that lists h3 (QuicSessionPool::DirectJob::
+/// DoAttemptSession, SelectQuicVersion).
+// shortcut: the records come from Firefox's parser, which drops a whole
+// answer over an unknown mandatory key where Chrome drops that record, and
+// puts records with ECH first among equal priorities. Write Chrome's own
+// parser if either shows up.
+pub(crate) fn choose_chrome(
+    records: &Records,
+    port: u16,
+    canonical: &str,
+) -> Option<Option<Vec<u8>>> {
+    if records.aliased || records.records.iter().any(|r| r.priority == 0) {
+        return None;
+    }
+    let canonical = canonical.trim_end_matches('.');
+    let mut usable: Vec<&Svcb> = records
+        .records
+        .iter()
+        .filter(|r| {
+            r.port.is_none_or(|p| p == port)
+                && r.target
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case(canonical)
+                && !(r.alpn.is_empty() && r.no_default_alpn)
+        })
+        .collect();
+    if usable.iter().all(|r| r.no_default_alpn) {
+        return None;
+    }
+    usable.sort_by_key(|r| r.priority);
+    usable
+        .into_iter()
+        .find(|r| r.alpn.iter().any(|a| a == "h3"))
+        .map(|r| r.ech.clone())
 }
 
 /// Picks the record a transaction connects to
@@ -1555,7 +1609,7 @@ mod tests {
 
     fn records(lookup: Res<Lookup>) -> Vec<Svcb> {
         match lookup {
-            Ok(Lookup::Records(r)) => r,
+            Ok(Lookup::Records(r, _)) => r,
             other => panic!("{other:?}"),
         }
     }
@@ -1570,6 +1624,7 @@ mod tests {
         Records {
             records,
             ttl: Duration::from_secs(60),
+            aliased: false,
         }
     }
 
@@ -1580,6 +1635,32 @@ mod tests {
             alpn: alpns.iter().map(|a| a.to_string()).collect(),
             ..Svcb::default()
         }
+    }
+
+    #[test]
+    fn chrome_takes_the_first_h3_record_by_priority_at_the_canonical_name() {
+        let with = |priority, target: &str, alpns: &[&str], ech: u8| Svcb {
+            ech: Some(vec![ech]),
+            ..rec(priority, target, alpns)
+        };
+        let records = set(vec![
+            with(3, "cdn.example", &["h3"], 3),
+            with(1, "cdn.example", &["h2"], 1),
+            with(2, "cdn.example", &["h3"], 2),
+            with(1, "other.example", &["h3"], 9),
+        ]);
+        // At the name the addresses' CNAME ends at, not the origin's.
+        assert_eq!(
+            choose_chrome(&records, 443, "cdn.example."),
+            Some(Some(vec![2]))
+        );
+        assert_eq!(choose_chrome(&records, 443, "origin.example"), None);
+        // Through an AliasMode record, nothing.
+        let aliased = Records {
+            aliased: true,
+            ..records.clone()
+        };
+        assert_eq!(choose_chrome(&aliased, 443, "cdn.example"), None);
     }
 
     #[test]
