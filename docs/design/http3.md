@@ -225,9 +225,7 @@ What's not the same as Firefox:
   it made for a request it no longer sends.
 - `h2` alternatives are proved by a TCP connection whose TLS handshake
   and certificate check out; Firefox also insists the connection agreed
-  on HTTP/2, which wreq doesn't tell. And an origin whose URL has a port
-  can't have its HTTP/2 sent to another port, as wreq connects to the
-  port the URL gives, so such an alternative is ignored.
+  on HTTP/2, which wreq doesn't tell.
 
 ## Chrome through netweir's quiche
 

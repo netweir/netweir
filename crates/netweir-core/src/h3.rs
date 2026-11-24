@@ -1210,11 +1210,6 @@ impl Routes {
             if !(is_h3 && !self.excluded(to_host) || protocol == "h2") {
                 continue;
             }
-            // Known limit: wreq connects to the port a URL gives, so an
-            // origin with one can't have its HTTP/2 sent to another.
-            if !is_h3 && origin.port().is_some_and(|p| p != to_port) {
-                continue;
-            }
             let max_age = parameters
                 .iter()
                 .rev()

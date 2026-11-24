@@ -1145,9 +1145,6 @@ tokio::task_local! {
 
 #[cfg(feature = "http3")]
 tokio::task_local! {
-    /// Set for a request to an `h2` alternative: the `host` and `port` its
-    /// connection goes to in place of the origin's.
-    static ALT: (String, u16);
     /// Set for a connection made only to prove an `h2` alternative: told
     /// it's up, it goes no further.
     static PROVING: Arc<std::sync::atomic::AtomicBool>;
@@ -1309,34 +1306,20 @@ where
 }
 
 /// The system's resolver, as wreq's own (getaddrinfo), but with the
-/// addresses `FetchOptions::resolve` gives, and for a request to an `h2`
-/// alternative the alternative's host and port in place of the origin's.
+/// addresses `FetchOptions::resolve` gives. A given address's port is
+/// used only where the URL (or the route a request connects to) names
+/// none.
 struct Resolver {
     hosts: Arc<HashMap<String, Vec<std::net::SocketAddr>>>,
 }
 
 impl wreq::dns::Resolve for Resolver {
     fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
-        #[cfg(feature = "http3")]
-        let routed = ALT.try_with(Clone::clone).ok();
-        #[cfg(not(feature = "http3"))]
-        let routed: Option<(String, u16)> = None;
-        let (name, port) = match routed {
-            Some((host, port)) => (wreq::dns::Name::new(host.into()), port),
-            None => (name, 0),
-        };
-        let with_port = move |mut a: std::net::SocketAddr| {
-            if port != 0 {
-                a.set_port(port);
-            }
-            a
-        };
         if let Some(given) = self.hosts.get(name.as_str()) {
-            let addrs: Vec<_> = given.iter().copied().map(with_port).collect();
+            let addrs = given.clone();
             return Box::pin(async move { Ok(Box::new(addrs.into_iter()) as wreq::dns::Addrs) });
         }
-        let resolving = wreq::dns::GaiResolver::default().resolve(name);
-        Box::pin(async move { Ok(Box::new(resolving.await?.map(with_port)) as wreq::dns::Addrs) })
+        wreq::dns::GaiResolver::default().resolve(name)
     }
 }
 
@@ -2460,11 +2443,18 @@ impl Fetcher {
     }
 }
 
-/// Sends a request to an `h2` alternative: over TCP to its host and port,
-/// for the origin (its server name, certificate and `:authority`), with
-/// `Alt-Used` (nsHttpChannel::BeginConnect) where Connection would be, as
-/// over HTTP/3. Its connections are pooled apart from the origin's, as
-/// Firefox's routed connection info hashes apart.
+/// `request` over a TCP connection to `to` (`host:port`) in place of its
+/// URL's host and port, for the URL's origin all the same (its server
+/// name, certificate and `:authority`). Such connections are pooled apart
+/// from the origin's, as Firefox's routed connection info hashes apart.
+#[cfg(feature = "http3")]
+fn routed(request: wreq::RequestBuilder, to: &str) -> Option<wreq::RequestBuilder> {
+    Some(request.connect_to(to.parse().ok()?))
+}
+
+/// Sends a request to an `h2` alternative: over TCP to its host and port
+/// (see [`routed`]), with `Alt-Used` (nsHttpChannel::BeginConnect) where
+/// Connection would be, as over HTTP/3.
 #[cfg(feature = "http3")]
 async fn send_h2(
     route: crate::h3::Route,
@@ -2473,16 +2463,15 @@ async fn send_h2(
     sent: Option<&Sent>,
     view: Option<JarView>,
 ) -> Result<wreq::Response, FetchError> {
-    let Some((host, port)) = route
-        .alternative
-        .rsplit_once(':')
-        .and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?)))
+    let Some(request) = request
+        .try_clone()
+        .and_then(|r| routed(r, &route.alternative))
     else {
         return dispatch(request, order, sent, view).await;
     };
-    let alt_used = match port {
-        443 => host.clone(),
-        _ => route.alternative.clone(),
+    let alt_used = match route.alternative.strip_suffix(":443") {
+        Some(host) => host.to_string(),
+        None => route.alternative.clone(),
     };
     let mut placed = OrigHeaderMap::new();
     let mut put = false;
@@ -2496,11 +2485,7 @@ async fn send_h2(
     if !put {
         placed.insert("alt-used");
     }
-    let request = request
-        .header("alt-used", alt_used)
-        .group(wreq::Group::new(format!("alt-svc {}", route.alternative)));
-    ALT.scope((host, port), dispatch(request, placed, sent, view))
-        .await
+    dispatch(request.header("alt-used", alt_used), placed, sent, view).await
 }
 
 /// Proves an `h2` alternative `to` for `origin` with `client`'s TCP
@@ -2509,20 +2494,15 @@ async fn send_h2(
 #[cfg(feature = "http3")]
 async fn prove_h2(client: wreq::Client, origin: Url, to: String) -> bool {
     static PROOFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let Some((host, port)) = to
-        .rsplit_once(':')
-        .and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?)))
-    else {
-        return false;
-    };
     let n = PROOFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let request = client
         .get(origin.as_str())
         .group(wreq::Group::new(format!("alt-svc proof {n}")));
+    let Some(request) = routed(request, &to) else {
+        return false;
+    };
     let proved = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _ = PROVING
-        .scope(proved.clone(), ALT.scope((host, port), request.send()))
-        .await;
+    let _ = PROVING.scope(proved.clone(), request.send()).await;
     proved.load(std::sync::atomic::Ordering::Relaxed)
 }
 

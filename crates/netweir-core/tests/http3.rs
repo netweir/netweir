@@ -781,6 +781,41 @@ async fn an_h2_alternative_carries_the_origins_requests_once_proved() {
 }
 
 #[tokio::test]
+async fn an_origin_with_a_port_can_have_its_http2_sent_to_another() {
+    // Firefox routes an origin whose URL names a port as any other: the
+    // connection goes to the alternative's port, the request is for the
+    // origin, port and all.
+    let origin_server = Server::start().await.unwrap();
+    let mut alternative = Server::start().await.unwrap();
+    let origin = format!("https://localhost:{}", origin_server.port);
+    let fetcher = fetcher();
+    let to = format!("localhost:{}", alternative.port);
+    fetcher
+        .get(
+            &offering(&origin, &format!("h2=\":{}\"", alternative.port)),
+            &[],
+        )
+        .await
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        let response = fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+        if alt_used(&response).as_deref() == Some(to.as_str()) {
+            assert_eq!(response.version, "HTTP/2");
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "never moved");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let first = alternative.next().await.unwrap();
+    let authority = first.headers.iter().find(|(k, _)| k == ":authority");
+    assert_eq!(
+        authority.map(|(_, v)| v.as_str()),
+        Some(format!("localhost:{}", origin_server.port).as_str())
+    );
+}
+
+#[tokio::test]
 async fn an_https_record_moves_requests_to_http3_without_alt_svc() {
     // origin.test's HTTPS record says h3 on the HTTP/3 server's port; its
     // TCP server never sends Alt-Svc. Firefox goes to HTTP/3 from the
