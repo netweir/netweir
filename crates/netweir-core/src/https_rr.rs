@@ -9,8 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 /// One record as Firefox's SVCB holds it. `target` is never "." for a
 /// ServiceMode record: the owner name stands in for it.
@@ -73,18 +73,159 @@ pub(crate) async fn query(host: &str, port: u16, seam: Option<&Seam>) -> Option<
     .flatten()
 }
 
-/// The canonical name of `host` from an address lookup, as Firefox's
-/// HTTPSRecordResolver asks for one (RESOLVE_CANONICAL_NAME, getaddrinfo
-/// with AI_CANONNAME) alongside the HTTPS query, for
-/// CheckRecordIsUsableWithCname. None if the lookup fails, which skips
-/// that check, as in Firefox.
-// Known limit: Windows gives None, so the check is skipped there.
+/// The canonical name of `host` from an address lookup of its own
+/// (getaddrinfo with AI_CANONNAME), for Chrome's and Safari's record
+/// checks. None if the lookup fails, which skips the check.
 pub(crate) async fn canonical_name(host: &str) -> Option<String> {
-    let host = std::ffi::CString::new(host).ok()?;
-    tokio::task::spawn_blocking(move || os::canonical(&host))
+    let host = host.to_string();
+    tokio::task::spawn_blocking(move || os::addresses(&host)?.cname)
         .await
         .ok()
         .flatten()
+}
+
+/// What an address lookup gave: the addresses in getaddrinfo's order, and
+/// the canonical name.
+#[derive(Debug)]
+pub(crate) struct Addresses {
+    pub ips: Vec<IpAddr>,
+    pub cname: Option<String>,
+}
+
+/// Firefox's host cache for address lookups (nsHostResolver), which
+/// network.dns.always_ai_canonname makes one entry, and one getaddrinfo
+/// with AI_CANONNAME, for both a request's canonical-name check
+/// (HTTPSRecordResolver) and its connections. An answer stands for
+/// network.dnsCacheExpiration (60 s), or its TTL where Firefox gets one,
+/// and is then still used for network.dnsCacheExpirationGracePeriod
+/// (600 s) while it's looked up again; a failed lookup likewise, for
+/// network.dnsNegativeCacheExpiration (60 s) and its grace (600 s).
+/// On Windows, where network.dns.get-ttl is on, a first answer is
+/// followed by a second lookup that also asks DnsQuery_A for the TTL
+/// (nsHostResolver::CompleteLookupLocked, _GetTTLData_Windows).
+// shortcut: keyed by host alone, as the HTTPS records here are, where
+// Firefox's entries are also keyed by the request's partition.
+#[derive(Default)]
+pub(crate) struct HostCache {
+    entries: std::sync::Mutex<HashMap<String, Arc<CacheEntry>>>,
+    /// How many lookups it has started.
+    #[cfg(test)]
+    pub(crate) lookups: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Default)]
+struct CacheEntry {
+    answer: tokio::sync::watch::Sender<Option<Cached>>,
+    refreshing: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Clone)]
+struct Cached {
+    answer: Option<Arc<Addresses>>,
+    /// From here it's used, but looked up again (EXP_GRACE).
+    stale: Instant,
+    /// From here it isn't used (EXP_EXPIRED).
+    gone: Instant,
+}
+
+impl HostCache {
+    fn started(&self) {
+        #[cfg(test)]
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `host`'s addresses and canonical name, from the cache or a lookup.
+    pub(crate) async fn lookup(&self, host: &str) -> Option<Arc<Addresses>> {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let entry = {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            let cached = entries
+                .get(&host)
+                .map(|e| (e.clone(), e.answer.borrow().clone()));
+            match cached {
+                // Still being looked up.
+                Some((entry, None)) => entry,
+                Some((entry, Some(cached))) if now < cached.gone => {
+                    if now >= cached.stale
+                        && !entry
+                            .refreshing
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        self.started();
+                        look_up(host, entry);
+                    }
+                    return cached.answer;
+                }
+                _ => {
+                    let entry = Arc::new(CacheEntry::default());
+                    entries.insert(host.clone(), entry.clone());
+                    self.started();
+                    look_up(host, entry.clone());
+                    entry
+                }
+            }
+        };
+        let mut answer = entry.answer.subscribe();
+        let cached = answer.wait_for(Option::is_some).await.ok()?.clone()?;
+        cached.answer
+    }
+}
+
+/// network.dnsCacheExpiration and network.dnsNegativeCacheExpiration
+/// (release builds), and their grace periods.
+const DNS_LIFETIME: Duration = Duration::from_secs(60);
+const DNS_GRACE: Duration = Duration::from_secs(600);
+
+/// Looks `host` up for `entry` on a thread of its own, as Firefox's
+/// resolver threads do, so the lookup outlives whichever runtime asked.
+fn look_up(host: String, entry: Arc<CacheEntry>) {
+    let unresolved = entry.clone();
+    let done = move |answer: Option<Addresses>, ttl: Option<u32>| {
+        let now = Instant::now();
+        let lifetime = ttl.map_or(DNS_LIFETIME, |t| Duration::from_secs(t.into()));
+        // nsHostRecord::SetExpiration: never less than a minute in all.
+        let grace = DNS_GRACE.max(Duration::from_secs(60).saturating_sub(lifetime));
+        entry.answer.send_replace(Some(Cached {
+            answer: answer.map(Arc::new),
+            stale: now + lifetime,
+            gone: now + lifetime + grace,
+        }));
+        entry
+            .refreshing
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    };
+    let spawned = std::thread::Builder::new()
+        .name("netweir-dns".into())
+        .spawn(move || {
+            let answer = os::addresses(&host);
+            let found = answer.is_some();
+            done(answer, None);
+            if found && os::GET_TTL {
+                let again = os::addresses(&host);
+                let name = again
+                    .as_ref()
+                    .and_then(|a| a.cname.clone())
+                    .unwrap_or_else(|| host.clone());
+                let ttl = again.as_ref().and_then(|_| os::ttl(&name));
+                if again.is_some() {
+                    done(again, ttl);
+                }
+            }
+        });
+    if spawned.is_err() {
+        // Gone at once, so the next request looks it up again.
+        let now = Instant::now();
+        unresolved.answer.send_replace(Some(Cached {
+            answer: None,
+            stale: now,
+            gone: now,
+        }));
+        unresolved
+            .refreshing
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The name Firefox queries for `host` on `port`, or None when it queries
@@ -1025,39 +1166,106 @@ pub fn https_answer(qname: &str, records: &[(u16, &str, &[(u16, Vec<u8>)])], ttl
 /// HTTPS lookup on; elsewhere Firefox makes none (MOZ_NO_HTTPS_IMPL).
 #[allow(unsafe_code)]
 mod os {
-    /// getaddrinfo's canonical name for `host`, asked as NSPR's
-    /// PR_GetAddrInfoByName asks for Firefox (GetAddrInfo.cpp::_GetAddrInfo
-    /// _Portable: PR_AI_ADDRCONFIG, and the canonical name).
+    /// Whether Firefox asks for a TTL after an address lookup
+    /// (network.dns.get-ttl: on Windows only).
+    pub(super) const GET_TTL: bool = cfg!(windows);
+
+    /// getaddrinfo's addresses and canonical name for `host`, asked as
+    /// NSPR's PR_GetAddrInfoByName asks for Firefox
+    /// (GetAddrInfo.cpp::_GetAddrInfo_Portable): AI_CANONNAME, and
+    /// AI_ADDRCONFIG but for the localhost names, and once more without
+    /// it if the system refuses the flag; any family, stream sockets.
     #[cfg(unix)]
-    pub(super) fn canonical(host: &std::ffi::CStr) -> Option<String> {
+    pub(super) fn addresses(host: &str) -> Option<super::Addresses> {
+        let name = std::ffi::CString::new(host).ok()?;
         let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
         hints.ai_family = libc::AF_UNSPEC;
         hints.ai_socktype = libc::SOCK_STREAM;
-        hints.ai_flags = libc::AI_ADDRCONFIG | libc::AI_CANONNAME;
+        hints.ai_flags = libc::AI_CANONNAME;
+        if !LOCALHOSTS.contains(&host) {
+            hints.ai_flags |= libc::AI_ADDRCONFIG;
+        }
         let mut list = std::ptr::null_mut();
         // SAFETY: valid C strings and hints; the list is freed below.
-        let failed =
-            unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut list) };
+        let mut failed =
+            unsafe { libc::getaddrinfo(name.as_ptr(), std::ptr::null(), &hints, &mut list) };
+        if failed == libc::EAI_BADFLAGS && hints.ai_flags & libc::AI_ADDRCONFIG != 0 {
+            hints.ai_flags &= !libc::AI_ADDRCONFIG;
+            // SAFETY: as above.
+            failed =
+                unsafe { libc::getaddrinfo(name.as_ptr(), std::ptr::null(), &hints, &mut list) };
+        }
         if failed != 0 {
             return None;
         }
         let first = std::ptr::NonNull::new(list)?;
-        // SAFETY: getaddrinfo succeeded and gave a list, so `first` points
-        // at its first entry until freeaddrinfo; the name is copied first.
+        let mut ips = Vec::new();
+        let mut cname = None;
+        // SAFETY: getaddrinfo succeeded and gave a list, which stays valid
+        // until freeaddrinfo; what's needed is copied out first.
         unsafe {
             let canonname = first.as_ref().ai_canonname;
-            let name = (!canonname.is_null()).then(|| {
-                std::ffi::CStr::from_ptr(canonname)
-                    .to_string_lossy()
-                    .into_owned()
-            });
-            libc::freeaddrinfo(first.as_ptr());
-            name
+            if !canonname.is_null() {
+                cname = Some(
+                    std::ffi::CStr::from_ptr(canonname)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            let mut at = list;
+            while let Some(entry) = at.as_ref() {
+                if let Some(ip) = ip_of(entry.ai_family, entry.ai_addr.cast()) {
+                    ips.push(ip);
+                }
+                at = entry.ai_next;
+            }
+            libc::freeaddrinfo(list);
+        }
+        (!ips.is_empty()).then_some(super::Addresses { ips, cname })
+    }
+
+    /// The names NSPR leaves AI_ADDRCONFIG off for.
+    #[cfg(any(unix, windows))]
+    const LOCALHOSTS: [&str; 4] = [
+        "localhost",
+        "localhost.localdomain",
+        "localhost6",
+        "localhost6.localdomain6",
+    ];
+
+    /// The address in a `sockaddr` of `family`.
+    ///
+    /// # Safety
+    /// `addr` points at a `sockaddr_in` for AF_INET and a `sockaddr_in6`
+    /// for AF_INET6.
+    #[cfg(unix)]
+    unsafe fn ip_of(family: i32, addr: *const u8) -> Option<std::net::IpAddr> {
+        if addr.is_null() {
+            return None;
+        }
+        // SAFETY: as the caller promises.
+        unsafe {
+            match family {
+                libc::AF_INET => {
+                    let a = &*addr.cast::<libc::sockaddr_in>();
+                    Some(std::net::Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr)).into())
+                }
+                libc::AF_INET6 => {
+                    let a = &*addr.cast::<libc::sockaddr_in6>();
+                    Some(std::net::Ipv6Addr::from(a.sin6_addr.s6_addr).into())
+                }
+                _ => None,
+            }
         }
     }
 
-    #[cfg(not(unix))]
-    pub(super) fn canonical(_: &std::ffi::CStr) -> Option<String> {
+    #[cfg(not(any(unix, windows)))]
+    pub(super) fn addresses(_: &str) -> Option<super::Addresses> {
+        None
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn ttl(_: &str) -> Option<u32> {
         None
     }
 
@@ -1449,9 +1657,17 @@ mod os {
         use std::ffi::CString;
 
         use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
-        use windows_sys::Win32::NetworkManagement::Dns::{DNS_RECORDA, DnsFree, DnsQuery_A};
+        use windows_sys::Win32::NetworkManagement::Dns::{
+            DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE, DNS_QUERY_DONT_RESET_TTL_VALUES,
+            DNS_QUERY_NO_HOSTS_FILE, DNS_QUERY_NO_MULTICAST, DNS_QUERY_NO_NETBT, DNS_RECORDA,
+            DNS_TYPE_A, DNS_TYPE_AAAA, DnsFree, DnsQuery_A,
+        };
         use windows_sys::Win32::NetworkManagement::IpHelper::{
             GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+        };
+        use windows_sys::Win32::Networking::WinSock::{
+            ADDRINFOA, AF_UNSPEC, AI_ADDRCONFIG, AI_CANONNAME, SOCK_STREAM, WSADATA, WSAStartup,
+            freeaddrinfo, getaddrinfo,
         };
         use windows_sys::Win32::System::Registry::{
             HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
@@ -1459,6 +1675,125 @@ mod os {
         use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryA, OSVERSIONINFOW};
 
         use super::super::{Fail, Lookup, Res, WinRecord, windows_records};
+
+        /// getaddrinfo's addresses and canonical name for `host`, as on
+        /// other systems: NSPR calls Winsock's getaddrinfo with the same
+        /// hints.
+        pub(in super::super) fn addresses(host: &str) -> Option<super::super::Addresses> {
+            // Winsock needs starting once per process, as std does before
+            // its own lookups.
+            static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            STARTED.get_or_init(|| {
+                // SAFETY: a WSADATA to fill in.
+                let mut data: WSADATA = unsafe { std::mem::zeroed() };
+                // SAFETY: as above; version 2.2.
+                unsafe { WSAStartup(0x0202, &mut data) };
+            });
+            let name = CString::new(host).ok()?;
+            // SAFETY: a zeroed ADDRINFOA is a valid empty hints struct.
+            let mut hints: ADDRINFOA = unsafe { std::mem::zeroed() };
+            hints.ai_family = AF_UNSPEC.into();
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_flags = AI_CANONNAME as i32;
+            if !super::LOCALHOSTS.contains(&host) {
+                hints.ai_flags |= AI_ADDRCONFIG as i32;
+            }
+            let mut list: *mut ADDRINFOA = std::ptr::null_mut();
+            // SAFETY: valid C strings and hints; the list is freed below.
+            let mut failed =
+                unsafe { getaddrinfo(name.as_ptr().cast(), std::ptr::null(), &hints, &mut list) };
+            // EAI_BADFLAGS is WSAEINVAL.
+            if failed == 10022 && hints.ai_flags & AI_ADDRCONFIG as i32 != 0 {
+                hints.ai_flags &= !(AI_ADDRCONFIG as i32);
+                // SAFETY: as above.
+                failed = unsafe {
+                    getaddrinfo(name.as_ptr().cast(), std::ptr::null(), &hints, &mut list)
+                };
+            }
+            if failed != 0 || list.is_null() {
+                return None;
+            }
+            let mut ips = Vec::new();
+            let mut cname = None;
+            // SAFETY: getaddrinfo succeeded and gave a list, valid until
+            // freeaddrinfo; what's needed is copied out first. A Windows
+            // sockaddr starts with its u16 family; an IPv4 address sits at
+            // byte 4 of a SOCKADDR_IN, an IPv6 one at byte 8 of a
+            // SOCKADDR_IN6.
+            unsafe {
+                let canonname = (*list).ai_canonname;
+                if !canonname.is_null() {
+                    cname = Some(
+                        std::ffi::CStr::from_ptr(canonname.cast())
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+                let mut at = list;
+                while let Some(entry) = at.as_ref() {
+                    let addr = entry.ai_addr.cast::<u8>();
+                    if !addr.is_null() {
+                        match entry.ai_family {
+                            2 if entry.ai_addrlen >= 8 => {
+                                let b = std::slice::from_raw_parts(addr.add(4), 4);
+                                ips.push(std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).into());
+                            }
+                            23 if entry.ai_addrlen >= 24 => {
+                                let mut b = [0u8; 16];
+                                b.copy_from_slice(std::slice::from_raw_parts(addr.add(8), 16));
+                                ips.push(std::net::Ipv6Addr::from(b).into());
+                            }
+                            _ => {}
+                        }
+                    }
+                    at = entry.ai_next;
+                }
+                freeaddrinfo(list);
+            }
+            (!ips.is_empty()).then_some(super::super::Addresses { ips, cname })
+        }
+
+        /// The smallest TTL among `name`'s A and AAAA answers, as
+        /// _GetTTLData_Windows asks DnsQuery_A for them.
+        pub(in super::super) fn ttl(name: &str) -> Option<u32> {
+            let name = CString::new(name).ok()?;
+            let flags = DNS_QUERY_NO_NETBT
+                | DNS_QUERY_NO_HOSTS_FILE
+                | DNS_QUERY_NO_MULTICAST
+                | DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE
+                | DNS_QUERY_DONT_RESET_TTL_VALUES;
+            let mut ttl: Option<u32> = None;
+            for kind in [DNS_TYPE_A, DNS_TYPE_AAAA] {
+                let mut result: *mut DNS_RECORDA = std::ptr::null_mut();
+                // SAFETY: a C string and an out pointer.
+                let status = unsafe {
+                    DnsQuery_A(
+                        name.as_ptr().cast(),
+                        kind,
+                        flags,
+                        std::ptr::null_mut(),
+                        &mut result,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if status != 0 || result.is_null() {
+                    continue;
+                }
+                let mut at = result;
+                // SAFETY: the list DnsQuery_A returned, freed below. The
+                // section is the flags' two low bits; 1 is the answer.
+                unsafe {
+                    while let Some(r) = at.as_ref() {
+                        if r.Flags.DW & 0x3 == 1 && r.wType == kind {
+                            ttl = Some(ttl.map_or(r.dwTtl, |t| t.min(r.dwTtl)));
+                        }
+                        at = r.pNext;
+                    }
+                    DnsFree(result.cast(), 1);
+                }
+            }
+            ttl
+        }
 
         /// mozilla::IsWin11OrLater: 10.0.22000. RtlGetVersion, as a
         /// process without Firefox's manifest gets told 6.2 by

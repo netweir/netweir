@@ -865,6 +865,8 @@ pub(crate) struct Routes {
     records: Mutex<HashMap<String, watch::Receiver<Option<Found>>>>,
     /// Given answers to HTTPS queries, for tests.
     seam: Option<Arc<crate::https_rr::Seam>>,
+    /// Firefox's host cache, which the TCP connections' lookups share.
+    host_cache: Option<Arc<crate::https_rr::HostCache>>,
     /// Connections by partition, server name and alternative.
     connections: Mutex<HashMap<String, Handle>>,
     /// The newest session ticket from each server, for the next
@@ -905,6 +907,7 @@ impl Routes {
         hosts: Arc<HashMap<String, Vec<IpAddr>>>,
         seam: Option<Arc<crate::https_rr::Seam>>,
         stack: Stack,
+        host_cache: Option<Arc<crate::https_rr::HostCache>>,
     ) -> Routes {
         Routes {
             stack,
@@ -915,6 +918,7 @@ impl Routes {
             hosts,
             records: Mutex::default(),
             seam,
+            host_cache,
             connections: Mutex::default(),
             tickets: Tickets::default(),
             chrome_tickets: crate::h3_chrome::Tickets::default(),
@@ -926,9 +930,16 @@ impl Routes {
         }
     }
 
+    /// How many address lookups Firefox's host cache has started.
+    #[cfg(test)]
+    pub(crate) fn address_lookups(&self) -> usize {
+        self.host_cache
+            .as_ref()
+            .map_or(0, |c| c.lookups.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// Whether the Fetcher follows Chrome's rules, as Safari's profiles
     /// also do, with the exceptions `is_safari` marks.
-    /// Whether the Fetcher follows Chrome's rules (Chrome's or Safari's).
     pub(crate) fn is_chrome(&self) -> bool {
         matches!(self.stack, Stack::Chrome(_) | Stack::Safari(_))
     }
@@ -1387,14 +1398,23 @@ impl Routes {
                 let (host, seam) = (host.to_string(), self.seam.clone());
                 let chrome = self.alt_svc_first();
                 let given = self.hosts.contains_key(&host);
+                let cache = self.host_cache.clone();
                 tokio::spawn(async move {
+                    // The canonical name comes from the address lookup the
+                    // connection uses too, Firefox's host cache entry
+                    // (network.dns.always_ai_canonname). A name given an
+                    // address has none.
+                    let cname = async {
+                        match &cache {
+                            _ if given => None,
+                            Some(cache) => cache.lookup(&host).await?.cname.clone(),
+                            None => crate::https_rr::canonical_name(&host).await,
+                        }
+                    };
                     let (records, cname) = if chrome {
                         chrome_resolve(&host, port, seam.as_deref(), given).await
                     } else {
-                        tokio::join!(
-                            crate::https_rr::query(&host, port, seam.as_deref()),
-                            crate::https_rr::canonical_name(&host),
-                        )
+                        tokio::join!(crate::https_rr::query(&host, port, seam.as_deref()), cname)
                     };
                     let expires = Instant::now()
                         + match (&records, chrome) {
@@ -1619,6 +1639,7 @@ impl Routes {
                 &key,
                 self.trust.clone(),
                 &self.tickets,
+                self.host_cache.clone(),
             ),
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
@@ -1934,6 +1955,7 @@ pub(crate) fn leading_number(s: &str) -> i64 {
 
 /// Opens a connection to `alternative`, at the address `given` for its
 /// host if there is one.
+#[allow(clippy::too_many_arguments, reason = "each is the connection's own")]
 fn open(
     host: &str,
     alternative: &str,
@@ -1942,6 +1964,7 @@ fn open(
     key: &str,
     trust: Trust,
     tickets: &Tickets,
+    host_cache: Option<Arc<crate::https_rr::HostCache>>,
 ) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
@@ -1969,6 +1992,17 @@ fn open(
                 key,
                 tickets,
             };
+            // The alternative's address, from Firefox's host cache as the
+            // TCP connections' are.
+            let given = given.or_else(|| {
+                let cache = host_cache.as_ref()?;
+                let name = host_of(&alternative);
+                if name.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() {
+                    return None;
+                }
+                let answer = runtime.block_on(cache.lookup(name))?;
+                answer.ips.first().copied()
+            });
             runtime.block_on(run(
                 host,
                 alternative,

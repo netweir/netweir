@@ -1288,6 +1288,10 @@ where
 /// none.
 struct Resolver {
     hosts: Arc<HashMap<String, Vec<std::net::SocketAddr>>>,
+    /// Firefox's host cache, shared with the HTTPS records' canonical-name
+    /// check, for a Firefox profile that moves to HTTP/3.
+    #[cfg(feature = "http3")]
+    cache: Option<Arc<crate::https_rr::HostCache>>,
 }
 
 impl wreq::dns::Resolve for Resolver {
@@ -1295,6 +1299,23 @@ impl wreq::dns::Resolve for Resolver {
         if let Some(given) = self.hosts.get(name.as_str()) {
             let addrs = given.clone();
             return Box::pin(async move { Ok(Box::new(addrs.into_iter()) as wreq::dns::Addrs) });
+        }
+        #[cfg(feature = "http3")]
+        if let Some(cache) = self.cache.clone() {
+            return Box::pin(async move {
+                let found = cache.lookup(name.as_str()).await.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("failed to look up address for {}", name.as_str()),
+                    )
+                })?;
+                let addrs: Vec<_> = found
+                    .ips
+                    .iter()
+                    .map(|ip| std::net::SocketAddr::new(*ip, 0))
+                    .collect();
+                Ok(Box::new(addrs.into_iter()) as wreq::dns::Addrs)
+            });
         }
         wreq::dns::GaiResolver::default().resolve(name)
     }
@@ -1344,6 +1365,17 @@ impl Fetcher {
                 .push(*addr);
         }
         let hosts = Arc::new(hosts);
+        // Firefox's host cache, for a Firefox profile that moves to HTTP/3,
+        // where the HTTPS records' canonical-name check would otherwise
+        // look each name up a second time.
+        #[cfg(feature = "http3")]
+        let host_cache = (options.http3
+            && options.proxy.is_none()
+            && profile
+                .http3
+                .as_ref()
+                .is_some_and(|h| h.stack == "firefox-160"))
+        .then(|| Arc::new(crate::https_rr::HostCache::default()));
         let build = |emulation| -> Result<wreq::Client, FetchError> {
             let mut builder = wreq::Client::builder()
                 .emulation(emulation)
@@ -1371,6 +1403,8 @@ impl Fetcher {
             }
             builder = builder.connector_layer(Told).dns_resolver(Resolver {
                 hosts: hosts.clone(),
+                #[cfg(feature = "http3")]
+                cache: host_cache.clone(),
             });
             if options.proxy.is_none() && !options.system_proxy {
                 builder = builder.no_proxy();
@@ -1475,6 +1509,7 @@ impl Fetcher {
                         (!options.https_records.is_empty())
                             .then(|| Arc::new(options.https_records.clone())),
                         stack,
+                        host_cache.clone(),
                     )))
                 }
                 Some(other) => {
@@ -3027,6 +3062,25 @@ mod tests {
 
     fn fetcher() -> Fetcher {
         Fetcher::new(FetchOptions::new(Profile::named("chrome").unwrap())).unwrap()
+    }
+
+    #[cfg(feature = "http3")]
+    #[tokio::test]
+    async fn the_record_check_and_the_connection_look_a_name_up_once() {
+        // Firefox's canonical-name check and its TCP connection share one
+        // host cache entry (network.dns.always_ai_canonname), so one
+        // getaddrinfo serves both, and the next request's too.
+        let server = netweir_fingerprint::Server::start().await.unwrap();
+        let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+        options.verify_certificates = false;
+        let fetcher = Fetcher::new(options).unwrap();
+        let url = format!("https://localhost:{}/", server.port);
+        fetcher.get(&url, &[]).await.unwrap();
+        fetcher.get(&url, &[]).await.unwrap();
+        let routes = fetcher.h3.as_ref().unwrap();
+        // The record lookup's task may still be on its way.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(routes.address_lookups(), 1);
     }
 
     #[test]

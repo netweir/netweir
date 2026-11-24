@@ -128,7 +128,15 @@ default preferences; Chrome's rules are
   `.local`, a name in the hosts file or under a search domain. An http URL
   is asked about too, as Firefox's DNS prefetch asks. Alongside goes an
   address lookup for the canonical name, which a record's target has to
-  match (`network.dns.https_rr.check_record_with_cname`). The answer is
+  match (`network.dns.https_rr.check_record_with_cname`). It's the same
+  lookup the connections use: `network.dns.always_ai_canonname` makes
+  every address lookup getaddrinfo with `AI_CANONNAME`, as NSPR calls it
+  on Linux, macOS and Windows alike, and the host cache keeps one entry
+  for both, for `network.dnsCacheExpiration` (60 s, or the TTL on
+  Windows, which a second lookup asks `DnsQuery_A` for, as
+  `network.dns.get-ttl` has Firefox do there), then serves it for
+  `network.dnsCacheExpirationGracePeriod` (600 s) while it looks the name
+  up again; a failed lookup is kept the same way. The answer is
   parsed, sorted and picked as `DNSPacket`, `HTTPSSVC.cpp` and
   `GetServiceModeRecordWithCname` do (`src/https_rr.rs`), and kept for
   its TTL and then the 600 s grace, or 300 s if there was none. The
@@ -234,10 +242,8 @@ What's not the same as Firefox:
   back: the request goes on as after any other failure.
 - ECH over TCP: BoringSSL builds the inner and outer ClientHellos, where
   Firefox has NSS, and Netweir hasn't compared the two.
-- The canonical name the record check needs comes from a lookup of its
-  own (getaddrinfo with `AI_CANONNAME`, as NSPR asks for Firefox),
-  alongside wreq's; a system with no caching resolver may send the
-  address queries twice. On Windows the check is skipped.
+- The host cache, like the HTTPS records', is keyed by name alone;
+  Firefox keys both by the request's top-level site too.
 
 ## Chrome through netweir's quiche
 
