@@ -1477,15 +1477,27 @@ impl Fetcher {
             // netweir, the system's included.
             #[cfg(feature = "http3")]
             h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
-                Some("firefox-160" | "chrome-157") if !options.http3 || options.proxy.is_some() => {
+                Some("firefox-160" | "chrome-157" | "safari-27")
+                    if !options.http3 || options.proxy.is_some() =>
+                {
                     None
                 }
-                Some(stack @ ("firefox-160" | "chrome-157")) => {
+                Some(stack @ ("firefox-160" | "chrome-157" | "safari-27")) => {
                     let chrome = stack == "chrome-157";
-                    let stack = if chrome {
-                        crate::h3::Stack::Chrome(Arc::new(profile.tls.clone()))
-                    } else {
-                        crate::h3::Stack::Firefox
+                    let stack = match stack {
+                        "chrome-157" => crate::h3::Stack::Chrome(Arc::new(profile.tls.clone())),
+                        "safari-27" => {
+                            // Safari's QUIC hello keeps its own extension
+                            // order (`[http3] extension_order`).
+                            let mut tls = profile.tls.clone();
+                            if let Some(h) = &profile.http3
+                                && !h.extension_order.is_empty()
+                            {
+                                tls.extension_order = h.extension_order.clone();
+                            }
+                            crate::h3::Stack::Safari(Arc::new(tls))
+                        }
+                        _ => crate::h3::Stack::Firefox,
                     };
                     let proving = client.clone();
                     let validate: crate::h3::Validate =
@@ -1625,6 +1637,12 @@ impl Fetcher {
                 Some(Err(lookup)) if alternative.is_none() => Way::Lookup(lookup),
                 _ => Way::Go(alternative?),
             };
+            // Safari keeps an origin on the TCP connection it has open.
+            if let Way::Go(r) = &way
+                && routes.tcp_open(&partition, &origin, r)
+            {
+                return None;
+            }
             return Some((routes.clone(), way));
         }
         let _ = (url, outgoing);
@@ -1635,6 +1653,13 @@ impl Fetcher {
     /// nsHttpChannel::ProcessAltService does: from an https origin, on any
     /// answer but a 421 or a 5xx.
     fn learn_alternative(&self, url: &Url, outgoing: &Outgoing, response: &wreq::Response) {
+        #[cfg(feature = "http3")]
+        if let Some(routes) = &self.h3
+            && url.scheme() == "https"
+            && self.direct(url)
+        {
+            routes.tcp_used(&partition(outgoing, url), url);
+        }
         #[cfg(feature = "http3")]
         if let Some(routes) = &self.h3
             && url.scheme() == "https"
@@ -2205,6 +2230,17 @@ impl Fetcher {
         use wreq_proto::ext::OnPreserveHeaderCallback;
         let route = match way {
             Way::Go(route) => route,
+            // Safari asks for the records alongside the addresses and
+            // connects once both are in, over QUIC first if the records
+            // offer h3 (Apple's Tommy Pauly on DNSOP, 2020-09-25).
+            Way::Lookup(lookup) if routes.waits_for_records() => {
+                match tokio::time::timeout(crate::h3::RECORD_WAIT, routes.adopt_when_found(lookup))
+                    .await
+                {
+                    Ok(Some(route)) => route,
+                    _ => return dispatch(request, order, sent, view).await,
+                }
+            }
             Way::Lookup(lookup) => {
                 // The TCP connection starts now; records that come in while
                 // it's being made, and send the request over HTTP/3, take it.

@@ -591,8 +591,9 @@ class Client:
     ``storage_state`` starts the client with the cookies of a storage state:
     a path to a file ``storage_state()`` (here or in a browser context) or
     Playwright saved, or its dict. ``cookies`` is the jar. ``http3=False``
-    keeps every request on TCP; otherwise a Firefox profile moves to HTTP/3
-    once a site offers it, as Firefox does, unless there's a proxy.
+    keeps every request on TCP; otherwise a Firefox, Chrome or Safari
+    profile moves to HTTP/3 once a site offers it, as that browser does,
+    unless there's a proxy.
     """
 
     def __init__(

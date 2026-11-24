@@ -36,8 +36,9 @@ Working today:
 - Fetching that is indistinguishable from Chrome 157, Firefox 160 or
   Safari 27 on the wire, over HTTP/2 and HTTP/1.1, with cookies and
   redirects. Below: how that's proved, and the one known exception.
-- HTTP/3 the way Chrome and Firefox do it: once a site offers it, the
-  profile moves there, with the browser's own first QUIC packets.
+- HTTP/3 the way Chrome, Firefox and Safari do it: once a site offers
+  it, the profile moves there, with the browser's own first QUIC packets
+  (for Safari, the closest match to them: its QUIC is Apple's own).
 - Forms, logins and JSON APIs: POST and any other method, sent the way
   Chrome, Firefox or Safari sends a form or a page's own script, and forms read off
   a page the way a browser submits them. See
@@ -498,7 +499,18 @@ and the fetcher follows those rules for a Chrome profile. What isn't
 exact: after the first round trips, congestion control and pacing are
 quiche's, not Chrome's
 ([docs/design/http3.md](docs/design/http3.md#what-isnt-chromes)).
-Safari stays on HTTP/2 until its own QUIC is in.
+
+Safari does too, and here I can only promise the closest match. Its QUIC
+is Apple's Network.framework, whose code isn't public, so there's nothing
+to run or port. What I could do was record Safari 27.2 and set the same
+quiche fork up to send what it sent. A test holds Netweir's first packets
+to that recording field for field: the ClientHello and both its JA4s,
+the transport parameters, the two 1200-byte Initials, the HTTP/3
+settings, the header order. Safari stays on an open TCP connection,
+moves to HTTP/3 on a new one or on first contact from an HTTPS DNS
+record, and gives QUIC 250 ms before starting TCP, as it was timed
+doing. What the recording couldn't show, and what Netweir chose instead,
+is in [docs/design/http3.md](docs/design/http3.md#what-isnt-safaris).
 
 One known difference: Chrome sends a `priority` header only over HTTP/2,
 and Netweir can't tell a server lacks HTTP/2 until it has answered once. So

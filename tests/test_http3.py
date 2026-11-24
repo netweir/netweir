@@ -78,3 +78,15 @@ async def test_http3_off_stays_on_tcp(capture):
         await client.get(url)
         await asyncio.sleep(1)
         assert protocol(await client.get(url)) != "h3"
+
+
+async def test_safari_keeps_its_open_connection(capture):
+    # Safari moves to HTTP/3 only on a new connection: while the one it
+    # has is open, the site's requests stay on it.
+    url = f"https://localhost:{capture}/"
+    async with netweir.Client(profile="safari", verify=False) as client:
+        first = await client.get(url)
+        await asyncio.sleep(0.5)
+        second = await client.get(url)
+    assert protocol(first) != "h3"
+    assert protocol(second) != "h3"

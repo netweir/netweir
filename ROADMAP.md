@@ -7,14 +7,6 @@ us something more urgent. Ideas and objections are welcome in
 
 ## Next
 
-**HTTP/3 for Safari.** Firefox's and Chrome's ship: a Firefox or Chrome
-profile moves to HTTP/3 when a site offers it, with that browser's first
-QUIC packets. Safari's
-([#390](https://github.com/netweir/netweir/issues/390)) is next, on the
-Chrome engine with Safari's settings, once its first packet looks
-exactly like Safari's. Until then it stays on HTTP/2 and HTTP/1.1, which
-is what a browser falls back to when a site offers no HTTP/3.
-
 **Firefox's gaps.** A few options still raise `BrowserError` on Firefox,
 mostly where its WebDriver BiDi has no command for them.
 [docs/browser.md](docs/browser.md#starting-firefox) lists them.
@@ -24,6 +16,12 @@ so. No route does that today, and a WebKit that every challenge spots would
 be no use to you.
 
 ## Shipped
+
+On main for the next release: HTTP/3 for the Firefox, Chrome and Safari
+profiles, each moving to it when a site offers it, with that browser's
+first QUIC packets ([#385](https://github.com/netweir/netweir/issues/385)).
+Safari's are the closest match to its own, since its QUIC is Apple's
+code and isn't public.
 
 0.8 added Firefox: `netweir.browser(engine="firefox")` drives the Firefox
 `netweir install firefox` installs, and pages can't tell it's driven. 0.7

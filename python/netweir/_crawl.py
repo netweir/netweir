@@ -137,7 +137,8 @@ class Settings:
     #: internal CA vouches for. Nothing on the wire changes.
     verify: bool | str | os.PathLike = True
     #: Move to HTTP/3 where the profile's browser would, after a site
-    #: offers it (Alt-Svc). Only Firefox profiles have it yet, and never
+    #: offers it (Alt-Svc, or for Firefox and Safari an HTTPS DNS record).
+    #: The newest Firefox, Chrome and Safari profiles have it, never
     #: through a proxy. False keeps every request on TCP.
     http3: bool = True
     #: A (user, password) login sent as HTTP Basic to http_auth_domain and

@@ -116,3 +116,48 @@ fn firefox_160_over_http3() {
         }
     }
 }
+
+#[test]
+fn safari_27_over_http3() {
+    let all = recording("safari-27-macos");
+    let captures = h3(&all);
+    assert!(captures.len() >= 10);
+    for c in &captures {
+        let quic = c.quic.as_ref().unwrap();
+        assert_eq!((quic.version, quic.dcid_len, quic.scid_len), (1, 8, 0));
+        assert!(quic.token.is_empty());
+        let sizes: Vec<usize> = quic.datagrams.iter().map(|d| d.size).collect();
+        assert_eq!(sizes, [1200, 1200], "two Initials of 1200 bytes");
+        for (i, d) in quic.datagrams.iter().enumerate() {
+            let p = &d.packets[..];
+            assert_eq!(p.len(), 1);
+            assert_eq!(p[0].packet_number, Some(i as u64));
+            // One CRYPTO frame, at most 999 bytes, then PADDING.
+            match &p[0].frames[..] {
+                [Frame::Crypto { length, .. }, Frame::Padding { .. }] => {
+                    assert!(*length <= 999)
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // Ascending from a random one, no GREASE.
+        let ids: Vec<u64> = quic.transport_parameters.iter().map(|p| p.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(sorted, [4, 5, 6, 7, 9, 0xe, 0xf]);
+        let at = sorted.iter().position(|&id| id == ids[0]).unwrap();
+        sorted.rotate_left(at);
+        assert_eq!(ids, sorted);
+        assert_eq!(setting_ids(c), [0x01, 0x07, 0]);
+        assert!(c.http3.as_ref().unwrap().control_frames.is_empty());
+        assert_eq!(pseudo(c), [":method", ":scheme", ":authority", ":path"]);
+        let ja4 = if resumed(c) {
+            "q13d0312h3_55b375c5d22e_151122171f7d"
+        } else {
+            "q13d0311h3_55b375c5d22e_f2a83c8e78ae"
+        };
+        assert_eq!(c.ja4, ja4);
+    }
+    assert!(captures.iter().any(|c| resumed(c)));
+    assert!(captures.iter().any(|c| !resumed(c)));
+}

@@ -1,4 +1,4 @@
-# HTTP/3: Firefox through neqo, Chrome through quiche
+# HTTP/3: Firefox through neqo, Chrome and Safari through quiche
 
 A request over HTTP/3 has to look like the browser's from its first UDP
 datagram: the QUIC Initial carries the ClientHello, and anyone on the path
@@ -6,7 +6,8 @@ can read it. For Firefox, Netweir doesn't imitate that. It runs the code
 Firefox runs.
 
 This is issue #387, and Chrome's, further down, is
-[#388](#chrome-through-netweirs-quiche). When the fetcher moves to it,
+[#388](#chrome-through-netweirs-quiche). Safari's, after it, is
+[#390](#safari-the-closest-match). When the fetcher moves to it,
 races TCP and falls back, the way Firefox does, is #389, under
 [When a request goes over HTTP/3](#when-a-request-goes-over-http3).
 Both are in netweir-core's `http3` feature, which netweir-py's own
@@ -101,11 +102,12 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 ## When a request goes over HTTP/3
 
 Only a profile with an `[http3]` section moves to HTTP/3: today that's
-`firefox-160-macos` and `chrome-157-macos`. Safari stays on TCP until its
-own stack is in (#390), and so do the older Firefox and Chrome profiles,
-which have no HTTP/3 recording. This section is Firefox's, following
-Firefox 160.0.1's source and default preferences; Chrome's rules are
-[their own](#when-chrome-moves-to-http3).
+`firefox-160-macos`, `chrome-157-macos` and `safari-27-macos`. The older
+Firefox and Chrome profiles have no HTTP/3 recording and stay on TCP.
+This section is Firefox's, following Firefox 160.0.1's source and
+default preferences; Chrome's rules are
+[their own](#when-chrome-moves-to-http3), and so are
+[Safari's](#when-safari-moves-to-http3).
 
 - Alt-Svc. An `Alt-Svc` header on an https response that isn't a 421 or
   a 5xx (`nsHttpChannel::ProcessAltService`) is read as
@@ -363,6 +365,154 @@ keeps them on disk and forgets the first on a network change. Chrome
 also tries HTTP/3 from an HTTPS DNS record, in a job of its own beside
 the Alt-Svc one. Netweir looks those records up the way Firefox does,
 for Firefox profiles only; a Chrome profile moves on Alt-Svc alone.
+
+## Safari: the closest match
+
+Safari's QUIC is Apple's own, in Network.framework, and its source isn't
+public. Netweir can't run it, as it runs Firefox's, or port it, as it
+ported Chrome's. What it can do is record it and set the Chrome engine up
+to send the same thing. That makes Safari's HTTP/3 the closest match
+Netweir has, not an exact one: everything below that says "exactly" was
+compared with a recording, and nothing was compared with code.
+
+### The recording
+
+`profiles/safari-27-macos.h3.capture.json` is Safari 27.2 on macOS
+26.7.2, against `capture --h3`, whose certificate the Mac already
+trusted as a root. Safari moved to HTTP/3 by itself, on the server's
+`Alt-Svc`, on `localhost` and a port that isn't 443. The recording has
+five rounds on fresh ports: `/image?set=nw` over HTTP/2, whose favicon
+went on a new QUIC connection, then, with the server restarted, `/image`
+and its picture on a QUIC connection that resumed the first. That gives
+ten QUIC connections, five fresh and five resumed. 43 more connections,
+not committed, were recorded for the transport parameters' order.
+
+The profile is Safari 27.0's headers. 27.2 sent the same TCP ClientHello
+(JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`) and the same headers but
+for the version in its User-Agent, which the test takes from the profile.
+
+### The stack
+
+The Chrome engine (`crates/netweir-core/src/h3_chrome.rs`) on the
+fork's `safari-27` branch, which builds on `chrome-157` and adds three
+options, each off unless asked for: `enable_safari_transport_params`,
+`enable_safari_initial` and `h3::Config::enable_safari`. Chrome's
+connections don't use them and haven't changed.
+
+The ClientHello comes from the profile's `[tls]`, as the TCP one does:
+GREASE, AES-256 first among the TLS 1.3 ciphers, the signature
+algorithms with rsa_pss_rsae_sha384 twice, OCSP and SCT requests, zlib
+certificate compression, X25519MLKEM768 and X25519 key shares. QUIC
+allows TLS 1.3 only, so BoringSSL leaves out extended_master_secret,
+renegotiation_info and ec_point_formats, as Safari does, and
+`[http3] extension_order` puts quic_transport_parameters where Safari
+puts it, before compress_certificate. No ALPS, no ECH GREASE.
+
+### What matches, and how it's tested
+
+`crates/netweir-core/tests/http3_safari.rs` sends a navigation and an
+image to the fingerprint server, on fresh and resumed connections, and
+holds each to the recording with `compare::differences`, the Initial's
+layout included.
+
+Exactly as Safari sent them, on every run:
+
+- the ClientHello: JA4 `q13d0311h3_55b375c5d22e_f2a83c8e78ae`, and
+  `q13d0312h3_55b375c5d22e_151122171f7d` resumed, with its cipher order,
+  extensions in their order, GREASE in the same places, groups, key
+  shares, signature algorithms and certificate compression; a resumed
+  hello is the same length as Safari's;
+- QUIC v1, an 8-byte Destination Connection ID, no Source Connection
+  ID, no token; two Initial datagrams of 1200 bytes, numbered 0 and 1
+  in one byte, each with one CRYPTO frame (999 bytes of the hello in the
+  first, the rest in the second) and then PADDING frames to the end;
+- the transport parameters: initial_max_data 16777216, the three stream
+  limits 2097152, initial_max_streams_uni 8, active_connection_id_limit
+  64 and an empty initial_source_connection_id, and nothing else: no
+  max_idle_timeout, max_udp_payload_size, GREASE or
+  version_information;
+- HTTP/3: only the control stream, SETTINGS 1:16383, 7:100 and one
+  GREASE setting in that order, nothing after them;
+- each request: `:method :scheme :authority :path`, then the TCP
+  profile's headers in its order, lowercase, without Host and
+  Connection, Priority as a header and no PRIORITY_UPDATE.
+
+Random per connection, and checked to vary: where the transport
+parameters start (they're always ascending from it, wrapping round), the
+GREASE values.
+
+### What isn't Safari's
+
+What the recording can't show, Netweir has had to choose:
+
+- Where the transport parameters start. Safari's 53 recorded
+  connections started at every one of the seven, but not evenly
+  (initial_max_data 21 times, active_connection_id_limit 14,
+  initial_source_connection_id and initial_max_streams_uni 5 each,
+  initial_max_stream_data_bidi_remote 4, the other two 2 each). Netweir
+  picks evenly.
+- Everything after the first flight: loss recovery, congestion
+  control, pacing, ACK timing, packet sizes once the handshake is done
+  (quiche's 1200 bytes), connection ID use and PING keepalives (Apple
+  says it pings every second while a request waits, every 20 seconds
+  while a body comes in). These are quiche's.
+- The idle timeout. Safari advertises none, so neither does Netweir,
+  and the connection lasts as long as the server's timeout allows.
+  Safari surely closes idle connections itself; when isn't recorded.
+- QPACK the other way. The fingerprint server offers no dynamic table,
+  so whether Safari's encoder uses one isn't recorded; quiche's encodes
+  from the static table.
+- 0-RTT, which Safari may send on a resumed connection. Netweir waits
+  for the handshake.
+- Addresses. Safari tried QUIC to `::1`, then to `127.0.0.1` 250 ms
+  later; Netweir tries the first address only.
+- The image request over HTTP/1.1. Safari's `[image]` headers are
+  recorded over HTTP/2 and HTTP/3; over HTTP/1.1, Host and Connection
+  go where Safari's other HTTP/1.1 requests put them.
+- Another recording disagrees on one field. curl-impersonate's Safari
+  27.0 signature (`tests/signatures/safari270.yaml`) lists
+  max_idle_timeout 300000 among the parameters. Safari 27.2 sent none
+  on any of its 53 recorded connections, so the profile follows 27.2.
+
+### When Safari moves to HTTP/3
+
+Apple documents that Safari learns HTTP/3 from `Alt-Svc` and from HTTPS
+DNS records, races QUIC first, and falls back to TCP. It gives no
+timings, so the rules below are what Safari 27.2 was timed doing on
+macOS, and a guess where they say so.
+
+- Alt-Svc, read as for Chrome (a guess: Apple says it remembers the
+  header for future connections, but not how it parses it or honours
+  `ma`). No proving, and another port is fine: Safari took
+  `h3=":9483"` from an origin on 8483.
+- A new connection only. Safari kept sending over its open HTTP/2
+  connection after learning an alternative, and went to HTTP/3 only
+  for a new one. Netweir can't see wreq's connection pool, so it takes
+  an origin's TCP connection as open for 90 seconds after its last TCP
+  response, wreq's idle timeout, and sends the origin's requests over
+  TCP until then. An HTTP/3 connection already up is used either way.
+- HTTPS records. Apple's Tommy Pauly wrote (DNSOP, September 2020) that
+  the stack queries them alongside the addresses on every connection and
+  races QUIC first when one offers h3. A Safari request with no
+  alternative yet waits for its origin's records, at most 2 seconds (a
+  guess), and goes over QUIC on first contact if they offer h3. They're
+  looked up as for Firefox, through the system's resolver; that isn't
+  verified against Safari, since the capture can't serve DNS.
+- Racing. Safari sent its QUIC Initials, then started TCP 250 ms later,
+  each of the four times it was timed against a server that never
+  answered QUIC; that's also the Connection Attempt Delay of Happy
+  Eyeballs v3, an Apple-led draft. A request whose QUIC connection isn't
+  up after 250 ms goes over TCP. When QUIC was up first, Safari opened
+  no TCP connection at all.
+- Broken. Pauly wrote that QUIC goes first only with "no history of
+  QUIC failures", but Safari went back to QUIC first on each of three
+  new connections over 47 seconds after the last had failed. Netweir
+  marks nothing broken; the open-TCP rule above keeps it from trying
+  QUIC on every request.
+- Falling back. A request a QUIC error cuts off before its response
+  goes again over TCP if its method is safe to repeat (a guess: Apple
+  only documents falling back for a connection).
+- Proxies, and `http3 = false`, as for the others: no QUIC at all.
 
 ## Building it
 

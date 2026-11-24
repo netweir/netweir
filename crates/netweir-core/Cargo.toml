@@ -51,11 +51,12 @@ neqo-transport = { git = "https://github.com/mozilla/neqo", tag = "v0.33.0", opt
 neqo-udp = { git = "https://github.com/mozilla/neqo", tag = "v0.33.0", optional = true }
 nss-rs = { git = "https://github.com/mozilla/nss-rs", optional = true }
 quinn-udp = { version = "0.6", default-features = false, features = ["log", "fast-apple-datapath"], optional = true }
-# HTTP/3 as Chrome sends it: netweir's fork of Cloudflare's quiche, built
-# on btls, the BoringSSL the TCP connections use, with Chrome's transport
-# parameters, Initial packets, HTTP/3 SETTINGS and QPACK decoding added
-# (branch chrome-157; see its README).
-quiche = { git = "https://github.com/netweir/quiche", rev = "abd732e14563274b51b484c051aeda6d1181ddd4", features = ["custom-client-dcid"], optional = true }
+# HTTP/3 as Chrome and Safari send it: netweir's fork of Cloudflare's
+# quiche, built on btls, the BoringSSL the TCP connections use, with
+# Chrome's and Safari's transport parameters, Initial packets, HTTP/3
+# SETTINGS and QPACK decoding added (branch safari-27, on chrome-157; see
+# its README).
+quiche = { git = "https://github.com/netweir/quiche", rev = "2b27e8658ab9fee537eecd41fc023578123acff3", features = ["custom-client-dcid"], optional = true }
 # The roots wreq checks TCP connections' certificates against.
 chromium-roots = { version = "0.1.2", optional = true }
 # wreq's own response decompression, for responses over HTTP/3.

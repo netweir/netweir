@@ -47,8 +47,10 @@ fn recorded(profile: &str, scenario: &str) -> Option<Vec<Capture>> {
     Some(serde_json::from_str(&json).unwrap())
 }
 
-/// Profiles whose image request is written from the browser's documented
-/// behaviour rather than a recording of it.
+/// Profiles with no image recording of their own over HTTP/2 and
+/// HTTP/1.1. Safari's image request is recorded only in its HTTP/3
+/// recording, over HTTP/2 and HTTP/3, which tests/http3_safari.rs holds
+/// it to.
 const IMAGE_NOT_RECORDED: &[&str] = &["safari-27-macos"];
 
 /// The navigations the browsers made for the captures, against `port`.

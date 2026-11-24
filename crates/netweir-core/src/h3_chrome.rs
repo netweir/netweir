@@ -14,6 +14,12 @@
 //! What comes after the first round trips (loss recovery, congestion
 //! control, pacing, ACK timing) is quiche's, not Chrome's.
 //!
+//! Safari's profiles use the same engine (the fork's `safari-27`
+//! branch) with Safari's settings, as recorded from Safari 27.2 on macOS
+//! (profiles/safari-27-macos.h3.capture.json). Safari's own QUIC is
+//! Apple's Network.framework, so this is the closest match, not the same
+//! code: see [`Browser::Safari`].
+//!
 //! Each connection runs on a thread of its own, as the Firefox ones do,
 //! and takes requests over a channel.
 
@@ -73,6 +79,40 @@ mod chrome {
     pub const NO_ERROR: u64 = 0x100;
 }
 
+/// Safari 27's QUIC and HTTP/3 settings, as the fingerprint server
+/// recorded them from Safari 27.2 on macOS 26.7
+/// (profiles/safari-27-macos.h3.capture.json). Network.framework's source
+/// isn't public, so nothing here could be checked against code.
+mod safari {
+    /// initial_max_data.
+    pub const MAX_DATA: u64 = 16_777_216;
+    /// initial_max_stream_data_bidi_local, _bidi_remote and _uni.
+    pub const MAX_STREAM_DATA: u64 = 2_097_152;
+    /// initial_max_streams_uni; initial_max_streams_bidi isn't sent.
+    pub const MAX_STREAMS_UNI: u64 = 8;
+    /// active_connection_id_limit.
+    pub const CONNECTION_ID_LIMIT: u64 = 64;
+    /// SETTINGS_QPACK_MAX_TABLE_CAPACITY.
+    pub const QPACK_TABLE: u64 = 16_383;
+    /// SETTINGS_QPACK_BLOCKED_STREAMS.
+    pub const BLOCKED_STREAMS: u64 = 100;
+}
+
+/// Whose QUIC a connection is laid out as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Browser {
+    /// Chrome 157, ported from or checked against Google's QUICHE.
+    Chrome,
+    /// Safari 27, from a recording: the TLS settings of the profile's
+    /// `[tls]` with the `[http3]` extension order; QUIC v1, an 8-byte
+    /// Destination Connection ID and no Source one; seven transport
+    /// parameters ascending from a random one; two 1200-byte Initials,
+    /// at most 999 bytes of hello each, PADDING frames after; SETTINGS
+    /// 1:16383, 7:100 and GREASE; `:method :scheme :authority :path`; no
+    /// PRIORITY_UPDATE.
+    Safari,
+}
+
 /// Brotli, the one certificate compression Chrome offers.
 struct Brotli;
 
@@ -87,6 +127,20 @@ impl CertificateCompressor for Brotli {
     }
 }
 
+/// Zlib, the one certificate compression Safari offers.
+struct Zlib;
+
+impl CertificateCompressor for Zlib {
+    const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::ZLIB;
+    const CAN_COMPRESS: bool = false;
+    const CAN_DECOMPRESS: bool = true;
+
+    fn decompress<W: io::Write>(&self, input: &[u8], output: &mut W) -> io::Result<()> {
+        let mut r = flate2::read::ZlibDecoder::new(input);
+        std::io::copy(&mut r, output).map(|_| ())
+    }
+}
+
 /// The TLS context for one connection: the profile's `[tls]` as
 /// Chromium's QUIC takes it. TLS 1.3 only, which quiche sets, so the
 /// ciphers are BoringSSL's three; no GREASE, as QUICHE never turns it on;
@@ -94,15 +148,42 @@ impl CertificateCompressor for Brotli {
 /// profile's groups, extension shuffling, certificate compression and
 /// trust anchors. The certificate is checked after the handshake, against
 /// the roots the TCP connections use.
-fn tls_context(tls: &Tls) -> Result<SslContextBuilder, String> {
+///
+/// Safari's QUIC hello was recorded with its TCP one's settings, GREASE,
+/// cipher order, signature algorithms, OCSP and SCT requests included,
+/// TLS 1.3 only, and the extensions in a fixed order of their own (the
+/// profile's `[http3] extension_order`, put in `tls` by the fetcher).
+fn tls_context(tls: &Tls, browser: Browser) -> Result<SslContextBuilder, String> {
     let bad = |e: btls::error::ErrorStack| format!("TLS: {e}");
     let mut ctx = SslContextBuilder::new(SslMethod::tls()).map_err(bad)?;
     ctx.set_curves_list(&tls.groups.join(":")).map_err(bad)?;
     ctx.set_permute_extensions(tls.permute_extensions);
+    if browser == Browser::Safari {
+        // Before the cipher list, or BoringSSL's own TLS 1.3 order stays.
+        ctx.set_preserve_tls13_cipher_list(tls.preserve_tls13_cipher_order);
+        ctx.set_cipher_list(&tls.ciphers.join(":")).map_err(bad)?;
+        ctx.set_sigalgs_list(&tls.signature_algorithms.join(":"))
+            .map_err(bad)?;
+        ctx.set_grease_enabled(tls.grease);
+        if tls.ocsp_stapling {
+            ctx.enable_ocsp_stapling();
+        }
+        if tls.signed_certificate_timestamps {
+            ctx.enable_signed_cert_timestamps();
+        }
+        if !tls.extension_order.is_empty() {
+            let order: Vec<btls::ssl::ExtensionType> =
+                tls.extension_order.iter().map(|&e| e.into()).collect();
+            ctx.set_extension_permutation(&order).map_err(bad)?;
+        }
+    }
     for c in &tls.certificate_compression {
         match c.as_str() {
             "brotli" => ctx
                 .add_certificate_compression_algorithm(Brotli)
+                .map_err(bad)?,
+            "zlib" => ctx
+                .add_certificate_compression_algorithm(Zlib)
                 .map_err(bad)?,
             other => return Err(format!("no QUIC certificate compression {other:?}")),
         }
@@ -117,8 +198,13 @@ fn tls_context(tls: &Tls) -> Result<SslContextBuilder, String> {
 
 /// The settings BoringSSL takes per connection, as
 /// TlsClientHandshaker::CryptoConnect makes them: ECH GREASE, the key
-/// shares, and ALPS for h3 with no settings of its own.
-fn tls_per_connection(conn: &mut quiche::Connection, tls: &Tls) -> Result<(), String> {
+/// shares, and ALPS for h3 with no settings of its own. Safari sends no
+/// ALPS.
+fn tls_per_connection(
+    conn: &mut quiche::Connection,
+    tls: &Tls,
+    browser: Browser,
+) -> Result<(), String> {
     let bad = |e: btls::error::ErrorStack| format!("TLS: {e}");
     let shares = tls
         .key_shares
@@ -134,19 +220,44 @@ fn tls_per_connection(conn: &mut quiche::Connection, tls: &Tls) -> Result<(), St
     let ssl = conn.ssl_mut();
     ssl.set_enable_ech_grease(tls.ech_grease);
     ssl.set_client_key_shares(&shares).map_err(bad)?;
-    ssl.add_application_settings(b"h3").map_err(bad)?;
-    ssl.set_alps_use_new_codepoint(tls.alps_new_codepoint);
+    if browser == Browser::Chrome {
+        ssl.add_application_settings(b"h3").map_err(bad)?;
+        ssl.set_alps_use_new_codepoint(tls.alps_new_codepoint);
+    }
     Ok(())
 }
 
-/// The QUIC side of one connection, as Chrome 157 sets it up.
-fn quic_config(tls: &Tls, ipv6: bool, rtt: Option<Duration>) -> Result<quiche::Config, String> {
+/// The QUIC side of one connection, as Chrome 157 sets it up, or as
+/// Safari 27 was recorded setting it up.
+fn quic_config(
+    tls: &Tls,
+    browser: Browser,
+    ipv6: bool,
+    rtt: Option<Duration>,
+) -> Result<quiche::Config, String> {
     let bad = |e: quiche::Error| format!("QUIC: {e}");
-    let mut config =
-        quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls_context(tls)?)
-            .map_err(bad)?;
+    let mut config = quiche::Config::with_boring_ssl_ctx_builder(
+        quiche::PROTOCOL_VERSION,
+        tls_context(tls, browser)?,
+    )
+    .map_err(bad)?;
     config.set_application_protos(&[b"h3"]).map_err(bad)?;
     config.verify_peer(false);
+    if browser == Browser::Safari {
+        // No max_idle_timeout and no max_udp_payload_size, as Safari
+        // sent none: quiche's defaults, 0 and 65527, are left out. The
+        // 1200-byte datagrams are quiche's default too.
+        config.set_initial_max_data(safari::MAX_DATA);
+        config.set_initial_max_stream_data_bidi_local(safari::MAX_STREAM_DATA);
+        config.set_initial_max_stream_data_bidi_remote(safari::MAX_STREAM_DATA);
+        config.set_initial_max_stream_data_uni(safari::MAX_STREAM_DATA);
+        config.set_initial_max_streams_bidi(0);
+        config.set_initial_max_streams_uni(safari::MAX_STREAMS_UNI);
+        config.set_active_connection_id_limit(safari::CONNECTION_ID_LIMIT);
+        config.enable_safari_transport_params(true);
+        config.enable_safari_initial(true);
+        return Ok(config);
+    }
     config.set_max_idle_timeout(chrome::IDLE_TIMEOUT);
     config.set_max_recv_udp_payload_size(chrome::MAX_UDP_PAYLOAD);
     config.set_max_send_udp_payload_size(if ipv6 {
@@ -175,9 +286,15 @@ fn quic_config(tls: &Tls, ipv6: bool, rtt: Option<Duration>) -> Result<quiche::C
 
 /// The HTTP/3 side: Chrome's SETTINGS (QuicSpdySession and
 /// QuicChromiumClientSession), its GREASE, and no QPACK streams until
-/// they're needed.
-fn h3_config() -> Result<quiche::h3::Config, String> {
+/// they're needed; or Safari's SETTINGS, with no GREASE frame.
+fn h3_config(browser: Browser) -> Result<quiche::h3::Config, String> {
     let mut config = quiche::h3::Config::new().map_err(|e| format!("HTTP/3: {e}"))?;
+    if browser == Browser::Safari {
+        config.set_qpack_max_table_capacity(safari::QPACK_TABLE);
+        config.set_qpack_blocked_streams(safari::BLOCKED_STREAMS);
+        config.enable_safari(true);
+        return Ok(config);
+    }
     config.set_qpack_max_table_capacity(chrome::QPACK_TABLE);
     config.set_max_field_section_size(chrome::FIELD_SECTION);
     config.set_qpack_blocked_streams(chrome::BLOCKED_STREAMS);
@@ -231,12 +348,14 @@ fn priority(headers: &[(String, Vec<u8>)]) -> (u8, bool) {
 }
 
 /// Opens a connection to `alternative` for `host` on a thread of its own.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open(
     host: &str,
     alternative: &str,
     given: Option<IpAddr>,
     key: &str,
     tls: Arc<Tls>,
+    browser: Browser,
     trust: Trust,
     tickets: &Tickets,
 ) -> Handle {
@@ -266,6 +385,7 @@ pub(crate) fn open(
                 alternative,
                 given,
                 tls,
+                browser,
                 trust,
                 ticket,
                 key,
@@ -293,6 +413,7 @@ struct Connection {
     /// The address to use instead of resolving the alternative's host.
     given: Option<IpAddr>,
     tls: Arc<Tls>,
+    browser: Browser,
     trust: Trust,
     ticket: Option<Ticket>,
     key: String,
@@ -347,7 +468,7 @@ impl Connection {
         let socket = tokio::net::UdpSocket::from_std(socket).map_err(|e| e.to_string())?;
         let local = socket.local_addr().map_err(|e| e.to_string())?;
         let rtt = self.ticket.as_ref().map(|t| t.rtt);
-        let mut config = quic_config(&self.tls, peer.is_ipv6(), rtt)?;
+        let mut config = quic_config(&self.tls, self.browser, peer.is_ipv6(), rtt)?;
         // An 8-byte Destination Connection ID and no Source Connection ID,
         // as Chrome's (QuicSessionPool, kQuicDefaultConnectionIdLength).
         let mut dcid = [0u8; 8];
@@ -357,7 +478,7 @@ impl Connection {
         let mut conn =
             quiche::connect_with_dcid(Some(&self.host), &scid, &dcid, local, peer, &mut config)
                 .map_err(|e| format!("QUIC: {e}"))?;
-        tls_per_connection(&mut conn, &self.tls)?;
+        tls_per_connection(&mut conn, &self.tls, self.browser)?;
         if let Some(ticket) = &self.ticket {
             // A session BoringSSL won't take leaves a fresh handshake.
             let _ = conn.set_session(&ticket.session);
@@ -392,7 +513,7 @@ impl Connection {
             }
         };
         let local = socket.local_addr().unwrap_or(peer);
-        let h3_config = match h3_config() {
+        let h3_config = match h3_config(self.browser) {
             Ok(c) => c,
             Err(e) => {
                 state.send_replace(State::Failed { exclude: false });
@@ -441,7 +562,7 @@ impl Connection {
             }
             if let Some(h3) = h3.as_mut() {
                 for job in waiting.drain(..) {
-                    start(h3, &mut conn, &mut streams, job);
+                    start(h3, &mut conn, &mut streams, job, self.browser);
                 }
                 events(h3, &mut conn, &mut streams, &mut buf);
                 // A request whose caller has gone is cancelled.
@@ -555,7 +676,7 @@ impl Connection {
                 () = sleep => conn.on_timeout(),
                 job = queue.recv(), if accepting => match job {
                     Some(job) => match h3.as_mut() {
-                        Some(h3) => start(h3, &mut conn, &mut streams, job),
+                        Some(h3) => start(h3, &mut conn, &mut streams, job, self.browser),
                         None => waiting.push(job),
                     },
                     None => accepting = false,
@@ -589,12 +710,15 @@ async fn flush(socket: &tokio::net::UdpSocket, conn: &mut quiche::Connection, ou
 
 /// Sends a request: Chrome's pseudo-header order, `:method :authority
 /// :scheme :path`, then its headers as given, and a PRIORITY_UPDATE
-/// with the `priority` header's value unless it's the default.
+/// with the `priority` header's value unless it's the default. Safari
+/// sends `:method :scheme :authority :path` and no PRIORITY_UPDATE, its
+/// `priority` header being the only word of it.
 fn start(
     h3: &mut quiche::h3::Connection,
     conn: &mut quiche::Connection,
     streams: &mut HashMap<u64, Stream>,
     job: Job,
+    browser: Browser,
 ) {
     let Job {
         request,
@@ -607,6 +731,9 @@ fn start(
         quiche::h3::Header::new(b":scheme", b"https"),
         quiche::h3::Header::new(b":path", request.path.as_bytes()),
     ];
+    if browser == Browser::Safari {
+        headers.swap(1, 2);
+    }
     headers.extend(
         request
             .headers
@@ -625,7 +752,7 @@ fn start(
         }
     };
     let (urgency, incremental) = priority(&request.headers);
-    if (urgency, incremental) != (3, false) {
+    if browser == Browser::Chrome && (urgency, incremental) != (3, false) {
         let _ = h3.send_priority_update_for_request(
             conn,
             stream_id,

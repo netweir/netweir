@@ -129,8 +129,14 @@ pub struct Http3 {
     /// The QUIC and HTTP/3 stack, set up as the browser sets it up:
     /// "firefox-160" is neqo and NSS as Firefox 160 configures them,
     /// "chrome-157" netweir's quiche on btls as Chrome 157 configures its
-    /// own QUIC.
+    /// own QUIC, "safari-27" the same engine set up as Safari 27 was
+    /// recorded setting up Apple's.
     pub stack: String,
+    /// The ClientHello's extensions in the QUIC Initial, in order, for a
+    /// browser whose order there is fixed but not the TCP one's. Empty:
+    /// as `[tls]` gives it.
+    #[serde(default)]
+    pub extension_order: Vec<u16>,
 }
 
 /// What the browser sends for one kind of request, captured as `headers`

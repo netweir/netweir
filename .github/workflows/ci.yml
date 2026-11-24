@@ -296,10 +296,10 @@ jobs:
       - run: uv run pytest -q --durations=10 tests/test_browser.py tests/test_crawl_browser.py
         timeout-minutes: 15
 
-  # HTTP/3 with the Firefox and Chrome profiles (netweir-core's http3
-  # feature): NSS built by scripts/nss.sh, then the tests that hold each
-  # request over HTTP/3 to Firefox 160's and Chrome 157's recordings.
-  # Chrome's quiche fork needs no C library of its own: it links the
+  # HTTP/3 with the Firefox, Chrome and Safari profiles (netweir-core's
+  # http3 feature): NSS built by scripts/nss.sh, then the tests that hold
+  # each request over HTTP/3 to Firefox 160's, Chrome 157's and Safari
+  # 27's recordings. The quiche fork needs no C library of its own: it links the
   # BoringSSL the TCP connections already build. Every system and architecture a
   # wheel is built for builds it; the x86_64 macOS build runs its tests
   # under Rosetta. Linux runs them in release builds, which link NSS the
@@ -369,7 +369,7 @@ jobs:
         run: scripts/nss.sh ${{ matrix.target }}
       - if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo clippy -p netweir-core --features http3 --all-targets -- -D warnings
-      - run: cargo test ${{ matrix.release }} -p netweir-core --features http3 --target ${{ matrix.target }} --lib --test http3 --test http3_chrome --test fingerprint
+      - run: cargo test ${{ matrix.release }} -p netweir-core --features http3 --target ${{ matrix.target }} --lib --test http3 --test http3_chrome --test http3_safari --test fingerprint
 
   # Chrome's suites of actions, pages, events and steps again, on Firefox,
   # and the browser from Python and in a crawl.

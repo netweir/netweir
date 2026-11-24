@@ -44,6 +44,29 @@ use crate::fetch::{FetchError, FetchErrorKind};
 /// Firefox 160's values for what `neqo_glue` reads from preferences and
 /// from `Http3Session::Init`'s arguments (modules/libpref/init/
 /// StaticPrefList.yaml and all.js at FIREFOX_160_0_1_RELEASE).
+/// The longest a Safari request waits for its origin's HTTPS records
+/// before it goes over TCP without them. A guess: the lookup runs beside
+/// the address lookup a connection waits for anyway, and Apple gives no
+/// limit.
+pub(crate) const RECORD_WAIT: Duration = Duration::from_secs(2);
+
+/// What Safari 27.2 was seen doing on macOS, against the fingerprint
+/// server: Apple documents neither number.
+mod safari {
+    use std::time::Duration;
+
+    /// How long TCP waits for a QUIC connection still being made: Safari
+    /// started TCP 250 ms after its first QUIC Initial each time it was
+    /// timed, the Connection Attempt Delay Happy Eyeballs v3 (an Apple
+    /// draft) recommends.
+    pub const RACE_DELAY: Duration = Duration::from_millis(250);
+    /// How long an origin's TCP connection is taken to stay open after
+    /// its last response: wreq's idle pool timeout. Safari kept sending
+    /// over an open HTTP/2 connection after learning an alternative, and
+    /// moved to HTTP/3 only for a new connection.
+    pub const TCP_KEPT: Duration = Duration::from_secs(90);
+}
+
 mod firefox {
     /// network.http.http3.max_data
     pub const MAX_DATA: u64 = 25_165_824;
@@ -755,6 +778,10 @@ pub(crate) enum Stack {
     /// Chrome 157: netweir's quiche on btls (src/h3_chrome.rs), with the
     /// profile's TLS settings.
     Chrome(Arc<crate::profile::Tls>),
+    /// Safari 27: the same engine with Safari's settings, and the
+    /// profile's TLS settings with its `[http3]` extension order. Safari
+    /// follows Chrome's rules here but where `Routes` says otherwise.
+    Safari(Arc<crate::profile::Tls>),
 }
 
 /// Where each origin's requests go over HTTP/3, and the connections to
@@ -802,6 +829,9 @@ pub(crate) struct Routes {
     /// before it delays a TCP job behind one
     /// (QuicSessionPool::has_quic_ever_worked_on_current_network_).
     quic_worked: std::sync::atomic::AtomicBool,
+    /// Safari's: when each origin, by partition, was last answered over
+    /// TCP, standing in for its TCP connection being open.
+    tcp_used: Mutex<HashMap<(String, String), Instant>>,
 }
 
 type Tickets = Arc<Mutex<HashMap<String, ResumptionToken>>>;
@@ -833,11 +863,18 @@ impl Routes {
             broken: Mutex::default(),
             main_won: Mutex::default(),
             quic_worked: std::sync::atomic::AtomicBool::new(false),
+            tcp_used: Mutex::default(),
         }
     }
 
+    /// Whether the Fetcher follows Chrome's rules, as Safari's profiles
+    /// also do, with the exceptions `is_safari` marks.
     fn is_chrome(&self) -> bool {
-        matches!(self.stack, Stack::Chrome(_))
+        matches!(self.stack, Stack::Chrome(_) | Stack::Safari(_))
+    }
+
+    fn is_safari(&self) -> bool {
+        matches!(self.stack, Stack::Safari(_))
     }
 
     /// Chrome's half of `learn` (HttpNetworkTransaction::ProcessAltSvcHeader,
@@ -958,6 +995,57 @@ impl Routes {
         })
     }
 
+    /// Whether a request waits for its origin's HTTPS records before
+    /// connecting, as Safari's do, rather than racing them as Firefox's.
+    pub(crate) fn waits_for_records(&self) -> bool {
+        self.is_safari()
+    }
+
+    /// Safari: a response from `origin` came over TCP. Its next requests
+    /// stay there while that connection would still be open.
+    pub(crate) fn tcp_used(&self, partition: &str, origin: &Url) {
+        if self.is_safari() {
+            self.tcp_used
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
+                    (partition.to_string(), origin.origin().ascii_serialization()),
+                    Instant::now(),
+                );
+        }
+    }
+
+    /// Whether Safari would still send `origin`'s requests over its TCP
+    /// connection rather than to `route`, found by Alt-Svc or an HTTPS
+    /// record alike: one answered within
+    /// [`safari::TCP_KEPT`], and no HTTP/3 connection to `route` up.
+    pub(crate) fn tcp_open(&self, partition: &str, origin: &str, route: &Route) -> bool {
+        if !self.is_safari() || route.forced {
+            return false;
+        }
+        let Some(host) = Url::parse(origin)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+        else {
+            return false;
+        };
+        let up = self
+            .connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&format!("{partition} {host} {}", route.alternative))
+            .is_some_and(|h| h.usable() && *h.state.borrow() == State::Connected);
+        let mut used = self.tcp_used.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (partition.to_string(), origin.to_string());
+        let recent = used
+            .get(&key)
+            .is_some_and(|at| at.elapsed() < safari::TCP_KEPT);
+        if !recent {
+            used.remove(&key);
+        }
+        recent && !up
+    }
+
     /// Chrome's main-job delay for a request to `alternative`.
     fn chrome_delay(&self, partition: &str, host: &str, alternative: &str) -> Duration {
         let worked = self.quic_worked.load(std::sync::atomic::Ordering::Relaxed);
@@ -993,8 +1081,11 @@ impl Routes {
     /// (JobController::MaybeReportBrokenAlternativeService), as does a
     /// retry over TCP after a QUIC error
     /// (HttpNetworkTransaction::HandleIOError, `retried_alternative_service_`).
+    ///
+    /// Safari marks nothing broken: it went back to QUIC first on each new
+    /// connection after one failed, every time it was timed.
     pub(crate) fn tcp_answered(&self, route: &Route, host: &str) {
-        if !self.is_chrome() || route.forced {
+        if !self.is_chrome() || self.is_safari() || route.forced {
             return;
         }
         let key = format!("{} {host} {}", route.partition, route.alternative);
@@ -1409,6 +1500,17 @@ impl Routes {
                 given,
                 &key,
                 tls.clone(),
+                crate::h3_chrome::Browser::Chrome,
+                self.trust.clone(),
+                &self.chrome_tickets,
+            ),
+            Stack::Safari(tls) => crate::h3_chrome::open(
+                host,
+                alternative,
+                given,
+                &key,
+                tls.clone(),
+                crate::h3_chrome::Browser::Safari,
                 self.trust.clone(),
                 &self.chrome_tickets,
             ),
@@ -1432,6 +1534,13 @@ impl Routes {
             // that it was ever broken (QuicSessionPool::
             // ProcessGoingAwaySession, ConfirmAlternativeService); a job
             // that fails after the TCP one won makes it broken.
+            if now.is_safari() {
+                if outcome == State::Connected {
+                    now.quic_worked
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                return;
+            }
             if now.is_chrome() {
                 let key = (partition.clone(), alternative.clone());
                 let won = now
@@ -1518,6 +1627,7 @@ impl Routes {
         // timer, sooner for a route from an HTTPS record
         // (nsHttpTransaction::OnFastFallbackTimer).
         let timer = match route.record {
+            _ if self.is_safari() => safari::RACE_DELAY,
             _ if self.is_chrome() => self.chrome_delay(&route.partition, host, alternative),
             Some(_) => firefox::FAST_FALLBACK,
             None => firefox::BACKUP_TIMER,
@@ -1554,7 +1664,9 @@ impl Routes {
         // Chrome sends any request again over TCP after a QUIC error that
         // came before its response (HttpNetworkTransaction::HandleIOError,
         // for every method).
-        let chrome = self.is_chrome();
+        // Safari: only what's safe to repeat, as for Firefox (a guess;
+        // Apple doesn't say).
+        let chrome = self.is_chrome() && !self.is_safari();
         let repeat = |e: FetchError| {
             if (idempotent || chrome) && !route.forced {
                 Ok(Answer::Tcp)
