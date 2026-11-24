@@ -122,14 +122,37 @@ impl Server {
         Server::bind_with(port, alpn, None, false).await
     }
 
+    /// A TCP listener on `port`, or on a free port for 0. With `h3` the
+    /// same port must also be free for UDP, which on Windows a free TCP
+    /// port often isn't: the system reserves ranges of UDP ports, and
+    /// binding one fails with WSAEACCES. So port 0 tries again.
+    async fn listen(port: u16, h3: bool) -> io::Result<(TcpListener, u16)> {
+        let mut tries = 0;
+        loop {
+            let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+            let got = listener.local_addr()?.port();
+            if !h3 {
+                return Ok((listener, got));
+            }
+            match std::net::UdpSocket::bind(("127.0.0.1", got)) {
+                // Free for UDP too; listen_quic binds it for real.
+                Ok(probe) => {
+                    drop(probe);
+                    return Ok((listener, got));
+                }
+                Err(e) if port != 0 || tries == 50 => return Err(e),
+                Err(_) => tries += 1,
+            }
+        }
+    }
+
     async fn bind_with(
         port: u16,
         alpn: &[&[u8]],
         certificate: Option<(Vec<u8>, Vec<u8>)>,
         h3: bool,
     ) -> io::Result<Server> {
-        let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-        let port = listener.local_addr()?.port();
+        let (listener, port) = Server::listen(port, h3).await?;
         let certificate = certificate.unwrap_or_else(|| {
             let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
             let made = rcgen::generate_simple_self_signed(names).expect("self-signed cert");
