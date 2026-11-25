@@ -2573,6 +2573,10 @@ impl Fetcher {
                 // An HTTP/3 connection from a record failed: on as
                 // PrepareConnInfoForRetry goes.
                 let no_h3 = routes.ruled_out_h3(&route, &host);
+                // A server that rejected ECH and sent configurations to
+                // retry with: the same record again with them
+                // (SSL_ERROR_ECH_RETRY_WITH_ECH).
+                let rejected = routes.ech_retry(&route, &host).map(Some);
                 let (host, port) = route
                     .alternative
                     .rsplit_once(':')
@@ -2585,7 +2589,7 @@ impl Fetcher {
                 };
                 let next = Next::After(
                     failed,
-                    None,
+                    rejected,
                     FetchError::new(
                         FetchErrorKind::Connect,
                         format!("{uri}: HTTP/3 failed, and no other record is left"),
@@ -2771,7 +2775,7 @@ async fn send_from_records(
             }
         };
         if to.alpn == "h3" {
-            let left = retries.take().unwrap_or_default();
+            let left = retries.take();
             let route = from.h3_retry(going.partition, to, left, attempts);
             let way = (going.routes.clone(), Way::Go(route));
             let fetcher = going.fetcher;

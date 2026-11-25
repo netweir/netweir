@@ -412,6 +412,7 @@ pub(crate) fn open(
         jobs,
         thread: Arc::new(Mutex::new(spawned.ok())),
         state: watching,
+        ech_retry: Arc::default(),
     }
 }
 

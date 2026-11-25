@@ -588,6 +588,9 @@ pub(crate) struct Handle {
     pub jobs: mpsc::UnboundedSender<Job>,
     pub thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     pub state: watch::Receiver<State>,
+    /// The ECH configurations a server that rejected the connection's
+    /// sent to retry with (Http3Session's SetRetryEchConfig).
+    pub ech_retry: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 impl Handle {
@@ -706,12 +709,13 @@ impl FromRecords {
     }
 
     /// The HTTP/3 route to `to`, an h3 record a request goes on to with
-    /// `left` still to go (CloneAndAdoptHTTPSSVCRecord on a retry).
+    /// `left` still to go, if the list has been made
+    /// (CloneAndAdoptHTTPSSVCRecord on a retry).
     pub(crate) fn h3_retry(
         &self,
         partition: &str,
         to: crate::https_rr::Route,
-        left: Vec<crate::https_rr::Route>,
+        left: Option<Vec<crate::https_rr::Route>>,
         attempts: usize,
     ) -> Route {
         Route {
@@ -725,7 +729,7 @@ impl FromRecords {
                 host: self.host.clone(),
                 port: self.port,
                 tcp: None,
-                left: Some(left),
+                left,
                 attempts,
             })),
         }
@@ -1852,6 +1856,18 @@ impl Routes {
             })
     }
 
+    /// The ECH configurations the server that rejected `route`'s
+    /// connection for `host` sent to retry with, if it sent any
+    /// (SSL_ERROR_ECH_RETRY_WITH_ECH).
+    pub(crate) fn ech_retry(&self, route: &Route, host: &str) -> Option<Vec<u8>> {
+        let ech = route.record.as_ref().and_then(Option::as_deref);
+        let key = connection_key(&route.partition, host, &route.alternative, ech);
+        let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = connections.get(&key)?;
+        let configs = handle.ech_retry.lock().unwrap_or_else(|e| e.into_inner());
+        configs.clone()
+    }
+
     /// Sends `request` to `alternative` for `host`, on the connection
     /// already up to it if there is one, as Firefox does. A connection
     /// still being made gets the backup timer's 100 ms to come up before
@@ -2068,6 +2084,8 @@ fn open(
 ) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
+    let ech_retry = Arc::new(Mutex::new(None));
+    let retry_with = ech_retry.clone();
     let (host, alternative) = (host.to_string(), alternative.to_string());
     let ticket = tickets
         .lock()
@@ -2112,6 +2130,7 @@ fn open(
                 ticket,
                 queue,
                 &state,
+                &retry_with,
             ));
             // However it ended, it isn't coming up any more.
             state.send_modify(|s| {
@@ -2128,6 +2147,7 @@ fn open(
         jobs,
         thread: Arc::new(Mutex::new(spawned.ok())),
         state: watching,
+        ech_retry,
     }
 }
 
@@ -2208,6 +2228,7 @@ async fn run(
     ticket: Ticket,
     mut queue: mpsc::UnboundedReceiver<Job>,
     state: &watch::Sender<State>,
+    ech_retry: &Mutex<Option<Vec<u8>>>,
 ) {
     let given = given.zip(
         alternative
@@ -2250,6 +2271,9 @@ async fn run(
     // waits for the handshake before sending, where Firefox sends a GET
     // or HEAD in 0-RTT.
     let mut ready = false;
+    // Whether the certificate check failed, which Firefox reads as an NSS
+    // error (Http3Session::Authenticated).
+    let mut cert_rejected = false;
     let mut accepting = true;
     let mut closing = false;
     let mut buf = vec![0; 64 << 10];
@@ -2262,7 +2286,9 @@ async fn run(
                         .peer_certificate()
                         .map(|c| c.iter().map(<[u8]>::to_vec).collect())
                         .unwrap_or_default();
-                    client.authenticated(trust.check(&host, &chain), Instant::now());
+                    let checked = trust.check(&host, &chain);
+                    cert_rejected = checked != AuthenticationStatus::Ok;
+                    client.authenticated(checked, Instant::now());
                 }
                 // The server rejected ECH: its certificate is checked
                 // against the configuration's public name, and the
@@ -2278,7 +2304,9 @@ async fn run(
                     } else {
                         &public_name
                     };
-                    client.authenticated(trust.check(name, &chain), Instant::now());
+                    let checked = trust.check(name, &chain);
+                    cert_rejected = checked != AuthenticationStatus::Ok;
+                    client.authenticated(checked, Instant::now());
                 }
                 Http3ClientEvent::StateChange(Http3State::Connected) => {
                     ready = true;
@@ -2298,9 +2326,18 @@ async fn run(
                         unreachable!()
                     };
                     let why = format!("HTTP/3 connection to {alternative} closed: {reason:?}");
+                    // A server that rejected ECH and sent configurations
+                    // to retry with (CloseError::EchRetry).
+                    let retry_with = match reason {
+                        neqo_transport::CloseReason::Transport(
+                            neqo_transport::Error::EchRetry(configs)
+                            | neqo_transport::Error::Crypto(nss_rs::Error::EchRetry(configs)),
+                        ) if !ready => Some(configs.clone()),
+                        _ => None,
+                    };
                     let kind = if ready {
                         FetchErrorKind::Body
-                    } else if format!("{reason:?}").contains("Crypto") {
+                    } else if retry_with.is_some() || format!("{reason:?}").contains("Crypto") {
                         FetchErrorKind::Tls
                     } else {
                         FetchErrorKind::Connect
@@ -2313,10 +2350,19 @@ async fn run(
                     state.send_replace(match (ready, broken) {
                         (true, true) => State::Broken,
                         (true, false) => State::Closed,
+                        // Http3Session::Shutdown excludes the host for a
+                        // failure before it connected unless it was an NSS
+                        // error, which only a rejected certificate is, or
+                        // an ECH retry. Any other close, ech_required with
+                        // nothing to retry with among them, is
+                        // NS_ERROR_NET_HTTP3_PROTOCOL_ERROR.
                         (false, _) => State::Failed {
-                            exclude: kind != FetchErrorKind::Tls,
+                            exclude: !cert_rejected && retry_with.is_none(),
                         },
                     });
+                    if let Some(configs) = retry_with {
+                        *ech_retry.lock().unwrap_or_else(|e| e.into_inner()) = Some(configs);
+                    }
                     for (_, s) in streams.drain() {
                         end(s, FetchError::new(kind, why.clone()));
                     }
@@ -2621,6 +2667,7 @@ mod tests {
                 jobs,
                 thread: Arc::default(),
                 state: state_now,
+                ech_retry: Arc::default(),
             };
             routes
                 .connections
