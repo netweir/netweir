@@ -122,35 +122,37 @@ impl Server {
         Server::bind_with(port, alpn, None, false).await
     }
 
-    /// A TCP listener on `port`, or on a free port for 0. With `h3` the
-    /// same port must also be free for UDP, which on Windows a free TCP
-    /// port often isn't: the system reserves ranges of UDP ports, and
-    /// binding one fails with WSAEACCES. So port 0 tries again. The UDP
-    /// socket is kept and returned: freed, another socket could take its
-    /// port before QUIC binds it.
+    /// A TCP listener on `port`, or on a free port for 0. With `h3`, a
+    /// UDP socket on the same port too, kept and returned for QUIC:
+    /// freed, another socket could take its port first. For port 0 the
+    /// UDP port is picked first: on Windows, with UDP ports in use, 51
+    /// free TCP ports in a row were all taken for UDP, and Windows also
+    /// reserves ranges of UDP ports.
     async fn listen(
         port: u16,
         h3: bool,
     ) -> io::Result<(TcpListener, u16, Option<std::net::UdpSocket>)> {
-        // Rejected listeners are held until one works, or Windows may
-        // hand the same port straight back (seen as 10048 in CI).
-        let mut rejected = Vec::new();
-        loop {
+        if !h3 {
             let listener = TcpListener::bind(("127.0.0.1", port)).await?;
             let got = listener.local_addr()?.port();
-            if !h3 {
-                return Ok((listener, got, None));
-            }
-            match std::net::UdpSocket::bind(("127.0.0.1", got)) {
-                Ok(udp) => return Ok((listener, got, Some(udp))),
+            return Ok((listener, got, None));
+        }
+        // Rejected sockets are held until a port works, so each try
+        // gets a new one.
+        let mut rejected = Vec::new();
+        loop {
+            let udp = std::net::UdpSocket::bind(("127.0.0.1", port))?;
+            let got = udp.local_addr()?.port();
+            match TcpListener::bind(("127.0.0.1", got)).await {
+                Ok(listener) => return Ok((listener, got, Some(udp))),
                 Err(e) if port != 0 || rejected.len() == 50 => {
                     let tries = rejected.len() + 1;
                     return Err(io::Error::new(
                         e.kind(),
-                        format!("UDP {got}, try {tries}: {e}"),
+                        format!("TCP {got}, try {tries}: {e}"),
                     ));
                 }
-                Err(_) => rejected.push(listener),
+                Err(_) => rejected.push(udp),
             }
         }
     }
