@@ -129,27 +129,41 @@ impl Server {
     /// one after another, each blind to the other's reserved ranges, so
     /// in CI 51 picks in a row from either one were taken or reserved
     /// for the other.
-    async fn listen(
-        port: u16,
-        h3: bool,
-    ) -> io::Result<(TcpListener, u16, Option<std::net::UdpSocket>)> {
+    ///
+    /// Chrome sends QUIC for `localhost` to ::1 and doesn't fall back to
+    /// 127.0.0.1 as it does over TCP, so where the machine has IPv6 the
+    /// port must be free on ::1 too, or a Chrome test would find nothing
+    /// there and fail with no word of why.
+    async fn listen(port: u16, h3: bool) -> io::Result<(TcpListener, u16, Option<QuicSockets>)> {
         if !h3 {
             let listener = TcpListener::bind(("127.0.0.1", port)).await?;
             let got = listener.local_addr()?.port();
             return Ok((listener, got, None));
         }
+        let ipv6 = std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_ok();
         let mut tries = 0;
         loop {
             tries += 1;
             let got = if port == 0 { random_port() } else { port };
-            let both = match std::net::UdpSocket::bind(("127.0.0.1", got)) {
-                Ok(udp) => TcpListener::bind(("127.0.0.1", got))
+            let all = (|| -> io::Result<_> {
+                let v4 = std::net::UdpSocket::bind(("127.0.0.1", got))?;
+                let v6 = match ipv6 {
+                    true => Some(std::net::UdpSocket::bind((
+                        std::net::Ipv6Addr::LOCALHOST,
+                        got,
+                    ))?),
+                    false => None,
+                };
+                Ok(QuicSockets { v4, v6 })
+            })();
+            let both = match all {
+                Ok(quic) => TcpListener::bind(("127.0.0.1", got))
                     .await
-                    .map(|listener| (listener, udp)),
+                    .map(|listener| (listener, quic)),
                 Err(e) => Err(e),
             };
             match both {
-                Ok((listener, udp)) => return Ok((listener, got, Some(udp))),
+                Ok((listener, quic)) => return Ok((listener, got, Some(quic))),
                 Err(e) if port != 0 || tries == 100 => {
                     return Err(io::Error::new(
                         e.kind(),
@@ -175,15 +189,12 @@ impl Server {
         });
         let (tx, captures) = mpsc::unbounded_channel();
         let connections = Arc::new(AtomicU64::new(0));
-        let alt_svc = if let Some(v4) = udp {
+        let alt_svc = if let Some(QuicSockets { v4, v6 }) = udp {
             let config = tls_config(&[b"h3"], certificate.clone());
             listen_quic(v4, config.clone(), connections.clone(), tx.clone())?;
-            // Chrome sends QUIC for `localhost` to ::1 and doesn't fall
-            // back to 127.0.0.1 as it does over TCP. A machine without
-            // IPv6 just doesn't get this one.
-            let v6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
-            if let Ok(v6) = std::net::UdpSocket::bind(v6) {
-                let _ = listen_quic(v6, config, connections.clone(), tx.clone());
+            // A machine without IPv6 just doesn't get this one.
+            if let Some(v6) = v6 {
+                listen_quic(v6, config, connections.clone(), tx.clone())?;
             }
             Some(format!("h3=\":{port}\"; ma=86400"))
         } else {
@@ -209,6 +220,13 @@ impl Server {
     pub async fn next(&mut self) -> Option<Capture> {
         self.captures.recv().await
     }
+}
+
+/// The UDP sockets QUIC listens on: 127.0.0.1, and ::1 where the
+/// machine has IPv6.
+struct QuicSockets {
+    v4: std::net::UdpSocket,
+    v6: Option<std::net::UdpSocket>,
 }
 
 /// A port in the dynamic range, 49152 to 65535.

@@ -372,3 +372,16 @@ async fn a_busy_udp_neighbour_never_takes_the_quic_port() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     neighbour.join().unwrap();
 }
+
+#[tokio::test]
+async fn the_quic_port_is_held_on_ipv6_localhost_too() {
+    // Chrome sends QUIC for `localhost` to ::1 only, so a server that
+    // speaks HTTP/3 must hold its port there as well as on 127.0.0.1.
+    if std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("skipped: no IPv6 here");
+        return;
+    }
+    let server = Server::start_h3(0, None).await.unwrap();
+    let taken = std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, server.port));
+    assert!(taken.is_err(), "::1 port {} was free", server.port);
+}
