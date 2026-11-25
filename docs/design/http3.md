@@ -232,9 +232,16 @@ default preferences; Chrome's rules are
   connection of its own (`CreateBackupConnection`), to send HTTP/2's
   preface and wait in the pool. A TCP connection that fails leaves the
   request to HTTP/3.
-- Failing. A connection that never comes up, for any reason but a TLS
-  error, stops HTTP/3 to its alternative's host (`Http3Session::Shutdown`,
-  `nsHttpHandler::ExcludeHttp3`). So does one that was up and closes with
+- Failing. A connection that never comes up stops HTTP/3 to its
+  alternative's host (`Http3Session::Shutdown`,
+  `nsHttpHandler::ExcludeHttp3`), unless the certificate check failed
+  (the only NSS error Firefox's session sees) or the server rejected ECH
+  and sent configurations to retry with. A server that rejected ECH with
+  nothing to retry with closes with `ech_required`, which is
+  `NS_ERROR_NET_HTTP3_PROTOCOL_ERROR` and excludes the host like any
+  other failure. A connection from an HTTPS record whose ECH the server
+  rejected with configurations is made again to the same record with
+  them (`SSL_ERROR_ECH_RETRY_WITH_ECH` in `PrepareConnInfoForRetry`). So does one that was up and closes with
   an error the server or neqo raised, which `Http3Session::ProcessEvents`
   reads as `NS_ERROR_NET_HTTP3_PROTOCOL_ERROR`: anything but a stateless
   reset, no error at either layer (`H3_NO_ERROR` for HTTP/3), a server
@@ -266,9 +273,6 @@ as if proved, ignores Alt-Svc for it, and never races or falls back.
 
 What's not the same as Firefox:
 
-- An HTTP/3 connection whose ECH the server rejects isn't tried again
-  with the configurations it sends back: the request goes on as after
-  any other failure.
 - ECH over TCP is held to recordings of configurations without
   extensions of their own; how NSS and BoringSSL treat a configuration
   extension isn't compared.
