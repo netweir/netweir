@@ -2711,7 +2711,8 @@ enum Next {
 /// (network.dns.echconfig.fallback_to_origin_when_all_failed is false).
 /// An h3 record next goes over HTTP/3, with its own fast fallback, unless
 /// HTTP/3 has failed for the request.
-/// At most network.http.request.max-attempts (10) connections.
+/// At most network.http.request.max-attempts (10) connections for the
+/// whole request, its HTTP/3 ones to records included.
 #[cfg(feature = "http3")]
 async fn send_from_records(
     from: &crate::h3::FromRecords,
@@ -2724,7 +2725,9 @@ async fn send_from_records(
 ) -> Result<wreq::Response, FetchError> {
     let h3_excluded = |target: &str| going.routes.excluded(target);
     let mut retries: Option<Vec<crate::https_rr::Route>> = None;
-    for _ in 0..10 {
+    // The connection that failed, if one did, was one of them.
+    let mut attempts = from.attempts + usize::from(matches!(next, Next::After(..)));
+    while attempts < 10 {
         let to = match next {
             Next::To(to) => to,
             Next::After(failed, rejected, error) => {
@@ -2751,10 +2754,11 @@ async fn send_from_records(
                                 retries.insert(list)
                             }
                         };
-                        // shortcut: an h3 record put on the list before
-                        // HTTP/3 failed for the request is passed over, as
-                        // Firefox can't connect over HTTP/3 with
-                        // NS_HTTP_DISALLOW_HTTP3; not seen in Firefox itself.
+                        // An h3 record put on the list before HTTP/3 failed
+                        // for the request is passed over: Firefox never runs
+                        // an HTTP/3 connection info with NS_HTTP_DISALLOW_HTTP3
+                        // (nsHttpConnectionMgr::ProcessNewTransaction asserts
+                        // it).
                         if going.no_h3 {
                             list.retain(|r| r.alpn != "h3");
                         }
@@ -2768,7 +2772,7 @@ async fn send_from_records(
         };
         if to.alpn == "h3" {
             let left = retries.take().unwrap_or_default();
-            let route = from.h3_retry(going.partition, to, left);
+            let route = from.h3_retry(going.partition, to, left, attempts);
             let way = (going.routes.clone(), Way::Go(route));
             let fetcher = going.fetcher;
             return Box::pin(fetcher.send_h3(way, request, order, sent, view, going.h3)).await;
@@ -2776,6 +2780,7 @@ async fn send_from_records(
         let Some((routed, require)) = request.try_clone().and_then(|r| to_record(r, &to)) else {
             return dispatch(request, order, sent, view).await;
         };
+        attempts += 1;
         // The connection first, so a failed one can go on elsewhere.
         let connecting = routed.try_clone().map(|r| r.connect_only(require).send());
         let made = match connecting {

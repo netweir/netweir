@@ -563,11 +563,15 @@ pub(crate) enum State {
     Connecting,
     Connected,
     /// It never connected. Firefox stops using HTTP/3 to the alternative's
-    /// host after any such failure but a TLS one (Http3Session::Shutdown,
-    /// DnsAndConnectSocket::SetupConn).
+    /// host after any such failure but a TLS one (Http3Session::Shutdown).
     Failed {
         exclude: bool,
     },
+    /// Its socket or client couldn't be set up, before any packet went
+    /// out: HTTP/3 to the alternative's host stops, but the request may
+    /// still go on to another h3 record (DnsAndConnectSocket::SetupConn
+    /// calls DisableHttp3(true) and ExcludeHttp3).
+    NotSetUp,
     /// It connected, and has closed since.
     Closed,
     /// It connected, then closed with an HTTP/3 or QUIC error, which
@@ -643,6 +647,9 @@ pub(crate) struct FromRecords {
     /// The records still to go on to, once a failed connection has made
     /// the list (nsHttpTransaction::mRecordsForRetry): it's made once.
     left: Option<Vec<crate::https_rr::Route>>,
+    /// The connections the request has made so far, which
+    /// network.http.request.max-attempts bounds for the whole request.
+    pub attempts: usize,
 }
 
 impl FromRecords {
@@ -705,6 +712,7 @@ impl FromRecords {
         partition: &str,
         to: crate::https_rr::Route,
         left: Vec<crate::https_rr::Route>,
+        attempts: usize,
     ) -> Route {
         Route {
             partition: partition.to_string(),
@@ -718,6 +726,7 @@ impl FromRecords {
                 port: self.port,
                 tcp: None,
                 left: Some(left),
+                attempts,
             })),
         }
     }
@@ -1252,7 +1261,7 @@ impl Routes {
             .get(&key)
             .map(|h| *h.state.borrow());
         match state {
-            Some(State::Failed { .. } | State::Broken) => {
+            Some(State::Failed { .. } | State::NotSetUp | State::Broken) => {
                 self.mark_broken(&route.partition, &route.alternative)
             }
             Some(State::Connecting) => {
@@ -1582,6 +1591,7 @@ impl Routes {
                 port,
                 tcp: (!h3).then_some(chosen),
                 left: None,
+                attempts: 0,
             })),
         })
     }
@@ -1784,6 +1794,7 @@ impl Routes {
             match outcome {
                 State::Connected => now.proved(&partition, &host, &alternative),
                 State::Failed { exclude } => return now.failed(&alternative, exclude),
+                State::NotSetUp => return now.failed(&alternative, true),
                 State::Connecting | State::Closed | State::Broken => return,
             }
             drop(now);
@@ -2198,20 +2209,23 @@ async fn run(
     mut queue: mpsc::UnboundedReceiver<Job>,
     state: &watch::Sender<State>,
 ) {
+    let given = given.zip(
+        alternative
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok()),
+    );
+    let remote = match given {
+        Some((ip, port)) => Ok(SocketAddr::new(ip, port)),
+        None => alternative
+            .to_socket_addrs()
+            .map_err(|e| format!("{alternative}: {e}"))
+            .and_then(|mut a| a.next().ok_or_else(|| format!("{alternative}: no address"))),
+    };
+    let remote = match remote {
+        Ok(remote) => remote,
+        Err(e) => return fail_all(queue, &format!("HTTP/3 to {alternative}: {e}")),
+    };
     let connect = || -> Result<(Socket, Http3Client), String> {
-        let given = given.zip(
-            alternative
-                .rsplit_once(':')
-                .and_then(|(_, p)| p.parse().ok()),
-        );
-        let remote = match given {
-            Some((ip, port)) => SocketAddr::new(ip, port),
-            None => alternative
-                .to_socket_addrs()
-                .map_err(|e| format!("{alternative}: {e}"))?
-                .next()
-                .ok_or_else(|| format!("{alternative}: no address"))?,
-        };
         let socket = Socket::bind(remote).map_err(|e| e.to_string())?;
         let client = firefox_client(
             &host,
@@ -2224,7 +2238,10 @@ async fn run(
     };
     let (socket, mut client) = match connect() {
         Ok(c) => c,
-        Err(e) => return fail_all(queue, &format!("HTTP/3 to {alternative}: {e}")),
+        Err(e) => {
+            state.send_replace(State::NotSetUp);
+            return fail_all(queue, &format!("HTTP/3 to {alternative}: {e}"));
+        }
     };
     let mut recv = neqo_udp::RecvBuf::default();
     let mut streams: HashMap<StreamId, Stream> = HashMap::new();
@@ -2546,6 +2563,61 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{Body, Excluded, alt_svc, decompressed, leading_number, priority};
+
+    #[test]
+    fn http3_is_taken_from_the_request_as_firefox_takes_it() {
+        // DisableHttp3 for what Http3Session::Shutdown excludes the host
+        // for, a failure to connect or an error once up; not for a TLS
+        // failure, nor for a socket that couldn't be set up
+        // (DnsAndConnectSocket::SetupConn's DisableHttp3(true)).
+        use super::{Handle, Route, Routes, Stack, State, Trust, Validate, connection_key};
+        use std::sync::Arc;
+        let validate: Validate = Arc::new(|_, _| Box::pin(async { false }));
+        let routes = Routes::new(
+            Trust::new(false, None).unwrap(),
+            validate,
+            Arc::default(),
+            None,
+            Stack::Firefox,
+            None,
+        );
+        let route = Route {
+            partition: "site".into(),
+            alternative: "h3.example:443".into(),
+            forced: false,
+            h3: true,
+            record: Some(Some(vec![1])),
+            from: None,
+        };
+        assert!(!routes.ruled_out_h3(&route, "origin.example"));
+        let key = connection_key("site", "origin.example", "h3.example:443", Some(&[1]));
+        for (state, ruled_out) in [
+            (State::Failed { exclude: true }, true),
+            (State::Broken, true),
+            (State::Failed { exclude: false }, false),
+            (State::NotSetUp, false),
+            (State::Connecting, false),
+            (State::Closed, false),
+        ] {
+            let (_, state_now) = tokio::sync::watch::channel(state);
+            let (jobs, _) = mpsc::unbounded_channel();
+            let handle = Handle {
+                jobs,
+                thread: Arc::default(),
+                state: state_now,
+            };
+            routes
+                .connections
+                .lock()
+                .unwrap()
+                .insert(key.clone(), handle);
+            assert_eq!(
+                routes.ruled_out_h3(&route, "origin.example"),
+                ruled_out,
+                "{state:?}"
+            );
+        }
+    }
 
     #[test]
     fn alt_svc_is_read_as_firefox_reads_it() {

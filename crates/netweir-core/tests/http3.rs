@@ -1138,6 +1138,111 @@ async fn a_failed_tcp_record_goes_on_to_an_h3_record() {
     }
 }
 
+/// A UDP port on 127.0.0.1 that answers every QUIC Initial with a
+/// Version Negotiation packet offering only a reserved version, so the
+/// handshake fails at once.
+async fn version_negotiation() -> u16 {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = socket.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut buf = vec![0; 65536];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            // Long header: flags, version, then each connection ID with its
+            // length in front.
+            let packet = &buf[..n];
+            let Some(&dcid_len) = packet.get(5) else {
+                continue;
+            };
+            let dcid_end = 6 + dcid_len as usize;
+            let Some(&scid_len) = packet.get(dcid_end) else {
+                continue;
+            };
+            let (dcid, scid) = (
+                &packet[6..dcid_end],
+                &packet[dcid_end + 1..dcid_end + 1 + scid_len as usize],
+            );
+            let mut answer = vec![0xc0, 0, 0, 0, 0, scid.len() as u8];
+            answer.extend_from_slice(scid);
+            answer.push(dcid.len() as u8);
+            answer.extend_from_slice(dcid);
+            answer.extend_from_slice(&[0x1a, 0x2a, 0x3a, 0x4a]);
+            let _ = socket.send_to(&answer, from).await;
+        }
+    });
+    port
+}
+
+/// A TCP port on 127.0.0.1 that closes every connection at once, and
+/// counts them.
+async fn closing() -> (u16, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let count = Arc::new(AtomicUsize::new(0));
+    let counting = count.clone();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            counting.fetch_add(1, Ordering::Relaxed);
+            drop(socket);
+        }
+    });
+    (port, count)
+}
+
+#[tokio::test]
+async fn a_request_from_records_makes_ten_connections_at_most() {
+    // network.http.request.max-attempts (10) bounds the whole request,
+    // its HTTP/3 connection to a record included. The first record's TCP
+    // connection is closed at once; the h3 record's port answers with
+    // Version Negotiation, so its QUIC handshake fails; twelve more
+    // records follow, each to a port that closes every connection.
+    // 1 + 1 + 8 = 10.
+    let origin = Server::start().await.unwrap();
+    let quiet = version_negotiation().await;
+    let (first, _) = closing().await;
+    let (rest, tried) = closing().await;
+    let ech = (5, hex(ECH_CONFIG_LIST));
+    let h2 = |port: u16| {
+        vec![
+            (1, b"\x02h2".to_vec()),
+            (3, port.to_be_bytes().to_vec()),
+            ech.clone(),
+        ]
+    };
+    // no-default-alpn, so the record has no TCP entry of its own.
+    let quic = vec![
+        (1, b"\x02h3".to_vec()),
+        (2, Vec::new()),
+        (3, quiet.to_be_bytes().to_vec()),
+        ech.clone(),
+    ];
+    let targets: Vec<String> = (0..12).map(|i| format!("t{i}.test")).collect();
+    let (first_params, more) = (h2(first), h2(rest));
+    let mut records = vec![(1, ".", first_params.as_slice()), (2, ".", quic.as_slice())];
+    for (i, target) in targets.iter().enumerate() {
+        records.push((3 + i as u16, target.as_str(), more.as_slice()));
+    }
+    let record = netweir_core::https_answer("origin.test", &records, 300);
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], origin.port).into())];
+    for target in &targets {
+        options
+            .resolve
+            .push((target.clone(), ([127, 0, 0, 1], rest).into()));
+    }
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    // The first requests may go to the origin before the records are in.
+    let started = Instant::now();
+    while fetcher.get("https://origin.test/", &[]).await.is_ok() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the records never took"
+        );
+    }
+    assert_eq!(tried.load(Ordering::Relaxed), 8);
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
