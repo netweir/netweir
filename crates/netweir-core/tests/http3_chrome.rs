@@ -880,3 +880,153 @@ async fn an_https_records_ech_config_goes_in_chromes_quic_hello() {
     let (_, hello) = netweir_fingerprint::first_flight(&datagrams, odcid).expect("a ClientHello");
     assert_eq!(hello.server_name.as_deref(), Some("public.test"));
 }
+
+/// A server on 127.0.0.1 that answers every request over plain HTTP/1.1
+/// with a 200 saying `body`: a site without TLS, or a proxy.
+async fn plain(body: &'static str) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    match client.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = client.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+/// Params for `alpn=h2`, which keeps the https request off QUIC.
+fn h2_alpn() -> (u16, Vec<u8>) {
+    (1, b"\x02h2".to_vec())
+}
+
+#[tokio::test]
+async fn an_http_url_with_an_https_record_moves_chrome_to_https() {
+    // Any record Chrome can read for the https name fails the http URL's
+    // lookup with ERR_DNS_NAME_HTTPS_ONLY, and URLRequestHttpJob answers
+    // with a 307 of its own to https, same port. The server speaks only
+    // TLS, so the http request can't have gone out.
+    let tls = Server::start().await.unwrap();
+    let port = tls.port;
+    let fetcher = fed(
+        port,
+        &["origin.test"],
+        vec![record_for(
+            "origin.test",
+            port,
+            1,
+            "origin.test",
+            &[h2_alpn()],
+        )],
+    );
+    let http = format!("http://origin.test:{port}/page?q=1");
+    let https = format!("https://origin.test:{port}/page?q=1");
+    let hop = fetcher
+        .once(&http, &Outgoing::navigate(), &[], 0)
+        .await
+        .unwrap();
+    assert_eq!(hop.status, 307);
+    assert_eq!(hop.url, http);
+    assert_eq!(hop.header("location"), Some(https.as_str()));
+    assert_eq!(hop.header("non-authoritative-reason"), Some("DNS"));
+    assert_eq!(
+        hop.header("cross-origin-resource-policy"),
+        Some("Cross-Origin")
+    );
+    assert!(hop.body.is_empty());
+    let page = fetcher.get(&http, &[]).await.unwrap();
+    assert_eq!(page.url, https);
+    assert_eq!(page.status, 200);
+    // It counts against the redirect limit, as Chrome's do.
+    let mut none = Outgoing::navigate();
+    none.policy.max_redirects = Some(0);
+    let err = fetcher.send(&http, &none, &[]).await.unwrap_err();
+    assert_eq!(err.kind, netweir_core::FetchErrorKind::TooManyRedirects);
+}
+
+#[tokio::test]
+async fn without_a_record_or_behind_a_proxy_chrome_stays_on_http() {
+    // No record, no upgrade; with a proxy Chrome looks up the proxy, not
+    // the host (ConnectJobParamsFactory), and asks for no record. The
+    // first host shows the record would have moved it.
+    let tls = Server::start().await.unwrap();
+    let site = plain("plain").await;
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![
+        ("moved.test".into(), ([127, 0, 0, 1], tls.port).into()),
+        ("bare.test".into(), ([127, 0, 0, 1], site).into()),
+    ];
+    options.https_records.extend([record_for(
+        "moved.test",
+        tls.port,
+        1,
+        "moved.test",
+        &[h2_alpn()],
+    )]);
+    let fetcher = Fetcher::new(options.clone()).unwrap();
+    let moved = fetcher
+        .get(&format!("http://moved.test:{}/", tls.port), &[])
+        .await
+        .unwrap();
+    assert_eq!(moved.url, format!("https://moved.test:{}/", tls.port));
+    let bare = fetcher
+        .get(&format!("http://bare.test:{site}/"), &[])
+        .await
+        .unwrap();
+    assert_eq!(bare.url, format!("http://bare.test:{site}/"));
+    assert_eq!(bare.text(), "plain");
+
+    let proxy = plain("proxied").await;
+    options.proxy = Some(format!("http://127.0.0.1:{proxy}"));
+    let proxied = Fetcher::new(options).unwrap();
+    let url = format!("http://moved.test:{}/", tls.port);
+    let page = proxied.get(&url, &[]).await.unwrap();
+    assert_eq!(
+        (page.url.as_str(), page.text().as_ref()),
+        (url.as_str(), "proxied")
+    );
+}
+
+#[tokio::test]
+async fn firefox_and_safari_stay_on_http_with_an_https_record() {
+    // Firefox upgrades from a record only over TRR
+    // (nsHttpChannel::MaybeUseHTTPSRRForUpgrade skips it when TRR is
+    // off), which Netweir never uses. Whether Safari does with the system
+    // resolver isn't known, so it stays as it was.
+    let site = plain("plain").await;
+    for profile in ["firefox-160-macos", "safari-27-macos"] {
+        let mut options = FetchOptions::new(Profile::named(profile).unwrap());
+        options.verify_certificates = false;
+        options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], site).into())];
+        options.https_records.extend([record_for(
+            "origin.test",
+            site,
+            1,
+            "origin.test",
+            &[h2_alpn()],
+        )]);
+        let fetcher = Fetcher::new(options).unwrap();
+        let url = format!("http://origin.test:{site}/");
+        let page = fetcher.get(&url, &[]).await.unwrap();
+        assert_eq!(
+            (page.url.as_str(), page.text().as_ref()),
+            (url.as_str(), "plain"),
+            "{profile}"
+        );
+    }
+}
