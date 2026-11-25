@@ -125,9 +125,10 @@ impl Server {
     /// A TCP listener on `port`, or on a free port for 0. With `h3`, a
     /// UDP socket on the same port too, kept and returned for QUIC:
     /// freed, another socket could take its port first. For port 0 the
-    /// UDP port is picked first: on Windows, with UDP ports in use, 51
-    /// free TCP ports in a row were all taken for UDP, and Windows also
-    /// reserves ranges of UDP ports.
+    /// number is picked at random. Windows gives out TCP and UDP ports
+    /// one after another, each blind to the other's reserved ranges, so
+    /// in CI 51 picks in a row from either one were taken or reserved
+    /// for the other.
     async fn listen(
         port: u16,
         h3: bool,
@@ -137,22 +138,25 @@ impl Server {
             let got = listener.local_addr()?.port();
             return Ok((listener, got, None));
         }
-        // Rejected sockets are held until a port works, so each try
-        // gets a new one.
-        let mut rejected = Vec::new();
+        let mut tries = 0;
         loop {
-            let udp = std::net::UdpSocket::bind(("127.0.0.1", port))?;
-            let got = udp.local_addr()?.port();
-            match TcpListener::bind(("127.0.0.1", got)).await {
-                Ok(listener) => return Ok((listener, got, Some(udp))),
-                Err(e) if port != 0 || rejected.len() == 50 => {
-                    let tries = rejected.len() + 1;
+            tries += 1;
+            let got = if port == 0 { random_port() } else { port };
+            let both = match std::net::UdpSocket::bind(("127.0.0.1", got)) {
+                Ok(udp) => TcpListener::bind(("127.0.0.1", got))
+                    .await
+                    .map(|listener| (listener, udp)),
+                Err(e) => Err(e),
+            };
+            match both {
+                Ok((listener, udp)) => return Ok((listener, got, Some(udp))),
+                Err(e) if port != 0 || tries == 100 => {
                     return Err(io::Error::new(
                         e.kind(),
-                        format!("TCP {got}, try {tries}: {e}"),
+                        format!("port {got}, try {tries}: {e}"),
                     ));
                 }
-                Err(_) => rejected.push(udp),
+                Err(_) => {}
             }
         }
     }
@@ -205,6 +209,12 @@ impl Server {
     pub async fn next(&mut self) -> Option<Capture> {
         self.captures.recv().await
     }
+}
+
+/// A port in the dynamic range, 49152 to 65535.
+fn random_port() -> u16 {
+    use std::hash::{BuildHasher, RandomState};
+    49152 + (RandomState::new().hash_one(()) % 16384) as u16
 }
 
 /// A certificate for `localhost` and `127.0.0.1` kept in `dir`, made the
