@@ -598,6 +598,22 @@ async fn a_session_chrome_handed_back_comes_back_on_resume_with_per_request() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrome() {
+    // Once hung on a Windows runner until the step's 30-minute limit
+    // (#351). A bound of its own, and the step it reached, make the next
+    // one say where.
+    let step = std::sync::Arc::new(std::sync::Mutex::new("starting"));
+    let reached = step.clone();
+    let run = own_proxy_after_a_hand_back(step);
+    if tokio::time::timeout(std::time::Duration::from_secs(240), run)
+        .await
+        .is_err()
+    {
+        panic!("hung after: {}", reached.lock().unwrap());
+    }
+}
+
+async fn own_proxy_after_a_hand_back(step: std::sync::Arc<std::sync::Mutex<&'static str>>) {
+    let at = |s: &'static str| *step.lock().unwrap() = s;
     let Some(_chrome) = chrome().await else {
         return;
     };
@@ -614,8 +630,10 @@ async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrom
         settings(BrowserMode::OnBlock),
     )
     .unwrap();
+    at("Chrome found");
     c.submit(request(1, site.url("/guarded"), false));
     let events = drain(&c).await;
+    at("first crawl drained");
     if events.iter().any(
         |e| matches!(e, Event::Warning { message } if message.contains("no matching netweir profile")),
     ) {
@@ -628,13 +646,16 @@ async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrom
         } = e
         {
             page.close().await;
+            at("a page closed");
         }
     }
     c.submit(CrawlRequest {
         proxy: Some(format!("http://127.0.0.1:{}", own.port)),
         ..request(2, site.url("/mine"), false)
     });
+    at("second request submitted");
     drain(&c).await;
+    at("second crawl drained");
     let requests = own.requests.lock().unwrap().clone();
     let (_, headers) = requests.first().expect("the own proxy carried it");
     let header = |name: &str| {
@@ -646,6 +667,8 @@ async fn a_request_naming_its_own_proxy_after_a_hand_back_still_looks_like_chrom
     };
     assert!(header("user-agent").contains("Chrome/"), "{headers:?}");
     assert!(header("cookie").contains("pass=1"), "{headers:?}");
+    at("checked; dropping the crawler");
+    drop(c);
 }
 
 #[tokio::test(flavor = "multi_thread")]
