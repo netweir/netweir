@@ -1246,6 +1246,42 @@ async fn a_request_from_records_makes_ten_connections_at_most() {
     assert_eq!(tried.load(Ordering::Relaxed), 8);
 }
 
+#[tokio::test]
+async fn an_http3_server_that_rejects_ech_is_left_at_once() {
+    // The record's ECH goes into the QUIC ClientHello, and this server
+    // knows no ECH, so it answers the outer hello. neqo then asks for its
+    // certificate to be checked against the configuration's public name
+    // (EchFallbackAuthenticationNeeded, which Firefox's
+    // Http3Session::CallCertVerification answers), and once it has been,
+    // fails the handshake with ech_required. The request goes on to TCP
+    // and is answered there, long before QUIC's idle timeout.
+    let server = Server::start_h3(0, None).await.unwrap();
+    let alpn = b"\x02h3".to_vec();
+    let port = server.port.to_be_bytes().to_vec();
+    let record = netweir_core::https_answer(
+        "origin.test",
+        &[(1, ".", &[(1, alpn), (3, port), (5, hex(ECH_CONFIG_LIST))])],
+        300,
+    );
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], server.port).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    // The first request may go before the records are in; every one has
+    // to be answered in time.
+    for _ in 0..5 {
+        let started = Instant::now();
+        let answer = tokio::time::timeout(
+            Duration::from_secs(5),
+            fetcher.get("https://origin.test/", &[]),
+        )
+        .await;
+        let answer = answer.unwrap_or_else(|_| panic!("no answer in {:?}", started.elapsed()));
+        assert_eq!(answer.unwrap().version, "HTTP/2");
+    }
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

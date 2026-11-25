@@ -2264,6 +2264,22 @@ async fn run(
                         .unwrap_or_default();
                     client.authenticated(trust.check(&host, &chain), Instant::now());
                 }
+                // The server rejected ECH: its certificate is checked
+                // against the configuration's public name, and the
+                // handshake then fails with ech_required
+                // (Http3Session::CallCertVerification).
+                Http3ClientEvent::EchFallbackAuthenticationNeeded { public_name } => {
+                    let chain: Vec<Vec<u8>> = client
+                        .peer_certificate()
+                        .map(|c| c.iter().map(<[u8]>::to_vec).collect())
+                        .unwrap_or_default();
+                    let name = if public_name.is_empty() {
+                        &host
+                    } else {
+                        &public_name
+                    };
+                    client.authenticated(trust.check(name, &chain), Instant::now());
+                }
                 Http3ClientEvent::StateChange(Http3State::Connected) => {
                     ready = true;
                     state.send_replace(State::Connected);
