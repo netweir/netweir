@@ -162,8 +162,11 @@ default preferences; Chrome's rules are
   the next record with ECH over TCP, to the origin only if some record
   has none, and nowhere once they're all tried
   (`network.dns.echconfig.fallback_to_origin_when_all_failed` is off). An
-  http URL isn't upgraded to https from a record: with TRR off, Firefox
-  doesn't (`nsHttpChannel::MaybeUseHTTPSRRForUpgrade`).
+  http URL isn't upgraded to https from a record. Firefox's
+  `network.dns.upgrade_with_https_rr` is on, but
+  `nsHttpChannel::MaybeUseHTTPSRRForUpgrade` skips the upgrade unless TRR
+  is in use (`canUseHTTPSRRonNetwork`, with
+  `network.dns.force_use_https_rr` off), and with TRR off it isn't.
 - `h2` alternatives. Firefox takes those too, each one (`h2` on the
   origin's own host and port is none, and clears the origin's others, as
   `AltSvcMapping`'s constructor makes it one with no lifetime). Once one
@@ -222,8 +225,9 @@ default preferences; Chrome's rules are
   sends no UDP at all, as Firefox's `AltSvcMapping::AcceptableProxy` and
   `UpdateAltServiceMapping` refuse HTTP/3 behind one. A system proxy is
   read as wreq reads it, from the environment: the first of `HTTPS_PROXY`
-  and `https_proxy` that is set, else of `ALL_PROXY` and `all_proxy`, if
-  wreq can use it, and none under CGI. Behind one, only the hosts
+  and `https_proxy` that is set (`HTTP_PROXY` and `http_proxy` for an
+  http URL), else of `ALL_PROXY` and `all_proxy`, if wreq can use it, and
+  none under CGI. Behind one, only the hosts
   `NO_PROXY` exempts, which wreq sends direct, move to HTTP/3, matched by
   wreq's rules (addresses, networks, and domains with their subdomains).
 - Off. `FetchOptions::http3 = false` keeps a Fetcher on TCP whatever its
@@ -394,6 +398,29 @@ Chromium's `net/` source:
   each says `no-default-alpn`. Of the rest, the first by priority that
   lists `h3` is the one QUIC uses (`ExtractHttpsResults`,
   `HostCache::Entry::GetEndpoints`, `QuicSessionPool::SelectQuicVersion`).
+- http URLs. Chrome asks for an http URL's HTTPS record too, under the
+  https URL's name: port 80 becomes 443, and any other port stays, so
+  `http://host:8080/` asks for `_8080._https.host`
+  (`dns_util::GetNameForHttpsQuery`). If any record comes back that
+  Chrome can read, the lookup fails with `ERR_DNS_NAME_HTTPS_ONLY`
+  (`HostResolverDnsTask::ShouldTriggerHttpToHttpsUpgrade`). "Can read"
+  means an AliasMode record, or a ServiceMode one whose `mandatory`
+  names only keys Chrome knows (`ExtractHttpsResults`,
+  `ServiceFormHttpsRecordRdata::IsCompatible`); its target, port and
+  ALPN don't matter, so a record Chrome wouldn't use for QUIC still
+  upgrades. `URLRequestHttpJob` then answers with a 307 of its own to
+  the same URL on https, port and all, with `Location`,
+  `Cross-Origin-Resource-Policy: Cross-Origin` and
+  `Non-Authoritative-Reason: DNS`
+  (`RedirectUtil::SynthesizeRedirectHeaders`). Netweir does the same: the
+  request waits for the record as an https one does, and the 307 is a
+  hop like any other redirect. It counts against `max_redirects`, and
+  `allow_redirects=False` or `once` hands it back. Nothing goes over the
+  network for it, so it isn't in the archive; the https request after
+  it is. The upgrade doesn't depend on QUIC, but Netweir's record lookup
+  lives in the `http3` feature, so it happens only with that feature
+  and `http3` on, and never with a proxy, where Chrome looks up the
+  proxy and not the host (`ConnectJobParamsFactory`).
 - Timing. The HTTPS query goes out with the address ones, and once the
   addresses are in it gets a fifth of the time they took, at least 5 ms
   and at most 50 ms, before Chrome goes on without it
@@ -428,9 +455,17 @@ Not the same as Chrome's:
   handshake and closes. Chrome's socket pool keeps it, idle
   (`ClientSocketHandle::Reset` leaves its connect job running), and sends
   HTTP/2's preface only once a request uses it, which wreq can't do.
-- An http:// URL whose host has an HTTPS record. Chrome sends a request
-  for it to https:// with an internal 307 (`ERR_DNS_NAME_HTTPS_ONLY`);
-  Netweir asks for the record and stays on http://.
+- `http3 = false`, or a build without the feature, turns off the HTTPS
+  record lookup, and with it the upgrade of http URLs. Chrome with QUIC
+  off still upgrades them.
+- When the http request carries `Origin`, Chrome's 307 also has
+  `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials`.
+  Netweir's doesn't, since it does no CORS checks.
+- The records come from Firefox's parser, which knows `odoh` (32769)
+  and not `trust_anchor_ids`, where Chrome's knows the reverse. An answer
+  whose `mandatory` names `odoh` upgrades in Netweir and not in Chrome;
+  one that names `trust_anchor_ids` upgrades in Chrome and not in
+  Netweir.
 - When both Alt-Svc and a record offer HTTP/3 at different places, Chrome
   races both QUIC connections. Netweir only uses the Alt-Svc one.
 - If every record has ECH, Chrome won't fall back to TCP without it.
@@ -585,6 +620,12 @@ macOS, and a guess where they say so.
 - Falling back. A request a QUIC error cuts off before its response
   goes again over TCP if its method is safe to repeat (a guess: Apple
   only documents falling back for a connection).
+- http URLs stay on http whatever their records say. Apple hasn't
+  said whether Safari upgrades from a record: Pauly's message says the
+  query goes out for `http://` URLs as well, and nothing about what
+  comes of it, and Chromium's intent to ship the upgrade called it
+  unclear whether Safari did. The capture can't serve DNS, so it isn't
+  recorded either.
 - Proxies, and `http3 = false`, as for the others: no QUIC at all.
 
 ## Building it

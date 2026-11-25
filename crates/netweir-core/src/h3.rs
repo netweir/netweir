@@ -703,6 +703,19 @@ pub(crate) struct Lookup {
     partition: String,
 }
 
+impl Lookup {
+    /// Waits for the lookup, and says whether it found any record.
+    pub(crate) async fn has_records(mut self) -> bool {
+        let Ok(found) = self.found.wait_for(Option::is_some).await else {
+            return false;
+        };
+        found
+            .as_ref()
+            .and_then(|f| f.records.as_ref())
+            .is_some_and(|r| !r.records.is_empty())
+    }
+}
+
 /// An origin's alternatives are kept by partition, origin and whether
 /// they're HTTP/3 ones, as AltSvcMapping::MakeHashKey keys them.
 type Key = (String, String, bool);

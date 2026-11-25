@@ -57,6 +57,9 @@ Left out:
 - a request that got no response: a network error, a timeout, or a body
   over `max_response_size`, which is abandoned part way;
 - a page served from the [cache](cache.md): nothing was fetched;
+- the 307 a Chrome profile makes up to send an http URL to https when
+  its host has an HTTPS record: nothing was fetched either, and the
+  https request it leads to is in;
 - a page fetched in Chrome. Netweir never sees the bytes Chrome got from
   the server, only the page once its scripts have run. A `resource` record
   of that rendered HTML could be written, but it isn't what the site sent,

@@ -170,6 +170,9 @@ pub struct Fetcher {
     /// alone may move to HTTP/3.
     #[cfg(feature = "http3")]
     proxied: Option<Arc<NoProxy>>,
+    /// The same for http, whose system proxy may be another.
+    #[cfg(feature = "http3")]
+    proxied_http: Option<Arc<NoProxy>>,
     /// The profile's headers wreq adds to a typed address, which an
     /// HTTP/3 request has to be given itself.
     #[cfg(feature = "http3")]
@@ -1522,7 +1525,12 @@ impl Fetcher {
             },
             #[cfg(feature = "http3")]
             proxied: (options.system_proxy && options.proxy.is_none())
-                .then(system_proxy)
+                .then(|| system_proxy(true))
+                .flatten()
+                .map(Arc::new),
+            #[cfg(feature = "http3")]
+            proxied_http: (options.system_proxy && options.proxy.is_none())
+                .then(|| system_proxy(false))
                 .flatten()
                 .map(Arc::new),
             #[cfg(feature = "http3")]
@@ -1606,9 +1614,37 @@ impl Fetcher {
     /// go over HTTP/3.
     #[cfg(feature = "http3")]
     fn direct(&self, url: &Url) -> bool {
-        self.proxied
+        let proxied = match url.scheme() {
+            "https" => &self.proxied,
+            _ => &self.proxied_http,
+        };
+        proxied
             .as_ref()
             .is_none_or(|no| url.host_str().is_some_and(|host| no.contains(host)))
+    }
+
+    /// Where Chrome sends an http `url` whose host has an HTTPS record:
+    /// to https, with the same port. Chrome 157 asks for the record of
+    /// the https URL, port 80 becoming 443 (dns_util::
+    /// GetNameForHttpsQuery), waits for it as for an https request, and
+    /// any record it can read, AliasMode or ServiceMode, whatever its
+    /// port, target or ALPN, fails the lookup with ERR_DNS_NAME_HTTPS_ONLY
+    /// (HostResolverDnsTask::ShouldTriggerHttpToHttpsUpgrade,
+    /// ExtractHttpsResults). Not through a proxy, which Chrome looks up
+    /// in place of the host, with no HTTPS query
+    /// (ConnectJobParamsFactory). Firefox does this only over TRR
+    /// (nsHttpChannel::MaybeUseHTTPSRRForUpgrade), and whether Safari
+    /// does isn't known.
+    #[cfg(feature = "http3")]
+    async fn https_only(&self, url: &Url, outgoing: &Outgoing) -> Option<Url> {
+        let routes = self.h3.as_ref().filter(|r| r.alt_svc_first())?;
+        if url.scheme() != "http" || !self.direct(url) {
+            return None;
+        }
+        let mut https = url.clone();
+        https.set_scheme("https").ok()?;
+        let lookup = routes.lookup(&partition(outgoing, url), &https)?;
+        lookup.has_records().await.then_some(https)
     }
 
     /// Where `outgoing` to `url` goes over HTTP/3, if it does.
@@ -1870,6 +1906,11 @@ impl Fetcher {
             caller.push((k.as_str(), name, value));
         }
         let current = parse_url(url)?;
+        #[cfg(feature = "http3")]
+        if let Some(https) = self.https_only(&current, outgoing).await {
+            // Nothing goes over the network, so nothing goes in the archive.
+            return Ok((current, internal_redirect(&https), None));
+        }
         let uri: Uri = current
             .as_str()
             .parse()
@@ -2818,15 +2859,35 @@ fn partition(outgoing: &Outgoing, url: &Url) -> String {
         .unwrap_or_default()
 }
 
-/// The system proxy https requests go through, as wreq reads it (its
-/// `proxy::matcher::Builder::from_env`, the only source without wreq's
-/// `system-proxy` feature): the first of HTTPS_PROXY and https_proxy that
-/// is set, else of ALL_PROXY and all_proxy, if it's a proxy URL wreq can
-/// use, and none at all under CGI (REQUEST_METHOD set). Given as the hosts
+/// The redirect Chrome makes up for an http URL whose host is HTTPS-only
+/// (URLRequestHttpJob::OnStartCompleted on ERR_DNS_NAME_HTTPS_ONLY,
+/// RedirectUtil::SynthesizeRedirectHeaders): a 307 to `to`, so the method
+/// and body go on, that no server sent.
+// shortcut: Chrome adds Access-Control-Allow-Origin and -Credentials when
+// the request carries Origin. Netweir does no CORS, so they would only
+// show on a 307 the caller asks to see; add them if one needs them.
+#[cfg(feature = "http3")]
+fn internal_redirect(to: &Url) -> wreq::Response {
+    let response = http::Response::builder()
+        .status(307)
+        .header(LOCATION, to.as_str())
+        .header("cross-origin-resource-policy", "Cross-Origin")
+        .header("non-authoritative-reason", "DNS")
+        .body(Bytes::new())
+        .expect("a URL is a header value");
+    wreq::Response::from(response)
+}
+
+/// The system proxy https requests (or, if not `https`, http ones) go
+/// through, as wreq reads it (its `proxy::matcher::Builder::from_env`,
+/// the only source without wreq's `system-proxy` feature): the first of
+/// HTTPS_PROXY and https_proxy (HTTP_PROXY and http_proxy) that is set,
+/// else of ALL_PROXY and all_proxy, if it's a proxy URL wreq can use, and
+/// none at all under CGI (REQUEST_METHOD set). Given as the hosts
 /// NO_PROXY (or no_proxy) leaves direct, which Firefox's
 /// AltSvcMapping::AcceptableProxy lets move to HTTP/3.
 #[cfg(feature = "http3")]
-fn system_proxy() -> Option<NoProxy> {
+fn system_proxy(https: bool) -> Option<NoProxy> {
     let first = |names: [&str; 2]| names.iter().find_map(|n| std::env::var(n).ok());
     let usable = |value: Option<String>| {
         let uri = value?.parse::<Uri>().ok()?;
@@ -2837,8 +2898,12 @@ fn system_proxy() -> Option<NoProxy> {
     if std::env::var_os("REQUEST_METHOD").is_some() {
         return None;
     }
-    usable(first(["HTTPS_PROXY", "https_proxy"]))
-        .or_else(|| usable(first(["ALL_PROXY", "all_proxy"])))?;
+    let own = if https {
+        ["HTTPS_PROXY", "https_proxy"]
+    } else {
+        ["HTTP_PROXY", "http_proxy"]
+    };
+    usable(first(own)).or_else(|| usable(first(["ALL_PROXY", "all_proxy"])))?;
     Some(NoProxy::new(
         &first(["NO_PROXY", "no_proxy"]).unwrap_or_default(),
     ))
