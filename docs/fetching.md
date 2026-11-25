@@ -74,6 +74,13 @@ Cookies it set are kept, as when following. `max_redirects=5` sets a
 different limit; one more redirect than that raises
 `FetchError(kind="too_many_redirects")`.
 
+Chrome adds a redirect of its own. If an http:// URL's host has an HTTPS
+DNS record, Chrome never sends the http request: it answers itself with
+a 307 to the same URL on https://, marked `Non-Authoritative-Reason: DNS`.
+A Chrome profile does the same, as long as `http3` is on and there's no
+proxy, since the record lookup comes with HTTP/3. Firefox and Safari
+profiles stay on http://, as Firefox does without DNS over HTTPS.
+
 ## Timeouts
 
 `timeout` is in seconds, for each request from connecting to its last
