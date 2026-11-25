@@ -640,6 +640,9 @@ pub(crate) struct FromRecords {
     /// For a request over TCP, the record it goes to
     /// (nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord).
     pub tcp: Option<crate::https_rr::Route>,
+    /// The records still to go on to, once a failed connection has made
+    /// the list (nsHttpTransaction::mRecordsForRetry): it's made once.
+    left: Option<Vec<crate::https_rr::Route>>,
 }
 
 impl FromRecords {
@@ -668,11 +671,18 @@ impl FromRecords {
     /// failed, and whether every record has ECH
     /// (nsHttpTransaction::PrepareSVCBRecordsForRetry): those after the
     /// failed one, in order, but none to the same target with the same
-    /// ALPN.
+    /// ALPN, and no h3 one if HTTP/3 has failed for the request (`no_h3`)
+    /// or is excluded from its target. Once made, the list is what's left
+    /// of it.
     pub(crate) fn retries(
         &self,
         failed: &crate::https_rr::Route,
+        no_h3: bool,
+        h3_excluded: &dyn Fn(&str) -> bool,
     ) -> (bool, Vec<crate::https_rr::Route>) {
+        if let Some(left) = &self.left {
+            return (true, left.clone());
+        }
         let Some(records) = self.found.records.as_ref() else {
             return (false, Vec::new());
         };
@@ -681,9 +691,35 @@ impl FromRecords {
             &self.host,
             self.port,
             self.found.cname.as_deref(),
+            no_h3,
+            h3_excluded,
         );
         list.retain(|r| r.host != failed.host || r.alpn != failed.alpn);
         (all, list)
+    }
+
+    /// The HTTP/3 route to `to`, an h3 record a request goes on to with
+    /// `left` still to go (CloneAndAdoptHTTPSSVCRecord on a retry).
+    pub(crate) fn h3_retry(
+        &self,
+        partition: &str,
+        to: crate::https_rr::Route,
+        left: Vec<crate::https_rr::Route>,
+    ) -> Route {
+        Route {
+            partition: partition.to_string(),
+            alternative: format!("{}:{}", to.host, to.port),
+            forced: false,
+            h3: true,
+            record: Some(to.ech),
+            from: Some(Arc::new(FromRecords {
+                found: self.found.clone(),
+                host: self.host.clone(),
+                port: self.port,
+                tcp: None,
+                left: Some(left),
+            })),
+        }
     }
 }
 
@@ -1243,7 +1279,9 @@ impl Routes {
         matches!(self.stack, Stack::Firefox)
     }
 
-    fn excluded(&self, host: &str) -> bool {
+    /// Whether HTTP/3 is excluded from `host`, as Firefox's
+    /// IsHttp3Excluded says.
+    pub(crate) fn excluded(&self, host: &str) -> bool {
         self.excluded
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1543,6 +1581,7 @@ impl Routes {
                 host: host.to_string(),
                 port,
                 tcp: (!h3).then_some(chosen),
+                left: None,
             })),
         })
     }
@@ -1781,6 +1820,25 @@ impl Routes {
                 let _ = tokio::task::spawn_blocking(move || thread.join()).await;
             }
         }
+    }
+
+    /// Whether `route`'s connection for `host` failed so that Firefox
+    /// takes HTTP/3 away from the request (NS_HTTP_DISALLOW_HTTP3):
+    /// Http3Session::Shutdown's DisableHttp3 for a failure it excludes the
+    /// host for, which a TLS one isn't.
+    pub(crate) fn ruled_out_h3(&self, route: &Route, host: &str) -> bool {
+        let ech = route.record.as_ref().and_then(Option::as_deref);
+        let key = connection_key(&route.partition, host, &route.alternative, ech);
+        self.connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .is_some_and(|h| {
+                matches!(
+                    *h.state.borrow(),
+                    State::Failed { exclude: true } | State::Broken
+                )
+            })
     }
 
     /// Sends `request` to `alternative` for `host`, on the connection

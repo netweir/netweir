@@ -1096,6 +1096,48 @@ async fn a_fast_fallback_goes_to_the_best_record_without_h3() {
     assert_eq!(authority.map(|(_, v)| v.as_str()), Some("origin.test"));
 }
 
+#[tokio::test]
+async fn a_failed_tcp_record_goes_on_to_an_h3_record() {
+    // Both records have ECH. The h2 one comes first, and nothing listens
+    // on its port. HTTP/3 hasn't failed for the request, so Firefox's list
+    // of records to go on to keeps the h3 one
+    // (PrepareSVCBRecordsForRetry without NS_HTTP_DISALLOW_HTTP3), and the
+    // next connection is QUIC to its port.
+    let origin = Server::start().await.unwrap();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let quiet = relay(None).await;
+    let ech = (5, hex(ECH_CONFIG_LIST));
+    let h2 = [
+        (1, b"\x02h2".to_vec()),
+        (3, closed.to_be_bytes().to_vec()),
+        ech.clone(),
+    ];
+    let h3 = [
+        (1, b"\x02h3".to_vec()),
+        (3, quiet.port.to_be_bytes().to_vec()),
+        ech,
+    ];
+    let record = netweir_core::https_answer("origin.test", &[(1, ".", &h2), (2, ".", &h3)], 300);
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], origin.port).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    let started = Instant::now();
+    while quiet.seen.load(Ordering::Relaxed) == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the h3 record was never tried"
+        );
+        let request = fetcher.get("https://origin.test/", &[]);
+        let _ = tokio::time::timeout(Duration::from_millis(500), request).await;
+    }
+}
+
 /// A proxy that tunnels each CONNECT to where it asks.
 async fn tunnel() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

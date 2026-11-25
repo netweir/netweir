@@ -159,9 +159,15 @@ default preferences; Chrome's rules are
   record that fails goes on as `PrepareConnInfoForRetry` does: without
   ECH, to the origin; with it, again with the configurations a server
   that rejected it sends back, or without ECH if it sent none, else to
-  the next record with ECH over TCP, to the origin only if some record
-  has none, and nowhere once they're all tried
-  (`network.dns.echconfig.fallback_to_origin_when_all_failed` is off). An
+  the next record with ECH, to the origin only if some record has none,
+  and nowhere once they're all tried
+  (`network.dns.echconfig.fallback_to_origin_when_all_failed` is off).
+  The records to go on to are listed once, at the first such failure
+  (`PrepareSVCBRecordsForRetry`): h3 entries stay on the list unless
+  HTTP/3 has already failed for the request in a way that excludes its
+  host (`NS_HTTP_DISALLOW_HTTP3`), or HTTP/3 is excluded from their
+  target. An h3 record taken from the list gets its own HTTP/3
+  connection, with a fast fallback as above. An
   http URL isn't upgraded to https from a record. Firefox's
   `network.dns.upgrade_with_https_rr` is on, but
   `nsHttpChannel::MaybeUseHTTPSRRForUpgrade` skips the upgrade unless TRR
@@ -239,11 +245,13 @@ as if proved, ignores Alt-Svc for it, and never races or falls back.
 
 What's not the same as Firefox:
 
-- After a record's connection fails, Firefox may go on to a record
-  that offers h3 if HTTP/3 hasn't failed for the request yet; Netweir
-  goes on only to records over TCP. And an HTTP/3 connection whose ECH
-  the server rejects isn't tried again with the configurations it sends
-  back: the request goes on as after any other failure.
+- An HTTP/3 connection whose ECH the server rejects isn't tried again
+  with the configurations it sends back: the request goes on as after
+  any other failure.
+- A QUIC socket that can't be set up takes HTTP/3 away from the request,
+  as any failure to connect that excludes the host does. Firefox's
+  `DnsAndConnectSocket::SetupConn` excludes the host but leaves the
+  request's other h3 records on its list.
 - ECH over TCP: BoringSSL builds the inner and outer ClientHellos, where
   Firefox has NSS, and Netweir hasn't compared the two.
 - The host cache, like the HTTPS records', is keyed by name alone;

@@ -2337,10 +2337,19 @@ impl Fetcher {
             if let Some(from) = route.from.clone()
                 && let Some(tcp) = from.tcp.clone()
             {
-                return send_from_records(&from, Next::To(tcp), request, order, sent, view).await;
+                let going = Going {
+                    fetcher: self,
+                    routes: &routes,
+                    partition: &route.partition,
+                    no_h3: false,
+                    h3,
+                };
+                return send_from_records(&from, Next::To(tcp), request, order, sent, view, going)
+                    .await;
             }
             return send_h2(route, request, order, sent, view).await;
         }
+        let again = h3.clone();
         let tcp = request.try_clone();
         let (_, request) = request.build_split();
         let request = request?;
@@ -2563,6 +2572,7 @@ impl Fetcher {
             (Err(None), Some(tcp)) if let Some(from) = route.from.as_ref() => {
                 // An HTTP/3 connection from a record failed: on as
                 // PrepareConnInfoForRetry goes.
+                let no_h3 = routes.ruled_out_h3(&route, &host);
                 let (host, port) = route
                     .alternative
                     .rsplit_once(':')
@@ -2581,7 +2591,14 @@ impl Fetcher {
                         format!("{uri}: HTTP/3 failed, and no other record is left"),
                     ),
                 );
-                return send_from_records(from, next, tcp, order, sent, view).await;
+                let going = Going {
+                    fetcher: self,
+                    routes: &routes,
+                    partition: &route.partition,
+                    no_h3,
+                    h3: again,
+                };
+                return send_from_records(from, next, tcp, order, sent, view, going).await;
             }
             (Err(None), Some(tcp)) => {
                 let done = dispatch(tcp, order, sent, view).await;
@@ -2692,6 +2709,8 @@ enum Next {
 /// it sent, or without them if it sent none, else to the next record with
 /// ECH, and to the origin only if some record has none
 /// (network.dns.echconfig.fallback_to_origin_when_all_failed is false).
+/// An h3 record next goes over HTTP/3, with its own fast fallback, unless
+/// HTTP/3 has failed for the request.
 /// At most network.http.request.max-attempts (10) connections.
 #[cfg(feature = "http3")]
 async fn send_from_records(
@@ -2701,7 +2720,9 @@ async fn send_from_records(
     order: OrigHeaderMap,
     sent: Option<&Sent>,
     view: Option<JarView>,
+    going: Going<'_>,
 ) -> Result<wreq::Response, FetchError> {
+    let h3_excluded = |target: &str| going.routes.excluded(target);
     let mut retries: Option<Vec<crate::https_rr::Route>> = None;
     for _ in 0..10 {
         let to = match next {
@@ -2723,13 +2744,20 @@ async fn send_from_records(
                         let list = match &mut retries {
                             Some(list) => list,
                             None => {
-                                let (all, list) = from.retries(&failed);
+                                let (all, list) = from.retries(&failed, going.no_h3, &h3_excluded);
                                 if !all {
                                     return dispatch(request, order, sent, view).await;
                                 }
                                 retries.insert(list)
                             }
                         };
+                        // shortcut: an h3 record put on the list before
+                        // HTTP/3 failed for the request is passed over, as
+                        // Firefox can't connect over HTTP/3 with
+                        // NS_HTTP_DISALLOW_HTTP3; not seen in Firefox itself.
+                        if going.no_h3 {
+                            list.retain(|r| r.alpn != "h3");
+                        }
                         if list.is_empty() {
                             return Err(error);
                         }
@@ -2738,6 +2766,13 @@ async fn send_from_records(
                 }
             }
         };
+        if to.alpn == "h3" {
+            let left = retries.take().unwrap_or_default();
+            let route = from.h3_retry(going.partition, to, left);
+            let way = (going.routes.clone(), Way::Go(route));
+            let fetcher = going.fetcher;
+            return Box::pin(fetcher.send_h3(way, request, order, sent, view, going.h3)).await;
+        }
         let Some((routed, require)) = request.try_clone().and_then(|r| to_record(r, &to)) else {
             return dispatch(request, order, sent, view).await;
         };
@@ -2838,8 +2873,21 @@ async fn prove_h2(client: wreq::Client, origin: Url, to: String) -> bool {
     proof.is_ok_and(|r| r.version() == Version::HTTP_2)
 }
 
+/// What a request from HTTPS records needs to go on to an h3 record:
+/// the fetcher and routes to send it with, its partition, whether HTTP/3
+/// has failed for it, and what it needs over HTTP/3.
+#[cfg(feature = "http3")]
+struct Going<'a> {
+    fetcher: &'a Fetcher,
+    routes: &'a Arc<crate::h3::Routes>,
+    partition: &'a str,
+    no_h3: bool,
+    h3: H3,
+}
+
 /// What a request over HTTP/3 needs besides what wreq's request holds.
 #[cfg(feature = "http3")]
+#[derive(Clone)]
 struct H3 {
     /// A typed address, which gets the profile's headers by default.
     typed: bool,

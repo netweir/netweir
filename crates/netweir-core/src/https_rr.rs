@@ -903,40 +903,81 @@ pub(crate) fn choose_tcp(
 
 /// The records a request may go on to after one with ECH failed, in
 /// order, and whether every record has ECH
-/// (DNSHTTPSSVCRecordBase::GetAllRecordsInternal, only records with ECH,
-/// HTTP/3 ruled out as it is once it has failed). Empty unless they all do.
-// shortcut: Firefox rules HTTP/3 out only once it failed to connect over
-// it; a TCP record's failure here never goes on to an HTTP/3 one.
+/// (DNSHTTPSSVCRecordBase::GetAllRecordsInternal, only records with ECH).
+/// Empty unless they all do. h3 is ruled out once HTTP/3 has failed for
+/// the request (`no_h3`, NS_HTTP_DISALLOW_HTTP3), and for a target
+/// HTTP/3 is excluded from, unless every h3 entry is.
 pub(crate) fn all_with_ech(
     records: &Records,
     origin_host: &str,
     origin_port: u16,
     cname: Option<&str>,
+    no_h3: bool,
+    h3_excluded: &dyn Fn(&str) -> bool,
 ) -> (bool, Vec<Route>) {
+    let mut out = Vec::new();
+    let all = all_with_ech_into(
+        records,
+        origin_host,
+        origin_port,
+        cname,
+        no_h3,
+        Some(h3_excluded),
+        &mut out,
+    );
+    (all, out)
+}
+
+fn all_with_ech_into(
+    records: &Records,
+    origin_host: &str,
+    origin_port: u16,
+    cname: Option<&str>,
+    no_h3: bool,
+    h3_excluded: Option<&dyn Fn(&str) -> bool>,
+    out: &mut Vec<Route>,
+) -> bool {
     let Some(first) = records.records.first() else {
-        return (false, Vec::new());
+        return false;
     };
     let mut all = first.ech.is_some();
-    let mut out = Vec::new();
+    if !all {
+        return false;
+    }
     let host = qname_host(origin_host, origin_port);
-    let (flat, _) = flatten(&host, &records.records);
+    let (flat, h3_count) = flatten(&host, &records.records);
+    let mut excluded_count = 0;
     for (r, alpn) in flat {
         all &= r.ech.is_some();
         if !all {
-            return (false, Vec::new());
+            out.clear();
+            return false;
         }
         if r.priority == 0
             || cname.is_some_and(|c| !c.is_empty() && r.target != c)
             || port_of(r) == Some(0)
-            || alpn
-                .as_ref()
-                .is_some_and(|(_, rank)| matches!(rank, Rank::No | Rank::H3))
         {
             continue;
         }
-        out.push(route(r, alpn, origin_host, origin_port));
+        let usable = match alpn.as_ref().map(|(_, rank)| rank) {
+            Some(Rank::No) => false,
+            Some(Rank::H3) if h3_excluded.is_some_and(|excluded| excluded(&r.target)) => {
+                excluded_count += 1;
+                false
+            }
+            Some(Rank::H3) => !no_h3,
+            _ => true,
+        };
+        if usable {
+            out.push(route(r, alpn, origin_host, origin_port));
+        }
     }
-    (all, out)
+    // Every h3 entry excluded: again without the list. Firefox doesn't
+    // clear what the first pass found, so those entries come twice.
+    if excluded_count > 0 && excluded_count == h3_count && h3_excluded.is_some() {
+        return all_with_ech_into(records, origin_host, origin_port, cname, no_h3, None, out);
+    }
+    all
 }
 
 /// The host Firefox's record set is keyed by (DNSHTTPSSVCRecordBase::mHost):
@@ -2090,10 +2131,11 @@ mod tests {
     }
 
     #[test]
-    fn records_to_retry_after_ech_failed_are_all_with_ech_and_no_h3() {
-        // GetAllRecordsInternal with only records with ECH: the h3 one is
-        // ruled out, the others come in order with their routes, and one
-        // record without ECH makes the list empty (the origin is next).
+    fn records_to_retry_after_ech_failed_are_all_with_ech() {
+        // GetAllRecordsInternal with only records with ECH: once HTTP/3
+        // has failed the h3 one is ruled out, the others come in order
+        // with their routes, and one record without ECH makes the list
+        // empty (the origin is next).
         let svcb = |priority, target: &str, alpn: &[&str], ech: Option<u8>| Svcb {
             priority,
             target: target.into(),
@@ -2112,7 +2154,8 @@ mod tests {
             svcb(2, "b.example.net", &["h2"], Some(2)),
             svcb(3, "c.example.net", &["http/1.1"], Some(3)),
         ]);
-        let (every, list) = all_with_ech(&all, "example.com", 443, None);
+        let none = |_: &str| false;
+        let (every, list) = all_with_ech(&all, "example.com", 443, None, true, &none);
         assert!(every);
         // FlattenRecords: each record's default ALPN ("") is an entry of
         // its own, an h3-only record's too.
@@ -2135,8 +2178,62 @@ mod tests {
             svcb(2, "b.example.net", &["h2"], None),
         ]);
         assert_eq!(
-            all_with_ech(&some, "example.com", 443, None),
+            all_with_ech(&some, "example.com", 443, None, false, &none),
             (false, Vec::new())
+        );
+        // HTTP/3 not failed: the h3 entry comes first, as its record does.
+        let (_, list) = all_with_ech(&all, "example.com", 443, None, false, &none);
+        let routes: Vec<_> = list
+            .iter()
+            .map(|r| (r.host.as_str(), r.alpn.as_str()))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("a.example.net", "h3"),
+                ("a.example.net", ""),
+                ("b.example.net", ""),
+                ("c.example.net", "http/1.1"),
+                ("c.example.net", ""),
+            ]
+        );
+        // A target HTTP/3 is excluded from loses its h3 entry; when every
+        // h3 entry is excluded, the list is made again without the check,
+        // after what the first pass found (as Firefox appends it).
+        let two = with(vec![
+            svcb(1, "a.example.net", &["h3"], Some(1)),
+            svcb(2, "b.example.net", &["h3"], Some(2)),
+        ]);
+        let only_a = |t: &str| t == "a.example.net";
+        let (_, list) = all_with_ech(&two, "example.com", 443, None, false, &only_a);
+        let alpns: Vec<_> = list
+            .iter()
+            .map(|r| (r.host.as_str(), r.alpn.as_str()))
+            .collect();
+        assert_eq!(
+            alpns,
+            [
+                ("a.example.net", ""),
+                ("b.example.net", "h3"),
+                ("b.example.net", "")
+            ]
+        );
+        let every_h3 = |_: &str| true;
+        let (_, list) = all_with_ech(&two, "example.com", 443, None, false, &every_h3);
+        let alpns: Vec<_> = list
+            .iter()
+            .map(|r| (r.host.as_str(), r.alpn.as_str()))
+            .collect();
+        assert_eq!(
+            alpns,
+            [
+                ("a.example.net", ""),
+                ("b.example.net", ""),
+                ("a.example.net", "h3"),
+                ("a.example.net", ""),
+                ("b.example.net", "h3"),
+                ("b.example.net", ""),
+            ]
         );
         // The fast fallback's record: the best one without h3.
         let tcp = choose_tcp(&all, "example.com", 443, None).unwrap();
