@@ -864,11 +864,8 @@ pub(crate) fn spawn(
         (child, lifeline)
     };
     #[cfg(windows)]
-    let mut child = child;
-    #[cfg(windows)]
     if let Err(e) = resume(&child) {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill(child, browser);
         return Err(failed(e));
     }
     let said = Said::read(stderr, browser);
@@ -877,6 +874,39 @@ pub(crate) fn spawn(
         said,
         lifeline,
     })
+}
+
+/// How long a killed process is waited for. Windows sets a killed
+/// process's exit code at once, but on a busy machine took up to five
+/// and a half seconds more to tear it down; ten is twice that.
+const KILLED_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Kills `child` (a browser, or `what` it is) and waits for it to be
+/// gone, for [`KILLED_WITHIN`] at most. A process can outlast a kill for
+/// good on Windows, stuck in a call into a driver, and a plain wait
+/// would then hold whatever was closing it, and the program's exit, for
+/// ever. One still there is said, and left to a thread to wait for.
+pub(crate) fn kill(mut child: Child, what: &str) {
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + KILLED_WITHIN;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Ok(None) => break,
+        }
+    }
+    crate::warn(&format!(
+        "{what} (process {}) was killed but hadn't exited {}s later; netweir isn't \
+         waiting for it any longer",
+        child.id(),
+        KILLED_WITHIN.as_secs()
+    ));
+    let _ = std::thread::Builder::new()
+        .name("netweir-reap".into())
+        .spawn(move || child.wait());
 }
 
 /// The Windows system folder, where `cmd.exe` and `PING.EXE` are.
@@ -1244,6 +1274,28 @@ pub(crate) fn running(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process that would run a minute, killed, is waited for until
+    /// it's gone, and no longer.
+    #[test]
+    fn a_killed_process_is_waited_for_until_its_gone() {
+        #[cfg(unix)]
+        let mut command = Command::new("sleep");
+        #[cfg(unix)]
+        command.arg("60");
+        #[cfg(windows)]
+        let mut command = Command::new(system_dir().unwrap().join("PING.EXE"));
+        #[cfg(windows)]
+        command.args(["-n", "60", "127.0.0.1"]);
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        kill(child, "sleep");
+        assert!(started.elapsed() < KILLED_WITHIN, "{:?}", started.elapsed());
+    }
 
     /// A pipe made while another thread starts processes is none of
     /// theirs: once its writer is dropped, its reader reads the end, with

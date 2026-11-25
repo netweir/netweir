@@ -36,9 +36,8 @@ impl Lifeline {
         #[cfg(windows)]
         {
             let mut lifeline = self;
-            if let Some(mut watcher) = lifeline.watcher.take() {
-                let _ = watcher.kill();
-                let _ = watcher.wait();
+            if let Some(watcher) = lifeline.watcher.take() {
+                crate::launch::kill(watcher, "the browser's watcher");
             }
             if let Some(job) = &lifeline.job {
                 end_job(job);
@@ -307,7 +306,7 @@ fn watch(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<(PipeWriter
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-    let mut watcher = command.spawn()?;
+    let watcher = command.spawn()?;
     // The job handle is copied into the watcher, never made inheritable,
     // so no other process started meanwhile can come by one. Holding it
     // is all the watcher does with it.
@@ -331,8 +330,7 @@ fn watch(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<(PipeWriter
         Err(std::io::Error::last_os_error())
     };
     if let Err(e) = started {
-        let _ = watcher.kill();
-        let _ = watcher.wait();
+        crate::launch::kill(watcher, "the browser's watcher");
         return Err(e);
     }
     Ok((end, watcher))

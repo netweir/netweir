@@ -371,13 +371,12 @@ async fn names_its_windows(conn: &Connection) -> Result<bool> {
 fn end(started: Started) {
     let Started {
         conn,
-        mut process,
+        process,
         temp,
         ..
     } = started;
     conn.shut();
-    let _ = process.child.kill();
-    let _ = process.child.wait();
+    crate::launch::kill(process.child, "Firefox");
     process.lifeline.process_gone();
     // The temporary profile goes only once Firefox has let go of it.
     drop(temp);

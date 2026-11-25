@@ -1561,8 +1561,7 @@ impl Inner {
                     std::thread::sleep(Duration::from_millis(20))
                 }
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    launch::kill(child, self.conn.dialect().browser());
                     break;
                 }
             }
@@ -1642,6 +1641,7 @@ impl Drop for Inner {
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
             let quitting = Quitting::start(self.profile.as_deref().unwrap_or(Path::new("")));
+            let what = self.conn.dialect().browser();
             let _ = std::thread::Builder::new()
                 .name("netweir-chrome-quit".into())
                 .spawn(move || {
@@ -1649,8 +1649,7 @@ impl Drop for Inner {
                     while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(50));
                     }
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    launch::kill(child, what);
                     if let Some(lifeline) = lifeline {
                         lifeline.process_gone();
                     }
