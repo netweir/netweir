@@ -1763,9 +1763,9 @@ const FOREGROUND: &[&str] = &[
 const AS_SHIPPED: &[&str] = &["--disable-infobars", "--disable-field-trial-config"];
 
 /// The switches each probe was started with, for the tests that count
-/// them.
+/// them, and when.
 #[cfg(test)]
-static PROBED: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+static PROBED: Mutex<Vec<(Vec<String>, Instant)>> = Mutex::new(Vec::new());
 
 /// By the file as it is now, so a Chrome updated in place is asked again,
 /// and by the switches it's started with.
@@ -1881,7 +1881,7 @@ async fn probe_identity(
     PROBED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(extra.to_vec());
+        .push((extra.to_vec(), Instant::now()));
     let temp = launch::TempProfile::make()
         .map_err(|e| Error::Launch(format!("can't make a profile directory: {e}")))?;
     let profile = temp.dir().to_path_buf();
@@ -1964,6 +1964,10 @@ async fn probe_identity(
     if asked.is_ok() {
         let _ = probe.close().await;
     }
+    // Ended before what it said is read: explain waits up to a second
+    // for a Chrome still running to finish saying it, and one that never
+    // answered held every failed probe up for that whole second.
+    drop(probe);
     asked.map_err(|e| match e {
         Error::Launch(message) => Error::Launch(said.explain(message)),
         Error::Timeout(message) => Error::Timeout(said.explain(message)),
@@ -2553,7 +2557,7 @@ mod tests {
 
     fn probes(extra: &[String]) -> usize {
         let probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
-        probed.iter().filter(|p| p.as_slice() == extra).count()
+        probed.iter().filter(|(p, _)| p.as_slice() == extra).count()
     }
 
     #[tokio::test]
@@ -2605,7 +2609,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|p| p.contains(&switch[0]))
+                .filter(|(p, _)| p.contains(&switch[0]))
                 .count()
         };
         // An old version's answer: asked again, and what it says is kept.
@@ -2728,16 +2732,19 @@ mod tests {
             assert!(message.contains("in 1s"), "{message}");
             // Headless asks a probe Chrome first, and a silent one twice.
             // Contains, not equals: $NETWEIR_CHROME_ARGS adds switches.
-            let probed = PROBED
+            // When each probe started, so a launch that took too long
+            // says whether it was slow to start one or slow after.
+            let probed: Vec<Duration> = PROBED
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|p| p.contains(&switch[0]))
-                .count();
-            assert_eq!(probed, if headless { 2 } else { 0 });
+                .filter(|(p, _)| p.contains(&switch[0]))
+                .map(|(_, at)| at.duration_since(started))
+                .collect();
+            assert_eq!(probed.len(), if headless { 2 } else { 0 });
             assert!(
                 started.elapsed() < Duration::from_secs(10),
-                "headless={headless}: {:?}",
+                "headless={headless}: {:?}, probes started at {probed:?}",
                 started.elapsed()
             );
         }
