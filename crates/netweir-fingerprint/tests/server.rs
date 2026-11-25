@@ -341,3 +341,34 @@ fn grease_values() {
         assert!(!is_grease(v));
     }
 }
+
+// Other tests' QUIC clients bind UDP ports from the same ephemeral range
+// the TCP port comes from, and one took the server's UDP port on macOS:
+// "Address already in use". A neighbour binding and freeing UDP ports
+// as fast as it can is that, many times over.
+#[tokio::test]
+async fn a_busy_udp_neighbour_never_takes_the_quic_port() {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let neighbour = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut held = std::collections::VecDeque::new();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(socket) = std::net::UdpSocket::bind("127.0.0.1:0") {
+                    held.push_back(socket);
+                }
+                if held.len() > 2000 {
+                    held.pop_front();
+                }
+            }
+        })
+    };
+    for i in 0..300 {
+        if let Err(e) = Server::start_h3(0, None).await {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            panic!("start {i}: {e}");
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    neighbour.join().unwrap();
+}
