@@ -132,7 +132,9 @@ impl Server {
         port: u16,
         h3: bool,
     ) -> io::Result<(TcpListener, u16, Option<std::net::UdpSocket>)> {
-        let mut tries = 0;
+        // Rejected listeners are held until one works, or Windows may
+        // hand the same port straight back (seen as 10048 in CI).
+        let mut rejected = Vec::new();
         loop {
             let listener = TcpListener::bind(("127.0.0.1", port)).await?;
             let got = listener.local_addr()?.port();
@@ -141,8 +143,14 @@ impl Server {
             }
             match std::net::UdpSocket::bind(("127.0.0.1", got)) {
                 Ok(udp) => return Ok((listener, got, Some(udp))),
-                Err(e) if port != 0 || tries == 50 => return Err(e),
-                Err(_) => tries += 1,
+                Err(e) if port != 0 || rejected.len() == 50 => {
+                    let tries = rejected.len() + 1;
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("UDP {got}, try {tries}: {e}"),
+                    ));
+                }
+                Err(_) => rejected.push(listener),
             }
         }
     }
