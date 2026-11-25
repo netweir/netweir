@@ -1130,11 +1130,14 @@ async fn a_failed_tcp_record_goes_on_to_an_h3_record() {
     let started = Instant::now();
     while quiet.seen.load(Ordering::Relaxed) == 0 {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(20),
             "the h3 record was never tried"
         );
+        // Windows takes about 2 s to refuse a connection to a closed
+        // port on 127.0.0.1 (it sends the SYN again before giving up), so
+        // the request has to outlast that to reach the h3 record.
         let request = fetcher.get("https://origin.test/", &[]);
-        let _ = tokio::time::timeout(Duration::from_millis(500), request).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), request).await;
     }
 }
 
