@@ -170,6 +170,11 @@ pub struct Tls {
     pub grease_signature_algorithms: bool,
     pub permute_extensions: bool,
     pub ech_grease: bool,
+    /// Write the ClientHelloInner of a connection with ECH as NSS does:
+    /// the encrypted_client_hello marker first, and the same cipher
+    /// suites as the ClientHelloOuter.
+    #[serde(default)]
+    pub ech_inner_like_nss: bool,
     pub ocsp_stapling: bool,
     pub signed_certificate_timestamps: bool,
     pub session_ticket: bool,
@@ -193,6 +198,11 @@ pub struct Tls {
     /// BoringSSL prefers.
     #[serde(default)]
     pub preserve_tls13_cipher_order: bool,
+    /// Whether BoringSSL takes the machine to have AES hardware, whatever
+    /// it has: it then picks an ECH configuration's first cipher suite,
+    /// as NSS does, rather than ChaCha20-Poly1305 wherever it is.
+    #[serde(default)]
+    pub aes_hw_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -390,6 +400,7 @@ impl Profile {
             .grease_sigalgs_enabled(t.grease_signature_algorithms)
             .permute_extensions(t.permute_extensions)
             .enable_ech_grease(t.ech_grease)
+            .ech_inner_like_nss(t.ech_inner_like_nss)
             .enable_ocsp_stapling(t.ocsp_stapling)
             .enable_signed_cert_timestamps(t.signed_certificate_timestamps)
             .session_ticket(t.session_ticket)
@@ -407,6 +418,9 @@ impl Profile {
         }
         if t.preserve_tls13_cipher_order {
             tls = tls.preserve_tls13_cipher_list(true);
+        }
+        if let Some(aes) = t.aes_hw_override {
+            tls = tls.aes_hw_override(aes);
         }
         if let Some(hex) = &t.trust_anchors {
             tls = tls.trust_anchors(decode_hex(hex).ok_or_else(|| bad("trust anchor hex", hex))?);

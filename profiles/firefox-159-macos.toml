@@ -58,6 +58,9 @@ ciphers = [
 ]
 # Firefox puts ChaCha20 between the two AES-GCM ciphers.
 preserve_tls13_cipher_order = true
+# NSS takes an ECH configuration's first cipher suite; BoringSSL does too
+# only when it takes the machine to have AES hardware.
+aes_hw_override = true
 groups = ["X25519MLKEM768", "X25519", "P-256", "P-384", "P-521"]
 key_shares = ["X25519MLKEM768", "X25519", "P-256"]
 signature_algorithms = [
@@ -95,6 +98,9 @@ grease_signature_algorithms = false
 permute_extensions = false
 extension_order = [0, 23, 65281, 10, 11, 35, 16, 5, 34, 18, 51, 43, 13, 45, 28, 27, 65037]
 ech_grease = true
+# The ClientHelloInner as NSS writes it (recorded in
+# firefox-160-macos.ech.capture.json).
+ech_inner_like_nss = true
 ocsp_stapling = true
 signed_certificate_timestamps = true
 session_ticket = true

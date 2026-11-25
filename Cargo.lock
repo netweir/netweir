@@ -240,7 +240,7 @@ dependencies = [
 [[package]]
 name = "btls"
 version = "0.5.6"
-source = "git+https://github.com/0x676e67/btls?rev=129887582a538b8f4dcf371d15c953335312ca37#129887582a538b8f4dcf371d15c953335312ca37"
+source = "git+https://github.com/netweir/btls?rev=1788f675aba654d5c3022c8189d2343f51ddfe53#1788f675aba654d5c3022c8189d2343f51ddfe53"
 dependencies = [
  "bitflags",
  "btls-sys",
@@ -252,7 +252,7 @@ dependencies = [
 [[package]]
 name = "btls-sys"
 version = "0.5.6"
-source = "git+https://github.com/0x676e67/btls?rev=129887582a538b8f4dcf371d15c953335312ca37#129887582a538b8f4dcf371d15c953335312ca37"
+source = "git+https://github.com/netweir/btls?rev=1788f675aba654d5c3022c8189d2343f51ddfe53#1788f675aba654d5c3022c8189d2343f51ddfe53"
 dependencies = [
  "bindgen",
  "cmake",
@@ -1512,6 +1512,7 @@ version = "0.10.1"
 dependencies = [
  "brotli",
  "btls",
+ "btls-sys",
  "bytes",
  "chardetng",
  "chromium-roots",
@@ -3279,7 +3280,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wreq"
 version = "0.16.1"
-source = "git+https://github.com/netweir/wreq?rev=4256d2584ce93f253aaeb7c46aec0fec8e69fab8#4256d2584ce93f253aaeb7c46aec0fec8e69fab8"
+source = "git+https://github.com/netweir/wreq?rev=e75d68f4dd1c37d91005da7cb467c37bf46121d3#e75d68f4dd1c37d91005da7cb467c37bf46121d3"
 dependencies = [
  "btls",
  "btls-sys",

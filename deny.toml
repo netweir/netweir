@@ -64,13 +64,13 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Netweir's wreq fork and the unreleased btls commits pinned in Cargo.toml's
+# Netweir's wreq and btls forks, pinned in Cargo.toml's
 # [patch.crates-io], and Mozilla's neqo and nss-rs, which Firefox takes from git too (netweir-core's
 # http3 feature, at the tag and commit Firefox 160 pins), and netweir's own
 # quiche fork for Chrome's HTTP/3 (same feature).
 allow-git = [
     "https://github.com/netweir/wreq",
-    "https://github.com/0x676e67/btls",
+    "https://github.com/netweir/btls",
     "https://github.com/mozilla/neqo",
     "https://github.com/mozilla/nss-rs",
     "https://github.com/netweir/quiche",

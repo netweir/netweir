@@ -84,6 +84,8 @@ libc = "0.2"
 
 [dev-dependencies]
 netweir-fingerprint = { path = "../netweir-fingerprint" }
+# The HPKE that opens a recorded ClientHelloInner (examples/ech_capture.rs).
+btls-sys = "0.5.6"
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
