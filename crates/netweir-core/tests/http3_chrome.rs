@@ -1064,6 +1064,84 @@ async fn resuming(server: &mut Server) -> (Fetcher, String) {
     (fetcher, origin)
 }
 
+/// What profiles/chrome-157-macos.h3-0rtt.capture.json recorded: Chrome
+/// for Testing 157.0.8103.79 loading /zero-rtt, forced onto QUIC, from a
+/// server whose session tickets allow early data, through a relay that
+/// held each datagram back 50 ms, over ::1. Its script asked until a
+/// response came over HTTP/3, let that connection time out, and went to
+/// /again, which Chrome sent in 0-RTT on a connection that resumed.
+fn zero_rtt_recording() -> Vec<Capture> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../profiles/{PROFILE}.h3-0rtt.capture.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn a_resumed_connection_in_0rtt_is_chromes() {
+    let recording = zero_rtt_recording();
+    let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
+    assert!(recorded.http3.as_ref().unwrap().early);
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("[::1]:{port}"))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(again.http3.as_ref().unwrap().early);
+    // What 0-RTT changes, held to the recording. The rest of the
+    // connection is held to Chrome 157's own recording elsewhere: Chrome
+    // for Testing also sent extension 0x12e0 and connection options
+    // ORIGNOIP on every connection, fresh ones too, which Chrome didn't.
+    const CFT_ONLY: u16 = 0x12e0;
+    let sorted = |c: &Capture| {
+        let mut e: Vec<u16> = c
+            .client_hello
+            .extensions
+            .iter()
+            .copied()
+            .filter(|&e| e != CFT_ONLY)
+            .collect();
+        e.sort_unstable();
+        e
+    };
+    assert_eq!(
+        sorted(&again),
+        sorted(recorded),
+        "the ClientHello's extensions"
+    );
+    for c in [recorded, &again] {
+        assert!(resumed(c));
+        assert!(c.client_hello.extensions.contains(&0x2a), "early_data");
+        assert_eq!(c.client_hello.extensions.last(), Some(&PRE_SHARED_KEY));
+    }
+    let layout = |c: &Capture| {
+        c.quic
+            .as_ref()
+            .unwrap()
+            .datagrams
+            .iter()
+            .map(|d| {
+                (
+                    d.size,
+                    d.packets.iter().map(|p| p.kind.clone()).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        layout(&again),
+        layout(recorded),
+        "the first flight's datagrams"
+    );
+}
+
 #[tokio::test]
 async fn a_resumed_connection_sends_a_get_in_0rtt() {
     // Once QUIC has worked, a session to an alternative that isn't
@@ -1242,4 +1320,50 @@ async fn quic_goes_to_the_first_address_only() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(v6.load(Ordering::Relaxed) > 0, "QUIC never went to ::1");
+}
+
+/// How long `profile`'s request takes on a connection that resumes to a
+/// server turning early data down, through a network with a 50 ms round
+/// trip.
+async fn turned_down_in(profile: &str) -> Duration {
+    let mut server = Server::start_h3_turning_early_down(0).await.unwrap();
+    let network = slow_relay(Some(server.port), Duration::from_millis(25), 0).await;
+    network.drop.store(false, Ordering::Relaxed);
+    let origin = format!("https://localhost:{}", server.port);
+    let mut options = FetchOptions::new(Profile::named(profile).unwrap());
+    options.verify_certificates = false;
+    let fetcher = Fetcher::new(options).unwrap();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{}", network.port))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    server.next().await.unwrap();
+    fetcher.close_http3().await;
+    let started = Instant::now();
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(
+        (response.status, response.version),
+        (200, "HTTP/3"),
+        "{profile}"
+    );
+    let again = server.next().await.unwrap();
+    assert!(!again.http3.as_ref().unwrap().early, "{profile}");
+    took
+}
+
+#[tokio::test]
+async fn early_data_turned_down_goes_again_at_once() {
+    // QUICHE marks what went in 0-RTT for retransmission the moment the
+    // server turns it down (QuicSession::OnZeroRttRejected,
+    // QuicSentPacketManager::MarkZeroRttPacketsForRetransmission), so the
+    // request goes again as soon as the 1-RTT keys are in, as Firefox's
+    // does once connected. Waiting for loss detection instead costs at
+    // least a probe timeout more, here over 100 ms.
+    let chrome = turned_down_in(PROFILE).await;
+    let firefox = turned_down_in("firefox-160-macos").await;
+    assert!(
+        chrome < firefox + Duration::from_millis(50),
+        "Chrome took {chrome:?}, Firefox {firefox:?}"
+    );
 }

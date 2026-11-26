@@ -2618,12 +2618,22 @@ impl Fetcher {
         let with_alt_used = routes.alt_used();
         for (name, value) in &headers {
             match name.as_str() {
-                "connection" => lines.extend(
-                    alt_used
-                        .clone()
-                        .filter(|_| with_alt_used)
-                        .map(|a| ("alt-used".to_string(), a.into_bytes())),
-                ),
+                "connection" => {
+                    if let Some(a) = alt_used.clone().filter(|_| with_alt_used) {
+                        let line = ("alt-used".to_string(), a.into_bytes());
+                        // An Authorization right before Connection goes
+                        // after Alt-Used in Firefox's request head: its
+                        // HTTP/1.1 lines are `Authorization, Connection`,
+                        // its HTTP/3 ones `alt-used, authorization`
+                        // (profiles/firefox-160-macos.auth.h3.capture.json).
+                        match lines.last() {
+                            Some((last, _)) if last == "authorization" => {
+                                lines.insert(lines.len() - 1, line);
+                            }
+                            _ => lines.push(line),
+                        }
+                    }
+                }
                 "host" | "keep-alive" | "proxy-connection" | "te" | "transfer-encoding"
                 | "upgrade" | "sec-websocket-key" => {}
                 other => lines.push((other.to_string(), value.as_bytes().to_vec())),

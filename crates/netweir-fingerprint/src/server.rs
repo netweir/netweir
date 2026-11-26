@@ -608,10 +608,14 @@ impl quinn::AsyncUdpSocket for Tee {
                     if seen.len() > 1024 {
                         seen.clear();
                     }
+                    // The newest 32: a first flight is read from the
+                    // Initial with its connection ID on, so older ones a
+                    // connection left are pushed out rather than in the way.
                     let kept = seen.entry(meta.addr).or_default();
-                    if kept.len() < 16 {
-                        kept.push(datagram.to_vec());
+                    if kept.len() == 32 {
+                        kept.remove(0);
                     }
+                    kept.push(datagram.to_vec());
                 }
             }
         }
@@ -670,9 +674,11 @@ fn listen_quic(
         while let Some(incoming) = endpoint.accept().await {
             let (seen, connections, tx) = (seen.clone(), connections.clone(), tx.clone());
             tokio::spawn(async move {
-                let addr = incoming.remote_address();
+                // Its datagrams were taken out when its first flight was
+                // read. Taking out what's under its address now could take
+                // a later connection's from the same address, as through a
+                // relay; what an unfinished one left is pushed out instead.
                 let _ = handle_quic(incoming, early, &seen, &connections, tx).await;
-                seen.lock().unwrap().remove(&addr);
             });
         }
     });
