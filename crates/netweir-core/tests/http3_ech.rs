@@ -39,8 +39,9 @@ struct Seen {
 }
 
 /// An HTTP/3 server on 127.0.0.1, with ECH keys of its own if `ech`,
-/// which answers every request with 200.
-fn server(ech: bool) -> (u16, Arc<Mutex<Seen>>) {
+/// which answers every request with 200, each datagram `slow` after it
+/// came.
+fn server(ech: bool, slow: Duration) -> (u16, Arc<Mutex<Seen>>) {
     nss_rs::init_db(nss_rs::TEST_FIXTURE_DB).unwrap();
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let local = socket.local_addr().unwrap();
@@ -71,6 +72,7 @@ fn server(ech: bool) -> (u16, Arc<Mutex<Seen>>) {
             let input = match socket.recv_from(&mut buf) {
                 Ok((n, from)) => {
                     seeing.lock().unwrap().ports.insert(from.port());
+                    std::thread::sleep(slow);
                     Some(Datagram::new(from, local, Tos::default(), &buf[..n]))
                 }
                 Err(_) => None,
@@ -134,7 +136,22 @@ async fn a_rejected_ech_is_tried_again_with_the_servers_configurations() {
     // same record again with them (SSL_ERROR_ECH_RETRY_WITH_ECH in
     // nsHttpTransaction::PrepareConnInfoForRetry). The server then accepts
     // ECH, and answers over HTTP/3.
-    let (port, seen) = server(true);
+    retries_with_the_servers_configurations(Duration::ZERO).await;
+}
+
+#[tokio::test]
+async fn a_rejection_after_the_fast_fallback_timer_is_tried_again_once() {
+    // The same, with the handshake failing after Firefox's 50 ms
+    // fast-fallback timer: still one connection again, with the
+    // configurations, and none beside it.
+    retries_with_the_servers_configurations(Duration::from_millis(40)).await;
+}
+
+/// A request to a server that rejects ECH and sends configurations to
+/// retry with, each of whose datagrams is answered `slow` after it came:
+/// two connections, the second accepted.
+async fn retries_with_the_servers_configurations(slow: Duration) {
+    let (port, seen) = server(true, slow);
     let fetcher = fetcher(port);
     let started = Instant::now();
     loop {
@@ -167,7 +184,24 @@ async fn a_rejected_ech_with_nothing_to_retry_with_rules_http3_out() {
     // from the host and taken from the request (DisableHttp3), so the
     // request doesn't go on to the second h3 record. Neither record has
     // a TCP entry (no-default-alpn), so the request fails.
-    let (port, seen) = server(false);
+    rules_http3_out(Duration::ZERO).await;
+}
+
+#[tokio::test]
+async fn a_rejection_after_the_fast_fallback_timer_still_rules_http3_out() {
+    // The same, with a server slow enough that the handshake fails after
+    // Firefox's 50 ms fast-fallback timer, while the request waits for it
+    // with no backup to race (ECH, and no record without h3). Its failed
+    // connection decides what comes next, as Firefox's transaction is in
+    // that session: the request isn't made again on a new one.
+    rules_http3_out(Duration::from_millis(40)).await;
+}
+
+/// A request to a server that rejects ECH with nothing to retry with,
+/// each of whose datagrams is answered `slow` after it came, makes one
+/// QUIC connection.
+async fn rules_http3_out(slow: Duration) {
+    let (port, seen) = server(false, slow);
     let h3 = |priority| {
         (
             priority,

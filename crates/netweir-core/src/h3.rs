@@ -2034,10 +2034,20 @@ impl Routes {
         deadline: tokio::time::Instant,
         idempotent: bool,
     ) -> Result<Answer, FetchError> {
+        // Its connection never came up while it waited, which Firefox's
+        // transaction, in that session, hears of as its own failure
+        // (PrepareConnInfoForRetry decides what's next): not another
+        // connection in its place.
+        let never_up = matches!(
+            *pending.state.borrow(),
+            State::Failed { .. } | State::NotSetUp
+        );
         match (pending.answer, pending.request) {
             (Some(answer), _) => self.finish(route, answer, &pending.state, idempotent).await,
-            (None, Some(request)) => self.send(route, host, request, deadline, idempotent).await,
-            (None, None) => Ok(Answer::Tcp),
+            (None, Some(request)) if !never_up => {
+                self.send(route, host, request, deadline, idempotent).await
+            }
+            (None, _) => Ok(Answer::Tcp),
         }
     }
 
