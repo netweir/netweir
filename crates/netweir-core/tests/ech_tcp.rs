@@ -290,10 +290,15 @@ fn nss_inner_profiles() -> Vec<String> {
 
 /// The plaintext length NSS gives the GREASE ECH payload of `outer`, a
 /// ClientHelloOuter to `host` (tls13_MaybeGreaseEch, lib/ssl/tls13ech.c
-/// in NSS 3.132): the EncodedClientHelloInner it would have, padded by
-/// tls13_PadChInner for a maximum_name_length of 100. On a resumption,
-/// NSS copies the outer hello's pre_shared_key into the inner one it
-/// measures.
+/// in NSS 3.132): the EncodedClientHelloInner it would have (lines
+/// 2186-2190), padded by tls13_PadChInner for greaseEchSize, a
+/// maximum_name_length of 100, and `strlen(ss->url)`, the host's length
+/// whether or not server_name carries it (line 2194). The padding is
+/// `100 - len`, never below zero (lines 1631-1634), then rounds the whole
+/// up to a multiple of 32 (lines 1638-1639). server_name is in the inner
+/// hello only if it's in the outer one, which an IP address leaves out.
+/// On a resumption, NSS copies the outer hello's pre_shared_key into the
+/// inner one it measures.
 fn nss_grease_plaintext_len(outer: &[u8], host: &str) -> usize {
     let o = parts(&outer[4..]).unwrap();
     let suites = &o.head[35 + o.head[34] as usize..];
@@ -309,15 +314,13 @@ fn nss_grease_plaintext_len(outer: &[u8], host: &str) -> usize {
     // compression methods; then the extensions: the inner
     // encrypted_client_hello, server_name, supported_versions (TLS 1.3)
     // and ech_outer_extensions.
-    let len = 2
-        + 32
-        + 1
-        + suites.len()
-        + 2
-        + (4 + 1)
-        + (4 + 5 + host.len())
-        + (4 + 3)
-        + (4 + 1 + 2 * compressed);
+    let server_name = if o.extensions.iter().any(|(k, _)| *k == SERVER_NAME) {
+        4 + 5 + host.len()
+    } else {
+        0
+    };
+    let len =
+        2 + 32 + 1 + suites.len() + 2 + (4 + 1) + server_name + (4 + 3) + (4 + 1 + 2 * compressed);
     let psk = o
         .extensions
         .iter()
@@ -386,6 +389,65 @@ fn every_profile_that_asks_sends_nss_ech_grease() {
     }
 }
 
+/// An HTTP proxy on 127.0.0.1 that answers every CONNECT, wherever to,
+/// then writes down the ClientHello that comes through it and answers it
+/// with handshake_failure: a host that can't be resolved or reached, an
+/// IPv6 address among them, gets as far as its ClientHello.
+fn proxied_hello_catcher() -> (String, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, hellos) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+            if let Some(hello) = read_hello(&mut stream) {
+                let _ = tx.send(hello);
+            }
+            let _ = stream.write_all(&[21, 3, 3, 0, 2, 2, 40]);
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), hellos)
+}
+
+/// A Fetcher with the Firefox 160 profile that goes through `proxy`.
+fn proxied_fetcher(proxy: &str) -> Fetcher {
+    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    options.verify_certificates = false;
+    options.proxy = Some(proxy.to_string());
+    Fetcher::new(options).unwrap()
+}
+
+/// `host`'s https URL, an IPv6 address in brackets.
+fn url_of(host: &str) -> String {
+    if host.contains(':') {
+        format!("https://[{host}]/")
+    } else {
+        format!("https://{host}/")
+    }
+}
+
+/// The AEAD and the plaintext length of a ClientHello's GREASE ECH
+/// payload, which takes the AEAD's 16-byte tag.
+fn grease_of(hello: &[u8]) -> (u16, usize) {
+    let p = parts(&hello[4..]).unwrap();
+    let ech = &p.extensions.iter().find(|(k, _)| *k == ECH).unwrap().1;
+    assert_eq!(&ech[..3], [0, 0, 1], "HKDF-SHA256");
+    let enc = u16::from_be_bytes([ech[6], ech[7]]) as usize;
+    (
+        u16::from_be_bytes([ech[3], ech[4]]),
+        ech.len() - 10 - enc - 16,
+    )
+}
+
 #[test]
 fn ech_grease_is_firefoxs() {
     // NSS's GREASE ECH (tls13_MaybeGreaseEch, lib/ssl/tls13ech.c in NSS
@@ -395,22 +457,24 @@ fn ech_grease_is_firefoxs() {
     // padded for a maximum_name_length of 100 (line 2194, greaseEchSize).
     let recorded = recorded();
     for (host, firefox) in &recorded.grease {
-        let (port, hellos) = hello_catcher();
-        let fetcher = fetcher("firefox-160-macos", host, port, None);
+        let (proxy, hellos) = proxied_hello_catcher();
+        let fetcher = proxied_fetcher(&proxy);
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut aeads = BTreeSet::new();
         for _ in 0..24 {
-            let _ = runtime.block_on(fetcher.get(&format!("https://{host}:{port}/"), &[]));
+            let _ = runtime.block_on(fetcher.get(&url_of(host), &[]));
             let ours = hellos.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!(
                 shape(&ours, true),
                 shape(firefox, true),
                 "{host}: the ClientHello with ECH GREASE differs from Firefox's"
             );
-            let p = parts(&ours[4..]).unwrap();
-            let ech = &p.extensions.iter().find(|(k, _)| *k == ECH).unwrap().1;
-            assert_eq!(&ech[..3], [0, 0, 1], "{host}: HKDF-SHA256");
-            aeads.insert(u16::from_be_bytes([ech[3], ech[4]]));
+            assert_eq!(
+                grease_of(firefox).1,
+                nss_grease_plaintext_len(firefox, host),
+                "{host}: Firefox's own GREASE against the formula"
+            );
+            aeads.insert(grease_of(&ours).0);
         }
         // The chance both don't turn up in 24 draws is 2^-23.
         assert_eq!(aeads, BTreeSet::from([1, 3]), "{host}: the AEADs drawn");
@@ -661,4 +725,65 @@ fn ech_grease_is_the_same_in_the_second_client_hello() {
         p.extensions.into_iter().find(|(k, _)| *k == ECH).unwrap().1
     };
     assert_eq!(ech(&first), ech(&second));
+}
+
+/// A DNS name of `len` bytes, in labels of at most 63.
+fn name_of_len(len: usize) -> String {
+    let mut name = String::from("test");
+    let mut label = b'a';
+    while name.len() < len {
+        let room = (len - name.len() - 1).min(63);
+        name = format!("{}.{name}", (label as char).to_string().repeat(room.max(1)));
+        label += 1;
+    }
+    assert_eq!(name.len(), len, "{name}");
+    name
+}
+
+#[test]
+fn ech_grease_pads_as_nss_does_at_every_name_length() {
+    // Up to 100 bytes, a name in server_name and its padding cancel out;
+    // past that, the name's own length shows, and without server_name, as
+    // for an IP address, only the padding does. These names and addresses
+    // cross the 32-byte steps both ways, so a padding term off by a few
+    // bytes lands on the wrong step for some of them.
+    let mut hosts: Vec<String> = [
+        "::1",
+        "10.0.0.1",
+        "127.0.0.1",
+        "192.168.100.200",
+        "2001:db8::1",
+        // Without server_name the step is at 16 bytes: these sit on either
+        // side of it.
+        "2001:db8:85a::",
+        "2001:db8:85a3::",
+        "2001:db8:85a3::8",
+        "2001:db8:85a3::88",
+        "2001:db8:85a3::888",
+        "2001:db8:85a3::8a2e:370",
+        "2001:db8:85a3:8d3:1319:8a2e:370:7348",
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+    ]
+    .iter()
+    .map(|h| h.to_string())
+    .collect();
+    hosts.extend([6, 99, 100, 101, 107, 108, 109, 139, 140, 141, 200].map(name_of_len));
+    let (proxy, hellos) = proxied_hello_catcher();
+    let fetcher = proxied_fetcher(&proxy);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut lengths = BTreeSet::new();
+    for host in &hosts {
+        let _ = runtime.block_on(fetcher.get(&url_of(host), &[]));
+        let ours = hellos.recv_timeout(Duration::from_secs(5)).unwrap();
+        let expected = nss_grease_plaintext_len(&ours, host);
+        assert_eq!(
+            grease_of(&ours).1,
+            expected,
+            "{host} ({} bytes)",
+            host.len()
+        );
+        lengths.insert(expected);
+    }
+    // The hosts reach several of the steps.
+    assert!(lengths.len() >= 4, "{lengths:?}");
 }

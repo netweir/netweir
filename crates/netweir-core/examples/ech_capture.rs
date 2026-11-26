@@ -7,7 +7,7 @@
 //! It serves DNS over HTTPS on 127.0.0.1:DOH_PORT (default 8053), which
 //! answers every name with 127.0.0.1 and an HTTPS record that offers h2
 //! and http/1.1 with an ECH configuration, and listens for TLS on
-//! 127.0.0.1:TCP_PORT (default 8443). The ECH key, the configuration
+//! 127.0.0.1:TCP_PORT (default 8443), and on [::1] where it can. The ECH key, the configuration
 //! (`ech_config_list.hex`) and the DoH server's certificate
 //! (`doh-cert.pem`) are kept in DIR and used again on the next run, so
 //! Firefox and Netweir see the same configuration. Each connection's
@@ -85,9 +85,15 @@ fn key_and_config(dir: &Path, max_name_length: u8, suites: &[u8]) -> (Vec<u8>, V
     (private, config)
 }
 
-fn capture(dir: PathBuf, port: u16, private: Vec<u8>, config: Vec<u8>) {
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind TLS port");
-    let count = AtomicUsize::new(0);
+/// Writes down each connection's hellos on `listener`, numbering them
+/// with `count`.
+fn capture(
+    listener: TcpListener,
+    dir: PathBuf,
+    count: Arc<AtomicUsize>,
+    private: Vec<u8>,
+    config: Vec<u8>,
+) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         let Some(outer) = read_hello(&mut stream) else {
@@ -276,7 +282,20 @@ async fn main() {
     std::fs::write(dir.join("ech_config_list.hex"), hex(&list)).unwrap();
     eprintln!("ECHConfigList: {}", hex(&list));
     let capturing = dir.clone();
-    std::thread::spawn(move || capture(capturing, tcp, private, config));
+    // 127.0.0.1, and ::1 where the machine has IPv6, for a URL with an
+    // IPv6 address.
+    let count = Arc::new(AtomicUsize::new(0));
+    let v4 = TcpListener::bind(("127.0.0.1", tcp)).expect("bind TLS port");
+    if let Ok(v6) = TcpListener::bind(("::1", tcp)) {
+        let (dir, count, private, config) = (
+            capturing.clone(),
+            count.clone(),
+            private.clone(),
+            config.clone(),
+        );
+        std::thread::spawn(move || capture(v6, dir, count, private, config));
+    }
+    std::thread::spawn(move || capture(v4, capturing, count, private, config));
     eprintln!("TLS on 127.0.0.1:{tcp}, DoH on https://127.0.0.1:{doh_port}/dns-query");
     doh(dir, doh_port, if grease { Vec::new() } else { list }).await;
 }

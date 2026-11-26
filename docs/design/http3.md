@@ -171,13 +171,15 @@ default preferences; Chrome's rules are
   160.0.1's outer and inner ClientHellos, decrypted with a key
   `examples/ech_capture.rs` holds, for `maximum_name_length` 0 and 64
   and for cipher suites with ChaCha20-Poly1305 first and last, and its
-  ECH GREASE for a short and a long host name and an IP address. `tests/ech_tcp.rs` holds
-  Netweir's to them: the same bytes but the randoms, key shares and
-  encrypted payload, padding included. It also checks every Firefox
+  ECH GREASE for a short and a long host name, 127.0.0.1 and ::1.
+  `tests/ech_tcp.rs` holds Netweir's to them: the same bytes but the
+  randoms, key shares and encrypted payload, padding included. Since
+  rounding to 32 bytes hides the name's length at those hosts, it also
+  holds the GREASE payload to NSS's padding formula for addresses and
+  names on both sides of each 32-byte step. It checks every Firefox
   profile's ECH GREASE, and finishes handshakes with a BoringSSL server
   that holds the key, ECH accepted, after a HelloRetryRequest too. A
-  record that offers h3 sends the
-  request over HTTP/3, racing TCP after
+  record that offers h3 sends the request over HTTP/3, racing TCP after
   `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms; that TCP
   connection goes to the best record without h3, which must have ECH if
   the h3 one did, else to the origin, or nowhere if ECH was used and no
