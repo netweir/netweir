@@ -287,6 +287,9 @@ fn quic_config(
         config.add_custom_transport_param(chrome::INITIAL_RTT, &varint(us));
     }
     config.enable_chromium_initial(true);
+    // QuicCryptoClientConfig turns early data on in every session's SSL
+    // context; whether a request uses it is the session's call.
+    config.enable_early_data();
     Ok(config)
 }
 
@@ -365,6 +368,7 @@ pub(crate) fn open(
     browser: Browser,
     trust: Trust,
     tickets: &Tickets,
+    early: bool,
 ) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
@@ -398,11 +402,12 @@ pub(crate) fn open(
                 ticket,
                 key,
                 tickets,
+                early,
             };
             runtime.block_on(connection.run(queue, &state));
             state.send_modify(|s| {
                 *s = match *s {
-                    State::Connecting => State::Failed { exclude: true },
+                    State::Connecting | State::ZeroRtt => State::Failed { exclude: true },
                     State::Connected => State::Closed,
                     other => other,
                 }
@@ -432,6 +437,10 @@ struct Connection {
     ticket: Option<Ticket>,
     key: String,
     tickets: Tickets,
+    /// Whether requests safe to repeat may go before the handshake is
+    /// confirmed, in 0-RTT: the session doesn't require confirmation
+    /// (QuicSessionPool::CreateSessionSync, QuicSessionAttempt).
+    early: bool,
 }
 
 /// A request in flight, by its stream.
@@ -535,6 +544,8 @@ impl Connection {
             }
         };
         let mut h3: Option<quiche::h3::Connection> = None;
+        // Its handshake done and its certificate checked.
+        let mut verified = false;
         let mut streams: HashMap<u64, Stream> = HashMap::new();
         let mut waiting: Vec<Job> = Vec::new();
         let (mut accepting, mut closing) = (true, false);
@@ -542,8 +553,23 @@ impl Connection {
         let mut out = vec![0u8; 65_535];
         let mut buf = vec![0u8; 65_535];
         loop {
+            // A resumed session that can send early data takes requests
+            // at once (QuicChromiumClientSession::OnNewEncryptionKeyAvailable
+            // runs the stream request's callback at ENCRYPTION_ZERO_RTT).
+            if h3.is_none() && self.early && conn.is_in_early_data() {
+                match quiche::h3::Connection::with_transport(&mut conn, &h3_config) {
+                    Ok(c) => {
+                        h3 = Some(c);
+                        state.send_replace(State::ZeroRtt);
+                    }
+                    Err(e) => {
+                        state.send_replace(State::Failed { exclude: true });
+                        return fail_all(queue, &format!("HTTP/3: {e}"));
+                    }
+                }
+            }
             // Up, and its certificate checked.
-            if h3.is_none() && conn.is_established() {
+            if !verified && conn.is_established() {
                 let chain: Vec<Vec<u8>> = conn
                     .peer_cert_chain()
                     .map(|c| c.iter().map(|d| d.to_vec()).collect())
@@ -560,23 +586,31 @@ impl Connection {
                             .head
                             .send(Err(FetchError::new(FetchErrorKind::Tls, why.clone())));
                     }
+                    for (_, s) in streams.drain() {
+                        s.end(FetchError::new(FetchErrorKind::Tls, why.clone()));
+                    }
                     flush(&socket, &mut conn, &mut out).await;
                     return fail_all(queue, &why);
                 }
-                match quiche::h3::Connection::with_transport(&mut conn, &h3_config) {
-                    Ok(c) => {
-                        h3 = Some(c);
-                        state.send_replace(State::Connected);
-                    }
-                    Err(e) => {
-                        state.send_replace(State::Failed { exclude: true });
-                        return fail_all(queue, &format!("HTTP/3: {e}"));
+                if h3.is_none() {
+                    match quiche::h3::Connection::with_transport(&mut conn, &h3_config) {
+                        Ok(c) => h3 = Some(c),
+                        Err(e) => {
+                            state.send_replace(State::Failed { exclude: true });
+                            return fail_all(queue, &format!("HTTP/3: {e}"));
+                        }
                     }
                 }
+                verified = true;
+                state.send_replace(State::Connected);
             }
             if let Some(h3) = h3.as_mut() {
-                for job in waiting.drain(..) {
-                    start(h3, &mut conn, &mut streams, job, self.browser);
+                for job in std::mem::take(&mut waiting) {
+                    if verified || safe_method(&job.request.method) {
+                        start(h3, &mut conn, &mut streams, job, self.browser);
+                    } else {
+                        waiting.push(job);
+                    }
                 }
                 events(h3, &mut conn, &mut streams, &mut buf);
                 // A request whose caller has gone is cancelled.
@@ -610,7 +644,7 @@ impl Connection {
             }
             if conn.is_closed() {
                 self.leave_ticket(&conn);
-                let ready = h3.is_some();
+                let ready = verified;
                 let peer_error = conn.peer_error().map(|e| (e.is_app, e.error_code));
                 let local_error = conn.local_error().map(|e| (e.is_app, e.error_code));
                 let why = format!(
@@ -643,7 +677,7 @@ impl Connection {
             // A handshake that takes too long ends the connection there and
             // then, with no CONNECTION_CLOSE, as Chrome's
             // QUIC_HANDSHAKE_TIMEOUT does.
-            if h3.is_none() && started.elapsed() >= chrome::HANDSHAKE_TIMEOUT {
+            if !verified && started.elapsed() >= chrome::HANDSHAKE_TIMEOUT {
                 state.send_replace(State::Failed { exclude: true });
                 let why = format!("HTTP/3 to {}: the handshake timed out", self.alternative);
                 for job in waiting.drain(..) {
@@ -655,7 +689,7 @@ impl Connection {
             }
             if let Err(e) = send_all(&socket, &mut conn, &mut out).await {
                 let why = format!("HTTP/3 to {}: {e}", self.alternative);
-                state.send_replace(if h3.is_some() {
+                state.send_replace(if verified {
                     State::Closed
                 } else {
                     State::Failed { exclude: true }
@@ -671,7 +705,7 @@ impl Connection {
                 return fail_all(queue, &why);
             }
             let mut timeout = conn.timeout().unwrap_or(Duration::from_secs(3600));
-            if h3.is_none() {
+            if !verified {
                 timeout = timeout.min(chrome::HANDSHAKE_TIMEOUT.saturating_sub(started.elapsed()));
             }
             let sleep = tokio::time::sleep(timeout);
@@ -690,14 +724,23 @@ impl Connection {
                 () = sleep => conn.on_timeout(),
                 job = queue.recv(), if accepting => match job {
                     Some(job) => match h3.as_mut() {
-                        Some(h3) => start(h3, &mut conn, &mut streams, job, self.browser),
-                        None => waiting.push(job),
+                        Some(h3) if verified || safe_method(&job.request.method) => {
+                            start(h3, &mut conn, &mut streams, job, self.browser)
+                        }
+                        _ => waiting.push(job),
                     },
                     None => accepting = false,
                 },
             }
         }
     }
+}
+
+/// Whether a request may go before the handshake is confirmed: its method
+/// is safe (HttpNetworkTransaction's can_send_early_data_,
+/// HttpUtil::IsMethodSafe).
+fn safe_method(method: &str) -> bool {
+    matches!(method, "GET" | "HEAD" | "OPTIONS" | "TRACE")
 }
 
 /// Sends every datagram quiche has ready.

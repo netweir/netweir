@@ -67,7 +67,15 @@ Exactly as Firefox sends them, on every run:
   Connection and te, with Alt-Used where Connection was, and Priority
   `u=0, i` for a navigation;
 - a second connection to the server resumes the first one's session, with
-  pre_shared_key last, as Firefox's did.
+  pre_shared_key last, as Firefox's did;
+- 0-RTT: `profiles/firefox-160-macos.h3-0rtt.capture.json` recorded
+  Firefox 160.0.1 opening the fingerprint server's `/zero-rtt` with
+  session tickets that allow early data. Its script asks until a
+  response comes over HTTP/3, lets that connection time out, and goes to
+  `/again`. Firefox sent that GET in 0-RTT on the connection that
+  resumed, in its first flight: the 0-RTT packet coalesced after the
+  second Initial, filling that datagram. Netweir's first flight has the
+  same packets in the same datagrams, and the request comes in 0-RTT.
 
 Random per connection, and checked to fall where Firefox's do: the
 Destination Connection ID (8 to 20 bytes), the first packet number (under
@@ -81,8 +89,6 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 
 ## What doesn't match yet
 
-- 0-RTT. With a ticket that allows early data, Firefox sends a GET in
-  0-RTT. Netweir resumes the session but waits for the handshake.
 - Where Alt-Used goes in a request that also carries Authorization: the
   recording has no login over HTTP/3, so Alt-Used takes Connection's place
   and Authorization stays before it, as over TCP.
@@ -339,6 +345,43 @@ What's not the same as Firefox:
 - The host cache, like the HTTPS records', is keyed by name alone;
   Firefox keys both by the request's top-level site too.
 
+### 0-RTT
+
+Firefox's, as Netweir follows it:
+
+- A connection resumed with a ticket that allows early data is in 0-RTT
+  (`network.http.http3.enable_0rtt`, Http3Session::Init's ZERORTT) and
+  takes requests at once. A request whose method is safe (GET, HEAD,
+  OPTIONS, TRACE, PROPFIND, REPORT, SEARCH:
+  nsHttpRequestHead::IsSafeMethod) goes in 0-RTT; any other waits for
+  the handshake (Http3Session's mCannotDo0RTTStreams). The request the
+  connection was made for goes in its first flight.
+- It keeps the backup timer: if the handshake isn't done when that
+  fires, TCP races the request as for a connection still being made
+  (MaybeStartHttp3BackupTimer; Finish0RTT cancels it).
+- A server that turns the early data down has the requests sent in 0-RTT
+  sent again once connected, without 0-RTT (ZeroRttRejected,
+  Http3Session::Finish0Rtt).
+- A connection still in 0-RTT after `network.http.http3.0rtt_timeout`
+  (5 s) fails. A failure before connecting after a request went in 0-RTT
+  doesn't exclude the host, since the next connection makes a full
+  handshake (Http3Session::Shutdown, mHad0RttStream).
+
+Chrome's (Chromium 157, net/quic): every session's SSL context has early
+data on. A session doesn't wait for confirmation once QUIC has worked on
+the network and the alternative isn't broken or recently broken
+(QuicSessionPool::CreateSessionSync, QuicSessionAttempt), so a request
+whose method is safe (HttpUtil::IsMethodSafe, HttpNetworkTransaction's
+`can_send_early_data_`) goes as soon as the session can send early data;
+any other waits for the handshake (QuicHttpStream::DoRequestStream,
+`requires_confirmation`). Chrome's QUIC job is done then, so nothing
+races it. Chrome isn't recorded doing this: headless Chrome for Testing
+157 stalled its first request before it reached the network on the
+machine these were made on.
+
+Safari's isn't recorded, so a Safari profile resumes and waits for the
+handshake.
+
 ## Chrome through netweir's quiche
 
 Chrome's QUIC is Google's QUICHE, in C++, and building it into the
@@ -425,8 +468,9 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
   server's dynamic table; quiche's encodes from the static table only.
   The fingerprint server offers no table, so this isn't in the
   recording, but a server that offers one sees the difference.
-- 0-RTT. Chrome sends a request in 0-RTT on a resumed connection when
-  the server's ticket allows it. Netweir resumes and waits.
+- 0-RTT turned down. Chrome's QUICHE marks the data it sent in 0-RTT for
+  retransmission as soon as the server turns early data down; quiche
+  sends it again once loss detection calls it lost, about a PTO later.
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.
@@ -646,7 +690,9 @@ What the recording can't show, Netweir has had to choose:
   (initial_max_data 21 times, active_connection_id_limit 14,
   initial_source_connection_id and initial_max_streams_uni 5 each,
   initial_max_stream_data_bidi_remote 4, the other two 2 each). Netweir
-  picks evenly.
+  draws the start with those weights, but 53 connections can't say
+  whether Safari's choice depends on something else, such as whether
+  the connection resumes.
 - Everything after the first flight: loss recovery, congestion
   control, pacing, ACK timing, packet sizes once the handshake is done
   (quiche's 1200 bytes), connection ID use and PING keepalives (Apple
@@ -658,8 +704,8 @@ What the recording can't show, Netweir has had to choose:
 - QPACK the other way. The fingerprint server offers no dynamic table,
   so whether Safari's encoder uses one isn't recorded; quiche's encodes
   from the static table.
-- 0-RTT, which Safari may send on a resumed connection. Netweir waits
-  for the handshake.
+- 0-RTT, which Safari may send on a resumed connection. It isn't
+  recorded, so Netweir waits for the handshake.
 - Addresses. Safari tried QUIC to `::1`, then to `127.0.0.1` 250 ms
   later; Netweir tries the first address only.
 - The image request over HTTP/1.1. Safari's `[image]` headers are

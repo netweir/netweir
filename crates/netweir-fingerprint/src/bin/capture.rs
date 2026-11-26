@@ -15,6 +15,11 @@
 //!
 //!     openssl x509 -in ~/.netweir/capture/cert.pem -pubkey -noout |
 //!       openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+//!
+//! `--early` with `--h3` gives QUIC session tickets that allow early data
+//! and takes requests in 0-RTT, set up for a browser to open /zero-rtt
+//! (`Server::start_h3_early`): each capture's `http3.early` says whether
+//! its request came in 0-RTT.
 
 #[tokio::main]
 async fn main() {
@@ -24,12 +29,15 @@ async fn main() {
         .unwrap_or(8443);
     let http1 = std::env::args().any(|a| a == "--http1");
     let h3 = std::env::args().any(|a| a == "--h3");
+    let early = std::env::args().any(|a| a == "--early");
     let home = std::env::var_os("NETWEIR_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".netweir")))
         .expect("$HOME or $NETWEIR_HOME");
     let dir = home.join("capture");
-    let mut server = if h3 {
+    let mut server = if h3 && early {
+        netweir_fingerprint::Server::start_h3_early(port, Some(&dir), true).await
+    } else if h3 {
         netweir_fingerprint::Server::start_h3(port, Some(&dir)).await
     } else {
         netweir_fingerprint::Server::start_trusted(port, http1, &dir).await

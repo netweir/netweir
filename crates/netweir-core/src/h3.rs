@@ -100,6 +100,9 @@ mod firefox {
     /// How long an alternative whose connection failed holds off another
     /// offer of it (AltSvcMappingValidator::OnTransactionDestroy).
     pub const ALT_SVC_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+    /// How long a connection may stay in 0-RTT before it fails
+    /// (network.http.http3.0rtt_timeout).
+    pub const ZERO_RTT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5000);
     /// The ports Firefox never connects to, an alternative's included
     /// (gBadPortList in netwerk/base/nsIOService.cpp, which
     /// NS_CheckPortSafety reads; nsHttpHandler::AllowPort overrides none,
@@ -468,6 +471,7 @@ impl Trust {
 /// One request, its headers as Firefox hands them to neqo: in order,
 /// lowercase, with no pseudo-headers (neqo writes those) and none that
 /// HTTP/3 forbids.
+#[derive(Clone)]
 pub(crate) struct Request {
     pub method: String,
     pub authority: String,
@@ -586,6 +590,11 @@ pub(crate) struct Job {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum State {
     Connecting,
+    /// Resumed with a ticket that allows early data, its handshake not
+    /// done yet: it takes requests, and sends those safe to repeat in
+    /// 0-RTT (Firefox's ZERORTT, which Http3Session::Init reports to the
+    /// connection manager as ready).
+    ZeroRtt,
     Connected,
     /// It never connected. Firefox stops using HTTP/3 to the alternative's
     /// host after any such failure but a TLS one (Http3Session::Shutdown).
@@ -624,9 +633,17 @@ pub(crate) struct Handle {
 }
 
 impl Handle {
+    /// Up, or resumed and in 0-RTT: a session a request can go on.
+    pub(crate) fn taking_requests(&self) -> bool {
+        matches!(*self.state.borrow(), State::Connected | State::ZeroRtt)
+    }
+
     pub(crate) fn usable(&self) -> bool {
         !self.jobs.is_closed()
-            && matches!(*self.state.borrow(), State::Connecting | State::Connected)
+            && matches!(
+                *self.state.borrow(),
+                State::Connecting | State::ZeroRtt | State::Connected
+            )
     }
 }
 
@@ -918,23 +935,31 @@ pub(crate) enum Answer {
     Race(Pending),
 }
 
-/// A request waiting for an HTTP/3 connection still being made.
+/// A request waiting for an HTTP/3 connection still being made, or sent
+/// on one still in 0-RTT, whose answer it then waits for.
 pub(crate) struct Pending {
-    request: Request,
+    request: Option<Request>,
+    answer: Option<oneshot::Receiver<Result<http::Response<Body>, FetchError>>>,
     state: watch::Receiver<State>,
+    /// The connection's Handle::third_party.
+    third_party: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Pending {
-    /// Waits for the connection: whether it came up, or failed.
+    /// Waits for the connection: whether it came up, or failed. One that a
+    /// request went on in 0-RTT is up once its handshake is done.
     pub(crate) async fn up(&mut self) -> bool {
+        let sent = self.answer.is_some();
         matches!(
-            self.state.wait_for(|s| *s != State::Connecting).await,
-            Ok(s) if *s == State::Connected
+            self.state
+                .wait_for(|s| match s {
+                    State::Connecting => false,
+                    State::ZeroRtt => !sent,
+                    _ => true,
+                })
+                .await,
+            Ok(s) if matches!(*s, State::Connected | State::ZeroRtt)
         )
-    }
-
-    pub(crate) fn request(self) -> Request {
-        self.request
     }
 }
 
@@ -1169,7 +1194,7 @@ impl Routes {
             }
             let up = connections
                 .get(&format!("{partition} {host} {to}"))
-                .is_some_and(|h| h.usable() && *h.state.borrow() == State::Connected);
+                .is_some_and(|h| h.usable() && h.taking_requests());
             if up {
                 chosen = Some(to);
                 break;
@@ -1235,7 +1260,7 @@ impl Routes {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&connection_key(partition, &host, &route.alternative, ech))
-            .is_some_and(|h| h.usable() && *h.state.borrow() == State::Connected);
+            .is_some_and(|h| h.usable() && h.taking_requests());
         self.tcp_recent(partition, origin) && !up
     }
 
@@ -1265,12 +1290,7 @@ impl Routes {
     /// Chrome's main-job delay for a request to `alternative`.
     fn chrome_delay(&self, partition: &str, host: &str, alternative: &str) -> Duration {
         let worked = self.quic_worked.load(std::sync::atomic::Ordering::Relaxed);
-        let recently = self
-            .broken
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(partition.to_string(), alternative.to_string()))
-            .is_some_and(|b| b.until.is_some() || b.count > 0);
+        let recently = self.recently_broken(partition, alternative);
         let rtt = self
             .chrome_tickets
             .lock()
@@ -1278,6 +1298,17 @@ impl Routes {
             .get(&format!("{partition} {host} {alternative}"))
             .map(|t| t.rtt);
         crate::h3_chrome::main_job_delay(worked, recently, rtt)
+    }
+
+    /// Whether Chrome takes `alternative` in `partition` as broken or
+    /// recently broken (HttpServerProperties::
+    /// WasAlternativeServiceRecentlyBroken).
+    fn recently_broken(&self, partition: &str, alternative: &str) -> bool {
+        self.broken
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(partition.to_string(), alternative.to_string()))
+            .is_some_and(|b| b.until.is_some() || b.count > 0)
     }
 
     /// Marks `alternative` broken in `partition`
@@ -1441,7 +1472,7 @@ impl Routes {
         if let Some((to, expires)) = h3
             && self.update(&key(true), &to, expires)
         {
-            let handle = self.connection(partition, host, &to, None);
+            let handle = self.connection(partition, host, &to, None, false);
             if *handle.state.borrow() == State::Connected {
                 self.proved(partition, host, &to);
             }
@@ -1753,6 +1784,7 @@ impl Routes {
         host: &str,
         alternative: &str,
         ech: Option<&[u8]>,
+        for_request: bool,
     ) -> Handle {
         let key = connection_key(partition, host, alternative, ech);
         let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
@@ -1775,6 +1807,7 @@ impl Routes {
                 self.trust.clone(),
                 &self.tickets,
                 self.host_cache.clone(),
+                for_request,
             ),
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
@@ -1786,6 +1819,12 @@ impl Routes {
                 crate::h3_chrome::Browser::Chrome,
                 self.trust.clone(),
                 &self.chrome_tickets,
+                // A session requires confirmation before its first stream
+                // until QUIC has worked on this network, and to an
+                // alternative recently broken (QuicSessionPool::
+                // CreateSessionSync, QuicSessionAttempt::DoCreateSession).
+                self.quic_worked.load(std::sync::atomic::Ordering::Relaxed)
+                    && !self.recently_broken(partition, alternative),
             ),
             Stack::Safari(tls) => crate::h3_chrome::open(
                 host,
@@ -1797,6 +1836,9 @@ impl Routes {
                 crate::h3_chrome::Browser::Safari,
                 self.trust.clone(),
                 &self.chrome_tickets,
+                // shortcut: Safari's 0-RTT isn't recorded, so it waits for
+                // the handshake; upgrade once a recording shows its rules.
+                false,
             ),
         };
         connections.insert(key, handle.clone());
@@ -1808,7 +1850,7 @@ impl Routes {
         );
         tokio::spawn(async move {
             let outcome = state
-                .wait_for(|s| *s != State::Connecting)
+                .wait_for(|s| !matches!(s, State::Connecting | State::ZeroRtt))
                 .await
                 .map_or(State::Failed { exclude: false }, |s| *s);
             let Some(now) = Weak::upgrade(&routes) else {
@@ -1850,7 +1892,7 @@ impl Routes {
                 State::Connected => now.proved(&partition, &host, &alternative),
                 State::Failed { exclude } => return now.failed(&alternative, exclude),
                 State::NotSetUp => return now.failed(&alternative, true),
-                State::Connecting | State::Closed | State::Broken => return,
+                State::Connecting | State::ZeroRtt | State::Closed | State::Broken => return,
             }
             drop(now);
             // Then, once it's up, whether it goes down with an error.
@@ -1936,7 +1978,7 @@ impl Routes {
     ) -> Result<Answer, FetchError> {
         let alternative = route.alternative.as_str();
         let ech = route.record.as_ref().and_then(Option::as_deref);
-        let handle = self.connection(&route.partition, host, alternative, ech);
+        let handle = self.connection(&route.partition, host, alternative, ech, true);
         let mut state = handle.state.clone();
         // How long the request waits for a connection still coming up
         // before TCP races it: Chrome's main-job delay; Firefox's backup
@@ -1959,6 +2001,7 @@ impl Routes {
             Some(_) => firefox::FAST_FALLBACK,
             None => firefox::BACKUP_TIMER,
         };
+        let waited = tokio::time::Instant::now();
         let up = route.forced
             || matches!(
                 tokio::time::timeout(
@@ -1966,11 +2009,16 @@ impl Routes {
                     state.wait_for(|s| *s != State::Connecting),
                 )
                 .await,
-                Ok(Ok(s)) if *s == State::Connected
+                Ok(Ok(s)) if matches!(*s, State::Connected | State::ZeroRtt)
             );
         if !up {
             if *state.borrow() == State::Connecting {
-                return Ok(Answer::Race(Pending { request, state }));
+                return Ok(Answer::Race(Pending {
+                    request: Some(request),
+                    answer: None,
+                    state,
+                    third_party: handle.third_party.clone(),
+                }));
             }
             return Ok(Answer::Tcp);
         }
@@ -1980,12 +2028,74 @@ impl Routes {
             head,
             deadline,
         };
-        let closed = || {
-            FetchError::new(
-                FetchErrorKind::Connect,
-                format!("the HTTP/3 connection to {alternative} closed"),
-            )
-        };
+        // Never sent: it can go anywhere.
+        if handle.jobs.send(job).is_err() {
+            return if route.forced {
+                Err(closed(alternative))
+            } else {
+                Ok(Answer::Tcp)
+            };
+        }
+        // A request on a connection still in 0-RTT keeps Firefox's backup
+        // timer (nsHttpTransaction::MaybeStartHttp3BackupTimer, while the
+        // session isn't connected; Finish0RTT cancels it): if the
+        // handshake isn't done when it fires, TCP races it. Chrome's QUIC
+        // job is done once its session can send early data.
+        if !self.is_chrome() && !route.forced && *state.borrow() == State::ZeroRtt {
+            let left = timer.saturating_sub(waited.elapsed());
+            let timed_out = tokio::time::timeout(left, state.wait_for(|s| *s != State::ZeroRtt))
+                .await
+                .is_err();
+            if timed_out {
+                return Ok(Answer::Race(Pending {
+                    request: None,
+                    answer: Some(answer),
+                    state,
+                    third_party: handle.third_party.clone(),
+                }));
+            }
+        }
+        self.finish(
+            route,
+            answer,
+            &handle.state,
+            &handle.third_party,
+            idempotent,
+        )
+        .await
+    }
+
+    /// Sends a request that waited in a race, or waits for the answer to
+    /// one already sent in 0-RTT.
+    pub(crate) async fn send_pending(
+        self: &Arc<Self>,
+        route: &Route,
+        host: &str,
+        pending: Pending,
+        deadline: tokio::time::Instant,
+        idempotent: bool,
+    ) -> Result<Answer, FetchError> {
+        match (pending.answer, pending.request) {
+            (Some(answer), _) => {
+                let third_party = pending.third_party.clone();
+                self.finish(route, answer, &pending.state, &third_party, idempotent)
+                    .await
+            }
+            (None, Some(request)) => self.send(route, host, request, deadline, idempotent).await,
+            (None, None) => Ok(Answer::Tcp),
+        }
+    }
+
+    /// What became of a request sent on a connection whose state is
+    /// `state`.
+    async fn finish(
+        &self,
+        route: &Route,
+        answer: oneshot::Receiver<Result<http::Response<Body>, FetchError>>,
+        state: &watch::Receiver<State>,
+        third_party: &std::sync::atomic::AtomicBool,
+        idempotent: bool,
+    ) -> Result<Answer, FetchError> {
         // A request safe to repeat that got nothing back goes again over
         // TCP when the connection went under it (nsHttpTransaction::Close).
         // Chrome sends any request again over TCP after a QUIC error that
@@ -2001,27 +2111,27 @@ impl Routes {
                 Err(e)
             }
         };
-        // Never sent: it can go anywhere.
-        if handle.jobs.send(job).is_err() {
-            return if route.forced {
-                Err(closed())
-            } else {
-                Ok(Answer::Tcp)
-            };
-        }
-        let refused = || {
-            handle
-                .third_party
-                .load(std::sync::atomic::Ordering::Relaxed)
-        };
         match answer.await {
             Ok(Ok(response)) => Ok(Answer::Response(response)),
-            Ok(Err(_)) | Err(_) if refused() => Ok(Answer::Tcp),
-            Ok(Err(e)) if *handle.state.borrow() == State::Connected => Err(e),
+            // Its connection reached a root Firefox doesn't build in, and
+            // nothing was sent (Handle::third_party).
+            Ok(Err(_)) | Err(_) if third_party.load(std::sync::atomic::Ordering::Relaxed) => {
+                Ok(Answer::Tcp)
+            }
+            Ok(Err(e)) if *state.borrow() == State::Connected => Err(e),
             Ok(Err(e)) => repeat(e),
-            Err(_) => repeat(closed()),
+            Err(_) => repeat(closed(&route.alternative)),
         }
     }
+}
+
+/// The error for a request whose HTTP/3 connection to `alternative` went
+/// before it was answered.
+fn closed(alternative: &str) -> FetchError {
+    FetchError::new(
+        FetchErrorKind::Connect,
+        format!("the HTTP/3 connection to {alternative} closed"),
+    )
 }
 
 /// An origin's HTTPS records and canonical name, looked up as Chrome's
@@ -2138,6 +2248,7 @@ fn open(
     trust: Trust,
     tickets: &Tickets,
     host_cache: Option<Arc<crate::https_rr::HostCache>>,
+    for_request: bool,
 ) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
@@ -2191,11 +2302,12 @@ fn open(
                 &state,
                 &retry_with,
                 &refused,
+                for_request,
             ));
             // However it ended, it isn't coming up any more.
             state.send_modify(|s| {
                 *s = match *s {
-                    State::Connecting => State::Failed { exclude: true },
+                    State::Connecting | State::ZeroRtt => State::Failed { exclude: true },
                     State::Connected => State::Closed,
                     other => other,
                 }
@@ -2270,7 +2382,14 @@ struct Stream {
     body: Option<mpsc::UnboundedSender<Chunk>>,
     /// Request body neqo hasn't taken yet.
     unsent: Bytes,
+    /// The request, while it went in 0-RTT and the server may still turn
+    /// that down, when it's sent again once the handshake is done.
+    early: Option<Request>,
 }
+
+/// How long a connection resumed in 0-RTT waits for the request it was
+/// made for before its first flight goes.
+const EARLY_JOB_WAIT: Duration = Duration::from_millis(20);
 
 /// The ticket a connection resumes with, and where it leaves the next.
 struct Ticket {
@@ -2291,6 +2410,7 @@ async fn run(
     state: &watch::Sender<State>,
     ech_retry: &Mutex<Option<Vec<u8>>>,
     third_party: &std::sync::atomic::AtomicBool,
+    for_request: bool,
 ) {
     let given = given.zip(
         alternative
@@ -2329,10 +2449,14 @@ async fn run(
     let mut recv = neqo_udp::RecvBuf::default();
     let mut streams: HashMap<StreamId, Stream> = HashMap::new();
     let mut waiting: Vec<Job> = Vec::new();
-    // Known limit: a resumed connection whose ticket allows early data
-    // waits for the handshake before sending, where Firefox sends a GET
-    // or HEAD in 0-RTT.
     let mut ready = false;
+    // In 0-RTT since when, and whether a request went that way
+    // (Http3Session's mZeroRttStarted and mHad0RttStream).
+    let mut early: Option<Instant> = None;
+    let mut had_early = false;
+    // Whether the request this connection was made for has yet to have
+    // its chance to join the first flight.
+    let mut first_flight = for_request;
     // Whether the certificate check failed, which Firefox reads as an NSS
     // error (Http3Session::Authenticated).
     let mut cert_rejected = false;
@@ -2402,8 +2526,39 @@ async fn run(
                     cert_rejected = checked != AuthenticationStatus::Ok;
                     client.authenticated(checked, Instant::now());
                 }
+                Http3ClientEvent::StateChange(Http3State::ZeroRtt) => {
+                    early = Some(Instant::now());
+                    state.send_replace(State::ZeroRtt);
+                }
+                // The server turned the early data down: neqo has dropped
+                // the streams, and Firefox sends their requests again once
+                // connected, without 0-RTT (Http3Session::Finish0Rtt).
+                Http3ClientEvent::ZeroRttRejected => {
+                    early = None;
+                    let sent: Vec<StreamId> = streams
+                        .iter()
+                        .filter(|(_, s)| s.early.is_some())
+                        .map(|(&id, _)| id)
+                        .collect();
+                    for id in sent {
+                        let Some(s) = streams.remove(&id) else {
+                            continue;
+                        };
+                        if let (Some(head), Some(request)) = (s.head, s.early) {
+                            waiting.push(Job {
+                                request,
+                                head,
+                                deadline: s.deadline,
+                            });
+                        }
+                    }
+                }
                 Http3ClientEvent::StateChange(Http3State::Connected) => {
                     ready = true;
+                    early = None;
+                    for s in streams.values_mut() {
+                        s.early = None;
+                    }
                     state.send_replace(State::Connected);
                 }
                 Http3ClientEvent::ResumptionToken(token) => {
@@ -2450,8 +2605,10 @@ async fn run(
                         // an ECH retry. Any other close, ech_required with
                         // nothing to retry with among them, is
                         // NS_ERROR_NET_HTTP3_PROTOCOL_ERROR.
+                        // Nor after a request went in 0-RTT, since the next
+                        // connection makes a full handshake.
                         (false, _) => State::Failed {
-                            exclude: !cert_rejected && retry_with.is_none(),
+                            exclude: !cert_rejected && retry_with.is_none() && !had_early,
                         },
                     });
                     if let Some(configs) = retry_with {
@@ -2538,10 +2695,57 @@ async fn run(
                 _ => {}
             }
         }
+        // Firefox makes a session for the transaction that asked for it, so
+        // a resumed one sends that request in its first flight, coalesced
+        // after the Initial. Here the request is on its way once the
+        // connection says it can take requests: it's taken before anything
+        // goes out, waiting at most EARLY_JOB_WAIT for it.
+        if first_flight && early.is_some() && accepting {
+            first_flight = false;
+            match tokio::time::timeout(EARLY_JOB_WAIT, queue.recv()).await {
+                Ok(Some(job)) => waiting.push(job),
+                Ok(None) => accepting = false,
+                Err(_) => {}
+            }
+            while let Ok(job) = queue.try_recv() {
+                waiting.push(job);
+            }
+        }
         if ready {
             for job in std::mem::take(&mut waiting) {
-                start(&mut client, &mut streams, job);
+                start(&mut client, &mut streams, job, false);
             }
+        } else if early.is_some() {
+            for job in std::mem::take(&mut waiting) {
+                if safe_method(&job.request.method) {
+                    had_early = true;
+                    start(&mut client, &mut streams, job, true);
+                } else {
+                    waiting.push(job);
+                }
+            }
+        }
+        // A connection stuck in 0-RTT past network.http.http3.0rtt_timeout
+        // fails (Http3Session::ProcessOutputAndEvents), and with a request
+        // sent in 0-RTT, isn't excluded.
+        if let Some(since) = early
+            && !ready
+            && since.elapsed() >= firefox::ZERO_RTT_TIMEOUT
+        {
+            let why = format!("HTTP/3 to {alternative}: stuck in 0-RTT");
+            client.close(Instant::now(), 0x100, "");
+            state.send_replace(State::Failed {
+                exclude: !had_early,
+            });
+            for (_, s) in streams.drain() {
+                end(s, FetchError::new(FetchErrorKind::Timeout, why.clone()));
+            }
+            for job in waiting.drain(..) {
+                let _ = job
+                    .head
+                    .send(Err(FetchError::new(FetchErrorKind::Timeout, why.clone())));
+            }
+            return fail_all(queue, &why);
         }
         // A request whose caller has gone (a timeout, a body nobody reads
         // to the end) is cancelled, as Firefox cancels one, with
@@ -2608,7 +2812,11 @@ async fn run(
         {
             return;
         }
-        let sleep = tokio::time::sleep(timeout.unwrap_or(Duration::from_secs(3600)));
+        let mut timeout = timeout.unwrap_or(Duration::from_secs(3600));
+        if let Some(since) = early {
+            timeout = timeout.min(firefox::ZERO_RTT_TIMEOUT.saturating_sub(since.elapsed()));
+        }
+        let sleep = tokio::time::sleep(timeout);
         tokio::select! {
             readable = socket.inner.readable() => {
                 if readable.is_ok() {
@@ -2625,7 +2833,7 @@ async fn run(
             }
             () = sleep => {}
             job = queue.recv(), if accepting => match job {
-                Some(job) if ready => start(&mut client, &mut streams, job),
+                Some(job) if ready => start(&mut client, &mut streams, job, false),
                 Some(job) => waiting.push(job),
                 None => accepting = false,
             },
@@ -2633,12 +2841,20 @@ async fn run(
     }
 }
 
-fn start(client: &mut Http3Client, streams: &mut HashMap<StreamId, Stream>, job: Job) {
+/// Starts `job`'s request; `in_early_data`, in 0-RTT, keeping it to send
+/// again should the server turn that down.
+fn start(
+    client: &mut Http3Client,
+    streams: &mut HashMap<StreamId, Stream>,
+    job: Job,
+    in_early_data: bool,
+) {
     let Job {
         request,
         head,
         deadline,
     } = job;
+    let early = in_early_data.then(|| request.clone());
     let headers: Vec<Header> = request
         .headers
         .iter()
@@ -2666,6 +2882,7 @@ fn start(client: &mut Http3Client, streams: &mut HashMap<StreamId, Stream>, job:
         deadline,
         body: None,
         unsent: request.body.unwrap_or_default(),
+        early,
     };
     push_body(client, stream_id, &mut stream);
     streams.insert(stream_id, stream);
@@ -2684,6 +2901,15 @@ fn push_body(client: &mut Http3Client, stream_id: StreamId, stream: &mut Stream)
         }
     }
     let _ = client.stream_close_send(stream_id, now);
+}
+
+/// Whether a request may go in 0-RTT: its method is safe
+/// (nsHttpTransaction::Do0RTT, nsHttpRequestHead::IsSafeMethod).
+fn safe_method(method: &str) -> bool {
+    matches!(
+        method,
+        "GET" | "HEAD" | "OPTIONS" | "TRACE" | "PROPFIND" | "REPORT" | "SEARCH"
+    )
 }
 
 fn end(stream: Stream, error: FetchError) {

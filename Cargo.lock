@@ -1720,7 +1720,7 @@ dependencies = [
 [[package]]
 name = "octets"
 version = "0.3.7"
-source = "git+https://github.com/netweir/quiche?rev=15d23bfff12cb4cc38fb50c5ac53c320653fe1ea#15d23bfff12cb4cc38fb50c5ac53c320653fe1ea"
+source = "git+https://github.com/netweir/quiche?rev=6ad414dad132e609fa06dadee370ad7bdce8ff96#6ad414dad132e609fa06dadee370ad7bdce8ff96"
 
 [[package]]
 name = "oid-registry"
@@ -1943,7 +1943,7 @@ dependencies = [
 [[package]]
 name = "quiche"
 version = "0.30.1"
-source = "git+https://github.com/netweir/quiche?rev=15d23bfff12cb4cc38fb50c5ac53c320653fe1ea#15d23bfff12cb4cc38fb50c5ac53c320653fe1ea"
+source = "git+https://github.com/netweir/quiche?rev=6ad414dad132e609fa06dadee370ad7bdce8ff96#6ad414dad132e609fa06dadee370ad7bdce8ff96"
 dependencies = [
  "btls",
  "btls-sys",
