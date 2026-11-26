@@ -57,8 +57,12 @@ quinn-udp = { version = "0.6", default-features = false, features = ["log", "fas
 # SETTINGS and QPACK decoding added (branch safari-27, on chrome-157; see
 # its README).
 quiche = { git = "https://github.com/netweir/quiche", rev = "6ad414dad132e609fa06dadee370ad7bdce8ff96", features = ["custom-client-dcid"], optional = true }
-# The roots wreq checks TCP connections' certificates against.
-chromium-roots = { version = "0.1.2", optional = true }
+# The roots each profile's connections trust: the Chrome Root Store for
+# Chrome's and Safari's (wreq's own default), and Mozilla's for Firefox's,
+# from CCADB. 1.0.11 holds exactly the 118 server-auth trust anchors of
+# NSS 3.132, the NSS Firefox 160 ships (docs/design/roots.md).
+chromium-roots = "0.1.2"
+webpki-root-certs = "=1.0.11"
 # wreq's own response decompression, for responses over HTTP/3.
 tower-http = { version = "0.7.1", default-features = false, features = ["decompression-gzip", "decompression-br", "decompression-zstd", "decompression-deflate"], optional = true }
 http-body = { version = "1", optional = true }
@@ -69,7 +73,7 @@ ipnet = { version = "2.12", optional = true }
 # Requests over HTTP/3 with a Firefox profile (src/h3.rs) or a Chrome one
 # (src/h3_chrome.rs). Off by default:
 # it needs NSS built (scripts/nss.sh) and NSS_DIR set.
-http3 = ["dep:quiche", "dep:neqo-common", "dep:neqo-http3", "dep:neqo-transport", "dep:neqo-udp", "dep:nss-rs", "dep:quinn-udp", "dep:chromium-roots", "dep:tower-http", "dep:http-body", "dep:ipnet", "dep:libc", "dep:windows-sys"]
+http3 = ["dep:quiche", "dep:neqo-common", "dep:neqo-http3", "dep:neqo-transport", "dep:neqo-udp", "dep:nss-rs", "dep:quinn-udp", "dep:tower-http", "dep:http-body", "dep:ipnet", "dep:libc", "dep:windows-sys"]
 
 # HTTPS DNS records through the system resolver, as Firefox queries them
 # (src/https_rr.rs).

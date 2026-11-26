@@ -30,7 +30,8 @@ pub struct FetchOptions {
     pub verify_certificates: bool,
     /// PEM certificates of the CAs to trust in place of the bundled roots,
     /// for hosts an internal CA vouches for. None trusts the bundled roots
-    /// (Chrome's).
+    /// of the profile's browser: Mozilla's for Firefox, the Chrome Root
+    /// Store for Chrome and Safari.
     pub ca_certificates: Option<Vec<u8>>,
     /// Redirects followed before a request fails with `TooManyRedirects`;
     /// a request's own `Policy::max_redirects` replaces it. Chrome's is 20.
@@ -64,6 +65,11 @@ pub struct FetchOptions {
     /// for tests.
     #[doc(hidden)]
     pub https_records: HashMap<String, Vec<u8>>,
+    /// Certificates (DER) taken as if a root store bundled them, for
+    /// tests: a root that only one browser's store holds decides what a
+    /// profile trusts, which real roots can't show offline.
+    #[doc(hidden)]
+    pub extra_built_in_roots: Vec<(crate::profile::Roots, Vec<u8>)>,
 }
 
 impl FetchOptions {
@@ -82,6 +88,7 @@ impl FetchOptions {
             http3: true,
             resolve: Vec::new(),
             https_records: HashMap::new(),
+            extra_built_in_roots: Vec::new(),
         }
     }
 }
@@ -1467,6 +1474,18 @@ impl Fetcher {
             .as_deref()
             .map(ca_store)
             .transpose()?;
+        // The profile's browser's own roots, unless the fetch names CAs.
+        let roots = profile.tls.roots;
+        let extra: Vec<Vec<u8>> = options
+            .extra_built_in_roots
+            .iter()
+            .filter(|(r, _)| *r == roots)
+            .map(|(_, der)| der.clone())
+            .collect();
+        let bundled = match &cas {
+            Some(_) => None,
+            None => crate::roots::store(roots, &extra).map_err(FetchError::invalid)?,
+        };
         let mut hosts: HashMap<String, Vec<std::net::SocketAddr>> = HashMap::new();
         for (name, addr) in &options.resolve {
             hosts
@@ -1508,8 +1527,8 @@ impl Fetcher {
                 // longer timeout doesn't stretch its connect.
                 .connect_timeout(options.timeout.max(Duration::from_secs(30)))
                 .tls_cert_verification(options.verify_certificates);
-            if let Some(cas) = &cas {
-                builder = builder.tls_cert_store(cas.clone());
+            if let Some(store) = cas.as_ref().or(bundled.as_ref()) {
+                builder = builder.tls_cert_store(store.clone());
             }
             builder = builder.connector_layer(Told).dns_resolver(Resolver {
                 hosts: hosts.clone(),
@@ -1622,6 +1641,8 @@ impl Fetcher {
                         crate::h3::Trust::new(
                             options.verify_certificates,
                             options.ca_certificates.as_deref(),
+                            roots,
+                            &extra,
                         )?,
                         validate,
                         Arc::new(ips),

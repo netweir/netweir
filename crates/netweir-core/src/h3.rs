@@ -372,31 +372,35 @@ impl CertificateCompressor for Brotli {
     }
 }
 
-/// The roots Netweir builds in: the Chrome Root Store, DER.
-static BUILT_IN: std::sync::LazyLock<std::collections::HashSet<Vec<u8>>> =
-    std::sync::LazyLock::new(|| {
-        chromium_roots::TLS_SERVER_ROOT_CERTS
-            .iter()
-            .map(|der| der.as_ref().to_vec())
-            .collect()
-    });
-
 /// How a server's certificate is checked. NSS hands the chain over and
 /// leaves the decision to the caller, as it does to Firefox; it's made
 /// with BoringSSL against the roots the TCP connections use, so both
 /// trust the same servers.
 #[derive(Clone)]
 pub(crate) enum Trust {
-    Roots(Arc<X509Store>),
+    /// The store a chain is checked against, and the roots the profile's
+    /// browser builds in (DER).
+    Roots(Arc<X509Store>, Arc<std::collections::HashSet<Vec<u8>>>),
     Anything,
 }
 
 impl Trust {
-    pub(crate) fn new(verify: bool, pem: Option<&[u8]>) -> Result<Trust, FetchError> {
+    /// Checks against `pem`'s CAs if given, else `roots`, the profile's
+    /// browser's own, with `extra` (DER) counted among them.
+    pub(crate) fn new(
+        verify: bool,
+        pem: Option<&[u8]>,
+        roots: crate::profile::Roots,
+        extra: &[Vec<u8>],
+    ) -> Result<Trust, FetchError> {
         if !verify {
             return Ok(Trust::Anything);
         }
         let bad = |e: btls::error::ErrorStack| FetchError::invalid(format!("CA certificates: {e}"));
+        let built_in: std::collections::HashSet<Vec<u8>> = crate::roots::bundled(roots)
+            .map(<[u8]>::to_vec)
+            .chain(extra.iter().cloned())
+            .collect();
         let mut store = X509StoreBuilder::new().map_err(bad)?;
         match pem {
             Some(pem) => {
@@ -405,16 +409,16 @@ impl Trust {
                 }
             }
             None => {
-                for der in chromium_roots::TLS_SERVER_ROOT_CERTS {
+                for der in &built_in {
                     // A root BoringSSL can't read is one no connection
                     // could be checked against anyway.
-                    if let Ok(cert) = X509::from_der(der.as_ref()) {
+                    if let Ok(cert) = X509::from_der(der) {
                         let _ = store.add_cert(cert);
                     }
                 }
             }
         }
-        Ok(Trust::Roots(Arc::new(store.build())))
+        Ok(Trust::Roots(Arc::new(store.build()), Arc::new(built_in)))
     }
 
     /// Whether `chain` (leaf first, DER) is good for `host`, and whether
@@ -433,13 +437,13 @@ impl Trust {
     }
 
     /// None if `chain` isn't good for `host`; else whether the root it
-    /// ends at is one of the roots Netweir builds in, as Firefox asks of
-    /// Mozilla's (NSSSocketControl::IsBuiltCertChainRootBuiltInRoot).
-    /// Netweir's are the Chrome Root Store, which its connections trust
-    /// unless told other CAs: a chain to one of those that isn't also
-    /// built in ends at a third-party root.
+    /// ends at is one of the roots the profile's browser builds in, as
+    /// Firefox asks of Mozilla's
+    /// (NSSSocketControl::IsBuiltCertChainRootBuiltInRoot): a chain to a
+    /// CA the fetch was told to trust that isn't also one of them ends at
+    /// a third-party root.
     fn verify(&self, host: &str, chain: &[Vec<u8>]) -> Option<bool> {
-        let Trust::Roots(store) = self else {
+        let Trust::Roots(store, built_ins) = self else {
             return Some(true);
         };
         let mut built_in = true;
@@ -458,7 +462,7 @@ impl Trust {
                 }
                 let ok = ctx.verify_cert()?;
                 if let Some(root) = ctx.chain().and_then(|c| c.iter().next_back()) {
-                    built_in = BUILT_IN.contains(&root.to_der()?);
+                    built_in = built_ins.contains(&root.to_der()?);
                 }
                 Ok(ok)
             })
@@ -2956,7 +2960,7 @@ mod tests {
         use std::sync::Arc;
         let validate: Validate = Arc::new(|_, _| Box::pin(async { false }));
         let routes = Routes::new(
-            Trust::new(false, None).unwrap(),
+            Trust::new(false, None, crate::profile::Roots::Chromium, &[]).unwrap(),
             validate,
             Arc::default(),
             None,

@@ -90,7 +90,9 @@ Running out raises `FetchError(kind="timeout")`.
 
 ## Certificates
 
-Certificates are checked against the roots Chrome trusts. For a host with
+Certificates are checked against the roots the profile's browser trusts:
+Mozilla's for a Firefox profile, the Chrome Root Store for Chrome and
+Safari (`docs/design/roots.md`). For a host with
 a self-signed certificate, `verify=False` skips the check; for hosts your
 own CA vouches for, `verify="/path/to/ca.pem"` trusts the certificates in
 that PEM file instead of the bundled roots, as requests does with a path.
