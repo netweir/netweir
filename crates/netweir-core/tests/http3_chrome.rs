@@ -821,6 +821,26 @@ async fn records_chrome_cant_use_leave_it_on_tcp() {
     }
 }
 
+/// A TCP capture server and a UDP socket on the same port of 127.0.0.1.
+/// The number is picked at random and picked again if either is taken:
+/// on macOS TCP and UDP share one ephemeral range, so the free TCP port
+/// the server gets may already be another test's QUIC socket, and on
+/// Windows asking for free ports lands in runs of taken ones (see
+/// `Server::start_h3`).
+async fn tcp_and_udp_on_one_port() -> (Server, tokio::net::UdpSocket) {
+    use std::hash::{BuildHasher, RandomState};
+    for _ in 0..100 {
+        let port = 49152 + (RandomState::new().hash_one(()) % 16384) as u16;
+        let Ok(udp) = tokio::net::UdpSocket::bind(("127.0.0.1", port)).await else {
+            continue;
+        };
+        if let Ok(tcp) = Server::start_on(port).await {
+            return (tcp, udp);
+        }
+    }
+    panic!("no port was free for both TCP and UDP in 100 tries");
+}
+
 /// An ECHConfigList with one X25519 / HKDF-SHA256 / AES-128-GCM config
 /// for `public_name`.
 fn ech_config_list(public_name: &str) -> Vec<u8> {
@@ -844,11 +864,8 @@ async fn an_https_records_ech_config_goes_in_chromes_quic_hello() {
     // QuicChromiumClientSession::GetSSLConfig hands BoringSSL the record's
     // ECHConfigList, so the outer hello names its public name instead of
     // the origin. The QUIC side only listens, on the TCP server's port.
-    let tcp = Server::start().await.unwrap();
+    let (tcp, udp) = tcp_and_udp_on_one_port().await;
     let port = tcp.port;
-    let udp = tokio::net::UdpSocket::bind(("127.0.0.1", port))
-        .await
-        .unwrap();
     let ech = (5, ech_config_list("public.test"));
     let fetcher = fed(
         port,
