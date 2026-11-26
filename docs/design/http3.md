@@ -65,7 +65,14 @@ Exactly as Firefox sends them, on every run:
 - each request: `:method :scheme :authority :path`, then the TCP
   profile's headers in the TCP profile's order, lowercase, without Host,
   Connection and te, with Alt-Used where Connection was, and Priority
-  `u=0, i` for a navigation;
+  `u=0, i` for a navigation. With a login, an Authorization right before
+  Connection comes after Alt-Used: `alt-used, authorization`, where
+  HTTP/1.1 has `Authorization, Connection`
+  (`profiles/firefox-160-macos.auth.h3.capture.json`, Firefox 160.0.1
+  logged in to the capture server's /auth by URL credentials, over HTTP/3
+  from its first request with `network.http.http3.alt-svc-mapping-for-testing`
+  and `network.http.http3.disable_when_third_party_roots_found` off for
+  the test CA);
 - a second connection to the server resumes the first one's session, with
   pre_shared_key last, as Firefox's did;
 - 0-RTT: `profiles/firefox-160-macos.h3-0rtt.capture.json` recorded
@@ -89,9 +96,6 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 
 ## What doesn't match yet
 
-- Where Alt-Used goes in a request that also carries Authorization: the
-  recording has no login over HTTP/3, so Alt-Used takes Connection's place
-  and Authorization stays before it, as over TCP.
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
 - Addresses. Netweir connects to the first address the alternative's name
@@ -373,9 +377,21 @@ whose method is safe (HttpUtil::IsMethodSafe, HttpNetworkTransaction's
 `can_send_early_data_`) goes as soon as the session can send early data;
 any other waits for the handshake (QuicHttpStream::DoRequestStream,
 `requires_confirmation`). Chrome's QUIC job is done then, so nothing
-races it. Chrome isn't recorded doing this: headless Chrome for Testing
-157 stalled its first request before it reached the network on the
-machine these were made on.
+races it. Early data the server turns down goes again as soon as the
+handshake is done: QUICHE marks it for retransmission on the spot
+(QuicSession::OnZeroRttRejected,
+QuicSentPacketManager::MarkZeroRttPacketsForRetransmission), and
+netweir/quiche does the same where quiche waited for loss detection.
+`profiles/chrome-157-macos.h3-0rtt.capture.json` recorded Chrome for
+Testing 157.0.8103.79 on `/zero-rtt`, forced onto QUIC, through a relay
+that held each datagram back 50 ms (on localhost a resumed handshake is
+done before the next request is made). It sent `/again` in 0-RTT on
+the connection that resumed, in all three runs. Netweir's resumed
+connection is held to it: the ClientHello's extensions, early_data and
+pre_shared_key last, the first flight's two datagrams, and the request
+in 0-RTT. Chrome for Testing also sent extension 0x12e0 and the
+connection options `ORIGNOIP` on every connection, fresh ones too, which
+the recording of Chrome 157 doesn't have, so the profile follows Chrome.
 
 Safari's isn't recorded, so a Safari profile resumes and waits for the
 handshake.
@@ -466,9 +482,6 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
   server's dynamic table; quiche's encodes from the static table only.
   The fingerprint server offers no table, so this isn't in the
   recording, but a server that offers one sees the difference.
-- 0-RTT turned down. Chrome's QUICHE marks the data it sent in 0-RTT for
-  retransmission as soon as the server turns early data down; quiche
-  sends it again once loss detection calls it lost, about a PTO later.
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.

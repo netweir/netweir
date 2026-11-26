@@ -56,7 +56,7 @@ quinn-udp = { version = "0.6", default-features = false, features = ["log", "fas
 # Chrome's and Safari's transport parameters, Initial packets, HTTP/3
 # SETTINGS and QPACK decoding added (branch safari-27, on chrome-157; see
 # its README).
-quiche = { git = "https://github.com/netweir/quiche", rev = "6ad414dad132e609fa06dadee370ad7bdce8ff96", features = ["custom-client-dcid"], optional = true }
+quiche = { git = "https://github.com/netweir/quiche", rev = "515288bd3aba42a88bb6a1c8bee015056c9ab4c6", features = ["custom-client-dcid"], optional = true }
 # The roots each profile's connections trust: the Chrome Root Store for
 # Chrome's and Safari's (wreq's own default), and Mozilla's for Firefox's,
 # from CCADB. 1.0.11 holds exactly the 118 server-auth trust anchors of

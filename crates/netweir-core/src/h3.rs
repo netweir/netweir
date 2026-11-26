@@ -1304,6 +1304,16 @@ impl Routes {
         crate::h3_chrome::main_job_delay(worked, recently, rtt)
     }
 
+    /// Whether a Chrome session to `alternative` in `partition` may send
+    /// requests before its handshake is confirmed. It requires confirmation
+    /// until QUIC has worked on this network, and to an alternative broken
+    /// or recently broken (QuicSessionPool::CreateSessionSync,
+    /// QuicSessionAttempt::DoCreateSession).
+    fn chrome_sends_early(&self, partition: &str, alternative: &str) -> bool {
+        self.quic_worked.load(std::sync::atomic::Ordering::Relaxed)
+            && !self.recently_broken(partition, alternative)
+    }
+
     /// Whether Chrome takes `alternative` in `partition` as broken or
     /// recently broken (HttpServerProperties::
     /// WasAlternativeServiceRecentlyBroken).
@@ -1823,12 +1833,7 @@ impl Routes {
                 crate::h3_chrome::Browser::Chrome,
                 self.trust.clone(),
                 &self.chrome_tickets,
-                // A session requires confirmation before its first stream
-                // until QUIC has worked on this network, and to an
-                // alternative recently broken (QuicSessionPool::
-                // CreateSessionSync, QuicSessionAttempt::DoCreateSession).
-                self.quic_worked.load(std::sync::atomic::Ordering::Relaxed)
-                    && !self.recently_broken(partition, alternative),
+                self.chrome_sends_early(partition, alternative),
             ),
             Stack::Safari(tls) => crate::h3_chrome::open(
                 host,
@@ -2949,6 +2954,44 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{Body, Excluded, alt_svc, decompressed, leading_number, priority};
+
+    #[test]
+    fn a_chrome_session_waits_for_confirmation_as_chrome_says() {
+        use super::{Routes, Stack, Trust, Validate};
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let validate: Validate = Arc::new(|_, _| Box::pin(async { false }));
+        let tls = Arc::new(
+            crate::profile::Profile::named("chrome-157-macos")
+                .unwrap()
+                .tls
+                .clone(),
+        );
+        let routes = Routes::new(
+            Trust::new(false, None, crate::profile::Roots::Chromium, &[]).unwrap(),
+            validate,
+            Arc::default(),
+            None,
+            Stack::Chrome(tls),
+            None,
+        );
+        let (site, to) = ("site", "h3.example:443");
+        // Until QUIC has worked on the network, every session waits.
+        assert!(!routes.chrome_sends_early(site, to));
+        routes.quic_worked.store(true, Ordering::Relaxed);
+        assert!(routes.chrome_sends_early(site, to));
+        // Broken, and still recently broken once that has expired.
+        routes.mark_broken(site, to);
+        assert!(!routes.chrome_sends_early(site, to));
+        let key = (site.to_string(), to.to_string());
+        routes.broken.lock().unwrap().get_mut(&key).unwrap().until = Some(Instant::now());
+        assert!(!routes.chrome_sends_early(site, to));
+        assert!(routes.chrome_sends_early(site, "other.example:443"));
+        // A handshake that confirms it forgets it was ever broken.
+        routes.broken.lock().unwrap().remove(&key);
+        assert!(routes.chrome_sends_early(site, to));
+    }
 
     #[test]
     fn http3_is_taken_from_the_request_as_firefox_takes_it() {
