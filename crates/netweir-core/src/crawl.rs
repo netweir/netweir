@@ -4446,7 +4446,7 @@ fn hand_back(
 pub const RETRY_STATUSES: [u16; 8] = [408, 429, 500, 502, 503, 504, 522, 524];
 
 /// Network failures that may pass on another try.
-fn transient(error: &FetchError) -> bool {
+pub(crate) fn transient(error: &FetchError) -> bool {
     matches!(
         error.kind,
         FetchErrorKind::Timeout

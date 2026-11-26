@@ -8,7 +8,7 @@ use netweir_browser::{cft_executable, cft_platform};
 use serde_json::Value;
 use sha2::Digest;
 
-use crate::fetch::{FetchOptions, Fetcher};
+use crate::fetch::{FetchOptions, Fetcher, Response};
 use crate::profile::{DEFAULT, Profile};
 
 /// Google's list of the newest build of each Chrome milestone.
@@ -47,13 +47,7 @@ pub async fn install_chrome(
     options.timeout = Duration::from_secs(600);
     let fetcher = Fetcher::new(options).map_err(|e| e.message)?;
 
-    let listing = fetcher
-        .get(index, &[])
-        .await
-        .map_err(|e| format!("{index}: {}", e.message))?;
-    if listing.status != 200 {
-        return Err(format!("{index}: HTTP {}", listing.status));
-    }
+    let listing = download(&fetcher, index).await?;
     let listing: Value =
         serde_json::from_slice(&listing.body).map_err(|e| format!("{index}: {e}"))?;
     let build = &listing["milestones"][milestone];
@@ -109,13 +103,7 @@ pub async fn install_chrome(
             already: true,
         });
     }
-    let zip = fetcher
-        .get(&url, &[])
-        .await
-        .map_err(|e| format!("{url}: {}", e.message))?;
-    if zip.status != 200 {
-        return Err(format!("{url}: HTTP {}", zip.status));
-    }
+    let zip = download(&fetcher, &url).await?;
     // Unpacked beside its final place and moved in whole, so a download
     // cut short never looks installed.
     let prefix = format!(".{version}-{kind}-");
@@ -288,13 +276,7 @@ pub async fn install_firefox(
     // A download is over a hundred megabytes.
     options.timeout = Duration::from_secs(600);
     let fetcher = Fetcher::new(options).map_err(|e| e.message)?;
-    let download = fetcher
-        .get(&url, &[])
-        .await
-        .map_err(|e| format!("{url}: {}", e.message))?;
-    if download.status != 200 {
-        return Err(format!("{url}: HTTP {}", download.status));
-    }
+    let download = download(&fetcher, &url).await?;
     let got = hex(&sha2::Sha256::digest(&download.body));
     if got != sum {
         return Err(format!(
@@ -324,6 +306,39 @@ pub async fn install_firefox(
         executable,
         already: false,
     })
+}
+
+/// How many times a download is tried before its error is given.
+const ATTEMPTS: u32 = 4;
+
+/// `url`'s 200 response, tried again after a connection that failed,
+/// closed early, broke or timed out, or a 429 or 5xx answer, which a
+/// mirror or CDN gives now and then. Waits 1, 2 and then 4 s between tries. Any other
+/// failure, or the last one, is the error.
+async fn download(fetcher: &Fetcher, url: &str) -> Result<Response, String> {
+    download_waiting(fetcher, url, Duration::from_secs(1)).await
+}
+
+async fn download_waiting(
+    fetcher: &Fetcher,
+    url: &str,
+    first_wait: Duration,
+) -> Result<Response, String> {
+    let mut wait = first_wait;
+    for attempt in 1..=ATTEMPTS {
+        let last = attempt == ATTEMPTS;
+        match fetcher.get(url, &[]).await {
+            Ok(r) if r.status == 200 => return Ok(r),
+            Ok(r) if !last && (r.status == 429 || r.status >= 500) => {}
+            Ok(r) => return Err(format!("{url}: HTTP {}", r.status)),
+            // The errors a crawl tries again after.
+            Err(e) if !last && crate::crawl::transient(&e) => {}
+            Err(e) => return Err(format!("{url}: {}", e.message)),
+        }
+        tokio::time::sleep(wait).await;
+        wait *= 2;
+    }
+    unreachable!("the last attempt returns")
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -397,4 +412,94 @@ fn unpack_firefox(archive: &[u8], file: &str, partial: &Path) -> Result<(), Stri
     };
     let _ = std::fs::remove_file(&downloaded);
     done
+}
+
+#[cfg(test)]
+mod download_tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::download_waiting;
+    use crate::fetch::{FetchOptions, Fetcher};
+    use crate::profile::Profile;
+
+    /// A server that answers its requests in turn from `answers`: a status
+    /// to send, or 0 to close the connection without answering. The last
+    /// answer repeats. Returns its URL and how many requests came.
+    fn serve(answers: &'static [u16]) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/f",
+            listener.local_addr().unwrap().port()
+        );
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                }
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                let status = answers[n.min(answers.len() - 1)];
+                if status == 0 {
+                    continue;
+                }
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                );
+                let _ = stream.write_all(head.as_bytes());
+            }
+        });
+        (url, count)
+    }
+
+    fn fetcher() -> Fetcher {
+        Fetcher::new(FetchOptions::new(Profile::named("firefox").unwrap())).unwrap()
+    }
+
+    const NO_WAIT: Duration = Duration::from_millis(1);
+
+    #[tokio::test]
+    async fn a_busy_server_is_asked_again() {
+        let (url, count) = serve(&[503, 429, 200]);
+        let got = download_waiting(&fetcher(), &url, NO_WAIT).await.unwrap();
+        assert_eq!(&got.body[..], b"ok");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_is_tried_again() {
+        let (url, count) = serve(&[0, 200]);
+        let got = download_waiting(&fetcher(), &url, NO_WAIT).await.unwrap();
+        assert_eq!(got.status, 200);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_missing_file_is_asked_for_once() {
+        let (url, count) = serve(&[404]);
+        let err = download_waiting(&fetcher(), &url, NO_WAIT)
+            .await
+            .unwrap_err();
+        assert!(err.ends_with("HTTP 404"), "{err}");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stays_down_is_given_up_on() {
+        let (url, count) = serve(&[503]);
+        let err = download_waiting(&fetcher(), &url, NO_WAIT)
+            .await
+            .unwrap_err();
+        assert!(err.ends_with("HTTP 503"), "{err}");
+        assert_eq!(count.load(Ordering::SeqCst), super::ATTEMPTS as usize);
+    }
 }
