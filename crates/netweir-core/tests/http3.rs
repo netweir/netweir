@@ -1766,6 +1766,48 @@ async fn a_connection_stuck_in_0rtt_fails_after_five_seconds() {
 }
 
 #[tokio::test]
+async fn a_root_distrusted_after_a_date_refuses_what_came_later_over_http3() {
+    // As over TCP (tests/roots.rs): a built-in root's distrust-after date
+    // refuses a certificate issued after it, and only after; and a chain
+    // BoringSSL refuses, its root not built in, stays refused.
+    let dir = std::env::temp_dir().join(format!("netweir-h3-distrust-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = Server::start_h3(0, Some(&dir)).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let der = std::fs::read(dir.join("cert.der")).unwrap();
+    // Midnight UTC today: the certificate's notBefore.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let issued = now - now % 86_400;
+    for (after, built_in, trusted) in [
+        (issued - 1, true, false),
+        (issued, true, true),
+        (i64::MAX, false, false),
+    ] {
+        let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+        if built_in {
+            options.extra_built_in_roots = vec![(netweir_core::Roots::Mozilla, der.clone())];
+        }
+        options.extra_distrust_after = vec![(der.clone(), after)];
+        let fetcher = Fetcher::new(options).unwrap();
+        fetcher
+            .use_http3(&origin, &format!("localhost:{port}"))
+            .unwrap();
+        let fetched = fetcher.get(&format!("{origin}/"), &[]).await;
+        match (trusted, fetched) {
+            (true, Ok(response)) => assert_eq!(response.version, "HTTP/3"),
+            (false, Err(e)) => assert_eq!(e.kind, netweir_core::FetchErrorKind::Tls, "{e}"),
+            (true, Err(e)) => panic!("distrusted after {after}: {e}"),
+            (false, Ok(_)) => panic!("distrusted after {after}, but trusted"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn a_get_in_0rtt_on_a_chacha20_session_is_seen_as_early() {
     // A machine without AES in hardware resumes with
     // TLS_CHACHA20_POLY1305_SHA256; the server offers nothing else here,

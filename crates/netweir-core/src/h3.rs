@@ -378,20 +378,27 @@ impl CertificateCompressor for Brotli {
 /// trust the same servers.
 #[derive(Clone)]
 pub(crate) enum Trust {
-    /// The store a chain is checked against, and the roots the profile's
-    /// browser builds in (DER).
-    Roots(Arc<X509Store>, Arc<std::collections::HashSet<Vec<u8>>>),
+    /// The store a chain is checked against, the roots the profile's
+    /// browser builds in (DER), and, for Mozilla's, the distrust-after
+    /// dates given beside NSS's own.
+    Roots(
+        Arc<X509Store>,
+        Arc<std::collections::HashSet<Vec<u8>>>,
+        Option<Arc<crate::roots::DistrustAfter>>,
+    ),
     Anything,
 }
 
 impl Trust {
     /// Checks against `pem`'s CAs if given, else `roots`, the profile's
-    /// browser's own, with `extra` (DER) counted among them.
+    /// browser's own, with `extra` (DER) counted among them and, for
+    /// Mozilla's, `distrust` dates beside NSS's.
     pub(crate) fn new(
         verify: bool,
         pem: Option<&[u8]>,
         roots: crate::profile::Roots,
         extra: &[Vec<u8>],
+        distrust: &crate::roots::DistrustAfter,
     ) -> Result<Trust, FetchError> {
         if !verify {
             return Ok(Trust::Anything);
@@ -418,7 +425,13 @@ impl Trust {
                 }
             }
         }
-        Ok(Trust::Roots(Arc::new(store.build()), Arc::new(built_in)))
+        let dates =
+            (roots == crate::profile::Roots::Mozilla && pem.is_none()).then(|| Arc::from(distrust));
+        Ok(Trust::Roots(
+            Arc::new(store.build()),
+            Arc::new(built_in),
+            dates,
+        ))
     }
 
     /// Whether `chain` (leaf first, DER) is good for `host`, and whether
@@ -443,7 +456,7 @@ impl Trust {
     /// CA the fetch was told to trust that isn't also one of them ends at
     /// a third-party root.
     fn verify(&self, host: &str, chain: &[Vec<u8>]) -> Option<bool> {
-        let Trust::Roots(store, built_ins) = self else {
+        let Trust::Roots(store, built_ins, dates) = self else {
             return Some(true);
         };
         let mut built_in = true;
@@ -460,7 +473,11 @@ impl Trust {
                     Ok(ip) => param.set_ip(ip)?,
                     Err(_) => param.set_host(host)?,
                 }
-                let ok = ctx.verify_cert()?;
+                let mut ok = ctx.verify_cert()?;
+                // The dates only add a refusal to BoringSSL's verdict.
+                if let (Some(dates), Some(chain)) = (dates, ctx.chain()) {
+                    ok = ok && !crate::roots::distrusted(chain, dates);
+                }
                 if let Some(root) = ctx.chain().and_then(|c| c.iter().next_back()) {
                     built_in = built_ins.contains(&root.to_der()?);
                 }
@@ -2964,7 +2981,25 @@ mod tests {
     use http_body_util::BodyExt;
     use tokio::sync::mpsc;
 
-    use super::{Body, Excluded, alt_svc, decompressed, leading_number, priority};
+    use super::{Body, Excluded, Trust, alt_svc, decompressed, leading_number, priority};
+
+    #[test]
+    fn distrust_dates_never_pass_a_chain_boringssl_refused() {
+        // A self-signed certificate no store holds, with a distrust-after
+        // date it passes: BoringSSL's refusal stands for Firefox's roots.
+        let names = vec!["localhost".to_string()];
+        let made = rcgen::generate_simple_self_signed(names).unwrap();
+        let der = made.cert.der().to_vec();
+        let trust = Trust::new(
+            true,
+            None,
+            crate::profile::Roots::Mozilla,
+            &[],
+            &[(der.clone(), i64::MAX)],
+        )
+        .unwrap();
+        assert!(!trust.trusts("localhost", &[der]));
+    }
 
     #[test]
     fn a_chrome_session_waits_for_confirmation_as_chrome_says() {
@@ -2980,7 +3015,7 @@ mod tests {
                 .clone(),
         );
         let routes = Routes::new(
-            Trust::new(false, None, crate::profile::Roots::Chromium, &[]).unwrap(),
+            Trust::new(false, None, crate::profile::Roots::Chromium, &[], &[]).unwrap(),
             validate,
             Arc::default(),
             None,
@@ -3014,7 +3049,7 @@ mod tests {
         use std::sync::Arc;
         let validate: Validate = Arc::new(|_, _| Box::pin(async { false }));
         let routes = Routes::new(
-            Trust::new(false, None, crate::profile::Roots::Chromium, &[]).unwrap(),
+            Trust::new(false, None, crate::profile::Roots::Chromium, &[], &[]).unwrap(),
             validate,
             Arc::default(),
             None,

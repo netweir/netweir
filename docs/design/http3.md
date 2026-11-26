@@ -101,10 +101,10 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 - Addresses. Netweir connects to the first address the alternative's name
   resolves to; Firefox races IPv4 and IPv6.
 - Certificates are checked with BoringSSL, not by NSS's `mozilla::pkix`,
-  against Mozilla's roots as Firefox 160 ships them
-  (`docs/design/roots.md`, which lists what still differs: distrust-after
-  dates and NSS's own checks). Firefox ends HTTP/3 when a chain that
-  checks out ends at a root it didn't ship
+  against Mozilla's roots as Firefox 160 ships them, distrust-after dates
+  included (`docs/design/roots.md`, which lists what still differs:
+  NSS's own checks). Firefox ends HTTP/3 when a chain that checks out
+  ends at a root it didn't ship
   (`network.http.http3.disable_when_third_party_roots_found`,
   `Http3Session::Authenticated`): HTTP/3 to the host stops, and the
   request goes over TCP as a retry, whatever its method. Netweir does the

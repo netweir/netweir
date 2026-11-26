@@ -3291,7 +3291,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wreq"
 version = "0.16.1"
-source = "git+https://github.com/netweir/wreq?rev=8665d5f6b4aae4315292c4ce773059856b12c34e#8665d5f6b4aae4315292c4ce773059856b12c34e"
+source = "git+https://github.com/netweir/wreq?rev=ca33cafe306b21fa5ddc9f29873567b5af835040#ca33cafe306b21fa5ddc9f29873567b5af835040"
 dependencies = [
  "btls",
  "btls-sys",

@@ -624,10 +624,16 @@ fn framed() -> common::Server {
         // is held: Firefox's garbage collector ends a worker whose Worker
         // object nothing holds, even one with a message still to send,
         // and the worker's own collections took the inner one (#351).
+        // It says it's running first and passes any error on, so a worker
+        // that never answers says how far it got (#351).
         (
             "/outer.js",
             script(
-                "self.inner = new Worker('/worker.js'); inner.onmessage = e => postMessage(e.data)",
+                "postMessage('running'); \
+                 try { self.inner = new Worker('/worker.js'); \
+                 inner.onmessage = e => postMessage(e.data); \
+                 inner.onerror = e => postMessage('inner error: ' + e.message) } \
+                 catch (e) { postMessage('new Worker threw: ' + e) }",
             ),
         ),
         (
@@ -905,10 +911,17 @@ async fn a_workers_requests_are_routed_and_heard() {
     };
     assert_eq!(said, json!("failed"));
     // And one started by a worker.
-    let nested = "new Promise(r => { window.outer = new Worker('/outer.js'); outer.onmessage = e => r(e.data) })";
+    let nested = "new Promise(r => { window.outerSaid = []; \
+        window.outer = new Worker('/outer.js'); \
+        outer.onmessage = e => e.data === 'running' ? outerSaid.push(e.data) : r(e.data); \
+        outer.onerror = e => r('outer error: ' + e.message) })";
     let said = match tokio::time::timeout(never, page.evaluate(nested)).await {
         Ok(said) => said.unwrap(),
-        Err(_) => never_answered("the worker's worker", &mut events, &routed, &server),
+        Err(_) => {
+            let far = page.evaluate("window.outerSaid").await;
+            let who = format!("the worker's worker (the outer worker said {far:?})");
+            never_answered(&who, &mut events, &routed, &server)
+        }
     };
     assert_eq!(said, json!("failed"));
     assert_eq!(times_seen(&server, "/secret-api"), 0);
