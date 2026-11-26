@@ -112,6 +112,7 @@ impl Server {
             Some(lasting_certificate(dir)?),
             false,
             Early::No,
+            false,
         )
         .await
     }
@@ -122,7 +123,21 @@ impl Server {
     /// (see [`lasting_certificate`]), else a new self-signed one.
     pub async fn start_h3(port: u16, dir: Option<&Path>) -> io::Result<Server> {
         let certificate = dir.map(lasting_certificate).transpose()?;
-        Server::bind_with(port, &[b"h2", b"http/1.1"], certificate, true, Early::No).await
+        Server::bind_with(
+            port,
+            &[b"h2", b"http/1.1"],
+            certificate,
+            true,
+            Early::No,
+            true,
+        )
+        .await
+    }
+
+    /// Like `start_h3`, but listens for QUIC on 127.0.0.1 only, for a
+    /// client that's to find nothing on ::1.
+    pub async fn start_h3_ipv4(port: u16) -> io::Result<Server> {
+        Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::No, false).await
     }
 
     /// Like `start_h3`, but its QUIC session tickets allow early data, and
@@ -143,22 +158,31 @@ impl Server {
         } else {
             (&[b"h2", b"http/1.1"], Early::Take)
         };
-        Server::bind_with(port, alpn, certificate, true, early).await
+        Server::bind_with(port, alpn, certificate, true, early, true).await
     }
 
     /// Like `start_h3_early`, but no session it gave a ticket for is ever
     /// resumed: a client that tries 0-RTT has its early data turned down,
     /// and makes a full handshake.
     pub async fn start_h3_turning_early_down(port: u16) -> io::Result<Server> {
-        Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::TurnDown).await
+        Server::bind_with(
+            port,
+            &[b"h2", b"http/1.1"],
+            None,
+            true,
+            Early::TurnDown,
+            true,
+        )
+        .await
     }
 
     async fn bind(port: u16, alpn: &[&[u8]]) -> io::Result<Server> {
-        Server::bind_with(port, alpn, None, false, Early::No).await
+        Server::bind_with(port, alpn, None, false, Early::No, false).await
     }
 
     /// A TCP listener on `port`, or on a free port for 0. With `h3`, a
-    /// UDP socket on the same port too, kept and returned for QUIC:
+    /// UDP socket on the same port too, kept and returned for QUIC, and
+    /// another on ::1 with `ipv6` where the machine has IPv6:
     /// freed, another socket could take its port first. For port 0 the
     /// number is picked at random. Windows gives out TCP and UDP ports
     /// one after another, each blind to the other's reserved ranges, so
@@ -169,13 +193,17 @@ impl Server {
     /// 127.0.0.1 as it does over TCP, so where the machine has IPv6 the
     /// port must be free on ::1 too, or a Chrome test would find nothing
     /// there and fail with no word of why.
-    async fn listen(port: u16, h3: bool) -> io::Result<(TcpListener, u16, Option<QuicSockets>)> {
+    async fn listen(
+        port: u16,
+        h3: bool,
+        ipv6: bool,
+    ) -> io::Result<(TcpListener, u16, Option<QuicSockets>)> {
         if !h3 {
             let listener = TcpListener::bind(("127.0.0.1", port)).await?;
             let got = listener.local_addr()?.port();
             return Ok((listener, got, None));
         }
-        let ipv6 = std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_ok();
+        let ipv6 = ipv6 && std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_ok();
         let mut tries = 0;
         loop {
             tries += 1;
@@ -216,8 +244,9 @@ impl Server {
         certificate: Option<(Vec<u8>, Vec<u8>)>,
         h3: bool,
         early: Early,
+        ipv6: bool,
     ) -> io::Result<Server> {
-        let (listener, port, udp) = Server::listen(port, h3).await?;
+        let (listener, port, udp) = Server::listen(port, h3, ipv6).await?;
         let certificate = certificate.unwrap_or_else(|| {
             let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
             let made = rcgen::generate_simple_self_signed(names).expect("self-signed cert");

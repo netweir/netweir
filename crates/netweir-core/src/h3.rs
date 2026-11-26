@@ -52,13 +52,17 @@ pub(crate) const RECORD_WAIT: Duration = Duration::from_secs(2);
 
 /// What Safari 27.2 was seen doing on macOS, against the fingerprint
 /// server: Apple documents neither number.
-mod safari {
+pub(crate) mod safari {
     use std::time::Duration;
 
-    /// How long TCP waits for a QUIC connection still being made: Safari
-    /// started TCP 250 ms after its first QUIC Initial each time it was
-    /// timed, the Connection Attempt Delay Happy Eyeballs v3 (an Apple
-    /// draft) recommends.
+    /// How long TCP waits for a QUIC connection still being made, and
+    /// the next QUIC attempt for the one before it: Safari started TCP
+    /// 250 ms after its first QUIC Initial each time it was timed against
+    /// one address, and tried `::1`, then `127.0.0.1` 250 ms later, for
+    /// `localhost`. It's the Connection Attempt Delay Happy Eyeballs v3
+    /// (an Apple draft) recommends. With two addresses, TCP waits for
+    /// both: QUIC won each of the five times the first went nowhere,
+    /// which it couldn't have with TCP starting beside the second.
     pub const RACE_DELAY: Duration = Duration::from_millis(250);
     /// How long an origin's TCP connection is taken to stay open after
     /// its last response: wreq's idle pool timeout. Safari kept sending
@@ -630,6 +634,10 @@ pub(crate) struct Handle {
     /// it goes over TCP, whatever its method (Http3Session::Authenticated
     /// closes its transaction with NS_ERROR_NET_RESET).
     pub third_party: Arc<std::sync::atomic::AtomicBool>,
+    /// How many addresses the connection tries QUIC on, one after
+    /// another, once it has them; 0 until then. Only Safari's tries more
+    /// than one.
+    pub attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Handle {
@@ -1793,10 +1801,20 @@ impl Routes {
         {
             return handle.clone();
         }
-        let given = self
+        // Firefox sends QUIC to the first address only: it takes one from
+        // the record (HttpConnectionUDP::Init, GetNextAddr), sets no
+        // backup timer for HTTP/3 (DnsAndConnectSocket::SetupBackupTimer),
+        // and retries another family only where
+        // network.http.http3.retry_different_ip_family is on, which
+        // release builds leave off (@IS_EARLY_BETA_OR_EARLIER@). Chrome's
+        // and Safari's connections pick from them all (h3_chrome's
+        // `Connection::peers`).
+        let addresses = self
             .hosts
             .get(host_of(alternative))
-            .and_then(|a| a.first().copied());
+            .cloned()
+            .unwrap_or_default();
+        let given = addresses.first().copied();
         let handle = match &self.stack {
             Stack::Firefox => open(
                 host,
@@ -1812,7 +1830,7 @@ impl Routes {
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
                 alternative,
-                given,
+                addresses.clone(),
                 ech.map(<[u8]>::to_vec),
                 &key,
                 tls.clone(),
@@ -1829,7 +1847,7 @@ impl Routes {
             Stack::Safari(tls) => crate::h3_chrome::open(
                 host,
                 alternative,
-                given,
+                addresses,
                 None,
                 &key,
                 tls.clone(),
@@ -2003,14 +2021,15 @@ impl Routes {
         };
         let waited = tokio::time::Instant::now();
         let up = route.forced
-            || matches!(
-                tokio::time::timeout(
-                    timer,
-                    state.wait_for(|s| *s != State::Connecting),
-                )
-                .await,
-                Ok(Ok(s)) if matches!(*s, State::Connected | State::ZeroRtt)
-            );
+            || up_within(&mut state, timer).await
+            // Safari's TCP waits its turn after every QUIC attempt.
+            || self.is_safari() && *state.borrow() == State::Connecting && {
+                let more = handle
+                    .attempts
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .saturating_sub(1);
+                more > 0 && up_within(&mut state, safari::RACE_DELAY * more as u32).await
+            };
         if !up {
             if *state.borrow() == State::Connecting {
                 return Ok(Answer::Race(Pending {
@@ -2321,7 +2340,17 @@ fn open(
         state: watching,
         ech_retry,
         third_party,
+        attempts: Arc::default(),
     }
+}
+
+/// Whether the connection `state` watches is up, or in 0-RTT, within
+/// `wait`.
+async fn up_within(state: &mut watch::Receiver<State>, wait: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(wait, state.wait_for(|s| *s != State::Connecting)).await,
+        Ok(Ok(s)) if matches!(*s, State::Connected | State::ZeroRtt)
+    )
 }
 
 pub(crate) fn fail_all(mut queue: mpsc::UnboundedReceiver<Job>, why: &str) {
@@ -2989,6 +3018,7 @@ mod tests {
                 state: state_now,
                 ech_retry: Arc::default(),
                 third_party: Arc::default(),
+                attempts: Arc::default(),
             };
             routes
                 .connections
