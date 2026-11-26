@@ -676,28 +676,36 @@ async fn handle_quic(
         // The handshake is done, so the whole ClientHello has arrived.
         incoming.await.map_err(io::Error::other)?
     };
-    // Taken before the handshake was done, the ClientHello may still be
-    // arriving: its datagrams are read again until it's all there.
-    let mut waited = 0;
-    let (quic, client_hello) = loop {
-        let datagrams = seen.lock().unwrap().get(&addr).cloned().unwrap_or_default();
-        if let Some(flight) = quic::first_flight(&datagrams, &odcid) {
-            seen.lock().unwrap().remove(&addr);
-            break flight;
-        }
-        waited += 1;
-        if !early || waited > 400 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    };
     let connection = connections.fetch_add(1, Ordering::Relaxed);
-    let ja4 = ja4_quic(&client_hello);
-    let mut request = 0u32;
-    let capture_of = |request, http3, method, path, headers, body: &[u8]| Capture {
+    // The first flight, read from what the socket received once all of the
+    // ClientHello is in: at once when the handshake is done, and for a
+    // connection taken before that, when its first request comes (which
+    // the server can only read once it has the whole ClientHello) or it
+    // ends. Its requests are read meanwhile: a client whose 0-RTT packets
+    // follow its ClientHello's datagrams (quiche's) could otherwise finish
+    // its handshake before the first one was read, and a request that
+    // came in 0-RTT would be taken as one that didn't.
+    let read_flight = || {
+        let mut seen = seen.lock().unwrap();
+        let flight = quic::first_flight(seen.get(&addr)?, &odcid)?;
+        seen.remove(&addr);
+        Some(flight)
+    };
+    let mut flight = if early {
+        None
+    } else {
+        Some(read_flight().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?)
+    };
+    let capture_of = |(quic, client_hello): &(Quic, ClientHello),
+                      request,
+                      http3,
+                      method,
+                      path,
+                      headers,
+                      body: &[u8]| Capture {
         connection,
         request,
-        ja4: ja4.clone(),
+        ja4: ja4_quic(client_hello),
         client_hello: client_hello.clone(),
         protocol: "h3".to_string(),
         http2: None,
@@ -708,6 +716,7 @@ async fn handle_quic(
         body: String::from_utf8_lossy(body).into_owned(),
         headers,
     };
+    let mut request = 0u32;
     let served = h3::serve(conn, in_early_data, |req| {
         let pseudo = |name: &str| {
             req.headers
@@ -718,7 +727,18 @@ async fn handle_quic(
         };
         let (method, path) = (pseudo(":method"), pseudo(":path"));
         let authorized = req.headers.iter().any(|(k, _)| k == "authorization");
+        if flight.is_none() {
+            flight = read_flight();
+        }
+        let Some(first) = flight.as_ref() else {
+            return (
+                500,
+                Vec::new(),
+                b"the first flight couldn't be read".to_vec(),
+            );
+        };
         let capture = capture_of(
+            first,
             request,
             Some(req.http3),
             method,
@@ -736,8 +756,11 @@ async fn handle_quic(
     .await;
     // Browsers open connections they never send a request on (Chrome's
     // next one then resumes its session); this keeps their first flights.
-    if request == 0 {
+    if request == 0
+        && let Some(first) = flight.or_else(read_flight)
+    {
         let _ = tx.send(capture_of(
+            &first,
             0,
             None,
             String::new(),

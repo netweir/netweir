@@ -1080,6 +1080,84 @@ async fn a_resumed_connection_sends_a_get_in_0rtt() {
     assert!(again.http3.as_ref().unwrap().early);
 }
 
+/// A UDP port on 127.0.0.1 that passes datagrams on to `to` and back,
+/// holding back each connection's second Initial datagram from the client
+/// by `hold`: the second half of its ClientHello comes after the server
+/// has the first, as on a network that reorders.
+async fn holding_second_initial(to: u16, hold: Duration) -> u16 {
+    let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let port = socket.local_addr().unwrap().port();
+    let upstream = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    upstream.connect(("127.0.0.1", to)).await.unwrap();
+    let client = Arc::new(std::sync::Mutex::new(None));
+    {
+        let (socket, upstream, client) = (socket.clone(), upstream.clone(), client.clone());
+        tokio::spawn(async move {
+            let mut initials: std::collections::HashMap<Vec<u8>, usize> = Default::default();
+            let mut buf = vec![0; 65536];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                *client.lock().unwrap() = Some(from);
+                let datagram = buf[..n].to_vec();
+                // A QUIC v1 Initial: long header, type 0; its Destination
+                // Connection ID follows the version.
+                let held = if datagram[0] & 0xf0 == 0xc0 && n > 6 {
+                    let len = usize::from(datagram[5]);
+                    let count = initials.entry(datagram[6..6 + len].to_vec()).or_default();
+                    *count += 1;
+                    *count == 2
+                } else {
+                    false
+                };
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    if held {
+                        tokio::time::sleep(hold).await;
+                    }
+                    let _ = upstream.send(&datagram).await;
+                });
+            }
+        });
+    }
+    tokio::spawn(async move {
+        let mut buf = vec![0; 65536];
+        loop {
+            let n = match upstream.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Err(_) => return,
+            };
+            let to = *client.lock().unwrap();
+            if let Some(to) = to {
+                let _ = socket.send_to(&buf[..n], to).await;
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_server_offering_early_data_answers_when_the_client_hello_comes_late() {
+    // The fingerprint server takes such a connection before its handshake
+    // is done, so a request in 0-RTT is read at once. When the second
+    // half of the ClientHello comes late, it doesn't have the client's
+    // stream limits yet: its control stream waits for them, and requests
+    // are still answered, on a fresh connection and on one that resumes.
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let network = holding_second_initial(server.port, Duration::from_millis(20)).await;
+    let origin = format!("https://localhost:{}", server.port);
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{network}"))
+        .unwrap();
+    let fresh = fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert_eq!((fresh.status, fresh.version), (200, "HTTP/3"));
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    let again = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((again.status, again.version), (200, "HTTP/3"));
+    assert!(resumed(&server.next().await.unwrap()));
+}
+
 #[tokio::test]
 async fn a_post_on_a_resumed_connection_waits_for_its_handshake() {
     let mut server = Server::start_h3_early(0, None, false).await.unwrap();

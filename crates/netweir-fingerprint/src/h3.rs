@@ -373,11 +373,24 @@ pub async fn serve<F>(
 where
     F: FnMut(Request) -> (u16, Vec<(&'static str, String)>, Vec<u8>),
 {
-    let mut control = conn.open_uni().await.map_err(failed)?;
-    let mut opening = Vec::new();
-    put_varint(&mut opening, CONTROL_STREAM);
-    put_frame(&mut opening, SETTINGS, &[]);
-    control.write_all(&opening).await.map_err(failed)?;
+    // The control stream, opened beside the requests being read. A
+    // connection taken before its handshake is done may not have the
+    // client's stream limits yet, and quinn doesn't wake an open_uni when
+    // they come with the ClientHello, so it waits for that first.
+    let control = {
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            while conn.handshake_data().is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let mut control = conn.open_uni().await.map_err(failed)?;
+            let mut opening = Vec::new();
+            put_varint(&mut opening, CONTROL_STREAM);
+            put_frame(&mut opening, SETTINGS, &[]);
+            control.write_all(&opening).await.map_err(failed)?;
+            Ok::<_, io::Error>(control)
+        })
+    };
 
     let state = Arc::new(Mutex::new(Http3::default()));
     let (settled, mut settings_in) = watch::channel(false);
@@ -447,6 +460,12 @@ where
     uni.abort();
     // Held until here: closing the control stream would be a connection
     // error for the client.
+    let control = if control.is_finished() {
+        control.await.ok().and_then(Result::ok)
+    } else {
+        control.abort();
+        None
+    };
     drop(control);
     result
 }
