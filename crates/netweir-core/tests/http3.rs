@@ -334,7 +334,21 @@ async fn a_login_goes_where_firefox_puts_it_over_http3() {
     fetcher
         .use_http3(&origin, &format!("localhost:{port}"))
         .unwrap();
-    let login = netweir_core::Auth::new("ada", "secret", None);
+    // The login Firefox was recorded sending, read back from its Basic
+    // Authorization header, so the test sends what the fixture holds.
+    let login = {
+        let value = recorded("/api")
+            .headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .and_then(|(_, v)| v.strip_prefix("Basic "))
+            .map(str::to_string)
+            .expect("a Basic Authorization header");
+        let pair = data_encoding::BASE64.decode(value.as_bytes()).unwrap();
+        let pair = String::from_utf8(pair).unwrap();
+        let (user, password) = pair.split_once(':').unwrap();
+        netweir_core::Auth::new(user, password, None)
+    };
     let with_login = |mut outgoing: Outgoing| {
         outgoing.policy.auth = Some(login.clone());
         outgoing
