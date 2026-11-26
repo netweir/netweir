@@ -1541,6 +1541,13 @@ impl Inner {
     pub(crate) fn explain(&self, e: Error) -> Error {
         match (e, &self.said) {
             (Error::Timeout(m), Some(said)) => Error::Timeout(said.lately(m)),
+            // Closed under netweir, not by it: say why, if Chrome did.
+            (Error::Closed, Some(said)) => {
+                if !self.conn.is_shut() {
+                    said.tell_closed();
+                }
+                Error::Closed
+            }
             (e, _) => e,
         }
     }

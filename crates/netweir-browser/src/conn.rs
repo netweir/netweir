@@ -401,6 +401,15 @@ impl Connection {
         self.shared.lock().sent.iter().cloned().collect()
     }
 
+    /// Whether netweir has shut the connection itself.
+    pub(crate) fn is_shut(&self) -> bool {
+        self.shared
+            .out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+    }
+
     /// Stops writing; the reader ends when Chrome closes its end.
     pub(crate) fn shut(&self) {
         self.shared

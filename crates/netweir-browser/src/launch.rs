@@ -493,7 +493,13 @@ pub(crate) struct Started {
 /// with the profile it was given (see [`refuses_its_profile`]).
 #[derive(Clone)]
 pub(crate) struct Said(
-    Arc<(Mutex<Lines>, Condvar, tokio::sync::watch::Sender<bool>)>,
+    Arc<(
+        Mutex<Lines>,
+        Condvar,
+        tokio::sync::watch::Sender<bool>,
+        // Whether the browser closing under netweir has been told of.
+        std::sync::atomic::AtomicBool,
+    )>,
     /// The browser saying it, for messages.
     &'static str,
 );
@@ -505,6 +511,7 @@ impl Default for Said {
                 Mutex::default(),
                 Condvar::new(),
                 tokio::sync::watch::Sender::new(false),
+                std::sync::atomic::AtomicBool::new(false),
             )),
             "Chrome",
         )
@@ -636,7 +643,7 @@ impl Said {
             .name(format!("netweir-{}-stderr", browser.to_ascii_lowercase()))
             .spawn(move || {
                 use std::io::BufRead;
-                let (lock, done, refused) = &*writing.0;
+                let (lock, done, refused, _) = &*writing.0;
                 for line in std::io::BufReader::new(stderr)
                     .lines()
                     .map_while(|l| l.ok())
@@ -685,7 +692,7 @@ impl Said {
     /// to a second for a Chrome that has just exited to finish saying it;
     /// only ever on the way to an error.
     pub(crate) fn explain(&self, message: String) -> String {
-        let (lock, done, _) = &*self.0;
+        let (lock, done, _, _) = &*self.0;
         let lines = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (lines, _) = done
             .wait_timeout_while(lines, std::time::Duration::from_secs(1), |l| !l.1)
@@ -695,6 +702,23 @@ impl Said {
         }
         let said: Vec<&str> = lines.0.iter().map(String::as_str).collect();
         format!("{message}; {} said:\n{}", self.1, said.join("\n"))
+    }
+
+    /// Warns, once, that the browser closed while netweir was using it,
+    /// with what it said as it went: a call only gets [`crate::Error::Closed`],
+    /// and why a browser died is in its stderr if anywhere. On a thread,
+    /// since `explain` may wait a second for the last of it. Says whether
+    /// this was the first time.
+    pub(crate) fn tell_closed(&self) -> bool {
+        if self.0.3.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let said = self.clone();
+        std::thread::spawn(move || {
+            let message = format!("{} closed while netweir was using it", said.1);
+            crate::warn(&said.explain(message));
+        });
+        true
     }
 }
 
@@ -1274,6 +1298,14 @@ pub(crate) fn running(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_browser_closing_under_netweir_is_told_of_once() {
+        let said = Said::default();
+        assert!(said.tell_closed());
+        // Every call waiting when it closed fails with Closed: one warning.
+        assert!(!said.clone().tell_closed());
+    }
 
     /// A process that would run a minute, killed, is waited for until
     /// it's gone, and no longer.
