@@ -474,3 +474,97 @@ async fn tcp_waits_for_quic_on_both_families() {
     assert!(gap >= Duration::from_millis(240), "{gap:?}");
     assert!(gap < Duration::from_millis(400), "{gap:?}");
 }
+
+/// profiles/safari-27-macos.h3-0rtt.capture.json and its -post twin:
+/// Safari 27.2 on the fingerprint server's `/zero-rtt?close` (and
+/// `?close,post`), from a server whose session tickets allow early data
+/// and which held each datagram to Safari back 50 ms. Its script had TCP
+/// closed under each probe, as Safari moves to QUIC only on a new
+/// connection, asked until a response came over HTTP/3, let that
+/// connection time out, and then went to /again: a navigation, sent in
+/// 0-RTT on the connection that resumed, or a POST, which waited for the
+/// handshake on it.
+fn zero_rtt_recording(post: bool) -> Vec<Capture> {
+    let name = if post { "h3-0rtt-post" } else { "h3-0rtt" };
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../profiles/{PROFILE}.{name}.capture.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A Safari Fetcher whose next connection to `server` resumes, with a
+/// ticket that allows early data.
+async fn resuming(server: &mut Server) -> (Fetcher, String) {
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{port}"))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    (fetcher, origin)
+}
+
+/// Its ClientHello's extensions but GREASE, sorted, and its first
+/// flight's datagrams.
+fn zero_rtt_shape(c: &Capture) -> (Vec<u16>, Vec<(usize, Vec<String>)>) {
+    let mut extensions: Vec<u16> = c
+        .client_hello
+        .extensions
+        .iter()
+        .copied()
+        .filter(|&e| !netweir_fingerprint::is_grease(e))
+        .collect();
+    extensions.sort_unstable();
+    let flight = c
+        .quic
+        .as_ref()
+        .unwrap()
+        .datagrams
+        .iter()
+        .map(|d| (d.size, d.packets.iter().map(|p| p.kind.clone()).collect()))
+        .collect();
+    (extensions, flight)
+}
+
+#[tokio::test]
+async fn a_resumed_connection_sends_a_get_in_0rtt_as_safari_did() {
+    let recording = zero_rtt_recording(false);
+    let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
+    assert!(recorded.http3.as_ref().unwrap().early);
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(again.client_hello.extensions.contains(&0x2a), "early_data");
+    assert!(again.http3.as_ref().unwrap().early, "the GET went in 0-RTT");
+    assert_eq!(zero_rtt_shape(&again), zero_rtt_shape(recorded));
+}
+
+#[tokio::test]
+async fn a_post_on_a_resumed_connection_waits_as_safaris_did() {
+    let recording = zero_rtt_recording(true);
+    let recorded = recording.iter().find(|c| c.method == "POST").unwrap();
+    assert!(resumed(recorded));
+    assert!(!recorded.http3.as_ref().unwrap().early);
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let form = Outgoing::form(
+        b"q=rust".to_vec(),
+        Some("application/x-www-form-urlencoded".into()),
+        None,
+    );
+    let response = fetcher
+        .send(&format!("{origin}/again"), &form, &[])
+        .await
+        .unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let post = server.next().await.unwrap();
+    assert!(resumed(&post));
+    assert_eq!(post.method, "POST");
+    assert!(!post.http3.as_ref().unwrap().early, "the POST waited");
+    assert_eq!(zero_rtt_shape(&post), zero_rtt_shape(recorded));
+}

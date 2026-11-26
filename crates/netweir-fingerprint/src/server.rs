@@ -27,7 +27,7 @@ use std::io::{self, IoSliceMut};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -146,17 +146,18 @@ impl Server {
     /// browser's `/zero-rtt`: TCP offers only HTTP/1.1, which a browser
     /// can't coalesce an HTTP/3 request onto, and a QUIC connection with
     /// nothing on it times out after 3 s, a close that leaves the browser's
-    /// Alt-Svc in place, so the next request resumes.
+    /// Alt-Svc in place, so the next request resumes. Each QUIC datagram
+    /// to the browser is held back by the duration given: on localhost a
+    /// resumed handshake is otherwise done before the next request is made.
     pub async fn start_h3_early(
         port: u16,
         dir: Option<&Path>,
-        browser: bool,
+        browser: Option<std::time::Duration>,
     ) -> io::Result<Server> {
         let certificate = dir.map(lasting_certificate).transpose()?;
-        let (alpn, early): (&[&[u8]], _) = if browser {
-            (&[b"http/1.1"], Early::ForBrowser)
-        } else {
-            (&[b"h2", b"http/1.1"], Early::Take)
+        let (alpn, early): (&[&[u8]], _) = match browser {
+            Some(hold) => (&[b"http/1.1"], Early::ForBrowser(hold)),
+            None => (&[b"h2", b"http/1.1"], Early::Take),
         };
         Server::bind_with(port, alpn, certificate, true, early, true).await
     }
@@ -263,19 +264,17 @@ impl Server {
             if early == Early::TurnDown {
                 config.session_storage = Arc::new(Forgetful);
             }
-            let idle = (early == Early::ForBrowser).then_some(EARLY_IDLE);
+            let hold = match early {
+                Early::ForBrowser(hold) => Some(hold),
+                _ => None,
+            };
+            let idle = hold.map(|_| EARLY_IDLE);
             let early = early != Early::No;
-            listen_quic(
-                v4,
-                config.clone(),
-                early,
-                idle,
-                connections.clone(),
-                tx.clone(),
-            )?;
+            let quic = (early, idle, hold);
+            listen_quic(v4, config.clone(), quic, connections.clone(), tx.clone())?;
             // A machine without IPv6 just doesn't get this one.
             if let Some(v6) = v6 {
-                listen_quic(v6, config, early, idle, connections.clone(), tx.clone())?;
+                listen_quic(v6, config, quic, connections.clone(), tx.clone())?;
             }
             Some(format!("h3=\":{port}\"; ma=86400"))
         } else {
@@ -309,7 +308,8 @@ impl Server {
 enum Early {
     No,
     Take,
-    ForBrowser,
+    /// Set up for a browser, each QUIC datagram to it held back so long.
+    ForBrowser(std::time::Duration),
     TurnDown,
 }
 
@@ -444,7 +444,11 @@ const IMAGE_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>image</t
 const ZERO_RTT_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>zero-rtt</title>
 <script>
 (async () => {
+  // With ?close, each probe comes after a TCP connection closed, for a
+  // browser that moves to QUIC only on a new connection (Safari).
+  const close = location.search.includes("close");
   for (let i = 0; i < 50; i++) {
+    if (close) await fetch("/close").catch(() => {});
     const seen = await (await fetch("/probe?" + i)).json();
     if (seen.protocol === "h3") break;
     await new Promise(r => setTimeout(r, 200));
@@ -452,6 +456,13 @@ const ZERO_RTT_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>zero-
   // The connection's ticket is taken, then the connection times out
   // (EARLY_IDLE), a close that leaves the browser's Alt-Svc in place.
   await new Promise(r => setTimeout(r, 6000));
+  // With ?post, a POST opens the connection that resumes.
+  if (location.search.includes("post")) {
+    await fetch("/again", {method: "POST", body: "q=rust"}).catch(() => {});
+    await new Promise(r => setTimeout(r, 6000));
+    await fetch("/again").catch(() => {});
+    return;
+  }
   location.href = "/again";
 })();
 </script>"#;
@@ -579,6 +590,8 @@ type Seen = Arc<Mutex<HashMap<SocketAddr, Vec<Vec<u8>>>>>;
 struct Tee {
     inner: Arc<dyn quinn::AsyncUdpSocket>,
     seen: Seen,
+    /// How long each datagram to the client is held back, if it is.
+    hold: Option<std::time::Duration>,
 }
 
 impl quinn::AsyncUdpSocket for Tee {
@@ -586,7 +599,30 @@ impl quinn::AsyncUdpSocket for Tee {
         self.inner.clone().create_io_poller()
     }
     fn try_send(&self, transmit: &quinn::udp::Transmit) -> io::Result<()> {
-        self.inner.try_send(transmit)
+        let Some(hold) = self.hold else {
+            return self.inner.try_send(transmit);
+        };
+        // Sent later, as over a network with that much delay one way; one
+        // the socket has no room for then is lost, and QUIC sends it again.
+        let inner = self.inner.clone();
+        let (destination, ecn, segment_size, src_ip) = (
+            transmit.destination,
+            transmit.ecn,
+            transmit.segment_size,
+            transmit.src_ip,
+        );
+        let contents = transmit.contents.to_vec();
+        tokio::spawn(async move {
+            tokio::time::sleep(hold).await;
+            let _ = inner.try_send(&quinn::udp::Transmit {
+                destination,
+                ecn,
+                contents: &contents,
+                segment_size,
+                src_ip,
+            });
+        });
+        Ok(())
     }
     fn poll_recv(
         &self,
@@ -642,11 +678,16 @@ const EARLY_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Serves QUIC on UDP `addr`: each connection's first flight is read from
 /// what the socket received, and its HTTP/3 requests are answered as the
 /// TCP side answers them.
+/// `quic`: whether it takes 0-RTT, how long a connection with nothing on
+/// it lasts, and how long each datagram to the client is held back.
 fn listen_quic(
     udp: std::net::UdpSocket,
     tls: rustls::ServerConfig,
-    early: bool,
-    idle: Option<std::time::Duration>,
+    (early, idle, hold): (
+        bool,
+        Option<std::time::Duration>,
+        Option<std::time::Duration>,
+    ),
     connections: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
@@ -663,6 +704,7 @@ fn listen_quic(
     let socket = Arc::new(Tee {
         inner: quinn::Runtime::wrap_udp_socket(&*runtime, udp)?,
         seen: seen.clone(),
+        hold,
     });
     let endpoint = quinn::Endpoint::new_with_abstract_socket(
         quinn::EndpointConfig::default(),
@@ -693,19 +735,14 @@ async fn handle_quic(
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
     let (addr, odcid) = (incoming.remote_address(), incoming.orig_dst_cid());
-    let in_early_data = Arc::new(AtomicBool::new(false));
+    let mut handshake = None;
     let conn = if early {
         // A server's connection is always taken before its handshake is
         // done, so a request in 0-RTT can be read at once.
         let Ok((conn, done)) = incoming.accept().map_err(io::Error::other)?.into_0rtt() else {
             return Err(io::Error::other("a server connection always converts"));
         };
-        in_early_data.store(true, Ordering::SeqCst);
-        let flag = in_early_data.clone();
-        tokio::spawn(async move {
-            done.await;
-            flag.store(false, Ordering::SeqCst);
-        });
+        handshake = Some(done);
         conn
     } else {
         // The handshake is done, so the whole ClientHello has arrived.
@@ -752,6 +789,22 @@ async fn handle_quic(
         headers,
     };
     let mut request = 0u32;
+    // Asked as each request stream is taken, of the handshake itself: a
+    // client that sends its Finished and a request together (quiche, for
+    // a request that waited for the handshake) has the handshake done by
+    // the time that stream is there, which a task told of it later could
+    // still be on its way to saying.
+    let in_early_data = move || {
+        let Some(done) = handshake.as_mut() else {
+            return false;
+        };
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::pin::Pin::new(done).poll(&mut cx).is_ready() {
+            handshake = None;
+            return false;
+        }
+        true
+    };
     let served = h3::serve(conn, in_early_data, |req| {
         let pseudo = |name: &str| {
             req.headers

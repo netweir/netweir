@@ -400,8 +400,20 @@ in 0-RTT. Chrome for Testing also sent extension 0x12e0 and the
 connection options `ORIGNOIP` on every connection, fresh ones too, which
 the recording of Chrome 157 doesn't have, so the profile follows Chrome.
 
-Safari's isn't recorded, so a Safari profile resumes and waits for the
-handshake.
+Safari's, as recorded: `profiles/safari-27-macos.h3-0rtt.capture.json`
+and `safari-27-macos.h3-0rtt-post.capture.json` are Safari 27.2 on the
+fingerprint server's `/zero-rtt?close` and `/zero-rtt?close,post`.
+Safari moves to QUIC only on a new connection, so the page closes TCP
+under each probe, and the server held each datagram to Safari back 50 ms
+(`capture --h3 --early --hold-ms 50`), since on localhost a resumed
+handshake is otherwise done before the next request is made. On every
+connection that resumed, a GET went in 0-RTT: `/again` on all three
+navigation runs, and the GET after the POST on both POST runs. The POST
+waited for the handshake both times. A Safari profile does the same:
+safe methods go in 0-RTT, others wait. Only GET and POST were recorded,
+so HEAD, OPTIONS and TRACE follow Chrome's rule. Safari marks nothing
+broken, so nothing makes a session wait for confirmation, and nothing
+races a request that went in 0-RTT, as for Chrome.
 
 ## Chrome through netweir's quiche
 
@@ -724,8 +736,8 @@ What the recording can't show, Netweir has had to choose:
 - QPACK the other way. The fingerprint server offers no dynamic table,
   so whether Safari's encoder uses one isn't recorded; quiche's encodes
   from the static table.
-- 0-RTT, which Safari may send on a resumed connection. It isn't
-  recorded, so Netweir waits for the handshake.
+- 0-RTT for methods other than GET and POST, which weren't recorded:
+  they follow Chrome's rule.
 - The image request over HTTP/1.1. Safari's `[image]` headers are
   recorded over HTTP/2 and HTTP/3; over HTTP/1.1, Host and Connection
   go where Safari's other HTTP/1.1 requests put them.
