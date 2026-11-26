@@ -33,20 +33,75 @@ release after it, 1.0.12, has dropped six that NSS 3.132 still trusts
 and Class 3, Certigna), so the crate is pinned to `=1.0.11` until a
 Firefox profile on a newer NSS moves it.
 
-Where it still differs from NSS:
+## Distrust-after dates
 
-- Distrust-after dates. NSS 3.132 keeps Izenpe.com trusted with a server
-  distrust-after date of 2026-04-15: certificates it issued after that are
-  refused, the ones before still trusted (`CKA_NSS_SERVER_DISTRUST_AFTER`).
-  A bundled list has no such date, so Netweir trusts Izenpe's
-  certificates whenever they were issued. CCADB drops such a root 398
-  days after the date, which is when the crate does too.
+A list of certificates can't say that a root is trusted only for what it
+issued before a date, and NSS's can. NSS 3.132 keeps Izenpe.com trusted
+with a server distrust-after date of 2026-04-15 23:59:59 UTC
+(`CKA_NSS_SERVER_DISTRUST_AFTER`). Firefox refuses a chain that ends at
+it when the server certificate's notBefore is later than that, and
+trusts one issued on or before it until it expires
+(`NSSCertDBTrustDomain::IsChainValid` and `IsDistrustedCertificateChain`,
+`security/certverifier/NSSCertDBTrustDomain.cpp`, which fail it with
+`ERROR_ISSUER_NO_LONGER_TRUSTED`). A root the user added is exempt, even
+one that is also built in. CCADB drops such a root 398 days after its
+date, and `webpki-root-certs` drops it then too.
+
+Netweir keeps the dates beside the list. `src/distrust_after.rs` holds
+every root in `certdata.txt` that has one, by SHA-256: Izenpe.com, and
+three Entrust roots dated 2024-11-30 that 3.132 no longer trusts for
+servers anyway. `scripts/gen-distrust-after.py` writes that file from a
+given NSS tag:
+
+    cd crates/netweir-core && python3 scripts/gen-distrust-after.py NSS_3_132_RTM
+
+A Firefox profile applies them to a chain that ends at a Mozilla root, the
+way NSS does. Over TCP, a check beside BoringSSL's (wreq's
+`tls_verify_callback`) fails the handshake. Over HTTP/3, the same check
+runs on the chain neqo hands over. Roots from `ca_certificates` are
+third-party roots, so their chains are never held to a date, and Chrome's
+and Safari's profiles have no dates at all.
+
+One part isn't followed: Firefox also ignores Certificate Transparency
+timestamps later than the date (`CTVerifier::Verify` takes the date).
+Netweir doesn't check Certificate Transparency.
+
+## Where it still differs from NSS
+
 - What NSS adds in code: its own name constraints for some roots and
   other checks `mozilla::pkix` makes that a list of certificates doesn't
   carry. Certificates are checked by BoringSSL, not `mozilla::pkix`.
-- Enterprise roots and the system's store. Firefox can also trust the
-  roots the operating system has (`security.enterprise_roots.enabled`),
-  as third-party ones. Netweir doesn't read the system's store.
+- The system's roots. See below.
+
+## Enterprise roots
+
+`security.enterprise_roots.enabled` is `true` in Firefox 160 on every
+platform (`modules/libpref/init/StaticPrefList.yaml`, with no
+per-platform default). What it reads depends on the platform
+(`security/manager/ssl/EnterpriseRoots.cpp`):
+
+- Windows: the `ROOT` and `CA` stores of the local machine, its group
+  policy and enterprise stores, the current user, and the user's group
+  policy.
+- macOS: certificates with trust settings in the user or admin domain.
+  Roots the system ships (trust settings in the system domain) are
+  skipped, so it's only what someone added: a company's root, or a
+  debugging proxy's.
+- Android: the user's CA certificates.
+- Linux: nothing. There's no code for it.
+
+Firefox counts these as third-party roots, so a chain that ends at one
+keeps Firefox off HTTP/3 and isn't held to a distrust-after date.
+
+Netweir doesn't read the system's store, and nothing on the wire depends
+on it: the same handshake goes out either way. What changes is whether a
+connection through a TLS-intercepting proxy succeeds. Firefox on a
+company laptop trusts the company's root, while Netweir refuses it unless
+it's given. `FetchOptions::ca_certificates` (`verify=` in Python) is the
+way to give it, and Netweir then treats it as Firefox treats an
+enterprise root. It's third-party, so the request stays off HTTP/3.
+Reading the store would mean code for each platform's API, for a case
+where a single option already does the same.
 
 ## Safari
 

@@ -99,10 +99,10 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
 - Certificates are checked with BoringSSL, not by NSS's `mozilla::pkix`,
-  against Mozilla's roots as Firefox 160 ships them
-  (`docs/design/roots.md`, which lists what still differs: distrust-after
-  dates and NSS's own checks). Firefox ends HTTP/3 when a chain that
-  checks out ends at a root it didn't ship
+  against Mozilla's roots as Firefox 160 ships them, distrust-after dates
+  included (`docs/design/roots.md`, which lists what still differs:
+  NSS's own checks). Firefox ends HTTP/3 when a chain that checks out
+  ends at a root it didn't ship
   (`network.http.http3.disable_when_third_party_roots_found`,
   `Http3Session::Authenticated`): HTTP/3 to the host stops, and the
   request goes over TCP as a retry, whatever its method. Netweir does the
