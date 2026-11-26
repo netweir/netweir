@@ -182,7 +182,15 @@ impl Server {
     /// TLS_CHACHA20_POLY1305_SHA256, the suite a client on a machine
     /// without AES in hardware picks, so its sessions resume with it.
     pub async fn start_h3_early_chacha20(port: u16) -> io::Result<Server> {
-        Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::ChaCha20).await
+        Server::bind_with(
+            port,
+            &[b"h2", b"http/1.1"],
+            None,
+            true,
+            Early::ChaCha20,
+            true,
+        )
+        .await
     }
 
     async fn bind(port: u16, alpn: &[&[u8]]) -> io::Result<Server> {
