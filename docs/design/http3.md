@@ -618,7 +618,9 @@ What the recording can't show, Netweir has had to choose:
   (initial_max_data 21 times, active_connection_id_limit 14,
   initial_source_connection_id and initial_max_streams_uni 5 each,
   initial_max_stream_data_bidi_remote 4, the other two 2 each). Netweir
-  picks evenly.
+  draws the start with those weights, but 53 connections can't say
+  whether Safari's choice depends on something else, such as whether
+  the connection resumes.
 - Everything after the first flight: loss recovery, congestion
   control, pacing, ACK timing, packet sizes once the handshake is done
   (quiche's 1200 bytes), connection ID use and PING keepalives (Apple
