@@ -19,7 +19,8 @@ import urllib.request
 
 source = sys.argv[1]
 if os.path.exists(source):
-    text = open(source, encoding="utf-8").read()
+    with open(source, encoding="utf-8") as f:
+        text = f.read()
     origin = "a local certdata.txt"
 else:
     url = f"https://raw.githubusercontent.com/nss-dev/nss/{source}/lib/ckfw/builtins/certdata.txt"
@@ -88,5 +89,7 @@ with open(os.path.join(here, "..", "src", "distrust_after.rs"), "w") as out:
         out.write("    (\n        [\n")
         for i in range(0, 32, 8):
             out.write("            " + " ".join(f"0x{b:02x}," for b in digest[i : i + 8]) + "\n")
-        out.write(f"        ],\n        {at}, // {date}\n        {label!r},\n    ),\n".replace("'", '"'))
+        out.write(
+            f"        ],\n        {at}, // {date}\n        {label!r},\n    ),\n".replace("'", '"')
+        )
     out.write("];\n")
