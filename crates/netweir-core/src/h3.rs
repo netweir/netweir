@@ -645,7 +645,8 @@ pub(crate) struct FromRecords {
     host: String,
     port: u16,
     /// For a request over TCP, the record it goes to
-    /// (nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord).
+    /// (nsHttpConnectionInfo::CloneAndAdoptHTTPSSVCRecord); None when the
+    /// record sends it to the origin as it was.
     pub tcp: Option<crate::https_rr::Route>,
     /// The records still to go on to, once a failed connection has made
     /// the list (nsHttpTransaction::mRecordsForRetry): it's made once.
@@ -680,8 +681,7 @@ impl FromRecords {
     /// The records a request goes on to after a connection with ECH
     /// failed, and whether every record has ECH
     /// (nsHttpTransaction::PrepareSVCBRecordsForRetry): those after the
-    /// failed one, in order, but none to the same target with the same
-    /// ALPN, and no h3 one if HTTP/3 has failed for the request (`no_h3`)
+    /// failed one, in order, but none `skipped_after` it, and no h3 one if HTTP/3 has failed for the request (`no_h3`)
     /// or is excluded from its target. Once made, the list is what's left
     /// of it.
     pub(crate) fn retries(
@@ -704,7 +704,7 @@ impl FromRecords {
             no_h3,
             h3_excluded,
         );
-        list.retain(|r| r.host != failed.host || r.alpn != failed.alpn);
+        list.retain(|r| !crate::https_rr::skipped_after(failed, r, &self.host, self.port));
         (all, list)
     }
 
@@ -1575,14 +1575,18 @@ impl Routes {
         if !h3 && self.is_chrome() {
             return None;
         }
-        let nothing_new = !h3
+        if chosen.port == 0 {
+            return None;
+        }
+        // A record that sends TCP to the origin as it was still makes the
+        // request one from HTTPS records (mOrigConnInfo), which a failed
+        // handshake is made again from (PrepareConnInfoForRetry); its
+        // connection is the origin's own.
+        let to_origin = !h3
             && chosen.host.eq_ignore_ascii_case(host)
             && chosen.port == port
             && chosen.ech.is_none()
             && chosen.alpn.is_empty();
-        if chosen.port == 0 || nothing_new {
-            return None;
-        }
         Some(Route {
             partition: lookup.partition.clone(),
             alternative: format!("{}:{}", chosen.host, chosen.port),
@@ -1593,7 +1597,7 @@ impl Routes {
                 found: found.clone(),
                 host: host.to_string(),
                 port,
-                tcp: (!h3).then_some(chosen),
+                tcp: (!h3 && !to_origin).then_some(chosen),
                 left: None,
                 attempts: 0,
             })),

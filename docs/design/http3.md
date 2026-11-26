@@ -98,6 +98,12 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
   portability layer and puts nothing on the wire.
 - Proxies. Firefox never sends QUIC through an HTTP or SOCKS proxy, and
   nor does a Fetcher with one (below).
+- TCP after HTTP/3, and after an `h2` alternative, when they fail.
+  Firefox makes such a transaction again (`nsHttpTransaction::Restart`
+  after `DisableHttp3`, or without the alternative's route), and its
+  next connection carries `IS_RETRY`, so leaves out
+  `compress_certificate`. Netweir's TCP connection there is made with
+  the profile's own options; neither case is recorded yet.
 
 ## When a request goes over HTTP/3
 
@@ -191,6 +197,18 @@ default preferences; Chrome's rules are
   the next record with ECH, to the origin only if some record has none,
   and nowhere once they're all tried
   (`network.dns.echconfig.fallback_to_origin_when_all_failed` is off).
+  A failed handshake of any kind goes on this way, an alert included,
+  and every connection after a failed one leaves `compress_certificate`
+  out of its ClientHello (`IS_RETRY`, which `nsNSSIOLayer` reads).
+  Moving to a record that came in while the request's own connection was
+  being made isn't a retry (`OnHTTPSRRAvailable`), so the record's first
+  connection keeps it. A record that sends TCP to the origin as
+  it was still makes the request one from records, so its failed
+  connection is made again once at the origin. And a record that keeps
+  the origin's host and port has no routed host to compare, so the entry
+  that failed is tried again (`nsHttpConnectionInfo`'s constructor):
+  for `. alpn=h2,http/1.1 ech=...` Firefox 160.0.1 made three
+  connections.
   The records to go on to are listed once, at the first such failure
   (`PrepareSVCBRecordsForRetry`): h3 entries stay on the list unless
   HTTP/3 has already failed for the request in a way that excludes its

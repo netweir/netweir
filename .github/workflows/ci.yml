@@ -369,7 +369,7 @@ jobs:
         run: scripts/nss.sh ${{ matrix.target }}
       - if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo clippy -p netweir-core --features http3 --all-targets -- -D warnings
-      - run: cargo test ${{ matrix.release }} -p netweir-core --features http3 --target ${{ matrix.target }} --lib --test http3 --test http3_chrome --test http3_safari --test http3_ech --test ech_tcp --test fingerprint
+      - run: cargo test ${{ matrix.release }} -p netweir-core --features http3 --target ${{ matrix.target }} --lib --test http3 --test http3_chrome --test http3_safari --test http3_ech --test ech_tcp --test fingerprint --test tls_retry
 
   # Chrome's suites of actions, pages, events and steps again, on Firefox,
   # and the browser from Python and in a crawl.

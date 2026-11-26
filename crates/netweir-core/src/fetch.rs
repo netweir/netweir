@@ -162,6 +162,8 @@ pub struct Fetcher {
     /// The headers of requests other than typing an address.
     shapes: Arc<Shapes>,
     archive: Option<Archive>,
+    /// How a request is made again after its handshake failed.
+    again: Arc<Again>,
     /// Origins whose requests go over HTTP/3, and the connections to them,
     /// for a profile that has HTTP/3.
     #[cfg(feature = "http3")]
@@ -288,6 +290,7 @@ impl OnPreserveHeaderCallback for Recorder {
 
 /// Sends `request` with its headers in `order`, writing down the lines it
 /// went out with in `sent`, if given.
+#[cfg(feature = "http3")]
 async fn dispatch(
     request: wreq::RequestBuilder,
     order: OrigHeaderMap,
@@ -298,8 +301,17 @@ async fn dispatch(
         Some(view) => request.cookie_provider(Arc::new(view)),
         None => request,
     };
+    Ok(send_raw(request, order, sent).await?)
+}
+
+/// `dispatch` once its cookies are on, with wreq's own error.
+async fn send_raw(
+    request: wreq::RequestBuilder,
+    order: OrigHeaderMap,
+    sent: Option<&Sent>,
+) -> Result<wreq::Response, wreq::Error> {
     let Some(sent) = sent else {
-        return Ok(request.orig_headers(order).send().await?);
+        return request.orig_headers(order).send().await;
     };
     // The hook goes in the request's extensions, where wreq's own ordering
     // would otherwise go; the client has no default order to put back in
@@ -317,7 +329,95 @@ async fn dispatch(
     request
         .extensions_mut()
         .extend(carrier.into_parts().0.extensions);
-    Ok(client.execute(request).await?)
+    client.execute(request).await
+}
+
+/// How a request is made again after its handshake failed, from the
+/// profile (`Tls::handshake_attempts` and
+/// `Tls::retry_without_certificate_compression`).
+#[derive(Clone)]
+struct Again {
+    /// The most connections a request makes, the first included.
+    attempts: usize,
+    /// The TLS options of each connection after a failed one, if they
+    /// aren't the profile's own.
+    tls: Option<wreq::tls::TlsOptions>,
+}
+
+/// `dispatch`, made again as Firefox makes a transaction again
+/// (nsHttpTransaction::Restart) when its connection was reset or closed
+/// during the TLS handshake (NS_ERROR_NET_RESET), up to `attempts`
+/// connections, nothing having been sent. A handshake the server failed
+/// with an alert isn't: with security.tls.version.fallback-limit at TLS
+/// 1.3, nsNSSIOLayer has no version to fall back to. `retry` says the
+/// first connection is already one made again.
+async fn dispatch_again(
+    mut request: wreq::RequestBuilder,
+    order: OrigHeaderMap,
+    sent: Option<&Sent>,
+    view: Option<JarView>,
+    again: &Again,
+    mut retry: bool,
+    attempts: usize,
+) -> Result<wreq::Response, FetchError> {
+    let mut left = attempts.max(1);
+    loop {
+        left -= 1;
+        let next = (left > 0).then(|| request.try_clone()).flatten();
+        let sending = match (&again.tls, retry) {
+            (Some(tls), true) => request.tls_options(tls.clone()),
+            _ => request,
+        };
+        let sending = match &view {
+            Some(view) => sending.cookie_provider(Arc::new(view.clone())),
+            None => sending,
+        };
+        match (send_raw(sending, order.clone(), sent).await, next) {
+            (Err(e), Some(next)) if handshake_broke(&e) => {
+                request = next;
+                retry = true;
+            }
+            (done, _) => return Ok(done?),
+        }
+    }
+}
+
+/// Whether a connection broke during its TLS handshake: reset, or closed
+/// before the server's hello, as nsNSSIOLayer sees PR_CONNECT_RESET_ERROR
+/// or PR_END_OF_FILE_ERROR. A connection refused never got that far.
+fn handshake_broke(error: &wreq::Error) -> bool {
+    use std::io::ErrorKind;
+    if !error.is_connect() {
+        return false;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::UnexpectedEof
+                    | ErrorKind::BrokenPipe
+            );
+        }
+        if let Some(tls) = e.downcast_ref::<btls::ssl::Error>() {
+            match tls.io_error() {
+                Some(io) => {
+                    return matches!(
+                        io.kind(),
+                        ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionAborted
+                            | ErrorKind::UnexpectedEof
+                            | ErrorKind::BrokenPipe
+                    );
+                }
+                None => return tls.code() == btls::ssl::ErrorCode::SYSCALL,
+            }
+        }
+        source = e.source();
+    }
+    false
 }
 
 /// A profile's captured shapes, and its name to say which is missing.
@@ -1469,6 +1569,15 @@ impl Fetcher {
                 after_form_redirect: profile.after_form_redirect.clone(),
             }),
             archive: options.archive.clone(),
+            again: Arc::new(Again {
+                attempts: profile.tls.handshake_attempts.into(),
+                tls: profile
+                    .tls
+                    .retry_without_certificate_compression
+                    .then(|| profile.tls_options(false))
+                    .transpose()
+                    .map_err(|e| FetchError::invalid(e.to_string()))?,
+            }),
             // Firefox never sends QUIC through a proxy (AltSvcCache::
             // UpdateAltServiceMapping refuses h3 behind one); nor does
             // netweir, the system's included.
@@ -2102,7 +2211,7 @@ impl Fetcher {
             };
             return self.send_h3(route, request, order, sent, view, h3).await;
         }
-        dispatch(request, order, sent, view).await
+        self.over_tcp(request, order, sent, view).await
     }
 
     /// Any request but typing an address: the headers of the profile's
@@ -2260,7 +2369,99 @@ impl Fetcher {
             };
             return self.send_h3(route, request, order, sent, view, h3).await;
         }
-        dispatch(request, order, sent, view).await
+        self.over_tcp(request, order, sent, view).await
+    }
+
+    /// A request's first connection over TCP, made again if its handshake
+    /// breaks, as the profile's browser does (`dispatch_again`).
+    async fn over_tcp(
+        &self,
+        request: wreq::RequestBuilder,
+        order: OrigHeaderMap,
+        sent: Option<&Sent>,
+        view: Option<JarView>,
+    ) -> Result<wreq::Response, FetchError> {
+        dispatch_again(
+            request,
+            order,
+            sent,
+            view,
+            &self.again,
+            false,
+            self.again.attempts,
+        )
+        .await
+    }
+
+    /// A request whose HTTPS record sends it to the origin as it was: a
+    /// failed connection is made again once, as nsHttpTransaction::
+    /// PrepareConnInfoForRetry goes back to the origin's connection info
+    /// for a record without ECH (`origin_again`).
+    #[cfg(feature = "http3")]
+    async fn to_origin_from_records(
+        &self,
+        request: wreq::RequestBuilder,
+        order: OrigHeaderMap,
+        sent: Option<&Sent>,
+        view: Option<JarView>,
+    ) -> Result<wreq::Response, FetchError> {
+        let next = request.try_clone();
+        let first = dispatch_again(
+            request,
+            order.clone(),
+            sent,
+            view.clone(),
+            &self.again,
+            false,
+            1,
+        );
+        match (first.await, next) {
+            (Err(e), Some(next)) => self.origin_again(e, next, order, sent, view).await,
+            (done, _) => done,
+        }
+    }
+
+    /// After a request from an HTTPS record that sends it to the origin
+    /// failed its first connection with `error`: made again at the origin
+    /// after any error AllowedErrorForTransactionRetry takes (a handshake
+    /// error, a reset, a refusal, a timeout), and that connection only as
+    /// `dispatch_again` says.
+    #[cfg(feature = "http3")]
+    async fn origin_again(
+        &self,
+        error: FetchError,
+        request: wreq::RequestBuilder,
+        order: OrigHeaderMap,
+        sent: Option<&Sent>,
+        view: Option<JarView>,
+    ) -> Result<wreq::Response, FetchError> {
+        let retried = matches!(
+            error.kind,
+            FetchErrorKind::Connect | FetchErrorKind::Tls | FetchErrorKind::Timeout
+        );
+        if !retried || self.again.attempts < 2 {
+            return Err(error);
+        }
+        let left = self.again.attempts - 1;
+        dispatch_again(request, order, sent, view, &self.again, true, left).await
+    }
+
+    /// After `request`'s own first connection, made ahead of it, failed
+    /// with `error`: made again as `dispatch_again` says, or the error.
+    #[cfg(feature = "http3")]
+    async fn after_failed(
+        &self,
+        error: wreq::Error,
+        request: wreq::RequestBuilder,
+        order: OrigHeaderMap,
+        sent: Option<&Sent>,
+        view: Option<JarView>,
+    ) -> Result<wreq::Response, FetchError> {
+        let left = self.again.attempts.saturating_sub(1);
+        if left == 0 || !handshake_broke(&error) {
+            return Err(error.into());
+        }
+        dispatch_again(request, order, sent, view, &self.again, true, left).await
     }
 
     /// Sends a request built for wreq over HTTP/3 instead, its headers
@@ -2293,7 +2494,7 @@ impl Fetcher {
             Way::Lookup(lookup) if routes.alt_svc_first() => {
                 match routes.adopt_when_found(lookup).await {
                     Some(route) => route,
-                    None => return dispatch(request, order, sent, view).await,
+                    None => return self.over_tcp(request, order, sent, view).await,
                 }
             }
             Way::Lookup(lookup) if routes.waits_for_records() => {
@@ -2301,7 +2502,7 @@ impl Fetcher {
                     .await
                 {
                     Ok(Some(route)) => route,
-                    _ => return dispatch(request, order, sent, view).await,
+                    _ => return self.over_tcp(request, order, sent, view).await,
                 }
             }
             Way::Lookup(lookup) => {
@@ -2312,23 +2513,37 @@ impl Fetcher {
                 // does once no transaction is left for it
                 // (DnsAndConnectSocket::SetupConn).
                 let Some(mut connecting) = preconnect(&request, None) else {
-                    return dispatch(request, order, sent, view).await;
+                    return self.over_tcp(request, order, sent, view).await;
                 };
                 let adopted = tokio::select! {
                     biased;
                     made = &mut connecting => match made {
-                        Ok(Err(e)) => return Err(e.into()),
-                        _ => return dispatch(request, order, sent, view).await,
+                        Ok(Err(e)) => return self.after_failed(e, request, order, sent, view).await,
+                        _ => return self.over_tcp(request, order, sent, view).await,
                     },
                     route = routes.adopt_when_found(lookup) => route,
                 };
                 match adopted {
+                    // The connection being made is the record's own.
+                    Some(route)
+                        if !connecting.is_finished()
+                            && !route.h3
+                            && route.from.as_ref().is_some_and(|f| f.tcp.is_none()) =>
+                    {
+                        return match connecting.await {
+                            Ok(Err(e)) => {
+                                self.origin_again(e.into(), request, order, sent, view)
+                                    .await
+                            }
+                            _ => self.over_tcp(request, order, sent, view).await,
+                        };
+                    }
                     Some(route) if !connecting.is_finished() => route,
                     _ => {
                         if let Ok(Err(e)) = connecting.await {
-                            return Err(e.into());
+                            return self.after_failed(e, request, order, sent, view).await;
                         }
-                        return dispatch(request, order, sent, view).await;
+                        return self.over_tcp(request, order, sent, view).await;
                     }
                 }
             }
@@ -2345,6 +2560,11 @@ impl Fetcher {
                     h3,
                 };
                 return send_from_records(&from, Next::To(tcp), request, order, sent, view, going)
+                    .await;
+            }
+            if route.from.is_some() {
+                return self
+                    .to_origin_from_records(request, order, sent, view)
                     .await;
             }
             return send_h2(route, request, order, sent, view).await;
@@ -2731,12 +2951,17 @@ async fn send_from_records(
     let mut retries: Option<Vec<crate::https_rr::Route>> = None;
     // The connection that failed, if one did, was one of them.
     let mut attempts = from.attempts + usize::from(matches!(next, Next::After(..)));
+    // Every connection after a failed one is made again (IS_RETRY).
+    let mut retry = attempts > 0;
+    let again = &going.fetcher.again;
+    let left = |attempts: usize| again.attempts.saturating_sub(attempts);
     while attempts < 10 {
         let to = match next {
             Next::To(to) => to,
             Next::After(failed, rejected, error) => {
                 if failed.ech.is_none() {
-                    return dispatch(request, order, sent, view).await;
+                    return dispatch_again(request, order, sent, view, again, true, left(attempts))
+                        .await;
                 }
                 match rejected {
                     Some(Some(configs)) => crate::https_rr::Route {
@@ -2753,7 +2978,11 @@ async fn send_from_records(
                             None => {
                                 let (all, list) = from.retries(&failed, going.no_h3, &h3_excluded);
                                 if !all {
-                                    return dispatch(request, order, sent, view).await;
+                                    let n = left(attempts);
+                                    return dispatch_again(
+                                        request, order, sent, view, again, true, n,
+                                    )
+                                    .await;
                                 }
                                 retries.insert(list)
                             }
@@ -2781,9 +3010,13 @@ async fn send_from_records(
             let fetcher = going.fetcher;
             return Box::pin(fetcher.send_h3(way, request, order, sent, view, going.h3)).await;
         }
-        let Some((routed, require)) = request.try_clone().and_then(|r| to_record(r, &to)) else {
+        let Some((mut routed, require)) = request.try_clone().and_then(|r| to_record(r, &to))
+        else {
             return dispatch(request, order, sent, view).await;
         };
+        if retry && let Some(tls) = &again.tls {
+            routed = routed.tls_options(tls.clone());
+        }
         attempts += 1;
         // The connection first, so a failed one can go on elsewhere.
         let connecting = routed.try_clone().map(|r| r.connect_only(require).send());
@@ -2808,6 +3041,7 @@ async fn send_from_records(
                 Next::After(to, rejected, e.into())
             }
         };
+        retry = true;
     }
     match next {
         Next::After(_, _, error) => Err(error),

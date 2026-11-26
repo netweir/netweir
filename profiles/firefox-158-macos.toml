@@ -101,6 +101,12 @@ ech_grease = true
 # The ClientHelloInner as NSS writes it (recorded in
 # firefox-160-macos.ech.capture.json).
 ech_inner_like_nss = true
+# A handshake that's reset or closed is made again, up to 10 connections
+# in all (network.http.request.max-attempts), and every connection after
+# a failed one leaves compress_certificate out (IS_RETRY, nsNSSIOLayer).
+# Recorded from Firefox 160.0.1 for #436.
+handshake_attempts = 10
+retry_without_certificate_compression = true
 ocsp_stapling = true
 signed_certificate_timestamps = true
 session_ticket = true

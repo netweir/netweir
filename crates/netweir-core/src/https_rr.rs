@@ -980,6 +980,25 @@ fn all_with_ech_into(
     all
 }
 
+/// Whether the list of records to go on to leaves `r` out after a
+/// connection to `failed` failed (nsHttpTransaction::
+/// PrepareSVCBRecordsForRetry): when it goes to the same name with the
+/// same ALPN. Firefox compares the name with the failed connection's
+/// routed host, which nsHttpConnectionInfo leaves empty for a TCP record
+/// that keeps the origin's host and port, so none is left out after that
+/// one and it's tried again.
+pub(crate) fn skipped_after(
+    failed: &Route,
+    r: &Route,
+    origin_host: &str,
+    origin_port: u16,
+) -> bool {
+    let routed = failed.alpn == "h3"
+        || !failed.host.eq_ignore_ascii_case(origin_host)
+        || failed.port != origin_port;
+    routed && r.host == failed.host && r.alpn == failed.alpn
+}
+
 /// The host Firefox's record set is keyed by (DNSHTTPSSVCRecordBase::mHost):
 /// the query name, port prefix and all.
 fn qname_host(host: &str, port: u16) -> String {
@@ -2128,6 +2147,37 @@ mod tests {
         );
         // The owner matches case-insensitively, and with a trailing dot.
         assert_eq!(records(parse(&p, "EXAMPLE.com.")).len(), 1);
+    }
+
+    #[test]
+    fn a_record_to_the_origin_itself_is_tried_again_after_it_failed() {
+        // nsHttpConnectionInfo keeps no routed host for a TCP record with
+        // the origin's own host and port, so PrepareSVCBRecordsForRetry
+        // finds nothing named like the failed connection: Firefox 160.0.1
+        // made three connections for `. alpn=h2,http/1.1 ech=...`, its
+        // two entries and the first of them again (#436).
+        let to = |host: &str, port, alpn: &str| Route {
+            host: host.into(),
+            port,
+            alpn: alpn.into(),
+            ech: Some(vec![1]),
+        };
+        let origin = to("example.com", 443, "");
+        assert!(!skipped_after(&origin, &origin, "example.com", 443));
+        // Another port, another name, or h3 is routed, and is left out.
+        let port = to("example.com", 8443, "");
+        assert!(skipped_after(&port, &port, "example.com", 443));
+        let name = to("cdn.example.net", 443, "");
+        assert!(skipped_after(&name, &name, "example.com", 443));
+        let h3 = to("example.com", 443, "h3");
+        assert!(skipped_after(&h3, &h3, "example.com", 443));
+        // Only the same name with the same ALPN.
+        assert!(!skipped_after(
+            &name,
+            &to("cdn.example.net", 443, "http/1.1"),
+            "example.com",
+            443
+        ));
     }
 
     #[test]

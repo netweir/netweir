@@ -158,7 +158,15 @@ Settings(
 ## Interactions
 
 - **Retries** keep the request's policy: the same timeout, redirect limit
-  and login.
+  and login. Beneath them, one request with a Firefox profile makes its
+  connection again, as Firefox makes a transaction again, when the TLS
+  handshake is reset or closed: up to 10 connections in all
+  (`network.http.request.max-attempts`), each after the first without
+  `compress_certificate`, which a retried Firefox connection leaves
+  out. A handshake the server refuses with an alert is made once, unless
+  the origin has an HTTPS record (see `http3.md`). Chrome's and Safari's
+  profiles make one connection. A crawl's own retries come on top, as
+  new requests.
 - **Redirects** in a crawl are queued hop by hop, as before; each hop
   carries the policy, counts toward its limit, and gets the login only
   where the rules above allow it.

@@ -203,6 +203,21 @@ pub struct Tls {
     /// as NSS does, rather than ChaCha20-Poly1305 wherever it is.
     #[serde(default)]
     pub aes_hw_override: Option<bool>,
+    /// The connections a request makes when its TLS handshake is reset
+    /// or closed, the first included: Firefox makes the transaction again
+    /// up to network.http.request.max-attempts (10) times. 1, the
+    /// default, makes none again, as Chrome does.
+    #[serde(default = "one")]
+    pub handshake_attempts: u8,
+    /// A connection made again after one failed offers no certificate
+    /// compression, as Firefox's carry IS_RETRY and nsNSSIOLayer then
+    /// leaves compress_certificate out.
+    #[serde(default)]
+    pub retry_without_certificate_compression: bool,
+}
+
+fn one() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -333,12 +348,12 @@ impl Profile {
         self.emulation_with(None)
     }
 
-    /// `emulation`, with `priority` for every request's HEADERS frame in
-    /// place of the profile's.
-    pub(crate) fn emulation_with(
+    /// The TLS options of a connection from this profile, offering
+    /// certificate compression or not (see `Tls::retry_without_certificate_compression`).
+    pub(crate) fn tls_options(
         &self,
-        priority: Option<&HeadersPriority>,
-    ) -> Result<Emulation, ProfileError> {
+        certificate_compression: bool,
+    ) -> Result<TlsOptions, ProfileError> {
         let bad = |what: &str, v: &str| {
             ProfileError(format!("profile {}: unknown {what} {v:?}", self.name))
         };
@@ -377,6 +392,7 @@ impl Profile {
         let compressors = t
             .certificate_compression
             .iter()
+            .filter(|_| certificate_compression)
             .map(|c| match c.as_str() {
                 "brotli" => Ok(&BROTLI as &'static dyn CertificateCompressor),
                 "zlib" => Ok(&ZLIB as &'static dyn CertificateCompressor),
@@ -425,7 +441,19 @@ impl Profile {
         if let Some(hex) = &t.trust_anchors {
             tls = tls.trust_anchors(decode_hex(hex).ok_or_else(|| bad("trust anchor hex", hex))?);
         }
+        Ok(tls.build())
+    }
 
+    /// `emulation`, with `priority` for every request's HEADERS frame in
+    /// place of the profile's.
+    pub(crate) fn emulation_with(
+        &self,
+        priority: Option<&HeadersPriority>,
+    ) -> Result<Emulation, ProfileError> {
+        let bad = |what: &str, v: &str| {
+            ProfileError(format!("profile {}: unknown {what} {v:?}", self.name))
+        };
+        let tls = self.tls_options(true)?;
         let h = &self.http2;
         let mut order = SettingsOrder::builder();
         let mut http2 = Http2Options::builder();
@@ -487,7 +515,7 @@ impl Profile {
         // client-wide one would take the place of the hook that records
         // what a request was sent with.
         Ok(Emulation::builder()
-            .tls_options(tls.build())
+            .tls_options(tls)
             .http2_options(http2.build())
             .headers(self.default_headers()?)
             .build(Group::new(self.name.clone())))
