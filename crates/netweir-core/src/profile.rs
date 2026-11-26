@@ -155,9 +155,24 @@ pub struct Shape {
     pub headers_priority: Option<HeadersPriority>,
 }
 
+/// The root certificates a browser trusts out of the box.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Roots {
+    /// The Chrome Root Store (chromium-roots).
+    #[default]
+    Chromium,
+    /// Mozilla's, the NSS builtins Firefox ships (webpki-root-certs).
+    Mozilla,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
+    /// The roots its connections trust, unless the fetch is given CAs of
+    /// its own.
+    #[serde(default)]
+    pub roots: Roots,
     pub ciphers: Vec<String>,
     pub groups: Vec<String>,
     pub key_shares: Vec<String>,

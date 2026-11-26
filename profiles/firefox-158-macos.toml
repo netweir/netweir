@@ -39,6 +39,8 @@ http2_headers = [
 ]
 
 [tls]
+# NSS's builtins: Mozilla's root store, as Firefox ships it.
+roots = "mozilla"
 ciphers = [
     "TLS_AES_128_GCM_SHA256",
     "TLS_CHACHA20_POLY1305_SHA256",

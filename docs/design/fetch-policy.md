@@ -45,7 +45,8 @@ await client.get(url, params=..., auth=..., allow_redirects=..., timeout=...)
 - `timeout` on a call replaces the client's for that call, longer or
   shorter. Like the client's, it covers one request from connecting to the
   last byte; each redirect is a request of its own.
-- `verify` is `True` (the bundled roots, which are Chrome's), `False`, or
+- `verify` is `True` (the bundled roots of the profile's browser:
+  Mozilla's for Firefox, the Chrome Root Store for Chrome and Safari), `False`, or
   the path of a PEM file of CA certificates, which then replaces the
   bundled roots, as requests and httpx do with a path. A file with no
   certificate in it is a `ValueError`.

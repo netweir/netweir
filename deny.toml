@@ -51,6 +51,13 @@ allow = ["AGPL-3.0-only"]
 crate = "tiny-keccak"
 allow = ["CC0-1.0"]
 
+# Mozilla's root certificates, as CCADB publishes them, under the CCADB
+# data terms: permissive, no copyleft, the licence or a link to it kept
+# with the data. Allowed for this crate only.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 # A hash the Redis client needs. The Boost licence is permissive, asks
 # for no notice in binaries and allows commercial use; allowed for this
 # crate only, as it's the only one under it.

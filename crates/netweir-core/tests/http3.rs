@@ -437,6 +437,36 @@ async fn certificates_are_checked_over_http3() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[tokio::test]
+async fn a_root_firefox_builds_in_keeps_http3() {
+    // The same server as above, its root now among Mozilla's, which
+    // Firefox builds in: the chain is no third party's, and the request
+    // goes over HTTP/3. Among Chromium's only, Firefox doesn't trust it.
+    let dir = std::env::temp_dir().join(format!("netweir-h3-root-{}", std::process::id()));
+    let mut server = Server::start_h3(0, Some(&dir)).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let alternative = format!("localhost:{port}");
+    let der = std::fs::read(dir.join("cert.der")).unwrap();
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.extra_built_in_roots = vec![(netweir_core::Roots::Mozilla, der.clone())];
+    let built_in = Fetcher::new(options).unwrap();
+    built_in.use_http3(&origin, &alternative).unwrap();
+    let response = built_in.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/3");
+    assert_eq!(server.next().await.unwrap().protocol, "h3");
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.extra_built_in_roots = vec![(netweir_core::Roots::Chromium, der)];
+    let chrome_only = Fetcher::new(options).unwrap();
+    chrome_only.use_http3(&origin, &alternative).unwrap();
+    let error = chrome_only
+        .get(&format!("{origin}/"), &[])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, netweir_core::FetchErrorKind::Tls, "{error}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn http3_only_for_a_profile_that_has_it_and_never_through_a_proxy() {
     // An older Chrome, with no HTTP/3 recording.

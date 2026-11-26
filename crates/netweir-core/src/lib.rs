@@ -31,6 +31,7 @@ pub mod install;
 mod profile;
 pub mod queue;
 pub mod robots;
+mod roots;
 pub mod sitemap;
 pub mod tdmrep;
 pub mod tracks;
@@ -52,5 +53,5 @@ pub use fetch::{
 #[doc(hidden)]
 pub use https_rr::https_answer;
 pub use profile::{
-    DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, built_in as built_in_profiles,
+    DEFAULT as DEFAULT_PROFILE, Profile, ProfileError, Roots, built_in as built_in_profiles,
 };
