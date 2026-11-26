@@ -1320,3 +1320,17 @@ async fn early_data_turned_down_goes_again_at_once() {
         "Chrome took {chrome:?}, Firefox {firefox:?}"
     );
 }
+
+#[tokio::test]
+async fn a_get_in_0rtt_on_a_chacha20_session_is_seen_as_early() {
+    // A machine without AES in hardware resumes with
+    // TLS_CHACHA20_POLY1305_SHA256; the server offers nothing else here,
+    // and still has to read the GET out of the 0-RTT packets.
+    let mut server = Server::start_h3_early_chacha20(0).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(again.http3.as_ref().unwrap().early, "the GET went in 0-RTT");
+}

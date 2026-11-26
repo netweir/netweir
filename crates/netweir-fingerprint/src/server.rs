@@ -155,6 +155,13 @@ impl Server {
         Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::TurnDown).await
     }
 
+    /// Like `start_h3_early`, but QUIC offers only
+    /// TLS_CHACHA20_POLY1305_SHA256, the suite a client on a machine
+    /// without AES in hardware picks, so its sessions resume with it.
+    pub async fn start_h3_early_chacha20(port: u16) -> io::Result<Server> {
+        Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::ChaCha20).await
+    }
+
     async fn bind(port: u16, alpn: &[&[u8]]) -> io::Result<Server> {
         Server::bind_with(port, alpn, None, false, Early::No).await
     }
@@ -236,6 +243,14 @@ impl Server {
             if early == Early::TurnDown {
                 config.session_storage = Arc::new(Forgetful);
             }
+            if early == Early::ChaCha20 {
+                config = tls_config_with(
+                    &[b"h3"],
+                    certificate.clone(),
+                    vec![rustls::crypto::ring::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256],
+                );
+                config.max_early_data_size = u32::MAX;
+            }
             let hold = match early {
                 Early::ForBrowser(hold) => Some(hold),
                 _ => None,
@@ -283,6 +298,8 @@ enum Early {
     /// Set up for a browser, each QUIC datagram to it held back so long.
     ForBrowser(std::time::Duration),
     TurnDown,
+    /// Like `Take`, with QUIC offering only TLS_CHACHA20_POLY1305_SHA256.
+    ChaCha20,
 }
 
 /// A session store that keeps nothing, so every resumption fails and
@@ -370,17 +387,29 @@ fn today() -> (i32, u8, u8) {
     (year as i32, month as u8, day as u8)
 }
 
-fn tls_config(alpn: &[&[u8]], (cert_der, key_der): (Vec<u8>, Vec<u8>)) -> rustls::ServerConfig {
+fn tls_config(alpn: &[&[u8]], certificate: (Vec<u8>, Vec<u8>)) -> rustls::ServerConfig {
+    let suites = rustls::crypto::ring::default_provider().cipher_suites;
+    tls_config_with(alpn, certificate, suites)
+}
+
+/// `tls_config`, offering only `suites`.
+fn tls_config_with(
+    alpn: &[&[u8]],
+    (cert_der, key_der): (Vec<u8>, Vec<u8>),
+    suites: Vec<rustls::SupportedCipherSuite>,
+) -> rustls::ServerConfig {
     let cert = rustls::pki_types::CertificateDer::from(cert_der);
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key_der.into());
-    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("protocol versions")
-    .with_no_client_auth()
-    .with_single_cert(vec![cert], key)
-    .expect("certificate");
+    let mut config =
+        rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::CryptoProvider {
+            cipher_suites: suites,
+            ..rustls::crypto::ring::default_provider()
+        }))
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .expect("certificate");
     config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     config
 }
@@ -679,8 +708,18 @@ fn listen_quic(
     if early {
         tls.key_log = secrets.clone();
     }
-    let crypto =
-        quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
+    // Initial packets always use TLS_AES_128_GCM_SHA256 (RFC 9001), even
+    // on a server whose TLS offers only ChaCha20.
+    let rustls::SupportedCipherSuite::Tls13(initial) =
+        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256
+    else {
+        unreachable!("a TLS 1.3 suite");
+    };
+    let initial = initial
+        .quic_suite()
+        .ok_or_else(|| io::Error::other("no QUIC suite"))?;
+    let crypto = quinn::crypto::rustls::QuicServerConfig::with_initial(Arc::new(tls), initial)
+        .map_err(io::Error::other)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     if let Some(idle) = idle {
         let mut transport = quinn::TransportConfig::default();

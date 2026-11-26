@@ -296,10 +296,17 @@ fn open(keys: &Keys, packet: &[u8], pn_offset: usize) -> Option<(u64, usize, Vec
 /// read with its early traffic secret. QUIC v1 only; packets that don't
 /// open are skipped.
 pub fn zero_rtt_streams(datagrams: &[Vec<u8>], secret: &[u8]) -> std::collections::HashSet<u64> {
+    ZeroRttKeys::for_secret(secret)
+        .iter()
+        .map(|keys| streams_with(datagrams, keys))
+        .find(|streams| !streams.is_empty())
+        .unwrap_or_default()
+}
+
+/// The streams the 0-RTT packets in `datagrams` that open with `keys`
+/// carried data on.
+fn streams_with(datagrams: &[Vec<u8>], keys: &ZeroRttKeys) -> std::collections::HashSet<u64> {
     let mut streams = std::collections::HashSet::new();
-    let Some(keys) = ZeroRttKeys::new(secret) else {
-        return streams;
-    };
     let mut largest = None;
     for datagram in datagrams {
         let mut rest = &datagram[..];
@@ -355,11 +362,7 @@ pub fn zero_rtt_streams(datagrams: &[Vec<u8>], secret: &[u8]) -> std::collection
 }
 
 /// QUIC v1 packet protection for 0-RTT, from the client's early traffic
-/// secret (RFC 9001, Section 5.1). The suite is told from the secret's
-/// length: TLS_AES_256_GCM_SHA384 (Safari's) for 48 bytes, else
-/// TLS_AES_128_GCM_SHA256 (Chrome's and Firefox's).
-/// shortcut: a session resumed with TLS_CHACHA20_POLY1305_SHA256 doesn't
-/// open, so reads as not early; add it if a profile ever resumes with it.
+/// secret (RFC 9001, Section 5.1).
 struct ZeroRttKeys {
     key: ring::aead::LessSafeKey,
     iv: [u8; 12],
@@ -367,13 +370,40 @@ struct ZeroRttKeys {
 }
 
 impl ZeroRttKeys {
-    fn new(secret: &[u8]) -> Option<ZeroRttKeys> {
-        use ring::aead::{AES_128_GCM, AES_256_GCM, quic};
-        let (hkdf, aead, hp_alg, len) = if secret.len() == 48 {
-            (ring::hkdf::HKDF_SHA384, &AES_256_GCM, &quic::AES_256, 32)
+    /// The keys `secret` could be for. A 48-byte secret is
+    /// TLS_AES_256_GCM_SHA384's (Safari resumes with it). A 32-byte one is
+    /// TLS_AES_128_GCM_SHA256's (Chrome's and Firefox's) or, on a machine
+    /// without AES in hardware, TLS_CHACHA20_POLY1305_SHA256's: the
+    /// secret doesn't say which, so both are tried.
+    fn for_secret(secret: &[u8]) -> Vec<ZeroRttKeys> {
+        use ring::aead::{AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305, quic};
+        let suites: &[(_, _, _, usize)] = if secret.len() == 48 {
+            &[(ring::hkdf::HKDF_SHA384, &AES_256_GCM, &quic::AES_256, 32)]
         } else {
-            (ring::hkdf::HKDF_SHA256, &AES_128_GCM, &quic::AES_128, 16)
+            &[
+                (ring::hkdf::HKDF_SHA256, &AES_128_GCM, &quic::AES_128, 16),
+                (
+                    ring::hkdf::HKDF_SHA256,
+                    &CHACHA20_POLY1305,
+                    &quic::CHACHA20,
+                    32,
+                ),
+            ]
         };
+        suites
+            .iter()
+            .filter_map(|&(hkdf, aead, hp, len)| ZeroRttKeys::new(secret, hkdf, aead, hp, len))
+            .collect()
+    }
+
+    fn new(
+        secret: &[u8],
+        hkdf: ring::hkdf::Algorithm,
+        aead: &'static ring::aead::Algorithm,
+        hp_alg: &'static ring::aead::quic::Algorithm,
+        len: usize,
+    ) -> Option<ZeroRttKeys> {
+        use ring::aead::quic;
         let prk = ring::hkdf::Prk::new_less_safe(hkdf, secret);
         let (mut key, mut iv, mut hp) = ([0u8; 32], [0u8; 12], [0u8; 32]);
         expand_label(&prk, b"quic key", &mut key[..len])?;
