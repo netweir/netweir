@@ -1047,3 +1047,74 @@ async fn firefox_and_safari_stay_on_http_with_an_https_record() {
         );
     }
 }
+
+/// A Fetcher whose next connection to `server` resumes the session its
+/// first one got, with a ticket that allows early data, QUIC having
+/// worked by then.
+async fn resuming(server: &mut Server) -> (Fetcher, String) {
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{port}"))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    (fetcher, origin)
+}
+
+#[tokio::test]
+async fn a_resumed_connection_sends_a_get_in_0rtt() {
+    // Once QUIC has worked, a session to an alternative that isn't
+    // recently broken needs no confirmation, so a GET goes as soon as it
+    // can send early data (QuicChromiumClientSession::
+    // OnNewEncryptionKeyAvailable, HttpUtil::IsMethodSafe).
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(again.client_hello.extensions.contains(&0x2a), "early_data");
+    assert!(again.http3.as_ref().unwrap().early);
+}
+
+#[tokio::test]
+async fn a_post_on_a_resumed_connection_waits_for_its_handshake() {
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let form = Outgoing::form(
+        b"q=rust".to_vec(),
+        Some("application/x-www-form-urlencoded".into()),
+        None,
+    );
+    let response = fetcher
+        .send(&format!("{origin}/post"), &form, &[])
+        .await
+        .unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let post = server.next().await.unwrap();
+    assert!(resumed(&post));
+    assert_eq!(
+        (post.method.as_str(), post.body.as_str()),
+        ("POST", "q=rust")
+    );
+    assert!(!post.http3.as_ref().unwrap().early);
+}
+
+#[tokio::test]
+async fn early_data_turned_down_still_gets_its_answer() {
+    // The server keeps no session and turns the 0-RTT GET down; the
+    // request's data goes again once the handshake is done, and is
+    // answered once.
+    let mut server = Server::start_h3_turning_early_down(0).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert_eq!(again.path, "/again");
+    assert!(!again.http3.as_ref().unwrap().early);
+    let more = tokio::time::timeout(Duration::from_millis(300), server.next()).await;
+    assert!(more.is_err(), "the request came once");
+}

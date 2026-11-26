@@ -2705,7 +2705,7 @@ impl Fetcher {
                     *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
                 }
                 h3_answer(
-                    routes.send(&route, &host, pending.request(), deadline, h3.idempotent),
+                    routes.send_pending(&route, &host, pending, deadline, h3.idempotent),
                     deadline,
                     &uri,
                 )
@@ -2777,7 +2777,7 @@ impl Fetcher {
                     *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
                 }
                 h3_answer(
-                    routes.send(&route, &host, pending.request(), deadline, h3.idempotent),
+                    routes.send_pending(&route, &host, pending, deadline, h3.idempotent),
                     deadline,
                     &uri,
                 )

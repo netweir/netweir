@@ -1388,3 +1388,175 @@ async fn the_archive_records_http3() {
     assert_eq!(entry["response"]["httpVersion"], "HTTP/3");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What profiles/firefox-160-macos.h3-0rtt.capture.json recorded: Firefox
+/// 160.0.1 loading /zero-rtt from a server whose session tickets allow
+/// early data. Its script asked until a response came over HTTP/3, let
+/// that connection time out, and went to /again, which Firefox sent in
+/// 0-RTT on a connection that resumed, over ::1.
+fn zero_rtt_recording() -> Vec<Capture> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../profiles/{PROFILE}.h3-0rtt.capture.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A first flight's packet kinds, per datagram. Their sizes follow the
+/// random connection ID's length.
+fn packets(q: &Quic) -> Vec<Vec<String>> {
+    q.datagrams
+        .iter()
+        .map(|d| d.packets.iter().map(|p| p.kind.clone()).collect())
+        .collect()
+}
+
+/// A Fetcher whose next connection to `server` over ::1 resumes the
+/// session its first one got, with the ticket that allows early data.
+async fn resuming(server: &mut Server) -> (Fetcher, String) {
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("[::1]:{port}"))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    (fetcher, origin)
+}
+
+#[tokio::test]
+async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_did() {
+    let recording = zero_rtt_recording();
+    let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
+    assert!(recorded.http3.as_ref().unwrap().early);
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(
+        again.http3.as_ref().unwrap().early,
+        "the request went before the handshake was done"
+    );
+    // The request rides the first flight, in the 0-RTT packet coalesced
+    // after the second Initial, which fills that datagram as Firefox's did.
+    let (expected, actual) = (
+        recorded.quic.as_ref().unwrap(),
+        again.quic.as_ref().unwrap(),
+    );
+    assert_eq!(packets(actual), packets(expected));
+    assert_eq!(
+        actual.datagrams.iter().map(|d| d.size).collect::<Vec<_>>(),
+        expected
+            .datagrams
+            .iter()
+            .map(|d| d.size)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn a_post_on_a_resumed_connection_waits_for_the_handshake() {
+    // Only a safe method goes in 0-RTT (nsHttpTransaction::Do0RTT).
+    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let form = Outgoing::form(
+        b"q=rust".to_vec(),
+        Some("application/x-www-form-urlencoded".into()),
+        None,
+    );
+    let response = fetcher
+        .send(&format!("{origin}/post"), &form, &[])
+        .await
+        .unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let post = server.next().await.unwrap();
+    assert!(resumed(&post));
+    assert_eq!(
+        (post.method.as_str(), post.body.as_str()),
+        ("POST", "q=rust")
+    );
+    assert!(!post.http3.as_ref().unwrap().early);
+}
+
+#[tokio::test]
+async fn early_data_turned_down_is_sent_again_once_connected() {
+    // The server keeps no session, so it turns the 0-RTT GET down; neqo
+    // drops the stream, and the request goes again on the same connection
+    // once its handshake is done (Http3Session::Finish0Rtt), once.
+    let mut server = Server::start_h3_turning_early_down(0).await.unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert_eq!(again.path, "/again");
+    assert!(!again.http3.as_ref().unwrap().early);
+    let kinds = again.quic.as_ref().unwrap().datagrams.iter();
+    assert!(
+        kinds.flat_map(|d| &d.packets).any(|p| p.kind == "0-rtt"),
+        "the request was tried in 0-RTT"
+    );
+    let more = tokio::time::timeout(Duration::from_millis(300), server.next()).await;
+    assert!(more.is_err(), "the request came once");
+}
+
+#[tokio::test]
+async fn a_request_in_0rtt_still_races_tcp_after_the_backup_timer() {
+    // A request on a connection in 0-RTT keeps Firefox's backup timer: if
+    // the handshake isn't done when it fires, a TCP connection is opened,
+    // and the request goes over it once it's made
+    // (MaybeStartHttp3BackupTimer, OnBackupConnectionReady). Here QUIC is
+    // blocked once the session ticket is in hand.
+    let h3 = Server::start_h3_early(0, None, false).await.unwrap();
+    let tcp = Server::start().await.unwrap();
+    let udp = relay(Some(h3.port)).await;
+    let origin = format!("https://localhost:{}", tcp.port);
+    let plain = format!("{origin}/");
+    let fetcher = fetcher();
+    fetcher
+        .get(
+            &offering(&origin, &format!("h3=\"127.0.0.1:{}\"", udp.port)),
+            &[],
+        )
+        .await
+        .unwrap();
+    until_http3(&fetcher, &plain).await;
+    fetcher.close_http3().await;
+    udp.drop.store(true, Ordering::Relaxed);
+    let seen = udp.seen.load(Ordering::Relaxed);
+    let started = Instant::now();
+    let response = fetcher.get(&plain, &[]).await.unwrap();
+    assert_eq!(response.version, "HTTP/2");
+    assert!(udp.seen.load(Ordering::Relaxed) > seen, "QUIC was tried");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited out 0-RTT: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_connection_stuck_in_0rtt_fails_after_five_seconds() {
+    // network.http.http3.0rtt_timeout: 5000 ms in 0-RTT, then the
+    // connection fails (Http3Session::ProcessOutputAndEvents). A forced
+    // route has no TCP to go to, so the request fails with it.
+    let h3 = Server::start_h3_early(0, None, false).await.unwrap();
+    let udp = relay(Some(h3.port)).await;
+    let origin = format!("https://localhost:{}", h3.port);
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{}", udp.port))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    fetcher.close_http3().await;
+    udp.drop.store(true, Ordering::Relaxed);
+    let started = Instant::now();
+    let failed = fetcher.get(&format!("{origin}/again"), &[]).await;
+    let took = started.elapsed();
+    assert!(failed.is_err(), "{failed:?}");
+    assert!(
+        (Duration::from_millis(4500)..Duration::from_millis(8000)).contains(&took),
+        "failed after {took:?}"
+    );
+}

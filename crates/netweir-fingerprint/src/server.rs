@@ -27,7 +27,7 @@ use std::io::{self, IoSliceMut};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -106,7 +106,14 @@ impl Server {
         } else {
             &[b"h2", b"http/1.1"]
         };
-        Server::bind_with(port, alpn, Some(lasting_certificate(dir)?), false).await
+        Server::bind_with(
+            port,
+            alpn,
+            Some(lasting_certificate(dir)?),
+            false,
+            Early::No,
+        )
+        .await
     }
 
     /// Like `start_on`, and listens for QUIC on the same UDP port, on
@@ -115,11 +122,39 @@ impl Server {
     /// (see [`lasting_certificate`]), else a new self-signed one.
     pub async fn start_h3(port: u16, dir: Option<&Path>) -> io::Result<Server> {
         let certificate = dir.map(lasting_certificate).transpose()?;
-        Server::bind_with(port, &[b"h2", b"http/1.1"], certificate, true).await
+        Server::bind_with(port, &[b"h2", b"http/1.1"], certificate, true, Early::No).await
+    }
+
+    /// Like `start_h3`, but its QUIC session tickets allow early data, and
+    /// it takes requests in 0-RTT: each capture's `http3.early` says
+    /// whether its request came that way. `browser` sets it up for a
+    /// browser's `/zero-rtt`: TCP offers only HTTP/1.1, which a browser
+    /// can't coalesce an HTTP/3 request onto, and a QUIC connection with
+    /// nothing on it times out after 3 s, a close that leaves the browser's
+    /// Alt-Svc in place, so the next request resumes.
+    pub async fn start_h3_early(
+        port: u16,
+        dir: Option<&Path>,
+        browser: bool,
+    ) -> io::Result<Server> {
+        let certificate = dir.map(lasting_certificate).transpose()?;
+        let (alpn, early): (&[&[u8]], _) = if browser {
+            (&[b"http/1.1"], Early::ForBrowser)
+        } else {
+            (&[b"h2", b"http/1.1"], Early::Take)
+        };
+        Server::bind_with(port, alpn, certificate, true, early).await
+    }
+
+    /// Like `start_h3_early`, but no session it gave a ticket for is ever
+    /// resumed: a client that tries 0-RTT has its early data turned down,
+    /// and makes a full handshake.
+    pub async fn start_h3_turning_early_down(port: u16) -> io::Result<Server> {
+        Server::bind_with(port, &[b"h2", b"http/1.1"], None, true, Early::TurnDown).await
     }
 
     async fn bind(port: u16, alpn: &[&[u8]]) -> io::Result<Server> {
-        Server::bind_with(port, alpn, None, false).await
+        Server::bind_with(port, alpn, None, false, Early::No).await
     }
 
     /// A TCP listener on `port`, or on a free port for 0. With `h3`, a
@@ -180,6 +215,7 @@ impl Server {
         alpn: &[&[u8]],
         certificate: Option<(Vec<u8>, Vec<u8>)>,
         h3: bool,
+        early: Early,
     ) -> io::Result<Server> {
         let (listener, port, udp) = Server::listen(port, h3).await?;
         let certificate = certificate.unwrap_or_else(|| {
@@ -190,11 +226,27 @@ impl Server {
         let (tx, captures) = mpsc::unbounded_channel();
         let connections = Arc::new(AtomicU64::new(0));
         let alt_svc = if let Some(QuicSockets { v4, v6 }) = udp {
-            let config = tls_config(&[b"h3"], certificate.clone());
-            listen_quic(v4, config.clone(), connections.clone(), tx.clone())?;
+            let mut config = tls_config(&[b"h3"], certificate.clone());
+            if early != Early::No {
+                // What quinn requires of a server that takes 0-RTT.
+                config.max_early_data_size = u32::MAX;
+            }
+            if early == Early::TurnDown {
+                config.session_storage = Arc::new(Forgetful);
+            }
+            let idle = (early == Early::ForBrowser).then_some(EARLY_IDLE);
+            let early = early != Early::No;
+            listen_quic(
+                v4,
+                config.clone(),
+                early,
+                idle,
+                connections.clone(),
+                tx.clone(),
+            )?;
             // A machine without IPv6 just doesn't get this one.
             if let Some(v6) = v6 {
-                listen_quic(v6, config, connections.clone(), tx.clone())?;
+                listen_quic(v6, config, early, idle, connections.clone(), tx.clone())?;
             }
             Some(format!("h3=\":{port}\"; ma=86400"))
         } else {
@@ -219,6 +271,36 @@ impl Server {
     /// The next request's capture, in the order requests completed.
     pub async fn next(&mut self) -> Option<Capture> {
         self.captures.recv().await
+    }
+}
+
+/// Whether a server's QUIC session tickets allow early data, and what
+/// becomes of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Early {
+    No,
+    Take,
+    ForBrowser,
+    TurnDown,
+}
+
+/// A session store that keeps nothing, so every resumption fails and
+/// early data with it.
+#[derive(Debug)]
+struct Forgetful;
+
+impl rustls::server::StoresServerSessions for Forgetful {
+    fn put(&self, _key: Vec<u8>, _value: Vec<u8>) -> bool {
+        true
+    }
+    fn get(&self, _key: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+    fn take(&self, _key: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+    fn can_cache(&self) -> bool {
+        true
     }
 }
 
@@ -326,6 +408,25 @@ const FETCH_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>fetch</t
 const IMAGE_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>image</title>
 <img src="/picture.png" alt="">"#;
 
+/// The page `/zero-rtt` serves: its script asks until a response came
+/// over HTTP/3, waits for that connection to time out, then goes to
+/// `/again`, whose request the browser may send in 0-RTT on the
+/// connection that resumes.
+const ZERO_RTT_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>zero-rtt</title>
+<script>
+(async () => {
+  for (let i = 0; i < 50; i++) {
+    const seen = await (await fetch("/probe?" + i)).json();
+    if (seen.protocol === "h3") break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  // The connection's ticket is taken, then the connection times out
+  // (EARLY_IDLE), a close that leaves the browser's Alt-Svc in place.
+  await new Promise(r => setTimeout(r, 6000));
+  location.href = "/again";
+})();
+</script>"#;
+
 /// The status, the headers, and a body of its own, or `None` to echo the
 /// capture as JSON.
 type Answer = (u16, Vec<(&'static str, String)>, Option<Vec<u8>>);
@@ -424,6 +525,10 @@ fn route(path: &str, authorized: bool) -> Answer {
             let page = html(&mut headers, LINK_PAGE);
             (200, headers, page)
         }
+        ("/zero-rtt", _) => {
+            let page = html(&mut headers, ZERO_RTT_PAGE);
+            (200, headers, page)
+        }
         ("/image", _) => {
             let page = html(&mut headers, IMAGE_PAGE);
             (200, headers, page)
@@ -497,18 +602,29 @@ impl quinn::AsyncUdpSocket for Tee {
     }
 }
 
+/// How long a connection to a server set up for a browser's `/zero-rtt`
+/// lasts with nothing on it, so the next request opens one that resumes.
+const EARLY_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Serves QUIC on UDP `addr`: each connection's first flight is read from
 /// what the socket received, and its HTTP/3 requests are answered as the
 /// TCP side answers them.
 fn listen_quic(
     udp: std::net::UdpSocket,
     tls: rustls::ServerConfig,
+    early: bool,
+    idle: Option<std::time::Duration>,
     connections: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
     let crypto =
         quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
-    let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    if let Some(idle) = idle {
+        let mut transport = quinn::TransportConfig::default();
+        transport.max_idle_timeout(Some(idle.try_into().map_err(io::Error::other)?));
+        config.transport_config(Arc::new(transport));
+    }
     let runtime = Arc::new(quinn::TokioRuntime);
     let seen = Seen::default();
     let socket = Arc::new(Tee {
@@ -526,7 +642,7 @@ fn listen_quic(
             let (seen, connections, tx) = (seen.clone(), connections.clone(), tx.clone());
             tokio::spawn(async move {
                 let addr = incoming.remote_address();
-                let _ = handle_quic(incoming, &seen, &connections, tx).await;
+                let _ = handle_quic(incoming, early, &seen, &connections, tx).await;
                 seen.lock().unwrap().remove(&addr);
             });
         }
@@ -536,16 +652,45 @@ fn listen_quic(
 
 async fn handle_quic(
     incoming: quinn::Incoming,
+    early: bool,
     seen: &Seen,
     connections: &AtomicU64,
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
     let (addr, odcid) = (incoming.remote_address(), incoming.orig_dst_cid());
-    let conn = incoming.await.map_err(io::Error::other)?;
-    // The handshake is done, so the whole ClientHello has arrived.
-    let datagrams = seen.lock().unwrap().remove(&addr).unwrap_or_default();
-    let (quic, client_hello) = quic::first_flight(&datagrams, &odcid)
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    let in_early_data = Arc::new(AtomicBool::new(false));
+    let conn = if early {
+        // A server's connection is always taken before its handshake is
+        // done, so a request in 0-RTT can be read at once.
+        let Ok((conn, done)) = incoming.accept().map_err(io::Error::other)?.into_0rtt() else {
+            return Err(io::Error::other("a server connection always converts"));
+        };
+        in_early_data.store(true, Ordering::SeqCst);
+        let flag = in_early_data.clone();
+        tokio::spawn(async move {
+            done.await;
+            flag.store(false, Ordering::SeqCst);
+        });
+        conn
+    } else {
+        // The handshake is done, so the whole ClientHello has arrived.
+        incoming.await.map_err(io::Error::other)?
+    };
+    // Taken before the handshake was done, the ClientHello may still be
+    // arriving: its datagrams are read again until it's all there.
+    let mut waited = 0;
+    let (quic, client_hello) = loop {
+        let datagrams = seen.lock().unwrap().get(&addr).cloned().unwrap_or_default();
+        if let Some(flight) = quic::first_flight(&datagrams, &odcid) {
+            seen.lock().unwrap().remove(&addr);
+            break flight;
+        }
+        waited += 1;
+        if !early || waited > 400 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
     let connection = connections.fetch_add(1, Ordering::Relaxed);
     let ja4 = ja4_quic(&client_hello);
     let mut request = 0u32;
@@ -563,7 +708,7 @@ async fn handle_quic(
         body: String::from_utf8_lossy(body).into_owned(),
         headers,
     };
-    let served = h3::serve(conn, |req| {
+    let served = h3::serve(conn, in_early_data, |req| {
         let pseudo = |name: &str| {
             req.headers
                 .iter()
