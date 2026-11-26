@@ -19,6 +19,10 @@ pub struct ClientHello {
     /// saved captures; `alpn` covers every protocol a browser sends.
     #[serde(skip)]
     pub alpn_first: Vec<u8>,
+    /// The 32-byte random, which a key log names the connection by. Not
+    /// kept in saved captures.
+    #[serde(skip)]
+    pub random: Vec<u8>,
     pub supported_versions: Vec<u16>,
     pub supported_groups: Vec<u16>,
     pub key_share_groups: Vec<u16>,
@@ -113,7 +117,7 @@ impl ClientHello {
         let body_len = r.u24()?;
         let mut r = Reader(r.take(body_len)?);
         let legacy_version = r.u16()?;
-        r.take(32)?; // random
+        let random = r.take(32)?.to_vec();
         r.vec8()?; // session id
         let ciphers = Reader::u16s(r.vec16()?);
         r.vec8()?; // compression methods
@@ -124,6 +128,7 @@ impl ClientHello {
             server_name: None,
             alpn: Vec::new(),
             alpn_first: Vec::new(),
+            random,
             supported_versions: Vec::new(),
             supported_groups: Vec::new(),
             key_share_groups: Vec::new(),

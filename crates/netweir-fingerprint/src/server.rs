@@ -127,7 +127,8 @@ impl Server {
 
     /// Like `start_h3`, but its QUIC session tickets allow early data, and
     /// it takes requests in 0-RTT: each capture's `http3.early` says
-    /// whether its request came that way. `browser` sets it up for a
+    /// whether its request came that way, read from the client's 0-RTT
+    /// packets with the early secret rustls logs. `browser` sets it up for a
     /// browser's `/zero-rtt`: TCP offers only HTTP/1.1, which a browser
     /// can't coalesce an HTTP/3 request onto, and a QUIC connection with
     /// nothing on it times out after 3 s, a close that leaves the browser's
@@ -561,6 +562,9 @@ type Seen = Arc<Mutex<HashMap<SocketAddr, Vec<Vec<u8>>>>>;
 struct Tee {
     inner: Arc<dyn quinn::AsyncUdpSocket>,
     seen: Seen,
+    /// The same datagrams, kept after the first flight is read from
+    /// `seen`, for the 0-RTT packets among them.
+    early: Seen,
     /// How long each datagram to the client is held back, if it is.
     hold: Option<std::time::Duration>,
 }
@@ -603,7 +607,7 @@ impl quinn::AsyncUdpSocket for Tee {
     ) -> Poll<io::Result<usize>> {
         let poll = self.inner.poll_recv(cx, bufs, meta);
         if let Poll::Ready(Ok(n)) = poll {
-            let mut seen = self.seen.lock().unwrap();
+            let (mut seen, mut early) = (self.seen.lock().unwrap(), self.early.lock().unwrap());
             for (buf, meta) in bufs.iter().zip(meta.iter()).take(n) {
                 // One buffer can hold several datagrams of `stride` bytes.
                 for datagram in buf[..meta.len].chunks(meta.stride.max(1)) {
@@ -615,6 +619,14 @@ impl quinn::AsyncUdpSocket for Tee {
                     if seen.len() > 1024 {
                         seen.clear();
                     }
+                    if early.len() > 1024 {
+                        early.clear();
+                    }
+                    let kept = early.entry(meta.addr).or_default();
+                    if kept.len() == 64 {
+                        kept.remove(0);
+                    }
+                    kept.push(datagram.to_vec());
                     // The newest 32: a first flight is read from the
                     // Initial with its connection ID on, so older ones a
                     // connection left are pushed out rather than in the way.
@@ -662,6 +674,11 @@ fn listen_quic(
     connections: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
+    let mut tls = tls;
+    let secrets = Arc::new(EarlySecrets::default());
+    if early {
+        tls.key_log = secrets.clone();
+    }
     let crypto =
         quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -671,10 +688,11 @@ fn listen_quic(
         config.transport_config(Arc::new(transport));
     }
     let runtime = Arc::new(quinn::TokioRuntime);
-    let seen = Seen::default();
+    let (seen, early_seen) = (Seen::default(), Seen::default());
     let socket = Arc::new(Tee {
         inner: quinn::Runtime::wrap_udp_socket(&*runtime, udp)?,
         seen: seen.clone(),
+        early: early_seen.clone(),
         hold,
     });
     let endpoint = quinn::Endpoint::new_with_abstract_socket(
@@ -686,11 +704,14 @@ fn listen_quic(
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
             let (seen, connections, tx) = (seen.clone(), connections.clone(), tx.clone());
+            let early_seen = early_seen.clone();
+            let secrets = secrets.clone();
             tokio::spawn(async move {
                 // Its datagrams were taken out when its first flight was
                 // read. Taking out what's under its address now could take
                 // a later connection's from the same address, as through a
                 // relay; what an unfinished one left is pushed out instead.
+                let early = early.then_some((&early_seen, &*secrets));
                 let _ = handle_quic(incoming, early, &seen, &connections, tx).await;
             });
         }
@@ -698,22 +719,43 @@ fn listen_quic(
     Ok(())
 }
 
+/// Each connection's 0-RTT secret, by its ClientHello's random, as rustls
+/// logs them.
+#[derive(Debug, Default)]
+struct EarlySecrets(Mutex<HashMap<Vec<u8>, Vec<u8>>>);
+
+impl rustls::KeyLog for EarlySecrets {
+    fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
+        if label == "CLIENT_EARLY_TRAFFIC_SECRET" {
+            let mut secrets = self.0.lock().unwrap();
+            // A test tool's bound, as on what the socket keeps.
+            if secrets.len() > 1024 {
+                secrets.clear();
+            }
+            secrets.insert(client_random.to_vec(), secret.to_vec());
+        }
+    }
+    fn will_log(&self, label: &str) -> bool {
+        label == "CLIENT_EARLY_TRAFFIC_SECRET"
+    }
+}
+
+/// `early`, on a server that takes 0-RTT: what its socket received, kept
+/// for the 0-RTT packets, and the secrets they are read with.
 async fn handle_quic(
     incoming: quinn::Incoming,
-    early: bool,
+    early: Option<(&Seen, &EarlySecrets)>,
     seen: &Seen,
     connections: &AtomicU64,
     tx: mpsc::UnboundedSender<Capture>,
 ) -> io::Result<()> {
     let (addr, odcid) = (incoming.remote_address(), incoming.orig_dst_cid());
-    let mut handshake = None;
-    let conn = if early {
+    let conn = if early.is_some() {
         // A server's connection is always taken before its handshake is
         // done, so a request in 0-RTT can be read at once.
-        let Ok((conn, done)) = incoming.accept().map_err(io::Error::other)?.into_0rtt() else {
+        let Ok((conn, _)) = incoming.accept().map_err(io::Error::other)?.into_0rtt() else {
             return Err(io::Error::other("a server connection always converts"));
         };
-        handshake = Some(done);
         conn
     } else {
         // The handshake is done, so the whole ClientHello has arrived.
@@ -726,15 +768,14 @@ async fn handle_quic(
     // the server can only read once it has the whole ClientHello) or it
     // ends. Its requests are read meanwhile: a client whose 0-RTT packets
     // follow its ClientHello's datagrams (quiche's) could otherwise finish
-    // its handshake before the first one was read, and a request that
-    // came in 0-RTT would be taken as one that didn't.
+    // its handshake before the first one was read.
     let read_flight = || {
         let mut seen = seen.lock().unwrap();
         let flight = quic::first_flight(seen.get(&addr)?, &odcid)?;
         seen.remove(&addr);
         Some(flight)
     };
-    let mut flight = if early {
+    let mut flight = if early.is_some() {
         None
     } else {
         Some(read_flight().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?)
@@ -760,23 +801,23 @@ async fn handle_quic(
         headers,
     };
     let mut request = 0u32;
-    // Asked as each request stream is taken, of the handshake itself: a
-    // client that sends its Finished and a request together (quiche, for
-    // a request that waited for the handshake) has the handshake done by
-    // the time that stream is there, which a task told of it later could
-    // still be on its way to saying.
-    let in_early_data = move || {
-        let Some(done) = handshake.as_mut() else {
+    // Whether a request came in 0-RTT is read from the packets its stream
+    // came in, not from how far the handshake had got by the time it was
+    // taken: on a quick machine a client's Finished can be in before the
+    // stream that came ahead of it is.
+    let in_early_data = |stream: u64, hello: &ClientHello| {
+        let Some((received, secrets)) = early else {
             return false;
         };
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        if std::pin::Pin::new(done).poll(&mut cx).is_ready() {
-            handshake = None;
+        let Some(secret) = secrets.0.lock().unwrap().get(&hello.random).cloned() else {
             return false;
-        }
-        true
+        };
+        let received = received.lock().unwrap();
+        received
+            .get(&addr)
+            .is_some_and(|d| quic::zero_rtt_streams(d, &secret).contains(&stream))
     };
-    let served = h3::serve(conn, in_early_data, |req| {
+    let served = h3::serve(conn, |mut req| {
         let pseudo = |name: &str| {
             req.headers
                 .iter()
@@ -796,6 +837,7 @@ async fn handle_quic(
                 b"the first flight couldn't be read".to_vec(),
             );
         };
+        req.http3.early = in_early_data(req.stream, &first.1);
         let capture = capture_of(
             first,
             request,

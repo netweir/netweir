@@ -292,6 +292,220 @@ fn open(keys: &Keys, packet: &[u8], pn_offset: usize) -> Option<(u64, usize, Vec
     Some((truncated, pn_len, plain.to_vec()))
 }
 
+/// The streams the client's 0-RTT packets in `datagrams` carried data on,
+/// read with its early traffic secret. QUIC v1 only; packets that don't
+/// open are skipped.
+pub fn zero_rtt_streams(datagrams: &[Vec<u8>], secret: &[u8]) -> std::collections::HashSet<u64> {
+    let mut streams = std::collections::HashSet::new();
+    let Some(keys) = ZeroRttKeys::new(secret) else {
+        return streams;
+    };
+    let mut largest = None;
+    for datagram in datagrams {
+        let mut rest = &datagram[..];
+        while let Some(&first) = rest.first() {
+            if first & 0x80 == 0 {
+                break;
+            }
+            let start = rest;
+            let mut r = &rest[1..];
+            let Some(version) = take(&mut r, 4).map(|v| u32::from_be_bytes(v.try_into().unwrap()))
+            else {
+                break;
+            };
+            let Some(dcid_len) = take(&mut r, 1).map(|l| l[0] as usize) else {
+                break;
+            };
+            if take(&mut r, dcid_len).is_none() {
+                break;
+            }
+            let Some(scid_len) = take(&mut r, 1).map(|l| l[0] as usize) else {
+                break;
+            };
+            if take(&mut r, scid_len).is_none() {
+                break;
+            }
+            let kind = long_kind(version, (first >> 4) & 0x03);
+            if kind == "initial" {
+                let Some(len) = varint(&mut r) else { break };
+                if take(&mut r, len as usize).is_none() {
+                    break;
+                }
+            }
+            let Some(length) = varint(&mut r).map(|l| l as usize) else {
+                break;
+            };
+            let pn_offset = start.len() - r.len();
+            let end = pn_offset + length;
+            if end > start.len() || matches!(kind, "retry" | "unknown") {
+                break;
+            }
+            if kind == "0-rtt"
+                && version == V1
+                && let Some((truncated, len, plain)) = keys.open(&start[..end], pn_offset)
+            {
+                let pn = packet_number(largest, truncated, len);
+                largest = largest.max(Some(pn));
+                stream_frames(&plain, &mut streams);
+            }
+            rest = &start[end..];
+        }
+    }
+    streams
+}
+
+/// QUIC v1 packet protection for 0-RTT, from the client's early traffic
+/// secret (RFC 9001, Section 5.1). The suite is told from the secret's
+/// length: TLS_AES_256_GCM_SHA384 (Safari's) for 48 bytes, else
+/// TLS_AES_128_GCM_SHA256 (Chrome's and Firefox's).
+/// shortcut: a session resumed with TLS_CHACHA20_POLY1305_SHA256 doesn't
+/// open, so reads as not early; add it if a profile ever resumes with it.
+struct ZeroRttKeys {
+    key: ring::aead::LessSafeKey,
+    iv: [u8; 12],
+    header: ring::aead::quic::HeaderProtectionKey,
+}
+
+impl ZeroRttKeys {
+    fn new(secret: &[u8]) -> Option<ZeroRttKeys> {
+        use ring::aead::{AES_128_GCM, AES_256_GCM, quic};
+        let (hkdf, aead, hp_alg, len) = if secret.len() == 48 {
+            (ring::hkdf::HKDF_SHA384, &AES_256_GCM, &quic::AES_256, 32)
+        } else {
+            (ring::hkdf::HKDF_SHA256, &AES_128_GCM, &quic::AES_128, 16)
+        };
+        let prk = ring::hkdf::Prk::new_less_safe(hkdf, secret);
+        let (mut key, mut iv, mut hp) = ([0u8; 32], [0u8; 12], [0u8; 32]);
+        expand_label(&prk, b"quic key", &mut key[..len])?;
+        expand_label(&prk, b"quic iv", &mut iv)?;
+        expand_label(&prk, b"quic hp", &mut hp[..len])?;
+        Some(ZeroRttKeys {
+            key: ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(aead, &key[..len]).ok()?),
+            iv,
+            header: quic::HeaderProtectionKey::new(hp_alg, &hp[..len]).ok()?,
+        })
+    }
+
+    /// Removes header and packet protection from the long-header packet
+    /// `packet`, whose packet number starts at `pn_offset`. Returns the
+    /// truncated packet number, its length and the plaintext.
+    fn open(&self, packet: &[u8], pn_offset: usize) -> Option<(u64, usize, Vec<u8>)> {
+        let mut packet = packet.to_vec();
+        let sample = packet.get(pn_offset + 4..pn_offset + 20)?;
+        let mask = self.header.new_mask(sample).ok()?;
+        packet[0] ^= mask[0] & 0x0f;
+        let pn_len = (packet[0] & 0x03) as usize + 1;
+        for i in 0..pn_len {
+            *packet.get_mut(pn_offset + i)? ^= mask[1 + i];
+        }
+        let truncated = packet[pn_offset..pn_offset + pn_len]
+            .iter()
+            .fold(0u64, |n, &b| n << 8 | u64::from(b));
+        let mut nonce = self.iv;
+        for (i, b) in truncated.to_be_bytes().iter().enumerate() {
+            nonce[4 + i] ^= b;
+        }
+        let (header, payload) = packet.split_at_mut(pn_offset + pn_len);
+        let plain = self
+            .key
+            .open_in_place(
+                ring::aead::Nonce::assume_unique_for_key(nonce),
+                ring::aead::Aad::from(&*header),
+                payload,
+            )
+            .ok()?;
+        Some((truncated, pn_len, plain.to_vec()))
+    }
+}
+
+/// HKDF-Expand-Label with an empty context (RFC 8446, Section 7.1).
+fn expand_label(prk: &ring::hkdf::Prk, label: &[u8], out: &mut [u8]) -> Option<()> {
+    struct Len(usize);
+    impl ring::hkdf::KeyType for Len {
+        fn len(&self) -> usize {
+            self.0
+        }
+    }
+    let length = (out.len() as u16).to_be_bytes();
+    let full = [b"tls13 ".as_slice(), label].concat();
+    let label_len = [full.len() as u8];
+    let info: [&[u8]; 4] = [&length, &label_len, &full, &[0]];
+    prk.expand(&info, Len(out.len())).ok()?.fill(out).ok()
+}
+
+/// The streams the STREAM frames in `plain` carry data on. Stops at a frame
+/// it doesn't know the length of.
+fn stream_frames(mut p: &[u8], streams: &mut std::collections::HashSet<u64>) {
+    while let Some(id) = varint(&mut p) {
+        let ok = match id {
+            0x00 | 0x01 => Some(()),
+            0x02 | 0x03 => (|| {
+                varint(&mut p)?;
+                varint(&mut p)?;
+                let ranges = varint(&mut p)?;
+                varint(&mut p)?;
+                for _ in 0..ranges * 2 + if id == 0x03 { 3 } else { 0 } {
+                    varint(&mut p)?;
+                }
+                Some(())
+            })(),
+            0x04 => (|| {
+                for _ in 0..3 {
+                    varint(&mut p)?;
+                }
+                Some(())
+            })(),
+            0x05 | 0x11 => (|| {
+                varint(&mut p)?;
+                varint(&mut p)?;
+                Some(())
+            })(),
+            0x08..=0x0f => (|| {
+                let stream = varint(&mut p)?;
+                streams.insert(stream);
+                if id & 0x04 != 0 {
+                    varint(&mut p)?;
+                }
+                let len = if id & 0x02 != 0 {
+                    varint(&mut p)? as usize
+                } else {
+                    p.len()
+                };
+                take(&mut p, len)?;
+                Some(())
+            })(),
+            0x10 | 0x12 | 0x13 | 0x14 | 0x16 | 0x17 => varint(&mut p).map(|_| ()),
+            0x15 => (|| {
+                varint(&mut p)?;
+                varint(&mut p)?;
+                Some(())
+            })(),
+            0x18 => (|| {
+                varint(&mut p)?;
+                varint(&mut p)?;
+                let len = *take(&mut p, 1)?.first()? as usize;
+                take(&mut p, len + 16)?;
+                Some(())
+            })(),
+            0x19 => varint(&mut p).map(|_| ()),
+            0x1a => take(&mut p, 8).map(|_| ()),
+            0x30 => {
+                p = &[];
+                Some(())
+            }
+            0x31 => (|| {
+                let len = varint(&mut p)? as usize;
+                take(&mut p, len)?;
+                Some(())
+            })(),
+            _ => None,
+        };
+        if ok.is_none() {
+            return;
+        }
+    }
+}
+
 /// Reads the client's first flight from the datagrams it sent, in arrival
 /// order, and returns it with the ClientHello its CRYPTO frames carry.
 /// `odcid` is the Destination Connection ID of the client's first Initial;

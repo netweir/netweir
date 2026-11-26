@@ -1581,6 +1581,7 @@ dependencies = [
  "fluke-hpack",
  "quinn",
  "rcgen",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

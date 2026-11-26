@@ -464,3 +464,80 @@ async fn a_post_on_a_resumed_connection_waits_as_safaris_did() {
     assert!(!post.http3.as_ref().unwrap().early, "the POST waited");
     assert_eq!(zero_rtt_shape(&post), zero_rtt_shape(recorded));
 }
+
+/// A UDP port on 127.0.0.1 that relays to and from `to`, holding back
+/// the client's datagrams that start with a 0-RTT packet until it has sent
+/// one that starts with a Handshake packet (its Finished), and sending
+/// them after it, on each connection: what a quick machine's server sees
+/// when its connection task gets to the request stream only once the
+/// handshake is done.
+async fn finished_first(to: u16) -> u16 {
+    use std::sync::{Arc, Mutex};
+    let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let port = socket.local_addr().unwrap().port();
+    let upstream = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    upstream.connect(("127.0.0.1", to)).await.unwrap();
+    let client = Arc::new(Mutex::new(None));
+    {
+        let (socket, upstream, client) = (socket.clone(), upstream.clone(), client.clone());
+        tokio::spawn(async move {
+            let (mut buf, mut held, mut finished) = (vec![0; 65536], Vec::new(), false);
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                *client.lock().unwrap() = Some(from);
+                let kind = buf[0] & 0xf0;
+                // An Initial: a new connection's, so far.
+                if kind == 0xc0 {
+                    finished = false;
+                }
+                if !finished && kind == 0xd0 {
+                    held.push(buf[..n].to_vec());
+                    continue;
+                }
+                let _ = upstream.send(&buf[..n]).await;
+                if !finished && kind == 0xe0 {
+                    finished = true;
+                    for datagram in held.drain(..) {
+                        let _ = upstream.send(&datagram).await;
+                    }
+                }
+            }
+        });
+    }
+    tokio::spawn(async move {
+        let mut buf = vec![0; 65536];
+        loop {
+            let n = match upstream.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Err(_) => return,
+            };
+            let to = *client.lock().unwrap();
+            if let Some(to) = to {
+                let _ = socket.send_to(&buf[..n], to).await;
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_get_sent_in_0rtt_is_seen_as_early_when_the_finished_overtakes_it() {
+    // What the GET came in, not how far the handshake had got when the
+    // server read it: here the server has the client's Finished before
+    // the 0-RTT packets that carry the GET.
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
+    let relay = finished_first(server.port).await;
+    let origin = format!("https://localhost:{}", server.port);
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{relay}"))
+        .unwrap();
+    fetcher.get(&format!("{origin}/"), &[]).await.unwrap();
+    assert!(!resumed(&server.next().await.unwrap()));
+    fetcher.close_http3().await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(again.http3.as_ref().unwrap().early, "the GET went in 0-RTT");
+}

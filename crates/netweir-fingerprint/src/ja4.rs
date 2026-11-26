@@ -143,6 +143,7 @@ mod tests {
             server_name: None,
             alpn: vec![],
             alpn_first: vec![],
+            random: vec![],
             supported_versions: vec![0x0304],
             supported_groups: vec![],
             key_share_groups: vec![],

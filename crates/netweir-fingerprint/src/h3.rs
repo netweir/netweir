@@ -38,8 +38,8 @@ pub struct Http3 {
     /// Frames on this request's stream other than HEADERS and DATA, in
     /// order, as (type, payload hex).
     pub request_frames: Vec<(u64, String)>,
-    /// Whether this request's stream came in 0-RTT: before the handshake
-    /// was done, on a server that offers early data.
+    /// Whether this request's stream came in 0-RTT: its data was in the
+    /// client's 0-RTT packets, on a server that offers early data.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub early: bool,
 }
@@ -307,6 +307,8 @@ fn put_frame(out: &mut Vec<u8>, kind: u64, payload: &[u8]) {
 
 /// One request read from a connection.
 pub struct Request {
+    /// The request stream's ID.
+    pub stream: u64,
     pub http3: Http3,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -365,16 +367,9 @@ async fn read_uni(
 /// control stream with empty SETTINGS (no dynamic table), records the
 /// client's unidirectional streams, and answers each request stream with
 /// what `on_request` returns.
-/// `in_early_data` says, as each request stream is taken, whether the
-/// connection is still in 0-RTT.
-pub async fn serve<F, E>(
-    conn: quinn::Connection,
-    mut in_early_data: E,
-    mut on_request: F,
-) -> io::Result<()>
+pub async fn serve<F>(conn: quinn::Connection, mut on_request: F) -> io::Result<()>
 where
     F: FnMut(Request) -> (u16, Vec<(&'static str, String)>, Vec<u8>),
-    E: FnMut() -> bool,
 {
     // The control stream, opened beside the requests being read. A
     // connection taken before its handshake is done may not have the
@@ -407,7 +402,7 @@ where
     };
     let served = async {
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let early = in_early_data();
+            let stream = recv.id().index() << 2;
             // A stream the client resets, as when it cancels a request, is
             // skipped; the connection carries on.
             let Ok(raw) = recv.read_to_end(1 << 20).await else {
@@ -438,8 +433,8 @@ where
                 .await;
             let mut http3 = state.lock().unwrap().clone();
             http3.request_frames = request_frames;
-            http3.early = early;
             let (status, reply_headers, reply) = on_request(Request {
+                stream,
                 http3,
                 headers,
                 body,
