@@ -367,9 +367,21 @@ whose method is safe (HttpUtil::IsMethodSafe, HttpNetworkTransaction's
 `can_send_early_data_`) goes as soon as the session can send early data;
 any other waits for the handshake (QuicHttpStream::DoRequestStream,
 `requires_confirmation`). Chrome's QUIC job is done then, so nothing
-races it. Chrome isn't recorded doing this: headless Chrome for Testing
-157 stalled its first request before it reached the network on the
-machine these were made on.
+races it. Early data the server turns down goes again as soon as the
+handshake is done: QUICHE marks it for retransmission on the spot
+(QuicSession::OnZeroRttRejected,
+QuicSentPacketManager::MarkZeroRttPacketsForRetransmission), and
+netweir/quiche does the same where quiche waited for loss detection.
+`profiles/chrome-157-macos.h3-0rtt.capture.json` recorded Chrome for
+Testing 157.0.8103.79 on `/zero-rtt`, forced onto QUIC, through a relay
+that held each datagram back 50 ms (on localhost a resumed handshake is
+done before the next request is made). It sent `/again` in 0-RTT on
+the connection that resumed, in all three runs. Netweir's resumed
+connection is held to it: the ClientHello's extensions, early_data and
+pre_shared_key last, the first flight's two datagrams, and the request
+in 0-RTT. Chrome for Testing also sent extension 0x12e0 and the
+connection options `ORIGNOIP` on every connection, fresh ones too, which
+the recording of Chrome 157 doesn't have, so the profile follows Chrome.
 
 Safari's isn't recorded, so a Safari profile resumes and waits for the
 handshake.
@@ -460,9 +472,6 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
   server's dynamic table; quiche's encodes from the static table only.
   The fingerprint server offers no table, so this isn't in the
   recording, but a server that offers one sees the difference.
-- 0-RTT turned down. Chrome's QUICHE marks the data it sent in 0-RTT for
-  retransmission as soon as the server turns early data down; quiche
-  sends it again once loss detection calls it lost, about a PTO later.
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.
