@@ -65,7 +65,14 @@ Exactly as Firefox sends them, on every run:
 - each request: `:method :scheme :authority :path`, then the TCP
   profile's headers in the TCP profile's order, lowercase, without Host,
   Connection and te, with Alt-Used where Connection was, and Priority
-  `u=0, i` for a navigation;
+  `u=0, i` for a navigation. With a login, an Authorization right before
+  Connection comes after Alt-Used: `alt-used, authorization`, where
+  HTTP/1.1 has `Authorization, Connection`
+  (`profiles/firefox-160-macos.auth.h3.capture.json`, Firefox 160.0.1
+  logged in to the capture server's /auth by URL credentials, over HTTP/3
+  from its first request with `network.http.http3.alt-svc-mapping-for-testing`
+  and `network.http.http3.disable_when_third_party_roots_found` off for
+  the test CA);
 - a second connection to the server resumes the first one's session, with
   pre_shared_key last, as Firefox's did.
 
@@ -83,9 +90,6 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 
 - 0-RTT. With a ticket that allows early data, Firefox sends a GET in
   0-RTT. Netweir resumes the session but waits for the handshake.
-- Where Alt-Used goes in a request that also carries Authorization: the
-  recording has no login over HTTP/3, so Alt-Used takes Connection's place
-  and Authorization stays before it, as over TCP.
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
 - Addresses. Netweir connects to the first address the alternative's name

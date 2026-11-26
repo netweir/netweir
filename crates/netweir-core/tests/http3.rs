@@ -281,6 +281,114 @@ async fn a_form_posts_its_body_and_redirects_are_followed_over_http3() {
     }
 }
 
+/// A request's headers as the server saw them, without the pseudo-headers
+/// that name it (:authority, :path) and with the test server's port taken
+/// out of the rest, less `skip`.
+fn lines_of(capture: &Capture, skip: &[&str]) -> Vec<(String, String)> {
+    let unported = |v: &str| {
+        let mut out = String::new();
+        let mut rest = v;
+        while let Some(at) = rest.find("localhost:") {
+            out.push_str(&rest[..at + "localhost".len()]);
+            rest = rest[at + "localhost:".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        out + rest
+    };
+    capture
+        .headers
+        .iter()
+        .filter(|(k, _)| {
+            ![":authority", ":path"].contains(&k.as_str()) && !skip.contains(&k.as_str())
+        })
+        .map(|(k, v)| (k.clone(), unported(v)))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_login_goes_where_firefox_puts_it_over_http3() {
+    // profiles/firefox-160-macos.auth.h3.capture.json: Firefox 160.0.1
+    // over HTTP/3 from its first request
+    // (network.http.http3.alt-svc-mapping-for-testing, and
+    // disable_when_third_party_roots_found off for the test CA), logged in
+    // to the capture server's /auth by URL credentials. Over TCP its
+    // HTTP/1.1 lines have `Authorization, Connection`; over HTTP/3 Alt-Used
+    // comes first: `alt-used, authorization`. The page's script POSTed
+    // JSON, added its image (a lower priority than Netweir's, so left out)
+    // and submitted its form (no Sec-Fetch-User, so left out too).
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../profiles/{PROFILE}.auth.h3.capture.json"));
+    let recording: Vec<Capture> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let recorded = |path: &str| {
+        recording
+            .iter()
+            .find(|c| c.path == path)
+            .unwrap_or_else(|| panic!("{path} isn't recorded"))
+            .clone()
+    };
+    let mut server = Server::start_h3(0, None).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let page = format!("{origin}/auth");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("localhost:{port}"))
+        .unwrap();
+    let login = netweir_core::Auth::new("ada", "secret", None);
+    let with_login = |mut outgoing: Outgoing| {
+        outgoing.policy.auth = Some(login.clone());
+        outgoing
+    };
+    let steps = [
+        (
+            "/api",
+            with_login(Outgoing::fetch(
+                "POST",
+                Some(br#"{"q":"rust"}"#.to_vec()),
+                Some("application/json".into()),
+                Some(page.clone()),
+            )),
+            vec!["/api"],
+        ),
+        (
+            "/picture.png",
+            with_login(Outgoing::image(Some(page.clone()))),
+            vec!["/picture.png"],
+        ),
+        (
+            "/redirect?to=/after-auth",
+            with_login(Outgoing::form(b"q=rust".to_vec(), None, Some(page.clone()))),
+            vec!["/redirect?to=/after-auth", "/after-auth"],
+        ),
+    ];
+    for (path, outgoing, seen) in steps {
+        let response = fetcher
+            .send(&format!("{origin}{path}"), &outgoing, &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.status, response.version),
+            (200, "HTTP/3"),
+            "{path}"
+        );
+        for path in seen {
+            let actual = server.next().await.unwrap();
+            assert_eq!(actual.path, path);
+            let expected = recorded(path);
+            let skip: &[&str] = match path {
+                "/picture.png" => &["priority"],
+                "/redirect?to=/after-auth" | "/after-auth" => &["sec-fetch-user"],
+                _ => &[],
+            };
+            assert_eq!(
+                lines_of(&actual, skip),
+                lines_of(&expected, skip),
+                "{path} differs from Firefox's"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn certificates_are_checked_over_http3() {
     let dir = std::env::temp_dir().join(format!("netweir-h3-cert-{}", std::process::id()));
