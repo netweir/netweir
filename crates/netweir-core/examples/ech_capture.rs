@@ -2,7 +2,7 @@
 //! one as it arrives, and the inner one decrypted with the key this
 //! program holds, before and after its compressed extensions are put back.
 //!
-//!     cargo run -p netweir-core --example ech_capture -- DIR [TCP_PORT] [DOH_PORT] [MAX_NAME_LENGTH] [AEADS]
+//!     cargo run -p netweir-core --example ech_capture -- DIR [TCP_PORT] [DOH_PORT] [MAX_NAME_LENGTH] [AEADS|none]
 //!
 //! It serves DNS over HTTPS on 127.0.0.1:DOH_PORT (default 8053), which
 //! answers every name with 127.0.0.1 and an HTTPS record that offers h2
@@ -133,9 +133,12 @@ fn answer(query: &[u8], ech: &[u8]) -> Option<Vec<u8>> {
             d.extend(1u16.to_be_bytes());
             d.extend((alpn.len() as u16).to_be_bytes());
             d.extend(alpn);
-            d.extend(5u16.to_be_bytes());
-            d.extend((ech.len() as u16).to_be_bytes());
-            d.extend(ech);
+            // Without a configuration, the client sends ECH GREASE.
+            if !ech.is_empty() {
+                d.extend(5u16.to_be_bytes());
+                d.extend((ech.len() as u16).to_be_bytes());
+                d.extend(ech);
+            }
             Some(d)
         }
         _ => None,
@@ -254,9 +257,12 @@ async fn main() {
     let doh_port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(8053);
     let max_name_length: u8 = args.next().and_then(|n| n.parse().ok()).unwrap_or(0);
     // HKDF-SHA256 with these AEADs, in order: 1 AES-128-GCM, 2 AES-256-GCM,
-    // 3 ChaCha20-Poly1305.
-    let suites: Vec<u8> = args
-        .next()
+    // 3 ChaCha20-Poly1305. `none` offers no configuration at all, to record
+    // ECH GREASE.
+    let suites_arg = args.next();
+    let grease = suites_arg.as_deref() == Some("none");
+    let suites: Vec<u8> = suites_arg
+        .filter(|_| !grease)
         .map(|s| {
             s.split(',')
                 .map(|a| a.parse().expect("an AEAD id"))
@@ -272,5 +278,5 @@ async fn main() {
     let capturing = dir.clone();
     std::thread::spawn(move || capture(capturing, tcp, private, config));
     eprintln!("TLS on 127.0.0.1:{tcp}, DoH on https://127.0.0.1:{doh_port}/dns-query");
-    doh(dir, doh_port, list).await;
+    doh(dir, doh_port, if grease { Vec::new() } else { list }).await;
 }

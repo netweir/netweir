@@ -158,13 +158,22 @@ default preferences; Chrome's rules are
   hello's order. NSS takes a configuration's first cipher suite, and so
   does BoringSSL once `aes_hw_override` tells it the machine has AES
   hardware; without that, BoringSSL prefers ChaCha20-Poly1305 on a
-  machine without it. `profiles/firefox-160-macos.ech.capture.json`
-  recorded Firefox 160.0.1's outer and inner ClientHellos, decrypted
-  with a key `examples/ech_capture.rs` holds, for `maximum_name_length`
-  0 and 64 and for cipher suites with ChaCha20-Poly1305 first and last,
-  and
-  `tests/ech_tcp.rs` holds Netweir's to them: the same bytes but the
-  randoms, key shares and encrypted payload, padding included. A record that offers h3 sends the
+  machine without it. The same option makes ECH GREASE NSS's
+  (`tls13_MaybeGreaseEch`): AES-128-GCM or ChaCha20-Poly1305 drawn at
+  random for each connection, where BoringSSL takes AES-128-GCM on any
+  machine with AES hardware, and a payload as long as the
+  EncodedClientHelloInner would be, padded for a `maximum_name_length`
+  of 100, where BoringSSL draws one of four lengths.
+  `profiles/firefox-160-macos.ech.capture.json` recorded Firefox
+  160.0.1's outer and inner ClientHellos, decrypted with a key
+  `examples/ech_capture.rs` holds, for `maximum_name_length` 0 and 64
+  and for cipher suites with ChaCha20-Poly1305 first and last, and its
+  ECH GREASE for a short and a long host name. `tests/ech_tcp.rs` holds
+  Netweir's to them: the same bytes but the randoms, key shares and
+  encrypted payload, padding included. It also checks every Firefox
+  profile's ECH GREASE, and finishes handshakes with a BoringSSL server
+  that holds the key, ECH accepted, after a HelloRetryRequest too. A
+  record that offers h3 sends the
   request over HTTP/3, racing TCP after
   `network.dns.httpssvc.http3_fast_fallback_timeout`, 50 ms; that TCP
   connection goes to the best record without h3, which must have ECH if

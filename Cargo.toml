@@ -20,6 +20,6 @@ codegen-units = 1
 # ech_inner_like_nss, and btls plus set_ech_inner_like_nss (branch netweir
 # of each, see their READMEs).
 [patch.crates-io]
-wreq = { git = "https://github.com/netweir/wreq", rev = "e75d68f4dd1c37d91005da7cb467c37bf46121d3" }
-btls = { git = "https://github.com/netweir/btls", rev = "1788f675aba654d5c3022c8189d2343f51ddfe53" }
-btls-sys = { git = "https://github.com/netweir/btls", rev = "1788f675aba654d5c3022c8189d2343f51ddfe53" }
+wreq = { git = "https://github.com/netweir/wreq", rev = "07fc4332595fad75d221b5c8c8f26d3556d5f651" }
+btls = { git = "https://github.com/netweir/btls", rev = "07739c880a9cbb9756b801225a51c7be5f817eb8" }
+btls-sys = { git = "https://github.com/netweir/btls", rev = "07739c880a9cbb9756b801225a51c7be5f817eb8" }

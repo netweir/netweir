@@ -187,18 +187,7 @@ pub fn open_inner(private: &[u8], config: &[u8], outer: &[u8]) -> Option<(Vec<u8
     let encoded_hello = encoded[..used].to_vec();
     let padding = &encoded[used..];
     assert!(padding.iter().all(|&b| b == 0), "padding isn't zeros");
-    let mut decoded = Vec::new();
-    for (kind, ext) in &inner.extensions {
-        if *kind == OUTER_EXTENSIONS {
-            for pair in ext[1..].chunks(2) {
-                let wanted = u16::from_be_bytes([pair[0], pair[1]]);
-                let found = outer_parts.extensions.iter().find(|(k, _)| *k == wanted)?;
-                decoded.push(found.clone());
-            }
-        } else {
-            decoded.push((*kind, ext.clone()));
-        }
-    }
+    let decoded = decompress(&inner.extensions, &outer_parts.extensions)?;
     // legacy_session_id comes from the outer hello.
     let mut head = inner.head.clone();
     let outer_session = &outer_parts.head[34..35 + outer_parts.head[34] as usize];
@@ -206,4 +195,41 @@ pub fn open_inner(private: &[u8], config: &[u8], outer: &[u8]) -> Option<(Vec<u8
     let mut with_padding = handshake(encoded_hello);
     with_padding.extend(padding);
     Some((with_padding, handshake(with_extensions(&head, &decoded))))
+}
+
+/// A ClientHelloInner's extensions with those `ech_outer_extensions`
+/// names taken from the outer hello's. RFC 9849, section 5.1: never
+/// encrypted_client_hello itself, and in the outer hello's order; a
+/// server rejects anything else with illegal_parameter, and so does this.
+pub fn decompress(
+    inner: &[(u16, Vec<u8>)],
+    outer: &[(u16, Vec<u8>)],
+) -> Option<Vec<(u16, Vec<u8>)>> {
+    let mut decoded = Vec::new();
+    let mut after = 0;
+    for (kind, ext) in inner {
+        if *kind == OUTER_EXTENSIONS {
+            let list = ext.get(1..1 + *ext.first()? as usize)?;
+            if list.is_empty() || list.len() % 2 != 0 || list.len() + 1 != ext.len() {
+                eprintln!("a malformed ech_outer_extensions");
+                return None;
+            }
+            for pair in list.chunks(2) {
+                let wanted = u16::from_be_bytes([pair[0], pair[1]]);
+                let found = outer[after..]
+                    .iter()
+                    .position(|(k, _)| *k == wanted)
+                    .filter(|_| wanted != ECH);
+                let Some(at) = found else {
+                    eprintln!("ech_outer_extensions names {wanted:#06x} out of order");
+                    return None;
+                };
+                decoded.push(outer[after + at].clone());
+                after += at + 1;
+            }
+        } else {
+            decoded.push((*kind, ext.clone()));
+        }
+    }
+    Some(decoded)
 }
