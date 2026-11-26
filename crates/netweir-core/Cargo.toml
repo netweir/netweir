@@ -56,7 +56,7 @@ quinn-udp = { version = "0.6", default-features = false, features = ["log", "fas
 # Chrome's and Safari's transport parameters, Initial packets, HTTP/3
 # SETTINGS and QPACK decoding added (branch safari-27, on chrome-157; see
 # its README).
-quiche = { git = "https://github.com/netweir/quiche", rev = "15d23bfff12cb4cc38fb50c5ac53c320653fe1ea", features = ["custom-client-dcid"], optional = true }
+quiche = { git = "https://github.com/netweir/quiche", rev = "6ad414dad132e609fa06dadee370ad7bdce8ff96", features = ["custom-client-dcid"], optional = true }
 # The roots wreq checks TCP connections' certificates against.
 chromium-roots = { version = "0.1.2", optional = true }
 # wreq's own response decompression, for responses over HTTP/3.

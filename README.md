@@ -481,8 +481,9 @@ HTTPS DNS record, which Netweir asks the system for as Firefox does, the
 next requests leave on neqo, the QUIC stack Firefox itself runs, set up
 with Firefox 160's settings, and a test holds the QUIC Initial, the
 ClientHello inside it and the HTTP/3 settings to a recording of the real
-browser. What isn't Firefox's yet, 0-RTT for one, is listed in
-[docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
+browser. On a connection that resumes, a GET goes in 0-RTT as
+Firefox's does. What isn't Firefox's yet, racing IPv4 and IPv6 for one, is
+listed in [docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
 proxy it stays on TCP, as Firefox does, and `http3=False` turns it
 off.
 

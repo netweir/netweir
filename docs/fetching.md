@@ -138,9 +138,11 @@ on HTTP/2 and HTTP/1.1. A `proxy`, or a system proxy for https, keeps
 every request on TCP, as no browser sends QUIC through one. So does `http3=False`, on `netweir.get()`, a
 Client, or in [settings](settings.md#fetching).
 
-Not everything is the browser's yet. Both send a request in 0-RTT on a
-resumed connection where Netweir waits for the handshake, and Netweir
-tries only the first address a name resolves to. With Chrome and
+On a connection that resumes, Firefox and Chrome profiles send a GET in
+0-RTT, before the handshake is done, as both browsers do; a POST waits.
+Not everything is the browser's yet. Safari's 0-RTT isn't recorded, so a
+Safari profile waits for the handshake, and Netweir tries only the first
+address a name resolves to. With Chrome and
 Safari, what happens after the first round trips (congestion control,
 pacing, ACK timing) is quiche's, not the browser's. Safari's first
 packets match its recording field for field, but where that recording

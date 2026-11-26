@@ -38,6 +38,10 @@ pub struct Http3 {
     /// Frames on this request's stream other than HEADERS and DATA, in
     /// order, as (type, payload hex).
     pub request_frames: Vec<(u64, String)>,
+    /// Whether this request's stream came in 0-RTT: before the handshake
+    /// was done, on a server that offers early data.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub early: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,15 +365,32 @@ async fn read_uni(
 /// control stream with empty SETTINGS (no dynamic table), records the
 /// client's unidirectional streams, and answers each request stream with
 /// what `on_request` returns.
-pub async fn serve<F>(conn: quinn::Connection, mut on_request: F) -> io::Result<()>
+pub async fn serve<F>(
+    conn: quinn::Connection,
+    in_early_data: Arc<std::sync::atomic::AtomicBool>,
+    mut on_request: F,
+) -> io::Result<()>
 where
     F: FnMut(Request) -> (u16, Vec<(&'static str, String)>, Vec<u8>),
 {
-    let mut control = conn.open_uni().await.map_err(failed)?;
-    let mut opening = Vec::new();
-    put_varint(&mut opening, CONTROL_STREAM);
-    put_frame(&mut opening, SETTINGS, &[]);
-    control.write_all(&opening).await.map_err(failed)?;
+    // The control stream, opened beside the requests being read. A
+    // connection taken before its handshake is done may not have the
+    // client's stream limits yet, and quinn doesn't wake an open_uni when
+    // they come with the ClientHello, so it waits for that first.
+    let control = {
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            while conn.handshake_data().is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let mut control = conn.open_uni().await.map_err(failed)?;
+            let mut opening = Vec::new();
+            put_varint(&mut opening, CONTROL_STREAM);
+            put_frame(&mut opening, SETTINGS, &[]);
+            control.write_all(&opening).await.map_err(failed)?;
+            Ok::<_, io::Error>(control)
+        })
+    };
 
     let state = Arc::new(Mutex::new(Http3::default()));
     let (settled, mut settings_in) = watch::channel(false);
@@ -383,6 +404,7 @@ where
     };
     let served = async {
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let early = in_early_data.load(std::sync::atomic::Ordering::SeqCst);
             // A stream the client resets, as when it cancels a request, is
             // skipped; the connection carries on.
             let Ok(raw) = recv.read_to_end(1 << 20).await else {
@@ -413,6 +435,7 @@ where
                 .await;
             let mut http3 = state.lock().unwrap().clone();
             http3.request_frames = request_frames;
+            http3.early = early;
             let (status, reply_headers, reply) = on_request(Request {
                 http3,
                 headers,
@@ -437,6 +460,12 @@ where
     uni.abort();
     // Held until here: closing the control stream would be a connection
     // error for the client.
+    let control = if control.is_finished() {
+        control.await.ok().and_then(Result::ok)
+    } else {
+        control.abort();
+        None
+    };
     drop(control);
     result
 }
