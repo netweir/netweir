@@ -418,6 +418,9 @@ pub(crate) fn open(
         thread: Arc::new(Mutex::new(spawned.ok())),
         state: watching,
         ech_retry: Arc::default(),
+        // Firefox's rule (disable_when_third_party_roots_found); not
+        // applied to this stack.
+        third_party: Arc::default(),
     }
 }
 

@@ -293,17 +293,24 @@ async fn certificates_are_checked_over_http3() {
     strict.use_http3(&origin, &alternative).unwrap();
     let error = strict.get(&format!("{origin}/"), &[]).await.unwrap_err();
     assert_eq!(error.kind, netweir_core::FetchErrorKind::Tls, "{error}");
-    // ...until it's trusted as a CA.
+    // ...until it's trusted as a CA. A root Firefox didn't ship ends its
+    // HTTP/3 once the chain checks out (Http3Session::Authenticated, with
+    // network.http.http3.disable_when_third_party_roots_found on): the
+    // request goes over TCP, as a retry, and HTTP/3 to the host stops.
     let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
     options.ca_certificates = Some(std::fs::read(dir.join("cert.pem")).unwrap());
     let trusting = Fetcher::new(options).unwrap();
     trusting.use_http3(&origin, &alternative).unwrap();
-    let response = trusting.get(&format!("{origin}/"), &[]).await.unwrap();
-    assert_eq!(response.version, "HTTP/3");
+    for _ in 0..3 {
+        let response = trusting.get(&format!("{origin}/"), &[]).await.unwrap();
+        assert_eq!(response.version, "HTTP/2");
+        let capture: Capture = serde_json::from_slice(&response.body).unwrap();
+        assert!(!capture.client_hello.extensions.contains(&27));
+    }
     while let Ok(Some(c)) =
         tokio::time::timeout(std::time::Duration::from_millis(200), server.next()).await
     {
-        assert!(c.protocol == "h3");
+        assert!(c.protocol != "h3");
     }
     let _ = std::fs::remove_dir_all(dir);
 }

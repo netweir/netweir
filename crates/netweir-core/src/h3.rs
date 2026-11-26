@@ -372,6 +372,15 @@ impl CertificateCompressor for Brotli {
     }
 }
 
+/// The roots Netweir builds in: the Chrome Root Store, DER.
+static BUILT_IN: std::sync::LazyLock<std::collections::HashSet<Vec<u8>>> =
+    std::sync::LazyLock::new(|| {
+        chromium_roots::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .map(|der| der.as_ref().to_vec())
+            .collect()
+    });
+
 /// How a server's certificate is checked. NSS hands the chain over and
 /// leaves the decision to the caller, as it does to Firefox; it's made
 /// with BoringSSL against the roots the TCP connections use, so both
@@ -408,22 +417,33 @@ impl Trust {
         Ok(Trust::Roots(Arc::new(store.build())))
     }
 
-    /// Whether `chain` (leaf first, DER) is good for `host`.
-    fn check(&self, host: &str, chain: &[Vec<u8>]) -> AuthenticationStatus {
-        if self.trusts(host, chain) {
-            AuthenticationStatus::Ok
-        } else {
-            AuthenticationStatus::CertUntrusted
+    /// Whether `chain` (leaf first, DER) is good for `host`, and whether
+    /// the root it ends at is a built-in one (`Trust::verify`).
+    fn check(&self, host: &str, chain: &[Vec<u8>]) -> (AuthenticationStatus, bool) {
+        match self.verify(host, chain) {
+            Some(built_in) => (AuthenticationStatus::Ok, built_in),
+            None => (AuthenticationStatus::CertUntrusted, true),
         }
     }
 
     /// Whether `chain` (leaf first, DER) is good for `host`, checked with
     /// BoringSSL against the roots the TCP connections use.
     pub(crate) fn trusts(&self, host: &str, chain: &[Vec<u8>]) -> bool {
+        self.verify(host, chain).is_some()
+    }
+
+    /// None if `chain` isn't good for `host`; else whether the root it
+    /// ends at is one of the roots Netweir builds in, as Firefox asks of
+    /// Mozilla's (NSSSocketControl::IsBuiltCertChainRootBuiltInRoot).
+    /// Netweir's are the Chrome Root Store, which its connections trust
+    /// unless told other CAs: a chain to one of those that isn't also
+    /// built in ends at a third-party root.
+    fn verify(&self, host: &str, chain: &[Vec<u8>]) -> Option<bool> {
         let Trust::Roots(store) = self else {
-            return true;
+            return Some(true);
         };
-        let check = || -> Result<bool, btls::error::ErrorStack> {
+        let mut built_in = true;
+        let mut check = || -> Result<bool, btls::error::ErrorStack> {
             let leaf = X509::from_der(chain.first().map_or(&[][..], Vec::as_slice))?;
             let mut rest = btls::stack::Stack::new()?;
             for der in chain.iter().skip(1) {
@@ -436,10 +456,15 @@ impl Trust {
                     Ok(ip) => param.set_ip(ip)?,
                     Err(_) => param.set_host(host)?,
                 }
-                ctx.verify_cert()
+                let ok = ctx.verify_cert()?;
+                if let Some(root) = ctx.chain().and_then(|c| c.iter().next_back()) {
+                    built_in = BUILT_IN.contains(&root.to_der()?);
+                }
+                Ok(ok)
             })
         };
-        matches!(check(), Ok(true))
+        let ok = matches!(check(), Ok(true));
+        ok.then_some(built_in)
     }
 }
 
@@ -600,6 +625,11 @@ pub(crate) struct Handle {
     /// The ECH configurations a server that rejected the connection's
     /// sent to retry with (Http3Session's SetRetryEchConfig).
     pub ech_retry: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Its certificate chain ended at a root Firefox doesn't build in,
+    /// which ends HTTP/3 before anything is sent: a request waiting for
+    /// it goes over TCP, whatever its method (Http3Session::Authenticated
+    /// closes its transaction with NS_ERROR_NET_RESET).
+    pub third_party: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Handle {
@@ -911,6 +941,8 @@ pub(crate) struct Pending {
     request: Option<Request>,
     answer: Option<oneshot::Receiver<Result<http::Response<Body>, FetchError>>>,
     state: watch::Receiver<State>,
+    /// The connection's Handle::third_party.
+    third_party: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Pending {
@@ -1985,6 +2017,7 @@ impl Routes {
                     request: Some(request),
                     answer: None,
                     state,
+                    third_party: handle.third_party.clone(),
                 }));
             }
             return Ok(Answer::Tcp);
@@ -2018,10 +2051,18 @@ impl Routes {
                     request: None,
                     answer: Some(answer),
                     state,
+                    third_party: handle.third_party.clone(),
                 }));
             }
         }
-        self.finish(route, answer, &handle.state, idempotent).await
+        self.finish(
+            route,
+            answer,
+            &handle.state,
+            &handle.third_party,
+            idempotent,
+        )
+        .await
     }
 
     /// Sends a request that waited in a race, or waits for the answer to
@@ -2043,7 +2084,11 @@ impl Routes {
             State::Failed { .. } | State::NotSetUp
         );
         match (pending.answer, pending.request) {
-            (Some(answer), _) => self.finish(route, answer, &pending.state, idempotent).await,
+            (Some(answer), _) => {
+                let third_party = pending.third_party.clone();
+                self.finish(route, answer, &pending.state, &third_party, idempotent)
+                    .await
+            }
             (None, Some(request)) if !never_up => {
                 self.send(route, host, request, deadline, idempotent).await
             }
@@ -2058,6 +2103,7 @@ impl Routes {
         route: &Route,
         answer: oneshot::Receiver<Result<http::Response<Body>, FetchError>>,
         state: &watch::Receiver<State>,
+        third_party: &std::sync::atomic::AtomicBool,
         idempotent: bool,
     ) -> Result<Answer, FetchError> {
         // A request safe to repeat that got nothing back goes again over
@@ -2077,6 +2123,11 @@ impl Routes {
         };
         match answer.await {
             Ok(Ok(response)) => Ok(Answer::Response(response)),
+            // Its connection reached a root Firefox doesn't build in, and
+            // nothing was sent (Handle::third_party).
+            Ok(Err(_)) | Err(_) if third_party.load(std::sync::atomic::Ordering::Relaxed) => {
+                Ok(Answer::Tcp)
+            }
             Ok(Err(e)) if *state.borrow() == State::Connected => Err(e),
             Ok(Err(e)) => repeat(e),
             Err(_) => repeat(closed(&route.alternative)),
@@ -2213,6 +2264,8 @@ fn open(
     let (state, watching) = watch::channel(State::Connecting);
     let ech_retry = Arc::new(Mutex::new(None));
     let retry_with = ech_retry.clone();
+    let third_party = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refused = third_party.clone();
     let (host, alternative) = (host.to_string(), alternative.to_string());
     let ticket = tickets
         .lock()
@@ -2258,6 +2311,7 @@ fn open(
                 queue,
                 &state,
                 &retry_with,
+                &refused,
                 for_request,
             ));
             // However it ended, it isn't coming up any more.
@@ -2276,6 +2330,7 @@ fn open(
         thread: Arc::new(Mutex::new(spawned.ok())),
         state: watching,
         ech_retry,
+        third_party,
     }
 }
 
@@ -2364,6 +2419,7 @@ async fn run(
     mut queue: mpsc::UnboundedReceiver<Job>,
     state: &watch::Sender<State>,
     ech_retry: &Mutex<Option<Vec<u8>>>,
+    third_party: &std::sync::atomic::AtomicBool,
     for_request: bool,
 ) {
     let given = given.zip(
@@ -2426,8 +2482,40 @@ async fn run(
                         .peer_certificate()
                         .map(|c| c.iter().map(<[u8]>::to_vec).collect())
                         .unwrap_or_default();
-                    let checked = trust.check(&host, &chain);
+                    let (checked, built_in) = trust.check(&host, &chain);
                     cert_rejected = checked != AuthenticationStatus::Ok;
+                    // network.http.http3.disable_when_third_party_roots_found:
+                    // a chain to a root Firefox didn't ship ends HTTP/3
+                    // here, before the handshake goes on, and the request
+                    // goes over TCP (Http3Session::Authenticated:
+                    // DisableHttp3, NS_ERROR_NET_RESET; Shutdown then
+                    // excludes the host).
+                    if !built_in {
+                        let why = format!(
+                            "HTTP/3 to {alternative}: the certificate chain ends at a root Firefox doesn't build in"
+                        );
+                        third_party.store(true, std::sync::atomic::Ordering::Relaxed);
+                        state.send_replace(State::Failed { exclude: true });
+                        client.close(Instant::now(), 0x100, "");
+                        while let OutputBatch::DatagramBatch(batch) = client
+                            .process_multiple_output(
+                                Instant::now(),
+                                NonZeroUsize::new(socket.state.max_gso_segments())
+                                    .unwrap_or(NonZeroUsize::MIN),
+                            )
+                        {
+                            let _ = socket.send(&batch).await;
+                        }
+                        for (_, s) in streams.drain() {
+                            end(s, FetchError::new(FetchErrorKind::Connect, why.clone()));
+                        }
+                        for job in waiting.drain(..) {
+                            let _ = job
+                                .head
+                                .send(Err(FetchError::new(FetchErrorKind::Connect, why.clone())));
+                        }
+                        return fail_all(queue, &why);
+                    }
                     client.authenticated(checked, Instant::now());
                 }
                 // The server rejected ECH: its certificate is checked
@@ -2444,7 +2532,7 @@ async fn run(
                     } else {
                         &public_name
                     };
-                    let checked = trust.check(name, &chain);
+                    let (checked, _) = trust.check(name, &chain);
                     cert_rejected = checked != AuthenticationStatus::Ok;
                     client.authenticated(checked, Instant::now());
                 }
@@ -2910,6 +2998,7 @@ mod tests {
                 thread: Arc::default(),
                 state: state_now,
                 ech_retry: Arc::default(),
+                third_party: Arc::default(),
             };
             routes
                 .connections

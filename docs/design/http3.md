@@ -99,7 +99,15 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 - Certificates are checked with BoringSSL against the roots the TCP
   connections use, not by NSS against Mozilla's. Nothing about that is on
   the wire, but a server whose chain only one of the two root stores
-  accepts is treated differently from Firefox.
+  accepts is treated differently from Firefox. The same goes for what
+  counts as a built-in root. Firefox ends HTTP/3 when a chain that checks
+  out ends at a root it didn't ship
+  (`network.http.http3.disable_when_third_party_roots_found`,
+  `Http3Session::Authenticated`): HTTP/3 to the host stops, and the
+  request goes over TCP as a retry, whatever its method. Netweir does the
+  same, with the Chrome Root Store as its built-in roots, so a chain to a
+  CA from `FetchOptions::ca_certificates` that isn't one of them stays on
+  TCP.
 - NSS's tarball bundles NSPR 4.39, where Firefox has 4.40. NSPR is NSS's
   portability layer and puts nothing on the wire.
 - Proxies. Firefox never sends QUIC through an HTTP or SOCKS proxy, and
