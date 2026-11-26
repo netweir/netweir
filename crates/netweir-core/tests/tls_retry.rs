@@ -304,10 +304,10 @@ async fn a_record_with_the_origins_port_is_tried_again_after_it_failed() {
 
 /// An h3 record whose QUIC goes unanswered, as Firefox 160.0.1 went on
 /// from it (#436): after 50 ms the fast fallback's TCP connection, with
-/// the profile's hello (FallbackTransaction, no IS_RETRY). Once its TCP
-/// connection is up the request moves onto it (OnBackupConnectionReady,
-/// HandleFallback: a restart), leaving HTTP/3. When its handshake then
-/// fails, the request's own connection to the fallback's record and the
+/// the profile's hello (FallbackTransaction, no IS_RETRY). Once its
+/// handshake is over, even failed, the request moves to its route
+/// (OnBackupConnectionReady, HandleFallback: a restart), leaving HTTP/3:
+/// the request's own connection to the fallback's record and the
 /// origin's after it are both made again, without compress_certificate.
 /// Against a server whose handshake works, the request rides the
 /// backup's connection and nothing more is made.

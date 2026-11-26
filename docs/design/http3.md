@@ -261,9 +261,12 @@ default preferences; Chrome's rules are
   a TCP connection too (`nsHttpTransaction::OnHttp3BackupTimer`, a
   `FallbackTransaction`), with the profile's ClientHello. The request
   goes over HTTP/3 if that connection came up while the TCP one was still
-  being made. Once the TCP connection is up, whether its handshake then
-  works or not, Firefox moves the request to TCP
-  (`OnBackupConnectionReady`): it restarts the transaction on the direct
+  being made. Once the TCP connection's handshake is over, whether it
+  worked or not, Firefox moves the request to TCP
+  (`OnBackupConnectionReady`, when the `FallbackTransaction` the
+  connection drove its handshake with closes: `nsHttpConnection` lets it
+  read only once `EnsureNPNComplete` says the handshake is done, and
+  `SpeculativeTransaction::Close` takes that as success): it restarts the transaction on the direct
   route (`IS_RETRY`), whose connections pool apart from the backup's (a
   fallback connection info, `SetFallbackConnection`). So the request
   goes over a connection of its own, without `compress_certificate`, and

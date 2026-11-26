@@ -2763,9 +2763,9 @@ impl Fetcher {
                     tokio::select! {
                         biased;
                         made = connecting => match made {
-                            // Its TCP connection came up, so the request
-                            // moves to TCP (OnBackupConnectionReady): a
-                            // restart, IS_RETRY, on a connection of its own.
+                            // Its handshake is over, done or failed, so the
+                            // request moves to TCP (OnBackupConnectionReady):
+                            // a restart, IS_RETRY, on a connection of its own.
                             Ok(made) if apart && made.as_ref().map_or_else(reached, |_| true) => {
                                 let (tcp, _) = fallback.expect("a backup is made from it");
                                 let left = self.again.attempts.saturating_sub(1);
@@ -2783,11 +2783,11 @@ impl Fetcher {
                                 }
                                 return done;
                             }
-                            // Its TCP connection came up, which is when
-                            // Firefox moves the request onto it
-                            // (OnBackupConnectionReady, HandleFallback): a
-                            // restart, so with IS_RETRY. The handshake then
-                            // failed, and the request goes on from there.
+                            // Its handshake failed. Firefox moves the request
+                            // to the backup's route once its handshake is
+                            // over, failed or not (OnBackupConnectionReady,
+                            // HandleFallback): a restart, so with IS_RETRY,
+                            // and the request goes on from there.
                             Ok(Err(e)) if route.from.is_some() && reached(&e) => {
                                 let from = route.from.as_ref().expect("checked");
                                 let (tcp, _) = fallback.expect("a backup is made from it");

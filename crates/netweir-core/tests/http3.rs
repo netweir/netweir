@@ -594,9 +594,14 @@ fn alt_used(response: &netweir_core::Response) -> Option<String> {
 
 #[tokio::test]
 async fn an_http3_connection_that_comes_up_before_tcp_wins_the_race() {
-    // TCP takes 1.5 s to connect; QUIC's datagrams 150 ms each way, so a
-    // resumed handshake is up in about 300 ms: after Firefox's 100 ms
-    // backup timer, before the TCP connection it opens then.
+    // The backup's TCP connection is up at once, but its TLS handshake
+    // takes 1.5 s; QUIC's datagrams 150 ms each way, so a resumed
+    // handshake is up in about 300 ms: after Firefox's 100 ms backup
+    // timer, before the backup's handshake is over. Firefox moves a
+    // request to TCP only once that handshake is over, done or failed
+    // (OnBackupConnectionReady, from the FallbackTransaction's close,
+    // which nsHttpConnection lets come only after EnsureNPNComplete), so
+    // this one stays on HTTP/3.
     let h3 = Server::start_h3(0, None).await.unwrap();
     let tcp = Server::start().await.unwrap();
     let slow = slow_tcp(
