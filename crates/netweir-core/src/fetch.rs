@@ -70,6 +70,12 @@ pub struct FetchOptions {
     /// profile trusts, which real roots can't show offline.
     #[doc(hidden)]
     pub extra_built_in_roots: Vec<(crate::profile::Roots, Vec<u8>)>,
+    /// Roots (DER) and the date, in seconds since the Unix epoch, after
+    /// which Firefox stops trusting certificates issued under them, as if
+    /// NSS's builtins said so (CKA_NSS_SERVER_DISTRUST_AFTER): for tests,
+    /// with `extra_built_in_roots`.
+    #[doc(hidden)]
+    pub extra_distrust_after: Vec<(Vec<u8>, i64)>,
 }
 
 impl FetchOptions {
@@ -89,6 +95,7 @@ impl FetchOptions {
             resolve: Vec::new(),
             https_records: HashMap::new(),
             extra_built_in_roots: Vec::new(),
+            extra_distrust_after: Vec::new(),
         }
     }
 }
@@ -1486,6 +1493,9 @@ impl Fetcher {
             Some(_) => None,
             None => crate::roots::store(roots, &extra).map_err(FetchError::invalid)?,
         };
+        // Mozilla's distrust-after dates, for a chain to one of its roots.
+        let distrust = (roots == crate::profile::Roots::Mozilla && cas.is_none())
+            .then(|| Arc::new(options.extra_distrust_after.clone()));
         let mut hosts: HashMap<String, Vec<std::net::SocketAddr>> = HashMap::new();
         for (name, addr) in &options.resolve {
             hosts
@@ -1529,6 +1539,10 @@ impl Fetcher {
                 .tls_cert_verification(options.verify_certificates);
             if let Some(store) = cas.as_ref().or(bundled.as_ref()) {
                 builder = builder.tls_cert_store(store.clone());
+            }
+            if let Some(dates) = distrust.clone() {
+                builder = builder
+                    .tls_verify_callback(move |ok, ctx| crate::roots::verify_step(ok, ctx, &dates));
             }
             builder = builder.connector_layer(Told).dns_resolver(Resolver {
                 hosts: hosts.clone(),
@@ -1643,6 +1657,7 @@ impl Fetcher {
                             options.ca_certificates.as_deref(),
                             roots,
                             &extra,
+                            &options.extra_distrust_after,
                         )?,
                         validate,
                         Arc::new(ips),
