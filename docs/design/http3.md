@@ -163,12 +163,15 @@ default preferences; Chrome's rules are
   random for each connection, where BoringSSL takes AES-128-GCM on any
   machine with AES hardware, and a payload as long as the
   EncodedClientHelloInner would be, padded for a `maximum_name_length`
-  of 100, where BoringSSL draws one of four lengths.
+  of 100, where BoringSSL draws one of four lengths. The padding counts
+  the host's name even for an IP address, which gets ECH GREASE but no
+  `server_name`, and a second ClientHello after a HelloRetryRequest
+  repeats the first one's ECH GREASE.
   `profiles/firefox-160-macos.ech.capture.json` recorded Firefox
   160.0.1's outer and inner ClientHellos, decrypted with a key
   `examples/ech_capture.rs` holds, for `maximum_name_length` 0 and 64
   and for cipher suites with ChaCha20-Poly1305 first and last, and its
-  ECH GREASE for a short and a long host name. `tests/ech_tcp.rs` holds
+  ECH GREASE for a short and a long host name and an IP address. `tests/ech_tcp.rs` holds
   Netweir's to them: the same bytes but the randoms, key shares and
   encrypted payload, padding included. It also checks every Firefox
   profile's ECH GREASE, and finishes handshakes with a BoringSSL server

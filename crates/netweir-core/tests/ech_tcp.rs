@@ -588,3 +588,77 @@ fn ech_grease_on_a_resumption_is_as_long_as_nss_makes_it() {
     }
     assert!(resumed > 0, "no handshake resumed");
 }
+
+/// A TCP port on 127.0.0.1 that passes each connection on to `to`, and
+/// writes down the ClientHellos the client sends in the clear: the first,
+/// and the second after a HelloRetryRequest.
+fn hello_relay(to: u16) -> (u16, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, hellos) = mpsc::channel();
+    std::thread::spawn(move || {
+        for client in listener.incoming() {
+            let Ok(mut client) = client else { continue };
+            let Ok(mut server) = std::net::TcpStream::connect(("127.0.0.1", to)) else {
+                continue;
+            };
+            let (mut back_from, mut back_to) =
+                (server.try_clone().unwrap(), client.try_clone().unwrap());
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut back_from, &mut back_to);
+            });
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                // Records one after another; a handshake record that starts
+                // a ClientHello is one (each fits a record here).
+                let mut seen = 0;
+                loop {
+                    let mut header = [0; 5];
+                    if client.read_exact(&mut header).is_err() {
+                        return;
+                    }
+                    let mut body = vec![0; u16::from_be_bytes([header[3], header[4]]) as usize];
+                    if client.read_exact(&mut body).is_err() {
+                        return;
+                    }
+                    if seen < 2 && header[0] == 22 && body.first() == Some(&1) {
+                        seen += 1;
+                        let _ = tx.send(body.clone());
+                    }
+                    if server.write_all(&header).is_err() || server.write_all(&body).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, hellos)
+}
+
+#[test]
+fn ech_grease_is_the_same_in_the_second_client_hello() {
+    // RFC 9849, section 6.2: after a HelloRetryRequest, the second
+    // ClientHello carries the same GREASE encrypted_client_hello as the
+    // first, as NSS's does (tls13_MaybeGreaseEch sends greaseEchBuf
+    // again).
+    let recorded = recorded();
+    let firefox = &recorded.recordings[0];
+    let (server, accepted) =
+        ech_server(&recorded.private, &firefox.config_list[2..], Some("P-384"));
+    let (port, hellos) = hello_relay(server);
+    let fetcher = fetcher("firefox-160-macos", "origin.test", port, None);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let answer = runtime.block_on(fetcher.get(&format!("https://origin.test:{port}/"), &[]));
+    assert_eq!(answer.expect("answered").status, 200);
+    let seen = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(seen.group.as_deref(), Some("P-384"));
+    let first = hellos.recv_timeout(Duration::from_secs(5)).unwrap();
+    let second = hellos
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a second ClientHello");
+    let ech = |hello: &[u8]| {
+        let p = parts(&hello[4..]).unwrap();
+        p.extensions.into_iter().find(|(k, _)| *k == ECH).unwrap().1
+    };
+    assert_eq!(ech(&first), ech(&second));
+}
