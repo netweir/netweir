@@ -1765,6 +1765,54 @@ async fn a_connection_stuck_in_0rtt_fails_after_five_seconds() {
     );
 }
 
+/// How many datagrams reached a UDP socket at `at` that answers nothing;
+/// None where it can't be bound.
+fn silent(at: std::net::SocketAddr) -> Option<Arc<AtomicUsize>> {
+    let socket = std::net::UdpSocket::bind(at).ok()?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let count = seen.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 2048];
+        while socket.recv_from(&mut buf).is_ok() {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    Some(seen)
+}
+
+#[tokio::test]
+async fn quic_goes_to_the_first_address_only() {
+    // Firefox sends QUIC to the first address the name resolves to and
+    // nowhere else (HttpConnectionUDP::Init), with no family retry in
+    // release builds (network.http.http3.retry_different_ip_family): a server that answers QUIC on 127.0.0.1 only,
+    // behind ::1, is never reached over HTTP/3.
+    if std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("no IPv6 here");
+        return;
+    }
+    let server = Server::start_h3_ipv4(0).await.unwrap();
+    let v6 = silent((std::net::Ipv6Addr::LOCALHOST, server.port).into()).unwrap();
+    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![
+        (
+            "origin.test".into(),
+            (std::net::Ipv6Addr::LOCALHOST, server.port).into(),
+        ),
+        ("origin.test".into(), ([127, 0, 0, 1], server.port).into()),
+    ];
+    let fetcher = Fetcher::new(options).unwrap();
+    let url = format!("https://origin.test:{}/", server.port);
+    for _ in 0..10 {
+        assert_eq!(fetcher.get(&url, &[]).await.unwrap().version, "HTTP/2");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(v6.load(Ordering::Relaxed) > 0, "QUIC never went to ::1");
+}
+
 #[tokio::test]
 async fn a_root_distrusted_after_a_date_refuses_what_came_later_over_http3() {
     // As over TCP (tests/roots.rs): a built-in root's distrust-after date

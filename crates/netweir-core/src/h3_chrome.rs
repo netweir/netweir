@@ -38,6 +38,7 @@ use quiche::h3::NameValue;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::fetch::{FetchError, FetchErrorKind};
+use crate::h3::safari::RACE_DELAY;
 use crate::h3::{Body, Chunk, Handle, Job, State, Trust, fail_all};
 use crate::profile::Tls;
 
@@ -364,7 +365,7 @@ fn priority(headers: &[(String, Vec<u8>)]) -> (u8, bool) {
 pub(crate) fn open(
     host: &str,
     alternative: &str,
-    given: Option<IpAddr>,
+    given: Vec<IpAddr>,
     ech: Option<Vec<u8>>,
     key: &str,
     tls: Arc<Tls>,
@@ -381,6 +382,8 @@ pub(crate) fn open(
         .unwrap_or_else(|e| e.into_inner())
         .remove(&key);
     let tickets = tickets.clone();
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = attempts.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("netweir-h3 {alternative}"))
         .spawn(move || {
@@ -406,6 +409,7 @@ pub(crate) fn open(
                 key,
                 tickets,
                 early,
+                attempts: counted,
             };
             runtime.block_on(connection.run(queue, &state));
             state.send_modify(|s| {
@@ -424,14 +428,15 @@ pub(crate) fn open(
         // Firefox's rule (disable_when_third_party_roots_found); not
         // applied to this stack.
         third_party: Arc::default(),
+        attempts,
     }
 }
 
 struct Connection {
     host: String,
     alternative: String,
-    /// The address to use instead of resolving the alternative's host.
-    given: Option<IpAddr>,
+    /// The addresses to use instead of resolving the alternative's host.
+    given: Vec<IpAddr>,
     /// The ECH configuration from the HTTPS record that routed it here.
     ech: Option<Vec<u8>>,
     tls: Arc<Tls>,
@@ -444,6 +449,8 @@ struct Connection {
     /// confirmed, in 0-RTT: the session doesn't require confirmation
     /// (QuicSessionPool::CreateSessionSync, QuicSessionAttempt).
     early: bool,
+    /// How many addresses it tries, for the TCP race to wait on.
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A request in flight, by its stream.
@@ -468,23 +475,42 @@ impl Stream {
 }
 
 impl Connection {
-    fn connect(&self) -> Result<(tokio::net::UdpSocket, SocketAddr, quiche::Connection), String> {
-        let peer = match self.given {
-            Some(ip) => {
-                let port = self
-                    .alternative
-                    .rsplit_once(':')
-                    .and_then(|(_, p)| p.parse::<u16>().ok())
-                    .ok_or_else(|| format!("{}: no port", self.alternative))?;
-                SocketAddr::new(ip, port)
-            }
-            None => self
-                .alternative
+    /// The addresses to try, in order. Chrome tries the first
+    /// (QuicSessionPool::DirectJob::DoAttemptSession takes
+    /// `ip_endpoints.front()`); Safari tried `::1`, then `127.0.0.1`, for
+    /// `localhost`, so its alternate families as Happy Eyeballs does
+    /// (RFC 8305, section 4), starting with the first address's.
+    fn peers(&self) -> Result<Vec<SocketAddr>, String> {
+        let all: Vec<SocketAddr> = if self.given.is_empty() {
+            self.alternative
                 .to_socket_addrs()
                 .map_err(|e| format!("{}: {e}", self.alternative))?
-                .next()
-                .ok_or_else(|| format!("{}: no address", self.alternative))?,
+                .collect()
+        } else {
+            let port = self
+                .alternative
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.parse::<u16>().ok())
+                .ok_or_else(|| format!("{}: no port", self.alternative))?;
+            self.given
+                .iter()
+                .map(|&ip| SocketAddr::new(ip, port))
+                .collect()
         };
+        let Some(&first) = all.first() else {
+            return Err(format!("{}: no address", self.alternative));
+        };
+        if self.browser == Browser::Chrome {
+            return Ok(vec![first]);
+        }
+        Ok(interleaved(&all))
+    }
+
+    /// A socket and a connection to `peer`, its first flight not yet sent.
+    fn attempt(
+        &self,
+        peer: SocketAddr,
+    ) -> Result<(tokio::net::UdpSocket, quiche::Connection), String> {
         let any = match peer {
             SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
@@ -509,7 +535,57 @@ impl Connection {
             // A session BoringSSL won't take leaves a fresh handshake.
             let _ = conn.set_session(&ticket.session);
         }
-        Ok((socket, peer, conn))
+        Ok((socket, conn))
+    }
+
+    /// The connection to the first of `peers` to finish its handshake,
+    /// or to go into 0-RTT where it may, before `until`. Each address
+    /// gets [`RACE_DELAY`] before the next is tried, or less if it
+    /// fails; the others are dropped without a word (whether Safari
+    /// closes them isn't recorded). The error says whether QUIC was
+    /// sent at all.
+    async fn race(
+        &self,
+        peers: Vec<SocketAddr>,
+        until: Instant,
+    ) -> Result<(tokio::net::UdpSocket, SocketAddr, quiche::Connection), (bool, String)> {
+        if let [peer] = peers[..] {
+            return self
+                .attempt(peer)
+                .map(|(socket, conn)| (socket, peer, conn))
+                .map_err(|e| (false, e));
+        }
+        let mut peers = peers.into_iter().peekable();
+        let mut running = tokio::task::JoinSet::new();
+        let (mut tried, mut why) = (false, String::from("no address answered"));
+        loop {
+            if let Some(peer) = peers.next() {
+                match self.attempt(peer) {
+                    Ok((socket, conn)) => {
+                        tried = true;
+                        running.spawn(handshake(socket, peer, conn, until, self.early));
+                    }
+                    Err(e) => {
+                        why = e;
+                        continue;
+                    }
+                }
+            }
+            let next = tokio::time::sleep(RACE_DELAY);
+            tokio::pin!(next);
+            loop {
+                tokio::select! {
+                    done = running.join_next() => match done {
+                        Some(Ok(Some(won))) => return Ok(won),
+                        // One that failed hands on to the next at once.
+                        _ if peers.peek().is_some() => break,
+                        Some(_) if !running.is_empty() => {}
+                        _ => return Err((tried, why)),
+                    },
+                    () = &mut next, if peers.peek().is_some() => break,
+                }
+            }
+        }
     }
 
     /// Leaves this connection's session and RTT for the next one.
@@ -531,10 +607,21 @@ impl Connection {
     }
 
     async fn run(self, mut queue: mpsc::UnboundedReceiver<Job>, state: &watch::Sender<State>) {
-        let (socket, peer, mut conn) = match self.connect() {
-            Ok(c) => c,
+        let started = Instant::now();
+        let peers = match self.peers() {
+            Ok(p) => p,
             Err(e) => {
                 state.send_replace(State::Failed { exclude: false });
+                return fail_all(queue, &format!("HTTP/3 to {}: {e}", self.alternative));
+            }
+        };
+        self.attempts
+            .store(peers.len(), std::sync::atomic::Ordering::Relaxed);
+        let until = started + chrome::HANDSHAKE_TIMEOUT;
+        let (socket, peer, mut conn) = match self.race(peers, until).await {
+            Ok(c) => c,
+            Err((tried, e)) => {
+                state.send_replace(State::Failed { exclude: tried });
                 return fail_all(queue, &format!("HTTP/3 to {}: {e}", self.alternative));
             }
         };
@@ -552,7 +639,6 @@ impl Connection {
         let mut streams: HashMap<u64, Stream> = HashMap::new();
         let mut waiting: Vec<Job> = Vec::new();
         let (mut accepting, mut closing) = (true, false);
-        let started = Instant::now();
         let mut out = vec![0u8; 65_535];
         let mut buf = vec![0u8; 65_535];
         loop {
@@ -735,6 +821,57 @@ impl Connection {
                     None => accepting = false,
                 },
             }
+        }
+    }
+}
+
+/// `all` with its families taking turns, the first address's first.
+fn interleaved(all: &[SocketAddr]) -> Vec<SocketAddr> {
+    let Some(first) = all.first() else {
+        return Vec::new();
+    };
+    let (same, other): (Vec<SocketAddr>, Vec<SocketAddr>) =
+        all.iter().partition(|a| a.is_ipv6() == first.is_ipv6());
+    let (mut same, mut other) = (same.into_iter(), other.into_iter());
+    let mut peers = Vec::with_capacity(all.len());
+    loop {
+        match (same.next(), other.next()) {
+            (None, None) => return peers,
+            (a, b) => peers.extend(a.into_iter().chain(b)),
+        }
+    }
+}
+
+/// Takes one attempt's handshake as far as it goes before `until`: the
+/// attempt, up (or in 0-RTT, if `early`), or nothing if it closed or ran
+/// out of time.
+async fn handshake(
+    socket: tokio::net::UdpSocket,
+    peer: SocketAddr,
+    mut conn: quiche::Connection,
+    until: Instant,
+    early: bool,
+) -> Option<(tokio::net::UdpSocket, SocketAddr, quiche::Connection)> {
+    let local = socket.local_addr().ok()?;
+    let mut out = vec![0u8; 65_535];
+    let mut buf = vec![0u8; 65_535];
+    loop {
+        send_all(&socket, &mut conn, &mut out).await.ok()?;
+        if conn.is_established() || early && conn.is_in_early_data() {
+            return Some((socket, peer, conn));
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if conn.is_closed() || left.is_zero() {
+            return None;
+        }
+        let timeout = conn.timeout().unwrap_or(left).min(left);
+        tokio::select! {
+            got = socket.recv_from(&mut buf) => {
+                if let Ok((n, from)) = got {
+                    let _ = conn.recv(&mut buf[..n], quiche::RecvInfo { from, to: local });
+                }
+            }
+            () = tokio::time::sleep(timeout) => conn.on_timeout(),
         }
     }
 }

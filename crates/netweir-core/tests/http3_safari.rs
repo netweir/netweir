@@ -13,7 +13,9 @@
 #![cfg(feature = "http3")]
 
 use std::collections::HashSet;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
@@ -369,6 +371,108 @@ async fn an_alt_svc_route_stays_on_http3_once_it_moves() {
     fetcher.close_http3().await;
     let next = fetcher.get(&format!("{origin}/next"), &[]).await.unwrap();
     assert_eq!(next.version, "HTTP/3", "a new QUIC connection carries it");
+}
+
+/// When each datagram reached a socket, with its size.
+type Arrivals = Arc<Mutex<Vec<(Instant, usize)>>>;
+
+/// A UDP socket at `at` that answers nothing, and when each datagram
+/// reached it, with its size; None where it can't be bound.
+fn silent(at: SocketAddr) -> Option<Arrivals> {
+    let socket = std::net::UdpSocket::bind(at).ok()?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 2048];
+        while let Ok((n, _)) = socket.recv_from(&mut buf) {
+            log.lock().unwrap().push((Instant::now(), n));
+        }
+    });
+    Some(seen)
+}
+
+fn has_ipv6() -> bool {
+    std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).is_ok()
+}
+
+/// `origin.test` at ::1 and then 127.0.0.1, as `localhost` resolves on
+/// macOS, over TCP on `port`.
+fn both_families(options: &mut FetchOptions, port: u16) {
+    options.resolve = vec![
+        ("origin.test".into(), (Ipv6Addr::LOCALHOST, port).into()),
+        ("origin.test".into(), ([127, 0, 0, 1], port).into()),
+    ];
+}
+
+#[tokio::test]
+async fn quic_tries_the_other_family_250_ms_after_the_first() {
+    // Safari tried QUIC to ::1, then to 127.0.0.1 250 ms later, for a
+    // server that listened on 127.0.0.1 only, and its request went over
+    // QUIC: TCP waited its turn after both.
+    if !has_ipv6() {
+        eprintln!("no IPv6 here");
+        return;
+    }
+    let h3 = Server::start_h3_ipv4(0).await.unwrap();
+    let v6 = silent((Ipv6Addr::LOCALHOST, h3.port).into()).unwrap();
+    let tcp = Server::start().await.unwrap();
+    let mut options = options();
+    both_families(&mut options, tcp.port);
+    options
+        .https_records
+        .insert("origin.test".into(), h3_record(h3.port));
+    let fetcher = Fetcher::new(options).unwrap();
+    let started = Instant::now();
+    let response = fetcher.get("https://origin.test/", &[]).await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(response.version, "HTTP/3");
+    assert!(took >= Duration::from_millis(250), "{took:?}");
+    let seen = v6.lock().unwrap().clone();
+    assert_eq!(seen.first().map(|s| s.1), Some(1200), "{seen:?}");
+}
+
+#[tokio::test]
+async fn tcp_waits_for_quic_on_both_families() {
+    // Neither family answers QUIC: the second attempt goes 250 ms after
+    // the first, to the other family, and TCP 250 ms after that.
+    if !has_ipv6() {
+        eprintln!("no IPv6 here");
+        return;
+    }
+    let (port, v4, v6) = loop {
+        let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let v4 = silent(([127, 0, 0, 1], port).into());
+        let v6 = silent((Ipv6Addr::LOCALHOST, port).into());
+        if let (Some(v4), Some(v6)) = (v4, v6) {
+            break (port, v4, v6);
+        }
+    };
+    let tcp = Server::start().await.unwrap();
+    let mut options = options();
+    both_families(&mut options, tcp.port);
+    options
+        .https_records
+        .insert("origin.test".into(), h3_record(port));
+    let fetcher = Fetcher::new(options).unwrap();
+    let started = Instant::now();
+    let response = fetcher.get("https://origin.test/", &[]).await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(response.version, "HTTP/2");
+    assert!(took >= Duration::from_millis(500), "{took:?}");
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    let first = |seen: &Arrivals| seen.lock().unwrap().first().copied();
+    let (Some((at6, n6)), Some((at4, n4))) = (first(&v6), first(&v4)) else {
+        panic!("QUIC went to one family only");
+    };
+    assert_eq!((n6, n4), (1200, 1200));
+    let gap = at4.saturating_duration_since(at6);
+    assert!(gap >= Duration::from_millis(240), "{gap:?}");
+    assert!(gap < Duration::from_millis(400), "{gap:?}");
 }
 
 /// profiles/safari-27-macos.h3-0rtt.capture.json and its -post twin:

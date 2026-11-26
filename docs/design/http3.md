@@ -98,8 +98,6 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
-- Addresses. Netweir connects to the first address the alternative's name
-  resolves to; Firefox races IPv4 and IPv6.
 - Certificates are checked with BoringSSL, not by NSS's `mozilla::pkix`,
   against Mozilla's roots as Firefox 160 ships them, distrust-after dates
   included (`docs/design/roots.md`, which lists what still differs:
@@ -125,6 +123,15 @@ default preferences; Chrome's rules are
 [their own](#when-chrome-moves-to-http3), and so are
 [Safari's](#when-safari-moves-to-http3).
 
+- One address. QUIC goes to the first address the alternative's name
+  resolves to, and nowhere else. `HttpConnectionUDP::Init` takes one
+  address from the record (`GetNextAddr`), and `DnsAndConnectSocket`
+  arms no backup timer for HTTP/3, so there's no IPv4 attempt beside an
+  IPv6 one as over TCP. Trying the other family after a refused
+  connection is `network.http.http3.retry_different_ip_family`, on only
+  in early betas and Nightly (`@IS_EARLY_BETA_OR_EARLIER@`); Happy
+  Eyeballs v3 (`network.http.happy_eyeballs_enabled`) is Nightly's too.
+  A first address that never answers leaves the request to TCP's race.
 - Alt-Svc. An `Alt-Svc` header on an https response that isn't a 421 or
   a 5xx (`nsHttpChannel::ProcessAltService`) is read as
   `AltSvcMapping::ProcessHeader` reads it: `clear` forgets the origin's
@@ -497,8 +504,6 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.
-- Addresses: the first one a name resolves to, where Chrome would also
-  race IPv4 and IPv6 for TCP.
 - Certificates are checked after the handshake, against the TCP
   connections' roots, rather than by Chrome's verifier during it.
 
@@ -519,6 +524,10 @@ Chromium's `net/` source:
   Chrome refuses or a high port for a low one, unless a later one already
   has a connection up (`JobController::GetAdvertisedAltSvcInternal`).
   Other hosts are fine.
+- One address, as for Firefox: `QuicSessionPool::DirectJob::
+  DoAttemptSession` starts its one QUIC attempt at the resolved
+  endpoint's `ip_endpoints.front()`. Racing IPv4 against IPv6 for QUIC
+  is HappyEyeballsV3, off by default in Chrome 157.
 - Racing. The QUIC connection and a TCP one start together, and the
   request goes over whichever is ready first. TCP waits only once QUIC
   has worked on this network and the alternative wasn't recently broken,
@@ -729,8 +738,6 @@ What the recording can't show, Netweir has had to choose:
   from the static table.
 - 0-RTT for methods other than GET and POST, which weren't recorded:
   they follow Chrome's rule.
-- Addresses. Safari tried QUIC to `::1`, then to `127.0.0.1` 250 ms
-  later; Netweir tries the first address only.
 - The image request over HTTP/1.1. Safari's `[image]` headers are
   recorded over HTTP/2 and HTTP/3; over HTTP/1.1, Host and Connection
   go where Safari's other HTTP/1.1 requests put them.
@@ -769,7 +776,18 @@ macOS, and a guess where they say so.
   each of the four times it was timed against a server that never
   answered QUIC; that's also the Connection Attempt Delay of Happy
   Eyeballs v3, an Apple-led draft. A request whose QUIC connection isn't
-  up after 250 ms goes over TCP. When QUIC was up first, Safari opened
+  up after 250 ms goes over TCP.
+- Addresses. For `localhost`, Safari sent QUIC to `::1`, then to
+  `127.0.0.1` 250 ms later, and its request went over QUIC from there
+  each of the five times: the capture server listened for QUIC on
+  127.0.0.1 alone. So Netweir tries every address, 250 ms apart, the
+  families taking turns from the first address's (RFC 8305 does the
+  same), and sooner when one fails; the first handshake done wins, and
+  the others are dropped without a CONNECTION_CLOSE. TCP's 250 ms start
+  after the last QUIC attempt rather than the first: had TCP started
+  beside the second attempt, it would have won some of those five.
+  Two addresses are all that was timed, so the wait with more is a
+  guess. When QUIC was up first, Safari opened
   no TCP connection at all.
 - Broken. Pauly wrote that QUIC goes first only with "no history of
   QUIC failures", but Safari went back to QUIC first on each of three
