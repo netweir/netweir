@@ -6,8 +6,10 @@
 //!
 //! It serves DNS over HTTPS on 127.0.0.1:DOH_PORT (default 8053), which
 //! answers every name with 127.0.0.1 and an HTTPS record that offers h2
-//! and http/1.1 with an ECH configuration, and listens for TLS on
-//! 127.0.0.1:TCP_PORT (default 8443), and on [::1] where it can. The ECH key, the configuration
+//! and http/1.1 (or the ALPNs `ECH_CAPTURE_ALPN` lists, comma-separated)
+//! with an ECH configuration, and listens for TLS on
+//! 127.0.0.1:TCP_PORT (default 8443), and on [::1] where it can. The ECH
+//! key, the configuration
 //! (`ech_config_list.hex`) and the DoH server's certificate
 //! (`doh-cert.pem`) are kept in DIR and used again on the next run, so
 //! Firefox and Netweir see the same configuration. Each connection's
@@ -135,10 +137,17 @@ fn answer(query: &[u8], ech: &[u8]) -> Option<Vec<u8>> {
         65 => {
             let mut d = 1u16.to_be_bytes().to_vec();
             d.push(0);
-            let alpn = b"\x02h2\x08http/1.1";
+            // ECH_CAPTURE_ALPN lists others, such as h3,h2 to record what
+            // goes over TCP once HTTP/3 to this port fails.
+            let names = std::env::var("ECH_CAPTURE_ALPN").unwrap_or_else(|_| "h2,http/1.1".into());
+            let mut alpn = Vec::new();
+            for name in names.split(',') {
+                alpn.push(name.len() as u8);
+                alpn.extend(name.as_bytes());
+            }
             d.extend(1u16.to_be_bytes());
             d.extend((alpn.len() as u16).to_be_bytes());
-            d.extend(alpn);
+            d.extend(&alpn);
             // Without a configuration, the client sends ECH GREASE.
             if !ech.is_empty() {
                 d.extend(5u16.to_be_bytes());

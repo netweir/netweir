@@ -382,6 +382,13 @@ async fn dispatch_again(
     }
 }
 
+/// Whether a connection got as far as its TLS handshake before it failed:
+/// one the server refused, or that timed out, never did.
+#[cfg(feature = "http3")]
+fn reached(error: &wreq::Error) -> bool {
+    handshake_broke(error) || error.is_tls() || caused_by_tls(error)
+}
+
 /// Whether a connection broke during its TLS handshake: reset, or closed
 /// before the server's hello, as nsNSSIOLayer sees PR_CONNECT_RESET_ERROR
 /// or PR_END_OF_FILE_ERROR. A connection refused never got that far.
@@ -2567,7 +2574,7 @@ impl Fetcher {
                     .to_origin_from_records(request, order, sent, view)
                     .await;
             }
-            return send_h2(route, request, order, sent, view).await;
+            return send_h2(route, request, order, sent, view, &self.again).await;
         }
         let again = h3.clone();
         let tcp = request.try_clone();
@@ -2724,7 +2731,8 @@ impl Fetcher {
                 // From an HTTPS record, the backup goes where
                 // PrepareFastFallbackConnInfo sends it, or nowhere.
                 let ech_used = route.record.as_ref().is_some_and(Option::is_some);
-                let fallback = match route.from.as_ref().map(|f| f.fast_fallback(ech_used)) {
+                let fallback_to = route.from.as_ref().map(|f| f.fast_fallback(ech_used));
+                let fallback = match fallback_to.clone() {
                     None | Some(Some(None)) => tcp
                         .as_ref()
                         .and_then(wreq::RequestBuilder::try_clone)
@@ -2732,12 +2740,22 @@ impl Fetcher {
                     Some(Some(Some(to))) => tcp
                         .as_ref()
                         .and_then(wreq::RequestBuilder::try_clone)
-                        .and_then(|r| to_record(r, &to)),
+                        .and_then(|r| route.from.as_ref().and_then(|f| to_record(r, f, &to))),
                     Some(None) => None,
                 };
-                let mut backup = fallback
-                    .as_ref()
-                    .and_then(|(r, require)| preconnect(r, *require));
+                // Firefox's backup for an Alt-Svc alternative goes to an
+                // entry of its own: the FallbackTransaction's connection info
+                // has no partition key, the restarted request's has. So the
+                // request never rides it, and makes a connection of its own
+                // (recorded from Firefox 160.0.1 for #436).
+                let apart = route.from.is_none();
+                let mut backup = fallback.as_ref().and_then(|(r, require)| match apart {
+                    true => r
+                        .try_clone()
+                        .map(|r| r.group(wreq::Group::new("fallback")))
+                        .and_then(|r| preconnect(&r, *require)),
+                    false => preconnect(r, *require),
+                });
                 let won = loop {
                     let Some(connecting) = backup.as_mut() else {
                         break pending.up().await;
@@ -2745,6 +2763,18 @@ impl Fetcher {
                     tokio::select! {
                         biased;
                         made = connecting => match made {
+                            // Its TCP connection came up, so the request
+                            // moves to TCP (OnBackupConnectionReady): a
+                            // restart, IS_RETRY, on a connection of its own.
+                            Ok(made) if apart && made.as_ref().map_or_else(reached, |_| true) => {
+                                let (tcp, _) = fallback.expect("a backup is made from it");
+                                let left = self.again.attempts.saturating_sub(1);
+                                let done = dispatch_again(tcp, order, sent, view, &self.again, true, left).await;
+                                if done.is_ok() {
+                                    routes.tcp_answered(&route, &host);
+                                }
+                                return done;
+                            }
                             Ok(Ok(v)) if fallback.as_ref().and_then(|f| f.1).is_none_or(|r| r == v) => {
                                 let (tcp, _) = fallback.expect("a backup is made from it");
                                 let done = dispatch(tcp, order, sent, view).await;
@@ -2752,6 +2782,34 @@ impl Fetcher {
                                     routes.tcp_answered(&route, &host);
                                 }
                                 return done;
+                            }
+                            // Its TCP connection came up, which is when
+                            // Firefox moves the request onto it
+                            // (OnBackupConnectionReady, HandleFallback): a
+                            // restart, so with IS_RETRY. The handshake then
+                            // failed, and the request goes on from there.
+                            Ok(Err(e)) if route.from.is_some() && reached(&e) => {
+                                let from = route.from.as_ref().expect("checked");
+                                let (tcp, _) = fallback.expect("a backup is made from it");
+                                let after = from.after(from.attempts + 2);
+                                let going = Going {
+                                    fetcher: self,
+                                    routes: &routes,
+                                    partition: &route.partition,
+                                    no_h3: true,
+                                    h3: again.clone(),
+                                };
+                                return match fallback_to.flatten().flatten() {
+                                    Some(to) => {
+                                        send_from_records(&after, Next::To(to), tcp, order, sent, view, going)
+                                            .await
+                                    }
+                                    None => {
+                                        let left = self.again.attempts.saturating_sub(2);
+                                        dispatch_again(tcp, order, sent, view, &self.again, true, left)
+                                            .await
+                                    }
+                                };
                             }
                             _ => backup = None,
                         },
@@ -2762,12 +2820,13 @@ impl Fetcher {
                     && route.from.is_none()
                     && let Some(tcp) = tcp
                 {
-                    // So the request rides the backup's connection rather
-                    // than opening another beside it.
-                    if let Some(connecting) = backup {
-                        let _ = connecting.await;
-                    }
-                    let done = dispatch(tcp, order, sent, view).await;
+                    // HTTP/3 failed: Firefox makes the request again over
+                    // TCP (IS_RETRY), on a connection of its own, the
+                    // backup's being in another entry.
+                    drop(backup);
+                    let left = self.again.attempts.saturating_sub(1);
+                    let done =
+                        dispatch_again(tcp, order, sent, view, &self.again, true, left).await;
                     if done.is_ok() {
                         routes.tcp_answered(&route, &host);
                     }
@@ -2806,6 +2865,7 @@ impl Fetcher {
                     port: port.parse().unwrap_or(0),
                     alpn: "h3".into(),
                     ech: route.record.clone().flatten(),
+                    no_alpn: false,
                 };
                 let next = Next::After(
                     failed,
@@ -2825,7 +2885,10 @@ impl Fetcher {
                 return send_from_records(from, next, tcp, order, sent, view, going).await;
             }
             (Err(None), Some(tcp)) => {
-                let done = dispatch(tcp, order, sent, view).await;
+                // HTTP/3 failed for the request, which Firefox then makes
+                // again over TCP (nsHttpTransaction::Restart: IS_RETRY).
+                let left = self.again.attempts.saturating_sub(1);
+                let done = dispatch_again(tcp, order, sent, view, &self.again, true, left).await;
                 if done.is_ok() {
                     routes.tcp_answered(&route, &host);
                 }
@@ -2894,16 +2957,23 @@ fn preconnect(
     })
 }
 
-/// `request` over TCP to an HTTPS record's route `to`: its target and
-/// port, with its ECH configuration, and the version its ALPN names, if
-/// it names one, which the connection has to agree on (nsHttpConnection
-/// closes one whose ALPN isn't the record's NPN token).
+/// `request` over TCP to an HTTPS record's route `to`, from records
+/// `from`: its target and port, with its ECH configuration, and the
+/// version its ALPN names, if it names one, which the connection has to
+/// agree on (nsHttpConnection closes one whose ALPN isn't the record's NPN
+/// token). A route that keeps the origin's host and port has no routed
+/// host, and goes as the origin's connections do.
 #[cfg(feature = "http3")]
 fn to_record(
     request: wreq::RequestBuilder,
+    from: &crate::h3::FromRecords,
     to: &crate::https_rr::Route,
 ) -> Option<(wreq::RequestBuilder, Option<Version>)> {
-    let mut request = routed(request, &format!("{}:{}", to.host, to.port))?;
+    let mut request = if from.keeps_origin(to) {
+        request
+    } else {
+        routed(request, &format!("{}:{}", to.host, to.port))?
+    };
     if let Some(ech) = &to.ech {
         request = request.ech_config_list(ech.clone());
     }
@@ -3010,7 +3080,7 @@ async fn send_from_records(
             let fetcher = going.fetcher;
             return Box::pin(fetcher.send_h3(way, request, order, sent, view, going.h3)).await;
         }
-        let Some((mut routed, require)) = request.try_clone().and_then(|r| to_record(r, &to))
+        let Some((mut routed, require)) = request.try_clone().and_then(|r| to_record(r, from, &to))
         else {
             return dispatch(request, order, sent, view).await;
         };
@@ -3076,8 +3146,9 @@ async fn send_h2(
     order: OrigHeaderMap,
     sent: Option<&Sent>,
     view: Option<JarView>,
+    again: &Again,
 ) -> Result<wreq::Response, FetchError> {
-    let Some(request) = request
+    let Some(routed) = request
         .try_clone()
         .and_then(|r| routed(r, &route.alternative))
     else {
@@ -3099,7 +3170,24 @@ async fn send_h2(
     if !put {
         placed.insert("alt-used");
     }
-    dispatch(request.header("alt-used", alt_used), placed, sent, view).await
+    let routed = match &view {
+        Some(view) => routed.cookie_provider(Arc::new(view.clone())),
+        None => routed,
+    };
+    let first = send_raw(routed.header("alt-used", alt_used), placed, sent).await;
+    // A connection to the alternative that broke during its handshake
+    // (NS_ERROR_NET_RESET): Firefox makes the request again on the direct
+    // route, the origin's, without Alt-Used and with IS_RETRY
+    // (nsHttpTransaction::Restart, CloneAsDirectRoute,
+    // RemoveAlternateServiceUsedHeader). Recorded from Firefox 160.0.1
+    // for #436: one connection to the alternative, then nine to the origin.
+    match first {
+        Err(e) if again.attempts > 1 && handshake_broke(&e) => {
+            let left = again.attempts - 1;
+            dispatch_again(request, order, sent, view, again, true, left).await
+        }
+        done => Ok(done?),
+    }
 }
 
 /// Proves an `h2` alternative `to` for `origin` with `client`'s TCP

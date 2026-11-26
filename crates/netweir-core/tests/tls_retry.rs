@@ -11,6 +11,7 @@
 //! Chrome makes one connection either way.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use netweir_core::{FetchOptions, Fetcher, Profile};
 use netweir_fingerprint::Server;
@@ -29,6 +30,10 @@ enum Then {
     Alert,
     /// Passes it on to this port, the ClientHello included.
     Relay(u16),
+    /// The same, then closes it after this long, so it can't wait in the
+    /// client's pool.
+    #[cfg_attr(not(feature = "http3"), allow(dead_code))]
+    RelayFor(u16, Duration),
 }
 
 type Hellos = Arc<Mutex<Vec<Vec<u8>>>>;
@@ -68,14 +73,19 @@ async fn front(then: impl Fn(usize) -> Then + Send + 'static) -> (u16, Hellos) {
                     let _ = client.write_all(&[21, 3, 3, 0, 2, 2, 40]).await;
                     let _ = client.shutdown().await;
                 }
-                Then::Relay(to) => {
+                Then::Relay(to) | Then::RelayFor(to, _) => {
+                    let lasting = match then(n) {
+                        Then::RelayFor(_, lasting) => lasting,
+                        _ => Duration::MAX,
+                    };
                     tokio::spawn(async move {
                         let mut server = tokio::net::TcpStream::connect(("127.0.0.1", to))
                             .await
                             .unwrap();
                         server.write_all(&record).await.unwrap();
                         server.write_all(&hello).await.unwrap();
-                        let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                        let piped = tokio::io::copy_bidirectional(&mut client, &mut server);
+                        let _ = tokio::time::timeout(lasting, piped).await;
                     });
                 }
             }
@@ -192,23 +202,32 @@ async fn the_connection_a_retry_made_serves_the_next_request() {
     assert_eq!(hellos.lock().unwrap().len(), 2);
 }
 
+/// Where a test's HTTPS record sends origin.test's connections.
+#[cfg(feature = "http3")]
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// The URL has no port, and the record none: the origin's own.
+    Origin,
+    /// The record names the front's port, so it has a routed host, and its
+    /// route goes to the record's target (`connect_to`).
+    OwnPort,
+}
+
 /// The hellos of the first request to origin.test, whose one HTTPS record
 /// has `params` and whose every connection the front fails, that went by
-/// the record: the ones before it was in made one connection. `with_port`
-/// names the front's port in the record, for a record with ECH, whose
-/// route goes to the record's target (`connect_to`); its hellos name
-/// ech.com.
+/// the record: the ones before it was in made one connection. A record
+/// with ECH makes hellos that name ech.com.
 #[cfg(feature = "http3")]
-async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], with_port: bool) -> Vec<Vec<u8>> {
+async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], place: Place) -> Vec<Vec<u8>> {
     let (port, hellos) = front(|_| Then::Alert).await;
     let mut params = params.to_vec();
-    if with_port {
+    if place == Place::OwnPort {
         params.push((3, port.to_be_bytes().to_vec()));
         // A record's SvcParams go in key order.
         params.sort_by_key(|p| p.0);
     }
-    let params = params.as_slice();
-    let record = netweir_core::https_answer("origin.test", &[(1, ".", params)], 300);
+    let ech = params.iter().any(|p| p.0 == 5);
+    let record = netweir_core::https_answer("origin.test", &[(1, ".", &params)], 300);
     let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
     options.verify_certificates = false;
     options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], port).into())];
@@ -221,15 +240,15 @@ async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], with_port: bool) -> Ve
         let made = hellos.lock().unwrap()[before..].to_vec();
         // With ECH, a request whose own connection was under way when the
         // record came in made that one without it first.
-        let ech = |h: &Vec<u8>| h.windows(7).any(|w| w == b"ech.com");
-        if made.len() > 1 && (!with_port || made.iter().all(ech)) {
+        let with_ech = |h: &Vec<u8>| h.windows(7).any(|w| w == b"ech.com");
+        if made.len() > 1 && (!ech || made.iter().all(with_ech)) {
             return made;
         }
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(10),
             "the record never took"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -239,28 +258,156 @@ async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], with_port: bool) -> Ve
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn a_failed_handshake_from_a_record_without_ech_goes_to_the_origin_once() {
-    let made = once_the_record_is_in(&[(1, b"\x02h2\x08http/1.1".to_vec())], false).await;
+    let made = once_the_record_is_in(&[(1, b"\x02h2\x08http/1.1".to_vec())], Place::Origin).await;
     assert_eq!(made.len(), 2);
     retried_as_firefox(&made);
+}
+
+/// An ECHConfigList from BoringSSL's bssl generate-ech, public name
+/// ech.com.
+#[cfg(feature = "http3")]
+fn ech_config_list() -> Vec<u8> {
+    const LIST: &str = "003efe0d003a0000200020bb2f29e3e3057e0419d52fc5f44118776f8db61cea4fdf76079b93606c5a62480008000100010001000300076563682e636f6d0000";
+    (0..LIST.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&LIST[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 /// With ECH, a failed record goes on to the record's other ALPN entries
 /// (PrepareSVCBRecordsForRetry). `h2,http/1.1` flattens to http/1.1 and
 /// the default ALPN; with a port of its own the record has a routed host,
 /// so the failed one is left out and one connection follows it. The ECH
-/// stays, and the retry leaves compress_certificate out. (Firefox's three
-/// connections were to a record with the origin's port, whose failed
-/// entry is tried again: `https_rr::skipped_after`.)
+/// stays, and the retry leaves compress_certificate out.
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn a_failed_handshake_with_ech_goes_through_the_records_alpns() {
-    // From BoringSSL's bssl generate-ech, public name ech.com.
-    const LIST: &str = "003efe0d003a0000200020bb2f29e3e3057e0419d52fc5f44118776f8db61cea4fdf76079b93606c5a62480008000100010001000300076563682e636f6d0000";
-    let ech = (0..LIST.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&LIST[i..i + 2], 16).unwrap())
-        .collect();
-    let made = once_the_record_is_in(&[(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech)], true).await;
+    let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
+    let made = once_the_record_is_in(&params, Place::OwnPort).await;
     assert_eq!(made.len(), 2);
     retried_as_firefox(&made);
+}
+
+/// Firefox 160.0.1's three connections for `. alpn=h2,http/1.1 ech=...`
+/// with the origin's port: the record keeps the origin's host and port,
+/// so nsHttpConnectionInfo gives it no routed host, and
+/// PrepareSVCBRecordsForRetry leaves nothing out after it failed. Its
+/// first entry is tried again after the other.
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn a_record_with_the_origins_port_is_tried_again_after_it_failed() {
+    let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
+    let made = once_the_record_is_in(&params, Place::Origin).await;
+    assert_eq!(made.len(), 3);
+    retried_as_firefox(&made);
+}
+
+/// An h3 record whose QUIC goes unanswered, as Firefox 160.0.1 went on
+/// from it (#436): after 50 ms the fast fallback's TCP connection, with
+/// the profile's hello (FallbackTransaction, no IS_RETRY). Once its TCP
+/// connection is up the request moves onto it (OnBackupConnectionReady,
+/// HandleFallback: a restart), leaving HTTP/3. When its handshake then
+/// fails, the request's own connection to the fallback's record and the
+/// origin's after it are both made again, without compress_certificate.
+/// Against a server whose handshake works, the request rides the
+/// backup's connection and nothing more is made.
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn a_failed_fast_fallback_goes_on_over_tcp_as_firefox_does() {
+    let (port, hellos) = front(|_| Then::Alert).await;
+    let _quiet = std::net::UdpSocket::bind(("127.0.0.1", port)).unwrap();
+    let params = [
+        (1, b"\x02h3\x02h2".to_vec()),
+        (3, port.to_be_bytes().to_vec()),
+    ];
+    let record = netweir_core::https_answer("origin.test", &[(1, ".", &params)], 300);
+    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], port).into())];
+    options.https_records.insert("origin.test".into(), record);
+    let fetcher = Fetcher::new(options).unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        let before = hellos.lock().unwrap().len();
+        let sent = std::time::Instant::now();
+        fetcher.get("https://origin.test/", &[]).await.unwrap_err();
+        let made = hellos.lock().unwrap()[before..].to_vec();
+        // The first request's own connection may be under way before the
+        // record is in.
+        if made.len() == 3 {
+            retried_as_firefox(&made);
+            // Not held for HTTP/3's handshake timeout.
+            assert!(sent.elapsed() < Duration::from_secs(5));
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{} connections",
+            made.len()
+        );
+    }
+}
+
+/// An `h2` alternative whose handshake is reset: Firefox 160.0.1 made the
+/// request again on the direct route, the origin's, without Alt-Used and
+/// with IS_RETRY (nsHttpTransaction::Restart), so its connection to the
+/// origin left compress_certificate out. The alternative's connection had
+/// it.
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn a_reset_h2_alternative_goes_on_at_the_origin_as_a_retry() {
+    let origin_server = Server::start().await.unwrap();
+    let alternative = Server::start().await.unwrap();
+    let (to_origin, to_alternative) = (origin_server.port, alternative.port);
+    // Neither first connection stays: the origin's carries the answer that
+    // offers the alternative, the alternative's proves it.
+    let short = Duration::from_millis(300);
+    let (origin, origin_hellos) = front(move |n| match n {
+        0 => Then::RelayFor(to_origin, short),
+        _ => Then::Relay(to_origin),
+    })
+    .await;
+    let (alt, alt_hellos) = front(move |n| match n {
+        0 => Then::RelayFor(to_alternative, short),
+        _ => Then::Reset,
+    })
+    .await;
+    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    options.verify_certificates = false;
+    options.resolve = vec![
+        ("origin.test".into(), ([127, 0, 0, 1], origin).into()),
+        ("alt.test".into(), ([127, 0, 0, 1], alt).into()),
+    ];
+    let fetcher = Fetcher::new(options).unwrap();
+    let offer = format!("h2%3D%22alt.test%3A{alt}%22");
+    fetcher
+        .get(&format!("https://origin.test/?alt-svc={offer}"), &[])
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let (alt_before, origin_before) = (
+            alt_hellos.lock().unwrap().len(),
+            origin_hellos.lock().unwrap().len(),
+        );
+        let response = fetcher.get("https://origin.test/", &[]).await.unwrap();
+        assert_eq!(response.status, 200);
+        let alt_made = alt_hellos.lock().unwrap()[alt_before..].to_vec();
+        if alt_made.is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10), "never moved");
+            continue;
+        }
+        // One connection to the alternative, which was reset, then the
+        // origin's, made again.
+        assert_eq!(alt_made.len(), 1);
+        let origin_made = origin_hellos.lock().unwrap()[origin_before..].to_vec();
+        assert_eq!(origin_made.len(), 1);
+        let mut made = alt_made;
+        made.extend(origin_made);
+        retried_as_firefox(&made);
+        let capture: netweir_fingerprint::Capture = serde_json::from_slice(&response.body).unwrap();
+        assert!(!capture.headers.iter().any(|(k, _)| k == "alt-used"));
+        return;
+    }
 }

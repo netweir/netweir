@@ -98,12 +98,6 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
   portability layer and puts nothing on the wire.
 - Proxies. Firefox never sends QUIC through an HTTP or SOCKS proxy, and
   nor does a Fetcher with one (below).
-- TCP after HTTP/3, and after an `h2` alternative, when they fail.
-  Firefox makes such a transaction again (`nsHttpTransaction::Restart`
-  after `DisableHttp3`, or without the alternative's route), and its
-  next connection carries `IS_RETRY`, so leaves out
-  `compress_certificate`. Netweir's TCP connection there is made with
-  the profile's own options; neither case is recorded yet.
 
 ## When a request goes over HTTP/3
 
@@ -210,7 +204,10 @@ default preferences; Chrome's rules are
   the origin's host and port has no routed host to compare, so the entry
   that failed is tried again (`nsHttpConnectionInfo`'s constructor):
   for `. alpn=h2,http/1.1 ech=...` Firefox 160.0.1 made three
-  connections.
+  connections. Such a record's connections go as the origin's do, with
+  no route of their own. Under the failed connection's name, an entry
+  from a record that named no ALPN is left out as well
+  (`SVCBRecord::GetSelectedAlpn` fails, `nsHttpTransaction.cpp:1227`).
   The records to go on to are listed once, at the first such failure
   (`PrepareSVCBRecordsForRetry`): h3 entries stay on the list unless
   HTTP/3 has already failed for the request in a way that excludes its
@@ -231,7 +228,13 @@ default preferences; Chrome's rules are
   `AltSvcMapping`'s constructor makes it one with no lifetime). Once one
   is proved by a TCP connection to it, with no request, the origin's
   requests go there over HTTP/2, for the origin's name, with `Alt-Used`
-  (`nsHttpChannel::BeginConnect`), on connections of their own. An `h3`
+  (`nsHttpChannel::BeginConnect`), on connections of their own. A
+  connection to it that's reset or closed during its handshake sends the
+  request back to the origin's direct route, without `Alt-Used`
+  (`nsHttpTransaction::Restart`), as a retry: Firefox made one connection
+  to the alternative and then nine to the origin, none of them offering
+  `compress_certificate`. A handshake the alternative refuses with an
+  alert ends the request there. An `h3`
   alternative comes first (`AltSvcCache::GetAltServiceMapping`).
 - Proving it. As `AltSvcCache::UpdateAltServiceMapping` does, the
   fetcher connects to a new alternative at once, with no request, and
@@ -255,15 +258,29 @@ default preferences; Chrome's rules are
   (AlternateServices.bin) across restarts.
 - Racing TCP. A request whose alternative's connection is still being
   made waits `network.http.http3.backup_timer_delay`, 100 ms, then opens
-  a TCP connection too (`nsHttpTransaction::OnHttp3BackupTimer`). It goes
-  over whichever is up first: TCP, without `Alt-Used`, once that
-  connection is made or at once on one already open
-  (`OnBackupConnectionReady`); HTTP/3 if its connection came up while the
-  TCP one was still being made. Either way the other keeps going: the
-  HTTP/3 connection for the next requests, and the TCP one, a speculative
-  connection of its own (`CreateBackupConnection`), to send HTTP/2's
-  preface and wait in the pool. A TCP connection that fails leaves the
-  request to HTTP/3.
+  a TCP connection too (`nsHttpTransaction::OnHttp3BackupTimer`, a
+  `FallbackTransaction`), with the profile's ClientHello. The request
+  goes over HTTP/3 if that connection came up while the TCP one was still
+  being made. Once the TCP connection is up, whether its handshake then
+  works or not, Firefox moves the request to TCP
+  (`OnBackupConnectionReady`): it restarts the transaction on the direct
+  route (`IS_RETRY`), whose connections pool apart from the backup's (a
+  fallback connection info, `SetFallbackConnection`). So the request
+  goes over a connection of its own, without `compress_certificate`, and
+  the backup's waits in its own entry, unused. Recorded from Firefox
+  160.0.1 with `network.http.http3.alt-svc-mapping-for-testing` and an
+  alternative whose QUIC went unanswered: two TCP connections, the
+  answer on the second. The HTTP/3 connection keeps going for the next
+  requests. A request whose HTTP/3 fails goes to TCP the same way, as a
+  retry. A TCP connection that never connects leaves the request to
+  HTTP/3.
+- Racing TCP from an HTTPS record. The fast fallback's backup and the
+  restarted request share an entry, so a backup that's up carries the
+  request and nothing more is made. One whose handshake failed is made
+  again (`IS_RETRY`), and then the request goes on as
+  `PrepareConnInfoForRetry` says: for `. alpn=h3,h2` without ECH,
+  Firefox made the backup, the same record again and the origin, the
+  last two without `compress_certificate`, and didn't wait for HTTP/3.
 - Failing. A connection that never comes up stops HTTP/3 to its
   alternative's host (`Http3Session::Shutdown`,
   `nsHttpHandler::ExcludeHttp3`), unless the certificate check failed

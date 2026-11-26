@@ -46,6 +46,10 @@ pub(crate) struct Route {
     pub port: u16,
     pub alpn: String,
     pub ech: Option<Vec<u8>>,
+    /// The record named no ALPN at all, where `alpn` is "" for want of
+    /// one rather than the default entry FlattenRecords adds
+    /// (SVCBRecord::GetSelectedAlpn fails).
+    pub no_alpn: bool,
 }
 
 /// Test seam: answers by query name, as raw DNS response packets (what
@@ -983,20 +987,27 @@ fn all_with_ech_into(
 /// Whether the list of records to go on to leaves `r` out after a
 /// connection to `failed` failed (nsHttpTransaction::
 /// PrepareSVCBRecordsForRetry): when it goes to the same name with the
-/// same ALPN. Firefox compares the name with the failed connection's
-/// routed host, which nsHttpConnectionInfo leaves empty for a TCP record
-/// that keeps the origin's host and port, so none is left out after that
-/// one and it's tried again.
+/// same ALPN, or with none at all ("If the record has no alpn or the alpn
+/// is already tried, we skip this record"). Firefox compares the name
+/// with the failed connection's routed host, which nsHttpConnectionInfo
+/// leaves empty for a TCP record that keeps the origin's host and port,
+/// so none is left out after that one and it's tried again.
 pub(crate) fn skipped_after(
     failed: &Route,
     r: &Route,
     origin_host: &str,
     origin_port: u16,
 ) -> bool {
-    let routed = failed.alpn == "h3"
-        || !failed.host.eq_ignore_ascii_case(origin_host)
-        || failed.port != origin_port;
-    routed && r.host == failed.host && r.alpn == failed.alpn
+    !keeps_origin(failed, origin_host, origin_port)
+        && r.host == failed.host
+        && (r.no_alpn || r.alpn == failed.alpn)
+}
+
+/// Whether a record's route is to the origin's own host and port over
+/// TCP, which nsHttpConnectionInfo's constructor gives no routed host: the
+/// connection goes to the origin as any other would.
+pub(crate) fn keeps_origin(to: &Route, origin_host: &str, origin_port: u16) -> bool {
+    to.alpn != "h3" && to.host.eq_ignore_ascii_case(origin_host) && to.port == origin_port
 }
 
 /// The host Firefox's record set is keyed by (DNSHTTPSSVCRecordBase::mHost):
@@ -1140,6 +1151,7 @@ fn route(svcb: &Svcb, alpn: Option<(String, Rank)>, origin_host: &str, origin_po
             svcb.target.clone()
         },
         port: port_of(svcb).unwrap_or(origin_port),
+        no_alpn: alpn.is_none(),
         alpn: alpn.map(|a| a.0).unwrap_or_default(),
         ech: svcb.ech.clone().filter(|e| !e.is_empty()),
     }
@@ -2161,6 +2173,7 @@ mod tests {
             port,
             alpn: alpn.into(),
             ech: Some(vec![1]),
+            no_alpn: false,
         };
         let origin = to("example.com", 443, "");
         assert!(!skipped_after(&origin, &origin, "example.com", 443));
@@ -2171,6 +2184,26 @@ mod tests {
         assert!(skipped_after(&name, &name, "example.com", 443));
         let h3 = to("example.com", 443, "h3");
         assert!(skipped_after(&h3, &h3, "example.com", 443));
+        // A record that named no ALPN under the failed name is left out
+        // whatever the failed one offered (nsHttpTransaction.cpp:1227);
+        // under another name it stays.
+        let bare = Route {
+            no_alpn: true,
+            ..to("cdn.example.net", 443, "")
+        };
+        let h2 = to("cdn.example.net", 443, "h2");
+        assert!(skipped_after(&h2, &bare, "example.com", 443));
+        assert!(!skipped_after(
+            &h2,
+            &to("cdn.example.net", 443, ""),
+            "example.com",
+            443
+        ));
+        let elsewhere = Route {
+            no_alpn: true,
+            ..to("other.example.net", 443, "")
+        };
+        assert!(!skipped_after(&h2, &elsewhere, "example.com", 443));
         // Only the same name with the same ALPN.
         assert!(!skipped_after(
             &name,
@@ -2519,7 +2552,8 @@ mod tests {
                 host: "alias.net".into(),
                 port: 443,
                 alpn: String::new(),
-                ech: None
+                ech: None,
+                no_alpn: true,
             })
         );
         // A plain CNAME's target is the resolver's business.

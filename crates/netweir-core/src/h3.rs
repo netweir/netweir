@@ -708,6 +708,11 @@ impl FromRecords {
         (all, list)
     }
 
+    /// Whether `to` keeps the origin's host and port (`https_rr::keeps_origin`).
+    pub(crate) fn keeps_origin(&self, to: &crate::https_rr::Route) -> bool {
+        crate::https_rr::keeps_origin(to, &self.host, self.port)
+    }
+
     /// The HTTP/3 route to `to`, an h3 record a request goes on to with
     /// `left` still to go, if the list has been made
     /// (CloneAndAdoptHTTPSSVCRecord on a retry).
@@ -732,6 +737,18 @@ impl FromRecords {
                 left,
                 attempts,
             })),
+        }
+    }
+
+    /// These records once the request has made `attempts` connections.
+    pub(crate) fn after(&self, attempts: usize) -> FromRecords {
+        FromRecords {
+            found: self.found.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            tcp: self.tcp.clone(),
+            left: self.left.clone(),
+            attempts,
         }
     }
 }
