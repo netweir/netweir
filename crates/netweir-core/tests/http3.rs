@@ -1603,7 +1603,7 @@ async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_did() {
     let recording = zero_rtt_recording();
     let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
     assert!(recorded.http3.as_ref().unwrap().early);
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let (fetcher, origin) = resuming(&mut server).await;
     let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
     assert_eq!((response.status, response.version), (200, "HTTP/3"));
@@ -1633,7 +1633,7 @@ async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_did() {
 #[tokio::test]
 async fn a_post_on_a_resumed_connection_waits_for_the_handshake() {
     // Only a safe method goes in 0-RTT (nsHttpTransaction::Do0RTT).
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let (fetcher, origin) = resuming(&mut server).await;
     let form = Outgoing::form(
         b"q=rust".to_vec(),
@@ -1682,7 +1682,7 @@ async fn a_request_in_0rtt_still_races_tcp_after_the_backup_timer() {
     // and the request goes over it once it's made
     // (MaybeStartHttp3BackupTimer, OnBackupConnectionReady). Here QUIC is
     // blocked once the session ticket is in hand.
-    let h3 = Server::start_h3_early(0, None, false).await.unwrap();
+    let h3 = Server::start_h3_early(0, None, None).await.unwrap();
     let tcp = Server::start().await.unwrap();
     let udp = relay(Some(h3.port)).await;
     let origin = format!("https://localhost:{}", tcp.port);
@@ -1715,7 +1715,7 @@ async fn a_connection_stuck_in_0rtt_fails_after_five_seconds() {
     // network.http.http3.0rtt_timeout: 5000 ms in 0-RTT, then the
     // connection fails (Http3Session::ProcessOutputAndEvents). A forced
     // route has no TCP to go to, so the request fails with it.
-    let h3 = Server::start_h3_early(0, None, false).await.unwrap();
+    let h3 = Server::start_h3_early(0, None, None).await.unwrap();
     let udp = relay(Some(h3.port)).await;
     let origin = format!("https://localhost:{}", h3.port);
     let fetcher = fetcher();

@@ -365,13 +365,16 @@ async fn read_uni(
 /// control stream with empty SETTINGS (no dynamic table), records the
 /// client's unidirectional streams, and answers each request stream with
 /// what `on_request` returns.
-pub async fn serve<F>(
+/// `in_early_data` says, as each request stream is taken, whether the
+/// connection is still in 0-RTT.
+pub async fn serve<F, E>(
     conn: quinn::Connection,
-    in_early_data: Arc<std::sync::atomic::AtomicBool>,
+    mut in_early_data: E,
     mut on_request: F,
 ) -> io::Result<()>
 where
     F: FnMut(Request) -> (u16, Vec<(&'static str, String)>, Vec<u8>),
+    E: FnMut() -> bool,
 {
     // The control stream, opened beside the requests being read. A
     // connection taken before its handshake is done may not have the
@@ -404,7 +407,7 @@ where
     };
     let served = async {
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let early = in_early_data.load(std::sync::atomic::Ordering::SeqCst);
+            let early = in_early_data();
             // A stream the client resets, as when it cancels a request, is
             // skipped; the connection carries on.
             let Ok(raw) = recv.read_to_end(1 << 20).await else {

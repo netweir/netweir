@@ -262,6 +262,9 @@ fn quic_config(
         config.set_active_connection_id_limit(safari::CONNECTION_ID_LIMIT);
         config.enable_safari_transport_params(true);
         config.enable_safari_initial(true);
+        // Safari 27.2 sent a GET in 0-RTT on a connection that resumed
+        // (profiles/safari-27-macos.h3-0rtt.capture.json).
+        config.enable_early_data();
         return Ok(config);
     }
     config.set_max_idle_timeout(chrome::IDLE_TIMEOUT);
@@ -738,7 +741,8 @@ impl Connection {
 
 /// Whether a request may go before the handshake is confirmed: its method
 /// is safe (HttpNetworkTransaction's can_send_early_data_,
-/// HttpUtil::IsMethodSafe).
+/// HttpUtil::IsMethodSafe). Safari was recorded sending a GET in 0-RTT and
+/// holding a POST back; the other methods follow Chrome's rule for it.
 fn safe_method(method: &str) -> bool {
     matches!(method, "GET" | "HEAD" | "OPTIONS" | "TRACE")
 }

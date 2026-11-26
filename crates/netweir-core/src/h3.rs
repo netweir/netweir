@@ -1841,9 +1841,10 @@ impl Routes {
                 crate::h3_chrome::Browser::Safari,
                 self.trust.clone(),
                 &self.chrome_tickets,
-                // shortcut: Safari's 0-RTT isn't recorded, so it waits for
-                // the handshake; upgrade once a recording shows its rules.
-                false,
+                // Safari 27.2 sent a GET in 0-RTT on every connection that
+                // resumed with a ticket allowing it; it marks nothing
+                // broken, so nothing here makes it wait.
+                true,
             ),
         };
         connections.insert(key, handle.clone());

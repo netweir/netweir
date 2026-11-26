@@ -1081,7 +1081,7 @@ async fn a_resumed_connection_in_0rtt_is_chromes() {
     let recording = zero_rtt_recording();
     let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
     assert!(recorded.http3.as_ref().unwrap().early);
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let port = server.port;
     let origin = format!("https://localhost:{port}");
     let fetcher = fetcher();
@@ -1148,7 +1148,7 @@ async fn a_resumed_connection_sends_a_get_in_0rtt() {
     // recently broken needs no confirmation, so a GET goes as soon as it
     // can send early data (QuicChromiumClientSession::
     // OnNewEncryptionKeyAvailable, HttpUtil::IsMethodSafe).
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let (fetcher, origin) = resuming(&mut server).await;
     let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
     assert_eq!((response.status, response.version), (200, "HTTP/3"));
@@ -1220,7 +1220,7 @@ async fn a_server_offering_early_data_answers_when_the_client_hello_comes_late()
     // half of the ClientHello comes late, it doesn't have the client's
     // stream limits yet: its control stream waits for them, and requests
     // are still answered, on a fresh connection and on one that resumes.
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let network = holding_second_initial(server.port, Duration::from_millis(20)).await;
     let origin = format!("https://localhost:{}", server.port);
     let fetcher = fetcher();
@@ -1238,7 +1238,7 @@ async fn a_server_offering_early_data_answers_when_the_client_hello_comes_late()
 
 #[tokio::test]
 async fn a_post_on_a_resumed_connection_waits_for_its_handshake() {
-    let mut server = Server::start_h3_early(0, None, false).await.unwrap();
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
     let (fetcher, origin) = resuming(&mut server).await;
     let form = Outgoing::form(
         b"q=rust".to_vec(),
