@@ -1,0 +1,187 @@
+[
+  {
+    "connection": 0,
+    "request": 1,
+    "ja4": "t13d2013h2_a09f3c656075_7f0f34a4126d",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        39578,
+        4866,
+        4867,
+        4865,
+        49196,
+        49195,
+        52393,
+        49200,
+        49199,
+        52392,
+        49162,
+        49161,
+        49172,
+        49171,
+        157,
+        156,
+        53,
+        47,
+        49160,
+        49170,
+        10
+      ],
+      "extensions": [
+        6682,
+        0,
+        23,
+        65281,
+        10,
+        11,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        27,
+        2570
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "supported_versions": [
+        51914,
+        772,
+        771
+      ],
+      "supported_groups": [
+        6682,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        6682,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [
+        0
+      ],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h2",
+    "http2": {
+      "settings": [
+        [
+          2,
+          0
+        ],
+        [
+          3,
+          100
+        ],
+        [
+          4,
+          2097152
+        ],
+        [
+          9,
+          1
+        ]
+      ],
+      "window_update": 10420225,
+      "priority_frames": [],
+      "headers_priority": null,
+      "akamai": "2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p"
+    },
+    "path": "/picture.png",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19301"
+      ],
+      [
+        ":path",
+        "/picture.png"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+      ],
+      [
+        "referer",
+        "https://localhost:19301/image"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=5, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  }
+]

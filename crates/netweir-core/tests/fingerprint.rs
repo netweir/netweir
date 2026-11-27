@@ -47,12 +47,6 @@ fn recorded(profile: &str, scenario: &str) -> Option<Vec<Capture>> {
     Some(serde_json::from_str(&json).unwrap())
 }
 
-/// Profiles with no image recording of their own over HTTP/2 and
-/// HTTP/1.1. Safari's image request is recorded only in its HTTP/3
-/// recording, over HTTP/2 and HTTP/3, which tests/http3_safari.rs holds
-/// it to.
-const IMAGE_NOT_RECORDED: &[&str] = &["safari-27-macos"];
-
 /// The navigations the browsers made for the captures, against `port`.
 /// Each redirect is one navigation but two requests, so this makes six.
 fn scenario(port: u16) -> [String; 4] {
@@ -124,11 +118,14 @@ fn every_shipped_profile_is_registered_and_has_its_recordings() {
     for name in shipped() {
         let profile = Profile::named(&name).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(profile.name, name);
-        let mut needed = vec!["", ".http1", ".post", ".post.http1"];
-        if !IMAGE_NOT_RECORDED.contains(&name.as_str()) {
-            needed.extend([".image", ".image.http1"]);
-        }
-        for scenario in needed {
+        for scenario in [
+            "",
+            ".http1",
+            ".post",
+            ".post.http1",
+            ".image",
+            ".image.http1",
+        ] {
             assert!(
                 recorded(&name, scenario).is_some(),
                 "{name} has no {name}{scenario}.capture.json"
@@ -490,16 +487,18 @@ async fn image_scenario(fetcher: &Fetcher, server: &mut Server) -> Vec<Capture> 
 }
 
 /// The image captures of Chrome 154 and Firefox 156 were recorded from the
-/// browser a version on (Chrome 155, Firefox 157). The headers whose value
-/// differs between the two versions are named here and taken from the
-/// profile's own `[image]` shape: for Chrome the User-Agent, the client
-/// hints and Accept (155 added image/jxl); for Firefox only the
-/// User-Agent, since 157 sent the same Accept as 156. Their order and
-/// everything else, TLS and HTTP/2 included, must match the recording.
+/// browser a version on (Chrome 155, Firefox 157), and Safari's from
+/// Safari 27.2 (the profile is 27.0, whose other recordings this one
+/// matches but for the version). The headers whose value differs between
+/// the two versions are named here and taken from the profile's own
+/// `[image]` shape: for Chrome the User-Agent, the client hints and Accept
+/// (155 added image/jxl); for Firefox and Safari only the User-Agent.
+/// Their order and everything else, TLS and HTTP/2 included, must match
+/// the recording.
 fn recorded_a_version_on(profile: &str) -> &'static [&'static str] {
     match profile {
         "chrome-154-macos" => &["user-agent", "sec-ch-ua", "accept"],
-        "firefox-156-macos" => &["user-agent"],
+        "firefox-156-macos" | "safari-27-macos" => &["user-agent"],
         _ => &[],
     }
 }
@@ -553,8 +552,13 @@ async fn images_load_like_the_browser_over_http1() {
         let expected = at_profile_version(expected, &name);
         let mut server = Server::start_http1(0).await.unwrap();
         let fetcher = local_fetcher(&name);
-        let warm = [format!("https://localhost:{}/warm", server.port)];
-        run(&fetcher, &mut server, &warm).await;
+        // As for the posts: a profile that remembers HTTP/1.1 (Safari)
+        // would offer only that on the next connection, and Safari's image
+        // went on the one that loaded its page, the first.
+        if !Profile::named(&name).unwrap().remembers_http1 {
+            let warm = [format!("https://localhost:{}/warm", server.port)];
+            run(&fetcher, &mut server, &warm).await;
+        }
         let actual = image_scenario(&fetcher, &mut server).await;
         check(
             &name,
