@@ -252,8 +252,9 @@ http2_headers = [
 
 # Over HTTP/3 Firefox sends the headers above in the same order, lowercase,
 # without Host, Connection and te, and with Alt-Used where Connection was.
-# The rest of it, QUIC and TLS included, is neqo and NSS as Firefox 160
-# sets them up (crates/netweir-core/src/h3.rs); recorded in
-# firefox-160-macos.h3.capture.json.
+# The rest of it, QUIC and TLS included, is neqo and NSS as Firefox 161
+# sets them up (crates/netweir-core/src/h3.rs): Netweir builds one neqo,
+# and Firefox 160's (v0.33.0) gave way to 161's (v0.34.0). What 160 sent
+# is recorded in firefox-160-macos.h3.capture.json.
 [http3]
-stack = "firefox-160"
+stack = "firefox-161"

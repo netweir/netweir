@@ -42,7 +42,10 @@ struct Seen {
 /// which answers every request with 200, each datagram `slow` after it
 /// came.
 fn server(ech: bool, slow: Duration) -> (u16, Arc<Mutex<Seen>>) {
-    nss_rs::init_db(nss_rs::TEST_FIXTURE_DB).unwrap();
+    // nss-rs's test-fixture/db (a key and certificate for "key"), copied:
+    // nss-rs no longer exports its path, and the crate that does isn't
+    // published.
+    nss_rs::init_db(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/nss-db")).unwrap();
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let local = socket.local_addr().unwrap();
     socket

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the NSS that Firefox 160 ships, for netweir-core's `http3` feature.
+# Builds the NSS that Firefox 161 ships, for netweir-core's `http3` feature.
 #
 #   scripts/nss.sh [TARGET]
 #
@@ -7,13 +7,13 @@
 # target/nss/TARGET/, and the script ends by printing the two variables
 # cargo needs (and, on GitHub Actions, adds them to $GITHUB_ENV):
 #
-#   NSS_DIR=.../nss-3.132/nss  NSS_PREBUILT=1
+#   NSS_DIR=.../nss-3.133/nss  NSS_PREBUILT=1
 #
 # Needs bash, curl, python3 with gyp-next, and ninja (pip install
 # gyp-next ninja); on Windows, MSYS2's bash and an MSVC environment.
 #
-# The NSS release is the one Firefox 160.0.1 builds with
-# (security/nss/TAG-INFO: NSS_3_132_RTM). The tarball bundles NSPR 4.39,
+# The NSS release is the one Firefox 161.0 builds with
+# (security/nss/TAG-INFO: NSS_3_133_RTM). The tarball bundles NSPR 4.39,
 # where Firefox has 4.40; NSPR is NSS's portability layer and puts nothing
 # on the wire.
 #
@@ -25,9 +25,9 @@
 
 set -euo pipefail
 
-version=3.132
+version=3.133
 nspr=4.39
-sha256=c220ea83378e55f2e4d7f7d83477756d622f79b5b91d1ff4157d5e3f494d2b49
+sha256=21a9fa95043631db5331ad9202d8c7e7475f7d8d94fdf92c01624563c88502b4
 url="https://ftp.mozilla.org/pub/security/nss/releases/NSS_${version//./_}_RTM/src/nss-$version-with-nspr-$nspr.tar.gz"
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -144,6 +144,21 @@ if [ ! -f "$out/done" ]; then
     echo "scripts/nss.sh: prefixing freebl symbols in $(basename "$a")"
     objcopy --redefine-syms="$map" "$a"
   done
+
+  # Since 3.133, freebl's ChaCha20-Poly1305 on arm64 calls HACL's 128-bit
+  # vector code, which the build puts in hw-acc-crypto-avx; nss-rs links
+  # that archive only on x86_64, so on arm64 it joins freebl_static.
+  if [ "$arch" = arm64 ] && [ -f "$lib/libhw-acc-crypto-avx.a" ]; then
+    if [ "$(uname -s)" = Darwin ]; then
+      libtool -static -no_warning_for_no_symbols -o "$lib/freebl.tmp.a" \
+        "$lib/libfreebl_static.a" "$lib/libhw-acc-crypto-avx.a"
+    else
+      { echo "create $lib/freebl.tmp.a"
+        echo "addlib $lib/libfreebl_static.a"; echo "addlib $lib/libhw-acc-crypto-avx.a"
+        echo save; echo end; } | ar -M
+    fi
+    mv "$lib/freebl.tmp.a" "$lib/libfreebl_static.a"
+  fi
 
   # An archive with no members, which every linker takes as nothing.
   empty() { printf '!<arch>\n' > "$1"; }

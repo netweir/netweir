@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
 use netweir_fingerprint::{Capture, Frame, Quic, Server, differences, is_h3_grease};
 
-const PROFILE: &str = "chrome-157-macos";
+const PROFILE: &str = "chrome-158-macos";
 const PRE_SHARED_KEY: u16 = 0x0029;
 const INITIAL_RTT: u64 = 0x3127;
 const VERSION_INFORMATION: u64 = 0x11;

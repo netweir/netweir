@@ -1,5 +1,5 @@
 //! A request over HTTP/3 with the Firefox profile must look, on the wire,
-//! like Firefox 160's: profiles/firefox-160-macos.h3.capture.json recorded
+//! like Firefox 161's: profiles/firefox-161-macos.h3.capture.json recorded
 //! Firefox loading a page that set a cookie over HTTP/2, moving to HTTP/3
 //! on the server's Alt-Svc, then typing /image into the address bar, which
 //! loads /picture.png. Here netweir does the same against the same server,
@@ -16,7 +16,13 @@ use std::time::{Duration, Instant};
 use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
 use netweir_fingerprint::{Capture, Quic, Server, differences, transport_parameter_order_differs};
 
-const PROFILE: &str = "firefox-160-macos";
+const PROFILE: &str = "firefox-161-macos";
+/// Whose 0-RTT the 0-RTT tests hold Netweir to. Firefox 160 sent a
+/// resumed connection's GET in 0-RTT; Firefox 161 on macOS was recorded
+/// waiting for the handshake instead (profiles/firefox-161-macos.h3-0rtt
+/// and .h3-0rtt-qpack), with the same neqo Netweir runs, so that is
+/// Gecko's doing and not followed yet (docs/design/http3.md).
+const ZERO_RTT_PROFILE: &str = "firefox-160-macos";
 const PRE_SHARED_KEY: u16 = 0x0029;
 
 fn recording() -> Vec<Capture> {
@@ -306,7 +312,7 @@ fn lines_of(capture: &Capture, skip: &[&str]) -> Vec<(String, String)> {
 
 #[tokio::test]
 async fn a_login_goes_where_firefox_puts_it_over_http3() {
-    // profiles/firefox-160-macos.auth.h3.capture.json: Firefox 160.0.1
+    // profiles/firefox-161-macos.auth.h3.capture.json: Firefox 161.0
     // over HTTP/3 from its first request
     // (network.http.http3.alt-svc-mapping-for-testing, and
     // disable_when_third_party_roots_found off for the test CA), logged in
@@ -1599,8 +1605,9 @@ async fn the_archive_records_http3() {
 /// that connection time out, and went to /again, which Firefox sent in
 /// 0-RTT on a connection that resumed, over ::1.
 fn zero_rtt_recording() -> Vec<Capture> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../profiles/{PROFILE}.h3-0rtt.capture.json"));
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{ZERO_RTT_PROFILE}.h3-0rtt.capture.json"
+    ));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -1869,7 +1876,7 @@ async fn a_get_in_0rtt_on_a_chacha20_session_is_seen_as_early() {
     assert!(again.http3.as_ref().unwrap().early, "the GET went in 0-RTT");
 }
 
-/// What Firefox 160.0.1 sent a server offering a QPACK dynamic table, recorded
+/// What Firefox 161.0 sent a server offering a QPACK dynamic table, recorded
 /// on the capture server's `/qpack` page (its first request over HTTP/3 the probe, as it found HTTP/3 from Alt-Svc): `variant` "" offered
 /// 64 KiB and 100 blocked streams, "-unblocked" 64 KiB and none,
 /// "-1mib" 1 MiB and 100.
@@ -2007,13 +2014,13 @@ fn qpack_capacities(http3: &netweir_fingerprint::Http3) -> Vec<u64> {
 
 #[tokio::test]
 async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_did() {
-    // profiles/{PROFILE}.h3-0rtt-qpack.capture.json: Firefox 160.0.1 on
+    // profiles/{ZERO_RTT_PROFILE}.h3-0rtt-qpack.capture.json: Firefox 160.0.1 on
     // /zero-rtt against a server that takes 0-RTT and offers a
     // 64 KiB table with 100 blocked streams. Firefox's neqo keeps the server's SETTINGS
     // in its resumption token and fills the table in 0-RTT, as Netweir's
     // neqo does with Firefox's settings.
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../profiles/{PROFILE}.h3-0rtt-qpack.capture.json"
+        "../../profiles/{ZERO_RTT_PROFILE}.h3-0rtt-qpack.capture.json"
     ));
     let recording: Vec<Capture> =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

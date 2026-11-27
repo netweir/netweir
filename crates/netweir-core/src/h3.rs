@@ -1,6 +1,6 @@
-//! Requests over HTTP/3 the way Firefox 160 sends them: through neqo and
+//! Requests over HTTP/3 the way Firefox 161 sends them: through neqo and
 //! NSS, Mozilla's own QUIC stack and TLS library, at the versions Firefox
-//! 160.0.1 builds with, configured as Firefox's
+//! 161.0 builds with, configured as Firefox's
 //! `netwerk/socket/neqo_glue/src/lib.rs` configures them, with the values
 //! of the preferences it reads there. The QUIC Initial, the ClientHello in
 //! it, the transport parameters, the HTTP/3 SETTINGS and streams, QPACK,
@@ -41,9 +41,9 @@ use url::Url;
 
 use crate::fetch::{FetchError, FetchErrorKind};
 
-/// Firefox 160's values for what `neqo_glue` reads from preferences and
+/// Firefox 161's values for what `neqo_glue` reads from preferences and
 /// from `Http3Session::Init`'s arguments (modules/libpref/init/
-/// StaticPrefList.yaml and all.js at FIREFOX_160_0_1_RELEASE).
+/// StaticPrefList.yaml and all.js at FIREFOX_161_0_RELEASE).
 /// The longest a Safari request waits for its origin's HTTPS records
 /// before it goes over TCP without them. A guess: the lookup runs beside
 /// the address lookup a connection waits for anyway, and Apple gives no
@@ -125,7 +125,7 @@ pub(crate) fn banned_port(port: u16) -> bool {
     port == 0 || firefox::BANNED_PORTS.contains(&port)
 }
 
-/// The connection settings Firefox 160 makes, line for line in the order
+/// The connection settings Firefox 161 makes, line for line in the order
 /// `NeqoHttp3Conn::new` makes them.
 fn firefox_client(
     server_name: &str,
@@ -159,6 +159,9 @@ fn firefox_client(
         .pmtud(pmtud)
         // network.http.http3.spurious_recovery: true.
         .spurious_recovery(true)
+        // network.http.http3.abe: true. It changes how Cubic answers an
+        // ECN-CE mark, and ecn_mark is true.
+        .abe(true)
         // network.http.http3.hystart_alternative_css_baseline: false.
         .hystart_css_baseline(HyStartCssBaseline::CurrentRoundMinRtt);
     // fast_pto is 0 for every connection but DNS over HTTPS's, which
@@ -220,7 +223,7 @@ fn firefox_client(
 
 /// What Firefox sets for all of NSS when it starts, before any connection:
 /// `CommonInit` and `InitializeCipherSuite` in
-/// security/manager/ssl/nsNSSComponent.cpp, with Firefox 160's preference
+/// security/manager/ssl/nsNSSComponent.cpp, with Firefox 161's preference
 /// values. neqo sets most of what a ClientHello carries per connection,
 /// but leaves these to the process-wide defaults; two of them show in it
 /// (the delegated_credentials extension, and no ML-DSA among the signature
@@ -230,7 +233,7 @@ mod gecko {
     use std::ffi::c_int;
     use std::sync::OnceLock;
 
-    // ssl.h and secoidt.h, NSS 3.132.
+    // ssl.h and secoidt.h, NSS 3.133.
     const SSL_ENABLE_SSL2: i32 = 7;
     const SSL_NO_CACHE: i32 = 9;
     const SSL_V2_COMPATIBLE_HELLO: i32 = 12;
@@ -995,9 +998,9 @@ impl Pending {
 /// Whose QUIC and HTTP/3 a Fetcher sends, and whose rules it follows to
 /// move to it and off it.
 pub(crate) enum Stack {
-    /// Firefox 160: neqo and NSS (this file).
+    /// Firefox 161: neqo and NSS (this file).
     Firefox,
-    /// Chrome 157: netweir's quiche on btls (src/h3_chrome.rs), with the
+    /// Chrome 157 and 158: netweir's quiche on btls (src/h3_chrome.rs), with the
     /// profile's TLS settings.
     Chrome(Arc<crate::profile::Tls>),
     /// Safari 27: the same engine with Safari's settings, and the
@@ -1837,7 +1840,7 @@ impl Routes {
         // backup timer for HTTP/3 (DnsAndConnectSocket::SetupBackupTimer),
         // and retries another family only where
         // network.http.http3.retry_different_ip_family is on, which
-        // release builds leave off (@IS_EARLY_BETA_OR_EARLIER@). Chrome's
+        // release builds leave off (@IS_NIGHTLY_BUILD@ since 161). Chrome's
         // and Safari's connections pick from them all (h3_chrome's
         // `Connection::peers`).
         let addresses = self

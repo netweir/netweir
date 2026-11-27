@@ -2,12 +2,12 @@
 trusting for certificates issued after a date (CKA_NSS_SERVER_DISTRUST_AFTER
 in NSS's certdata.txt).
 
-    python3 scripts/gen-distrust-after.py NSS_3_132_RTM
+    python3 scripts/gen-distrust-after.py NSS_3_133_RTM
 
 The argument is the NSS release tag whose certdata.txt to read, from the
 nss-dev/nss mirror on GitHub; a path to a certdata.txt works too. Use the
-tag of the NSS that the Firefox profiles' release ships (Firefox 160:
-NSS 3.132), the one webpki-root-certs' roots are checked against
+tag of the NSS that the Firefox profiles' release ships (Firefox 161:
+NSS 3.133), the one webpki-root-certs' roots are checked against
 (src/roots.rs).
 """
 

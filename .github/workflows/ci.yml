@@ -298,7 +298,7 @@ jobs:
 
   # HTTP/3 with the Firefox, Chrome and Safari profiles (netweir-core's
   # http3 feature): NSS built by scripts/nss.sh, then the tests that hold
-  # each request over HTTP/3 to Firefox 160's, Chrome 157's and Safari
+  # each request over HTTP/3 to Firefox 161's, Chrome 158's and Safari
   # 27's recordings. The quiche fork needs no C library of its own: it links the
   # BoringSSL the TCP connections already build. Every system and architecture a
   # wheel is built for builds it; the x86_64 macOS build runs its tests

@@ -16,6 +16,17 @@ updates:
       - dependency-name: btls-sys
       - dependency-name: tokio-btls
       - dependency-name: http2
+      # HTTP/3 and NSS follow the tag and commit Firefox's own lockfile
+      # pins, and move with a new Firefox profile.
+      - dependency-name: neqo-common
+      - dependency-name: neqo-http3
+      - dependency-name: neqo-transport
+      - dependency-name: neqo-udp
+      - dependency-name: nss-rs
+      # Each browser's trusted roots: Mozilla's must be the NSS the Firefox
+      # profile's release ships, and Chrome's the store Chrome uses.
+      - dependency-name: webpki-root-certs
+      - dependency-name: chromium-roots
   - package-ecosystem: uv
     directory: /
     schedule:

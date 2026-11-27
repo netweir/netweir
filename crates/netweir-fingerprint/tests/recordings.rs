@@ -38,8 +38,8 @@ fn resumed(c: &Capture) -> bool {
 }
 
 #[test]
-fn chrome_157_over_http3() {
-    let all = recording("chrome-157-macos");
+fn chrome_158_over_http3() {
+    let all = recording("chrome-158-macos");
     let captures = h3(&all);
     assert!(captures.len() >= 10);
     for c in &captures {
@@ -86,8 +86,8 @@ fn chrome_157_over_http3() {
 }
 
 #[test]
-fn firefox_160_over_http3() {
-    let all = recording("firefox-160-macos");
+fn firefox_161_over_http3() {
+    let all = recording("firefox-161-macos");
     // It came over by Alt-Svc: the first navigation went over HTTP/2.
     assert_eq!(all[0].protocol, "h2");
     let captures = h3(&all);

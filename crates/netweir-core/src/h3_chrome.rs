@@ -1,4 +1,4 @@
-//! Requests over HTTP/3 the way Chrome 157 sends them: through netweir's
+//! Requests over HTTP/3 the way Chrome 157 and 158 send them: through netweir's
 //! fork of Cloudflare's quiche (github.com/netweir/quiche, branch
 //! chrome-157), linked against btls, the patched BoringSSL the TCP
 //! connections use. The ClientHello inside the QUIC Initial comes from

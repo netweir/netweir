@@ -17,20 +17,23 @@ built first. In Python it's the `http3=` setting, on by default.
 
 ## The stack
 
-Firefox 160.0.1 builds its HTTP/3 from three pieces, and Netweir pins the
+Firefox 161.0 builds its HTTP/3 from three pieces, and Netweir pins the
 same three:
 
-- neqo, Mozilla's QUIC and HTTP/3 in Rust, at tag v0.33.0
-  (`netwerk/socket/neqo_glue/Cargo.toml` at FIREFOX_160_0_1_RELEASE);
-- nss-rs, its binding to NSS, at commit ba8a3f6 (Firefox's `Cargo.lock`);
-- NSS 3.132 (`security/nss/TAG-INFO`), built by `scripts/nss.sh` from
-  Mozilla's release tarball, checked against its SHA-256.
+- neqo, Mozilla's QUIC and HTTP/3 in Rust, at tag v0.34.0
+  (`netwerk/socket/neqo_glue/Cargo.toml` at FIREFOX_161_0_RELEASE);
+- nss-rs, its binding to NSS, at commit bb8ed19 (Firefox's `Cargo.lock`);
+- NSS 3.133 (`security/nss/TAG-INFO`), built by `scripts/nss.sh` from
+  Mozilla's release tarball, checked against its SHA-256. On arm64,
+  NSS 3.133's ChaCha20-Poly1305 calls HACL vector code that its build
+  puts in a library nss-rs doesn't link there, so the script folds that
+  library into freebl's.
 
 `crates/netweir-core/src/h3.rs` sets them up the way
 `NeqoHttp3Conn::new` in Firefox's `neqo_glue/src/lib.rs` does, line by
-line and in the same order, with Firefox 160's values for every
+line and in the same order, with Firefox 161's values for every
 preference it reads: version negotiation on, Cubic with classic slow
-start, 24 MiB connection and 12 MiB stream flow control, a 30 s idle
+start and Alternative Backoff with ECN (new in 161), 24 MiB connection and 12 MiB stream flow control, a 30 s idle
 timeout, SNI slicing, no QUIC GREASE, ML-KEM768+X25519, X25519 and P-256
 key shares, zlib, zstd and brotli certificate compression, ECH GREASE on
 every connection, a 64 KiB QPACK table and 20 blocked streams. Before the
@@ -68,7 +71,7 @@ Exactly as Firefox sends them, on every run:
   `u=0, i` for a navigation. With a login, an Authorization right before
   Connection comes after Alt-Used: `alt-used, authorization`, where
   HTTP/1.1 has `Authorization, Connection`
-  (`profiles/firefox-160-macos.auth.h3.capture.json`, Firefox 160.0.1
+  (`profiles/firefox-161-macos.auth.h3.capture.json`, Firefox 161.0
   logged in to the capture server's /auth by URL credentials, over HTTP/3
   from its first request with `network.http.http3.alt-svc-mapping-for-testing`
   and `network.http.http3.disable_when_third_party_roots_found` off for
@@ -83,6 +86,7 @@ Exactly as Firefox sends them, on every run:
   resumed, in its first flight: the 0-RTT packet coalesced after the
   second Initial, filling that datagram. Netweir's first flight has the
   same packets in the same datagrams, and the request comes in 0-RTT.
+  Firefox 161 doesn't do this; see below.
 
 Random per connection, and checked to fall where Firefox's do: the
 Destination Connection ID (8 to 20 bytes), the first packet number (under
@@ -96,10 +100,24 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 
 ## What doesn't match yet
 
+- 0-RTT on Firefox 161. Recorded on `/zero-rtt` seven times, twice with
+  each datagram to Firefox held back 50 ms, Firefox 161.0 on macOS
+  resumed with early data allowed and still sent `/again` only once the
+  handshake was done. Its first flight carries a 0-RTT packet of about
+  110 bytes, its control and QPACK streams, with zeros after it
+  (`profiles/firefox-161-macos.h3-0rtt.capture.json`, `.h3-0rtt-qpack`).
+  Firefox 160 put the GET in that packet. Netweir runs the neqo Firefox
+  161 pins with 161's settings and still sends the GET in 0-RTT, as 160
+  did, so the change is in Gecko, and nothing in 161's `Http3Session`,
+  `nsHttpTransaction`, `neqo_glue` or preferences that touches 0-RTT
+  differs from 160's. Until it is found, Firefox profiles send a resumed
+  connection's GET in 0-RTT, and the 0-RTT tests hold them to Firefox
+  160's recordings.
+
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
 - Certificates are checked with BoringSSL, not by NSS's `mozilla::pkix`,
-  against Mozilla's roots as Firefox 160 ships them, distrust-after dates
+  against Mozilla's roots as Firefox 161 ships them, distrust-after dates
   included (`docs/design/roots.md`, which lists what still differs:
   NSS's own checks). Firefox ends HTTP/3 when a chain that checks out
   ends at a root it didn't ship
@@ -116,9 +134,11 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
 ## When a request goes over HTTP/3
 
 Only a profile with an `[http3]` section moves to HTTP/3: today that's
-`firefox-160-macos`, `chrome-157-macos` and `safari-27-macos`. The older
-Firefox and Chrome profiles have no HTTP/3 recording and stay on TCP.
-This section is Firefox's, following Firefox 160.0.1's source and
+`firefox-161-macos`, `firefox-160-macos`, `chrome-158-macos`,
+`chrome-157-macos` and `safari-27-macos`. `firefox-160-macos` runs the
+same neqo as 161, the one Netweir builds. The older Firefox and Chrome
+profiles have no HTTP/3 recording and stay on TCP.
+This section is Firefox's, following Firefox 161.0's source and
 default preferences; Chrome's rules are
 [their own](#when-chrome-moves-to-http3), and so are
 [Safari's](#when-safari-moves-to-http3).
@@ -140,8 +160,8 @@ default preferences; Chrome's rules are
   is kept, unless its host is one HTTP/3 has failed to reach or its port
   is one Firefox never connects to (the 82 in `gBadPortList`,
   `netwerk/base/nsIOService.cpp`, which `NS_CheckPortSafety` reads);
-  draft versions such as `h3-29` are ignored, as Firefox 160 ignores them.
-- HTTPS records. As Firefox 160 does with TRR off
+  draft versions such as `h3-29` are ignored, as Firefox 161 ignores them.
+- HTTPS records. As Firefox 161 does with TRR off
   (`network.dns.native_https_query`, `use_https_rr_as_altsvc`), each
   request to an https origin also asks the system's resolver for its
   HTTPS record, the way Firefox asks on that system:
@@ -433,8 +453,9 @@ loads two images, one after another. Each browser was recorded three
 times, offered 64 KiB and 100 blocked streams, 64 KiB and none, and 1 MiB
 and 100: `profiles/*.h3-qpack.capture.json`, `*.h3-qpack-unblocked` and
 `*.h3-qpack-1mib`. Chrome for Testing 157.0.8103.79 was forced onto QUIC
-through the 50 ms relay, as for 0-RTT. Firefox 160.0.1 found HTTP/3 from
-Alt-Svc. Safari 27.2 needed TCP to offer HTTP/1.1 only (`--http1`): with
+through the 50 ms relay, as for 0-RTT, and so was Google Chrome
+158.0.8127.89 for the 158 recordings. Firefox 160.0.1 and 161.0 found
+HTTP/3 from Alt-Svc. Safari 27.2 needed TCP to offer HTTP/1.1 only (`--http1`): with
 HTTP/2 it kept the page's requests on that connection.
 
 What they did:

@@ -1539,7 +1539,7 @@ impl Fetcher {
             && profile
                 .http3
                 .as_ref()
-                .is_some_and(|h| h.stack == "firefox-160"))
+                .is_some_and(|h| h.stack == "firefox-161"))
         .then(|| Arc::new(crate::https_rr::HostCache::default()));
         let build = |emulation| -> Result<wreq::Client, FetchError> {
             let mut builder = wreq::Client::builder()
@@ -1651,12 +1651,12 @@ impl Fetcher {
             // netweir, the system's included.
             #[cfg(feature = "http3")]
             h3: match profile.http3.as_ref().map(|h| h.stack.as_str()) {
-                Some("firefox-160" | "chrome-157" | "safari-27")
+                Some("firefox-161" | "chrome-157" | "safari-27")
                     if !options.http3 || options.proxy.is_some() =>
                 {
                     None
                 }
-                Some(stack @ ("firefox-160" | "chrome-157" | "safari-27")) => {
+                Some(stack @ ("firefox-161" | "chrome-157" | "safari-27")) => {
                     let stack = match stack {
                         "chrome-157" => crate::h3::Stack::Chrome(Arc::new(profile.tls.clone())),
                         "safari-27" => {

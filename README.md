@@ -33,7 +33,7 @@ of those words will mean when it is:
 
 Working today:
 
-- Fetching that is indistinguishable from Chrome 157, Firefox 160 or
+- Fetching that is indistinguishable from Chrome 158, Firefox 161 or
   Safari 27 on the wire, over HTTP/2 and HTTP/1.1, with cookies and
   redirects. Below: how that's proved, and the one known exception.
 - HTTP/3 the way Chrome, Firefox and Safari do it: once a site offers
@@ -450,7 +450,7 @@ extensions arrive, what the HTTP/2 settings frame says, which headers come
 first. A Python HTTP library gives itself away before it has
 asked for anything.
 
-Netweir sends what Chrome 157 sends. Not something close to it: the same
+Netweir sends what Chrome 158 sends. Not something close to it: the same
 ClientHello, the same HTTP/2 settings and priorities, the same headers in
 the same order and the same capitalisation over HTTP/1.1. Cookies go where
 Chrome puts them, and redirects are followed hop by hop the way Chrome
@@ -463,13 +463,14 @@ netweir-core` has Netweir do the same four and fails if any request differs
 from Chrome's. The public checker at tls.peet.ws reports the same JA4
 fingerprint for both: `t13d1517h2_8daaf6152771_cb7bf5808d99`.
 
-Firefox 160 is there too: `netweir.get(url, profile="firefox")`, or
+Firefox 161 is there too: `netweir.get(url, profile="firefox")`, or
 `profile="firefox"` in a spider's settings. Firefox sends its TLS extensions
 in a fixed order, with no GREASE, and the same test checks that order
 against a recording of the real browser, as well as everything above.
-Haven't updated yet? The versions before stay, as `chrome-156-macos`,
-`chrome-155-macos`, `chrome-154-macos`, `firefox-159-macos`,
-`firefox-158-macos` and `firefox-156-macos`, and are tested the same way.
+Haven't updated yet? The versions before stay, as `chrome-157-macos`,
+`chrome-156-macos`, `chrome-155-macos`, `chrome-154-macos`,
+`firefox-160-macos`, `firefox-159-macos`, `firefox-158-macos` and
+`firefox-156-macos`, and are tested the same way.
 
 So is Safari 27, as `profile="safari"`. It has two habits of its own, and
 Netweir copies both. Two cookies with the same path go out newest first.
@@ -479,11 +480,12 @@ HTTP/2 on new connections, so Netweir does the same.
 Firefox goes over HTTP/3 too. When a site offers it in `Alt-Svc` or its
 HTTPS DNS record, which Netweir asks the system for as Firefox does, the
 next requests leave on neqo, the QUIC stack Firefox itself runs, set up
-with Firefox 160's settings, and a test holds the QUIC Initial, the
+with Firefox 161's settings, and a test holds the QUIC Initial, the
 ClientHello inside it and the HTTP/3 settings to a recording of the real
-browser. A connection that resumes sends a GET in 0-RTT, and a site's
-ECH key is used the way Firefox uses it, retries and all. What still
-isn't Firefox's is listed in
+browser. A site's ECH key is used the way Firefox uses it, retries and
+all. A connection that resumes sends a GET in 0-RTT, as Firefox 160 did;
+Firefox 161 was recorded waiting for the handshake instead, which Netweir
+doesn't follow yet. That, and the rest of what isn't Firefox's, is in
 [docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
 proxy it stays on TCP, as Firefox does, and `http3=False` turns it
 off.
@@ -491,7 +493,7 @@ off.
 Chrome does too, through a fork of Cloudflare's quiche,
 [netweir/quiche](https://github.com/netweir/quiche), built on the same
 patched BoringSSL as Netweir's TCP connections. The fork sends what
-Chrome 157 sends that quiche didn't: its transport parameters, shuffled
+Chrome 158 sends that quiche didn't: its transport parameters, shuffled
 with fresh GREASE on every connection, its ClientHello split across two
 Initial packets among PING and PADDING frames, its HTTP/3 SETTINGS. A
 test holds that to a recording of Chrome, JA4 and all, and checks over
@@ -528,7 +530,7 @@ the page asks for them, not as a page, and the same test holds them to
 recordings of each browser loading an image: Chrome's, Firefox's, and
 Safari 27.2's over HTTP/1.1, HTTP/2 and HTTP/3.
 
-A login goes where the browser puts it. Chrome 157 and Firefox 160 were
+A login goes where the browser puts it. Chrome 158 and Firefox 161 were
 recorded holding an HTTP login and sending it with a navigation, a form, a
 script's request and an image; Netweir's `Authorization` header lands in
 the same place in each, and the same test checks it. Safari 27.2 was

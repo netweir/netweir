@@ -109,11 +109,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mozillas_roots_are_nss_3_132s() {
-        // NSS 3.132 (Firefox 160) has 118 server-auth trust anchors in
-        // certdata.txt, and webpki-root-certs 1.0.11 is all of them.
+    fn mozillas_roots_are_nss_3_133s() {
+        // NSS 3.133 (Firefox 161) has 118 server-auth trust anchors in
+        // certdata.txt, the same file as 3.132's, and webpki-root-certs
+        // 1.0.11 is all of them.
         assert_eq!(bundled(Roots::Mozilla).count(), 118);
-        assert_eq!(bundled(Roots::Chromium).count(), 115);
+        // chromium-roots 0.1.3: Chrome Root Store version 45, the PKI
+        // Metadata component Chrome 158 takes in place of its built-in 43.
+        assert_eq!(bundled(Roots::Chromium).count(), 110);
         // The two stores differ: some of each are the other's not.
         let mozilla: Vec<&[u8]> = bundled(Roots::Mozilla).collect();
         let chromium: Vec<&[u8]> = bundled(Roots::Chromium).collect();
@@ -123,7 +126,7 @@ mod tests {
 
     #[test]
     fn izenpe_is_distrusted_after_15_april_2026() {
-        // NSS 3.132's one trusted root with a server distrust-after date.
+        // NSS 3.133's one trusted root with a server distrust-after date.
         let izenpe: Vec<&[u8]> = bundled(Roots::Mozilla)
             .filter(|der| distrust_after(der, &[]).is_some())
             .collect();

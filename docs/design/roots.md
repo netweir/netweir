@@ -8,8 +8,8 @@ browser's:
 | Profile | Roots | Source |
 |---|---|---|
 | Firefox | Mozilla's: the NSS builtins Firefox ships | `webpki-root-certs` 1.0.11 |
-| Chrome | the Chrome Root Store | `chromium-roots` 0.1.2 |
-| Safari | the Chrome Root Store (see below) | `chromium-roots` 0.1.2 |
+| Chrome | the Chrome Root Store | `chromium-roots` 0.1.3 |
+| Safari | the Chrome Root Store (see below) | `chromium-roots` 0.1.3 |
 
 A profile names its list in its `[tls]` section (`roots = "mozilla"`, or
 `"chromium"`, the default). `FetchOptions::ca_certificates` (`verify=` a
@@ -21,14 +21,25 @@ ends HTTP/3 when a chain that checks out ends at a root it didn't ship
 profile goes over HTTP/3 to a server whose root is Mozilla's and over TCP
 to one whose root came from `ca_certificates` (`docs/design/http3.md`).
 
-## How close Mozilla's list is to Firefox 160's
+## How close the Chrome Root Store is to Chrome 158's
 
-Firefox 160.0.1 ships NSS 3.132. Its `lib/ckfw/builtins/certdata.txt` has
+Chrome takes its roots from the PKI Metadata component it updates in the
+background, and falls back on the copy built into it only until that
+arrives. `chromium-roots` 0.1.3 is version 45 of the store, from
+component 1834; Chrome 158 builds in version 43
+(`net/data/ssl/chrome_root_store/root_store.textproto` at
+158.0.8127.89), so a Chrome 158 that has been online trusts version 45.
+That is 110 roots. 0.1.2 was version 40, from a Chrome 154.
+
+## How close Mozilla's list is to Firefox 161's
+
+Firefox 161.0 ships NSS 3.133, whose `lib/ckfw/builtins/certdata.txt` is
+byte for byte 3.132's. It has
 118 certificates whose trust objects make them server-auth trust anchors
 (`CKA_TRUST_SERVER_AUTH CKT_NSS_TRUSTED_DELEGATOR`). `webpki-root-certs`
 builds its list from CCADB's report of the roots Mozilla includes with the
 Websites trust bit, and its 1.0.11 is exactly those 118, by SHA-256. The
-release after it, 1.0.12, has dropped six that NSS 3.132 still trusts
+release after it, 1.0.12, has dropped six that NSS 3.133 still trusts
 (DigiCert Trusted Root G4, QuoVadis Root CA 1 G3 and 3 G3, Buypass Class 2
 and Class 3, Certigna), so the crate is pinned to `=1.0.11` until a
 Firefox profile on a newer NSS moves it.
@@ -36,7 +47,7 @@ Firefox profile on a newer NSS moves it.
 ## Distrust-after dates
 
 A list of certificates can't say that a root is trusted only for what it
-issued before a date, and NSS's can. NSS 3.132 keeps Izenpe.com trusted
+issued before a date, and NSS's can. NSS 3.133 keeps Izenpe.com trusted
 with a server distrust-after date of 2026-04-15 23:59:59 UTC
 (`CKA_NSS_SERVER_DISTRUST_AFTER`). Firefox refuses a chain that ends at
 it when the server certificate's notBefore is later than that, and
@@ -49,11 +60,11 @@ date, and `webpki-root-certs` drops it then too.
 
 Netweir keeps the dates beside the list. `src/distrust_after.rs` holds
 every root in `certdata.txt` that has one, by SHA-256: Izenpe.com, and
-three Entrust roots dated 2024-11-30 that 3.132 no longer trusts for
+three Entrust roots dated 2024-11-30 that 3.133 no longer trusts for
 servers anyway. `scripts/gen-distrust-after.py` writes that file from a
 given NSS tag:
 
-    cd crates/netweir-core && python3 scripts/gen-distrust-after.py NSS_3_132_RTM
+    cd crates/netweir-core && python3 scripts/gen-distrust-after.py NSS_3_133_RTM
 
 A Firefox profile applies them to a chain that ends at a Mozilla root, the
 way NSS does. Over TCP, a check beside BoringSSL's (wreq's
@@ -75,7 +86,7 @@ Netweir doesn't check Certificate Transparency.
 
 ## Enterprise roots
 
-`security.enterprise_roots.enabled` is `true` in Firefox 160 on every
+`security.enterprise_roots.enabled` is `true` in Firefox 161 on every
 platform (`modules/libpref/init/StaticPrefList.yaml`, with no
 per-platform default). What it reads depends on the platform
 (`security/manager/ssl/EnterpriseRoots.cpp`):

@@ -22,7 +22,7 @@ directory.
 
 netweir's wheels include NSS and NSPR, Mozilla's TLS and portability
 libraries, compiled from Mozilla's release tarball
-(https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_132_RTM/src/)
+(https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_133_RTM/src/)
 for HTTP/3 with Firefox profiles. NSS and NSPR are licensed under the
 Mozilla Public License, Version 2.0 (https://mozilla.org/MPL/2.0/); their
 source code, unmodified, is at that address and in the tarball
