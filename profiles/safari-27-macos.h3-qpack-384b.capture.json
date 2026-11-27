@@ -1,0 +1,3096 @@
+[
+  {
+    "connection": 1,
+    "request": 0,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/probe?0",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/probe?0",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/probe?0"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 1,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/1",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/1",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/qpack/1"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 3,
+    "request": 0,
+    "ja4": "q13d0312h3_55b375c5d22e_151122171f7d",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        23130,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        2570,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        14906,
+        41
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        19018,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 568
+                },
+                {
+                  "type": "padding",
+                  "length": 592
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 130406802800,
+          "value": 792452345,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/favicon.ico",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 2,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 0,
+          "name": ":authority",
+          "value": "localhost:19110",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "sec-fetch-dest",
+          "value": "empty",
+          "huffman_name": true,
+          "huffman_value": true
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 95,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+          "huffman": true
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 3,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "post_base",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/2",
+            "huffman_value": true
+          },
+          {
+            "kind": "post_base",
+            "index": 1,
+            "name": "sec-fetch-dest",
+            "value": "empty"
+          },
+          {
+            "kind": "post_base",
+            "index": 2,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/2",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/qpack/2"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 3,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 0,
+          "name": ":authority",
+          "value": "localhost:19110",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "sec-fetch-dest",
+          "value": "empty",
+          "huffman_name": true,
+          "huffman_value": true
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 95,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+          "huffman": true
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": ":authority",
+          "value": "localhost:19110"
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": "sec-fetch-dest",
+          "value": "empty"
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 5,
+        "base": 3,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "post_base",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/3",
+            "huffman_value": true
+          },
+          {
+            "kind": "post_base",
+            "index": 1,
+            "name": "sec-fetch-dest",
+            "value": "empty"
+          },
+          {
+            "kind": "dynamic",
+            "index": 0,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/3",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/qpack/3"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 4,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 0,
+          "name": ":authority",
+          "value": "localhost:19110",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "sec-fetch-dest",
+          "value": "empty",
+          "huffman_name": true,
+          "huffman_value": true
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 95,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+          "huffman": true
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": ":authority",
+          "value": "localhost:19110"
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": "sec-fetch-dest",
+          "value": "empty"
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 13,
+          "name": "referer",
+          "value": "https://localhost:19110/qpack?close",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "priority",
+          "value": "",
+          "huffman_name": true,
+          "huffman_value": false
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 7,
+        "base": 5,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "dynamic",
+            "index": 1,
+            "name": ":authority",
+            "value": "localhost:19110"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/4",
+            "huffman_value": true
+          },
+          {
+            "kind": "dynamic",
+            "index": 0,
+            "name": "sec-fetch-dest",
+            "value": "empty"
+          },
+          {
+            "kind": "dynamic",
+            "index": 2,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "post_base",
+            "index": 0,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "post_base_name",
+            "index": 1,
+            "name": "priority",
+            "value": "u=3, i",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/4",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/qpack/4"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=3, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 5,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 0,
+          "name": ":authority",
+          "value": "localhost:19110",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "sec-fetch-dest",
+          "value": "empty",
+          "huffman_name": true,
+          "huffman_value": true
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 95,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+          "huffman": true
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": ":authority",
+          "value": "localhost:19110"
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": "sec-fetch-dest",
+          "value": "empty"
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 13,
+          "name": "referer",
+          "value": "https://localhost:19110/qpack?close",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "priority",
+          "value": "",
+          "huffman_name": true,
+          "huffman_value": false
+        },
+        {
+          "kind": "duplicate",
+          "index": 4,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 8,
+        "base": 7,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "dynamic",
+            "index": 3,
+            "name": ":authority",
+            "value": "localhost:19110"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/picture.png?1",
+            "huffman_value": true
+          },
+          {
+            "kind": "dynamic_name",
+            "index": 2,
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_value": true
+          },
+          {
+            "kind": "post_base",
+            "index": 0,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
+            "huffman_value": true
+          },
+          {
+            "kind": "dynamic",
+            "index": 1,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=5, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/picture.png?1",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/picture.png?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=5, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 6,
+    "ja4": "q13d0311h3_55b375c5d22e_f2a83c8e78ae",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        60138,
+        4866,
+        4867,
+        4865
+      ],
+      "extensions": [
+        10794,
+        0,
+        10,
+        16,
+        5,
+        13,
+        18,
+        51,
+        45,
+        43,
+        57,
+        27,
+        31354
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        2570,
+        772
+      ],
+      "supported_groups": [
+        51914,
+        4588,
+        29,
+        23,
+        24,
+        25
+      ],
+      "key_share_groups": [
+        51914,
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        1
+      ],
+      "alps": [],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": null,
+      "grease_extension_lengths": [
+        0,
+        1
+      ],
+      "grease_key_share_lengths": [
+        1
+      ]
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 0,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 999
+                },
+                {
+                  "type": "padding",
+                  "length": 162
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1200,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1200,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 999,
+                  "length": 473
+                },
+                {
+                  "type": "padding",
+                  "length": 687
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 4,
+          "value": "81000000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80200000",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "08",
+          "grease": false
+        },
+        {
+          "id": 14,
+          "value": "4040",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          6,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 16383,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 125098238986,
+          "value": 3090866243,
+          "grease": true
+        }
+      ],
+      "control_frames": [],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 384
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 0,
+          "name": ":authority",
+          "value": "localhost:19110",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "sec-fetch-dest",
+          "value": "empty",
+          "huffman_name": true,
+          "huffman_value": true
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 95,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+          "huffman": true
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": ":authority",
+          "value": "localhost:19110"
+        },
+        {
+          "kind": "duplicate",
+          "index": 2,
+          "name": "sec-fetch-dest",
+          "value": "empty"
+        },
+        {
+          "kind": "insert_with_name_reference",
+          "static_table": true,
+          "index": 13,
+          "name": "referer",
+          "value": "https://localhost:19110/qpack?close",
+          "huffman": true
+        },
+        {
+          "kind": "insert_with_literal_name",
+          "name": "priority",
+          "value": "",
+          "huffman_name": true,
+          "huffman_value": false
+        },
+        {
+          "kind": "duplicate",
+          "index": 4,
+          "name": "user-agent",
+          "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+        },
+        {
+          "kind": "duplicate",
+          "index": 4,
+          "name": ":authority",
+          "value": "localhost:19110"
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 9,
+        "base": 8,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "post_base",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:19110"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/picture.png?2",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "dynamic",
+            "index": 0,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:19110/qpack?close",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=5, i",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/picture.png?2",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":authority",
+        "localhost:19110"
+      ],
+      [
+        ":path",
+        "/picture.png?2"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15"
+      ],
+      [
+        "accept",
+        "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+      ],
+      [
+        "referer",
+        "https://localhost:19110/qpack?close"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=5, i"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ]
+    ]
+  }
+]

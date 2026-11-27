@@ -816,16 +816,25 @@ What the recording can't show, Netweir has had to choose:
 - The idle timeout. Safari advertises none, so neither does Netweir,
   and the connection lasts as long as the server's timeout allows.
   Safari surely closes idle connections itself; when isn't recorded.
-- QPACK in a small table. Offered 512 and 256 bytes
-  (`profiles/safari-27-macos.h3-qpack-512b.capture.json` and
-  `-256b`), Safari stopped inserting in a request once it had inserted
-  half the table's size, copied entries it was about to lose with
-  Duplicate even where the copy evicts the original (RFC 9204, Section
-  3.2.2 allows that; QUICHE never does it), and inserted a name with an
-  empty value to refer to it for a new one. When it copies rather than
-  refers to an entry follows no rule those two runs agree on, so
-  Netweir's Safari encoder evicts as QUICHE's does. In the 64 KiB and
-  1 MiB tables recorded, nothing was evicted.
+- QPACK in a small table, which no one rule explains. Safari was
+  recorded on `/qpack?close` against tables of 128, 192, 256, 320, 384,
+  448, 512, 640, 768, 1024, 1536 and 2048 bytes, twice at each
+  (`profiles/safari-27-macos.h3-qpack-{N}b.capture.json`; the two runs
+  were the same every time). It stops inserting into a section once it
+  has inserted half the table's size; copies, rather than refers to, an
+  entry from the oldest that leave 35% of the table free above them,
+  counted again for each field, even where the copy evicts the original
+  (RFC 9204, Section 3.2.2 allows that; QUICHE never does it); puts a
+  name that only such an entry has in again with an empty value, to
+  refer to it; and inserts under that name literally. That is the best
+  fit of the rules tried, and the profile follows it. It sends all six
+  of the page's requests as Safari did at 128, 448, 512, 1536 and 2048
+  bytes, the first five at 1024, four at 640 and 768, three at 320, and
+  two at 192, 256 and 384. Past those, Safari copies entries this rule
+  refers to (a `user-agent` at 1024 bytes, newer than the `:authority`
+  it went on referring to in the same section), so it isn't the space
+  above an entry alone that decides. In the 64 KiB and 1 MiB tables
+  recorded, nothing was evicted, and the two match throughout.
 - 0-RTT for methods other than GET and POST, which weren't recorded:
   they follow Chrome's rule.
 - The image request over HTTP/1.1. Safari's `[image]` headers are

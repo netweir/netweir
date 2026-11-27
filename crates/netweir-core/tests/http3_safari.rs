@@ -915,3 +915,67 @@ async fn a_huffman_tie_goes_as_it_is_as_safaris_did() {
         .unwrap();
     assert_eq!(inserts(&last), inserts(recorded));
 }
+
+/// Safari 27.2 against tables of 128 to 2048 bytes
+/// (profiles/safari-27-macos.h3-qpack-{N}b.capture.json, the requests
+/// over HTTP/3 of one of two runs at each; the two were the same at every
+/// size), and how many of the page's requests the fork's Safari encoder
+/// sends as Safari did. No one rule fits every run: this one, the best
+/// fit, matches all of them at 128, 448, 512, 1536 and 2048 bytes and the
+/// first few elsewhere (docs/design/http3.md).
+const QPACK_SWEEP: [(u64, usize); 12] = [
+    (128, 6),
+    (192, 2),
+    (256, 2),
+    (320, 3),
+    (384, 2),
+    (448, 6),
+    (512, 6),
+    (640, 4),
+    (768, 4),
+    (1024, 5),
+    (1536, 6),
+    (2048, 6),
+];
+
+#[tokio::test]
+async fn a_small_qpack_table_is_filled_as_safaris_was() {
+    let paths = [
+        "/qpack/1",
+        "/qpack/2",
+        "/qpack/3",
+        "/qpack/4",
+        "/picture.png?1",
+        "/picture.png?2",
+    ];
+    let requests: Vec<(&str, bool)> = paths
+        .iter()
+        .map(|p| (*p, p.starts_with("/picture")))
+        .collect();
+    for (capacity, matching) in QPACK_SWEEP {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../profiles/{PROFILE}.h3-qpack-{capacity}b.capture.json"
+        ));
+        let recording: Vec<Capture> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let offer = netweir_fingerprint::QpackOffer {
+            capacity,
+            blocked_streams: 100,
+        };
+        let got = qpack_run(offer, "/qpack?close", &requests).await;
+        let same = &paths[..matching];
+        let differences =
+            netweir_fingerprint::qpack_differences(&recording, &got, same, same.len());
+        assert!(differences.is_empty(), "{capacity} bytes: {differences:#?}");
+        // Where the rule stops fitting, it doesn't: a change there is news.
+        if matching < paths.len() {
+            let next = &paths[matching..=matching];
+            let differences = netweir_fingerprint::qpack_differences(&recording, &got, next, 1);
+            assert!(
+                !differences.is_empty(),
+                "{capacity} bytes: {} now matches",
+                next[0]
+            );
+        }
+    }
+}
