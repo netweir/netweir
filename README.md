@@ -481,9 +481,10 @@ HTTPS DNS record, which Netweir asks the system for as Firefox does, the
 next requests leave on neqo, the QUIC stack Firefox itself runs, set up
 with Firefox 160's settings, and a test holds the QUIC Initial, the
 ClientHello inside it and the HTTP/3 settings to a recording of the real
-browser. On a connection that resumes, a GET goes in 0-RTT as
-Firefox's does. What isn't Firefox's yet, racing IPv4 and IPv6 for one, is
-listed in [docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
+browser. A connection that resumes sends a GET in 0-RTT, and a site's
+ECH key is used the way Firefox uses it, retries and all. What still
+isn't Firefox's is listed in
+[docs/design/http3.md](docs/design/http3.md#what-doesnt-match-yet). With a
 proxy it stays on TCP, as Firefox does, and `http3=False` turns it
 off.
 
@@ -496,7 +497,9 @@ Initial packets among PING and PADDING frames, its HTTP/3 SETTINGS. A
 test holds that to a recording of Chrome, JA4 and all, and checks over
 many connections that what Chrome draws at random varies as Chrome's
 does. Chrome races QUIC against TCP and backs off a broken alternative,
-and the fetcher follows those rules for a Chrome profile. What isn't
+and the fetcher follows those rules for a Chrome profile. A resumed
+connection sends a GET in 0-RTT, and a server that offers a QPACK table
+gets it filled the way Chrome fills it. What isn't
 exact: after the first round trips, congestion control and pacing are
 quiche's, not Chrome's
 ([docs/design/http3.md](docs/design/http3.md#what-isnt-chromes)).
@@ -509,8 +512,10 @@ to that recording field for field: the ClientHello and both its JA4s,
 the transport parameters, the two 1200-byte Initials, the HTTP/3
 settings, the header order. Safari stays on an open TCP connection,
 moves to HTTP/3 on a new one or on first contact from an HTTPS DNS
-record, and gives QUIC 250 ms before starting TCP, as it was timed
-doing. What the recording couldn't show, and what Netweir chose instead,
+record, tries each of a host's addresses 250 ms apart, and starts TCP
+250 ms after the last, as it was timed doing. A resumed connection sends
+a GET in 0-RTT, as Safari's did. What the recording couldn't show, and
+what Netweir chose instead,
 is in [docs/design/http3.md](docs/design/http3.md#what-isnt-safaris).
 
 One known difference: Chrome sends a `priority` header only over HTTP/2,
