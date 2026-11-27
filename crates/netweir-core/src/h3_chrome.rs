@@ -335,6 +335,10 @@ fn varint(v: u64) -> Vec<u8> {
 pub(crate) struct Ticket {
     pub session: Vec<u8>,
     pub rtt: Duration,
+    /// The server's SETTINGS on the connection that left it, which Chrome
+    /// keeps with the session and takes again when it resumes
+    /// (quic_spdy_client_session_base.cc, OnSettingsFrame).
+    pub settings: Vec<(u64, u64)>,
 }
 
 pub(crate) type Tickets = Arc<Mutex<HashMap<String, Ticket>>>;
@@ -588,8 +592,9 @@ impl Connection {
         }
     }
 
-    /// Leaves this connection's session and RTT for the next one.
-    fn leave_ticket(&self, conn: &quiche::Connection) {
+    /// Leaves this connection's session, RTT and the server's SETTINGS
+    /// for the next one.
+    fn leave_ticket(&self, conn: &quiche::Connection, h3: Option<&quiche::h3::Connection>) {
         let Some(session) = conn.session() else {
             return;
         };
@@ -602,6 +607,10 @@ impl Connection {
                 Ticket {
                     session: session.to_vec(),
                     rtt,
+                    settings: h3
+                        .and_then(|h3| h3.peer_settings_raw())
+                        .map(<[_]>::to_vec)
+                        .unwrap_or_default(),
                 },
             );
     }
@@ -647,7 +656,15 @@ impl Connection {
             // runs the stream request's callback at ENCRYPTION_ZERO_RTT).
             if h3.is_none() && self.early && conn.is_in_early_data() {
                 match quiche::h3::Connection::with_transport(&mut conn, &h3_config) {
-                    Ok(c) => {
+                    Ok(mut c) => {
+                        // Chrome fills the server's table in 0-RTT from the
+                        // SETTINGS it left last time
+                        // (QuicSpdySession::ResumeApplicationState); the
+                        // fork's Safari encoder waits for the new ones, as
+                        // Safari 27.2 did.
+                        if let Some(ticket) = &self.ticket {
+                            c.resume_settings(&ticket.settings);
+                        }
                         h3 = Some(c);
                         state.send_replace(State::ZeroRtt);
                     }
@@ -728,11 +745,11 @@ impl Connection {
             }
             if !accepting && !closing && streams.is_empty() && waiting.is_empty() {
                 closing = true;
-                self.leave_ticket(&conn);
+                self.leave_ticket(&conn, h3.as_ref());
                 let _ = conn.close(true, chrome::NO_ERROR, b"");
             }
             if conn.is_closed() {
-                self.leave_ticket(&conn);
+                self.leave_ticket(&conn, h3.as_ref());
                 let ready = verified;
                 let peer_error = conn.peer_error().map(|e| (e.is_app, e.error_code));
                 let local_error = conn.local_error().map(|e| (e.is_app, e.error_code));

@@ -475,6 +475,28 @@ Huffman flags. Chrome fetched a favicon between the probe and
 `/qpack/1`; Netweir doesn't, so Chrome's later requests are compared
 without their dynamic indices.
 
+On a resumed connection, before the server's SETTINGS come:
+`profiles/*.h3-0rtt-qpack.capture.json` recorded each browser on
+`/zero-rtt` against a server that takes 0-RTT and offers a table
+(`capture --h3 --early --qpack 65536,100`). Chrome and Firefox sent
+`/again` in 0-RTT and filled the table with it, from the SETTINGS they
+kept with the session. Chrome set the table's capacity again once the new
+SETTINGS came, as QUICHE's `OnSetting` runs again after
+`ResumeApplicationState`; Firefox didn't. Safari sent `/again` in 0-RTT
+with nothing on its encoder stream, not even the capacity. Each profile
+does the same: the quiche path keeps the server's SETTINGS with the
+session ticket and gives a resumed Chrome connection them
+(`h3::Connection::resume_settings`). SETTINGS that then change the
+table's capacity, lower the blocked streams, or leave out a QPACK
+setting while early data was taken close the connection, as Chrome's do
+(RFC 9114, Section 7.2.4.2). Firefox's neqo keeps them in its
+resumption token already, and Safari's encoder waits.
+
+A string whose Huffman code is as long as the string goes as it is in
+Safari too: `profiles/safari-27-macos.h3-qpack-ties.capture.json`
+recorded `/qpack-ties`, whose fetches send `?0`, `&&&&`, the name `&&`
+and the value `1`, all of them raw, in field sections and inserts alike.
+
 ## Chrome through netweir's quiche
 
 Chrome's QUIC is Google's QUICHE, in C++, and building it into the
@@ -559,10 +581,6 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
   and ACK timing are quiche's, not Chrome's. Only Google's QUICHE would
   copy them, and it's the build cost above. A server that studies how a
   connection behaves under loss can tell.
-- QPACK on a resumed connection: Chrome applies the SETTINGS it
-  remembers for the server and may insert into its table in 0-RTT.
-  Netweir waits for the SETTINGS, so a request in 0-RTT uses no table.
-  The 0-RTT recording's server offered none, so this isn't recorded.
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.
@@ -798,9 +816,16 @@ What the recording can't show, Netweir has had to choose:
 - The idle timeout. Safari advertises none, so neither does Netweir,
   and the connection lasts as long as the server's timeout allows.
   Safari surely closes idle connections itself; when isn't recorded.
-- QPACK beyond what was recorded. No recording filled Safari's table,
-  so eviction follows QUICHE's rule, and no string Safari sent coded no
-  shorter in Huffman, so Netweir codes those as quiche does.
+- QPACK in a small table. Offered 512 and 256 bytes
+  (`profiles/safari-27-macos.h3-qpack-512b.capture.json` and
+  `-256b`), Safari stopped inserting in a request once it had inserted
+  half the table's size, copied entries it was about to lose with
+  Duplicate even where the copy evicts the original (RFC 9204, Section
+  3.2.2 allows that; QUICHE never does it), and inserted a name with an
+  empty value to refer to it for a new one. When it copies rather than
+  refers to an entry follows no rule those two runs agree on, so
+  Netweir's Safari encoder evicts as QUICHE's does. In the 64 KiB and
+  1 MiB tables recorded, nothing was evicted.
 - 0-RTT for methods other than GET and POST, which weren't recorded:
   they follow Chrome's rule.
 - The image request over HTTP/1.1. Safari's `[image]` headers are

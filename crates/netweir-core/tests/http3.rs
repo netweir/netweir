@@ -1991,3 +1991,51 @@ async fn requests_use_a_servers_qpack_table_as_firefox_did() {
         );
     }
 }
+
+/// The capacities a QPACK encoder set the server's table to so far, in
+/// order.
+fn qpack_capacities(http3: &netweir_fingerprint::Http3) -> Vec<u64> {
+    http3
+        .encoder
+        .iter()
+        .filter_map(|i| match i {
+            netweir_fingerprint::EncoderInstruction::SetCapacity { capacity } => Some(*capacity),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_did() {
+    // profiles/{PROFILE}.h3-0rtt-qpack.capture.json: Firefox 160.0.1 on
+    // /zero-rtt against a server that takes 0-RTT and offers a
+    // 64 KiB table with 100 blocked streams. Firefox's neqo keeps the server's SETTINGS
+    // in its resumption token and fills the table in 0-RTT, as Netweir's
+    // neqo does with Firefox's settings.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{PROFILE}.h3-0rtt-qpack.capture.json"
+    ));
+    let recording: Vec<Capture> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let recorded = recording.iter().position(|c| c.path == "/again").unwrap();
+    let want = recording[recorded].http3.as_ref().unwrap();
+    assert!(want.early, "the recording's /again went in 0-RTT");
+    let offer = netweir_fingerprint::QpackOffer {
+        capacity: 65536,
+        blocked_streams: 100,
+    };
+    let mut server = Server::start_h3_early_offering(0, None, None, Some(offer))
+        .await
+        .unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    let got = again.http3.as_ref().unwrap();
+    assert!(got.early, "the GET went in 0-RTT");
+    let refers = |h: &netweir_fingerprint::Http3| {
+        h.field_section.as_ref().unwrap().required_insert_count > 0
+    };
+    assert_eq!(refers(got), refers(want), "refers to the table in 0-RTT");
+    assert_eq!(qpack_capacities(got), qpack_capacities(want), "in 0-RTT");
+}

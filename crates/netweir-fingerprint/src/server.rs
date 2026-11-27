@@ -176,12 +176,25 @@ impl Server {
         dir: Option<&Path>,
         browser: Option<std::time::Duration>,
     ) -> io::Result<Server> {
+        Server::start_h3_early_offering(port, dir, browser, None).await
+    }
+
+    /// `start_h3_early`, its HTTP/3 offering the QPACK dynamic table
+    /// `qpack` describes if given, as `start_h3_qpack` does: a resumed
+    /// connection shows whether a client fills it in 0-RTT from the
+    /// SETTINGS it remembers.
+    pub async fn start_h3_early_offering(
+        port: u16,
+        dir: Option<&Path>,
+        browser: Option<std::time::Duration>,
+        qpack: Option<crate::QpackOffer>,
+    ) -> io::Result<Server> {
         let certificate = dir.map(lasting_certificate).transpose()?;
         let (alpn, early): (&[&[u8]], _) = match browser {
             Some(hold) => (&[b"http/1.1"], Early::ForBrowser(hold)),
             None => (&[b"h2", b"http/1.1"], Early::Take),
         };
-        Server::bind_with(port, alpn, certificate, true, early, true).await
+        Server::bind_offering(port, alpn, certificate, true, early, true, qpack).await
     }
 
     /// Like `start_h3_early`, but no session it gave a ticket for is ever
@@ -560,6 +573,29 @@ const QPACK_NAV_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>qpac
 })();
 </script>"#;
 
+/// The page `/qpack-ties` serves: as `/qpack`, but each of its four
+/// fetches sends headers whose Huffman code is exactly as long as the
+/// string: the values `?0` (15 bits) and `&&&&` (8 bits a character), and
+/// the name `&&`, so an encoder that codes a string only where that's
+/// shorter sends them as they are. Sent four times, they're inserted by
+/// an encoder that inserts what it sends again.
+const QPACK_TIES_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>qpack</title>
+<script>
+(async () => {
+  const close = location.search.includes("close");
+  for (let i = 0; i < 50; i++) {
+    if (close) await fetch("/close").catch(() => {});
+    const seen = await (await fetch("/probe?" + i)).json();
+    if (seen.protocol === "h3") break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  for (let i = 1; i <= 4; i++) {
+    await fetch("/qpack/" + i, {headers: {"x-tie": "?0", "x-tie-4": "&&&&", "&&": "1"}});
+  }
+  document.title = "done";
+})();
+</script>"#;
+
 /// The page `/zero-rtt` serves: its script asks until a response came
 /// over HTTP/3, waits for that connection to time out, then goes to
 /// `/again`, whose request the browser may send in 0-RTT on the
@@ -694,6 +730,10 @@ fn route(path: &str, authorized: bool) -> Answer {
         }
         ("/qpack", _) => {
             let page = html(&mut headers, QPACK_PAGE);
+            (200, headers, page)
+        }
+        ("/qpack-ties", _) => {
+            let page = html(&mut headers, QPACK_TIES_PAGE);
             (200, headers, page)
         }
         ("/qpack-nav", _) => {

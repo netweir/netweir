@@ -26,7 +26,7 @@
 //! CAPACITY bytes and BLOCKED blocked streams (`Server::start_h3_qpack`),
 //! for a browser to open /qpack: each capture's `http3.encoder` and
 //! `http3.field_section` say what it put in the table and how each
-//! request used it. With `--http1` too, TCP offers only HTTP/1.1, which
+//! request used it; with `--early` too, on a server that takes 0-RTT. With `--http1` too, TCP offers only HTTP/1.1, which
 //! Safari needs before it moves its requests to QUIC.
 
 #[tokio::main]
@@ -61,7 +61,8 @@ async fn main() {
         .expect("$HOME or $NETWEIR_HOME");
     let dir = home.join("capture");
     let mut server = if h3 && early {
-        netweir_fingerprint::Server::start_h3_early(port, Some(&dir), Some(hold)).await
+        netweir_fingerprint::Server::start_h3_early_offering(port, Some(&dir), Some(hold), qpack)
+            .await
     } else if let (true, Some(offer)) = (h3, qpack) {
         netweir_fingerprint::Server::start_h3_qpack(port, Some(&dir), offer, http1).await
     } else if h3 {

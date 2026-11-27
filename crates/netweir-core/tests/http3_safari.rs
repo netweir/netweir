@@ -765,3 +765,153 @@ async fn requests_use_a_servers_qpack_table_as_safaris_did() {
         );
     }
 }
+
+/// The capacities a QPACK encoder set the server's table to so far, in
+/// order.
+fn qpack_capacities(http3: &netweir_fingerprint::Http3) -> Vec<u64> {
+    http3
+        .encoder
+        .iter()
+        .filter_map(|i| match i {
+            netweir_fingerprint::EncoderInstruction::SetCapacity { capacity } => Some(*capacity),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_safaris_did() {
+    // profiles/{PROFILE}.h3-0rtt-qpack.capture.json: Safari 27.2 on
+    // /zero-rtt?close against a server that takes 0-RTT and offers a
+    // 64 KiB table with 100 blocked streams. Safari sent nothing on its encoder stream in
+    // 0-RTT, not even the table's capacity: it waits for the new SETTINGS.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{PROFILE}.h3-0rtt-qpack.capture.json"
+    ));
+    let recording: Vec<Capture> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let recorded = recording.iter().position(|c| c.path == "/again").unwrap();
+    let want = recording[recorded].http3.as_ref().unwrap();
+    assert!(want.early, "the recording's /again went in 0-RTT");
+    let offer = netweir_fingerprint::QpackOffer {
+        capacity: 65536,
+        blocked_streams: 100,
+    };
+    let mut server = Server::start_h3_early_offering(0, None, None, Some(offer))
+        .await
+        .unwrap();
+    let (fetcher, origin) = resuming(&mut server).await;
+    fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    let got = again.http3.as_ref().unwrap();
+    assert!(got.early, "the GET went in 0-RTT");
+    let refers = |h: &netweir_fingerprint::Http3| {
+        h.field_section.as_ref().unwrap().required_insert_count > 0
+    };
+    assert_eq!(refers(got), refers(want), "refers to the table in 0-RTT");
+    assert_eq!(qpack_capacities(got), qpack_capacities(want), "in 0-RTT");
+}
+
+#[tokio::test]
+async fn a_huffman_tie_goes_as_it_is_as_safaris_did() {
+    // profiles/safari-27-macos.h3-qpack-ties.capture.json: Safari 27.2's
+    // fetches on /qpack-ties sent headers whose Huffman code is as long as
+    // the string: "?0", "&&&&", the name "&&" and the value "1". Safari
+    // sent them as they are, in the field section and on the encoder
+    // stream alike. Safari put those names among its own, where Netweir
+    // adds a caller's after the profile's, so each field is compared by
+    // its name.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{PROFILE}.h3-qpack-ties.capture.json"
+    ));
+    let recording: Vec<Capture> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let ties = [("x-tie", "?0"), ("x-tie-4", "&&&&"), ("&&", "1")];
+    let offer = netweir_fingerprint::QpackOffer {
+        capacity: 65536,
+        blocked_streams: 100,
+    };
+    let mut server = Server::start_h3_qpack(0, None, offer, false).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{port}"))
+        .unwrap();
+    let page = format!("{origin}/qpack-ties?close");
+    fetcher.get(&page, &[]).await.unwrap();
+    server.next().await.unwrap();
+    let script = Outgoing::fetch("GET", None, None, Some(page.clone()));
+    let extra: Vec<(String, String)> = ties
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    // Each tie field's representation and Huffman flags, by request.
+    let lines = |c: &Capture| -> Vec<(String, String, Option<bool>, Option<bool>)> {
+        let mut out: Vec<_> = c
+            .http3
+            .as_ref()
+            .unwrap()
+            .field_section
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .filter(|l| ties.iter().any(|(k, _)| *k == l.name))
+            .map(|l| {
+                (
+                    l.name.clone(),
+                    l.kind.clone(),
+                    l.huffman_name,
+                    l.huffman_value,
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    for path in ["/qpack/1", "/qpack/2", "/qpack/3", "/qpack/4"] {
+        fetcher
+            .send(&format!("{origin}{path}"), &script, &extra)
+            .await
+            .unwrap();
+        let got = server.next().await.unwrap();
+        let want = recording.iter().find(|c| c.path == path).unwrap();
+        assert_eq!(lines(&got), lines(want), "{path}");
+    }
+    // The inserts of the tie fields, and their Huffman flags.
+    let inserts = |c: &Capture| -> Vec<String> {
+        let mut out: Vec<String> = c
+            .http3
+            .as_ref()
+            .unwrap()
+            .encoder
+            .iter()
+            .filter_map(|i| match i {
+                netweir_fingerprint::EncoderInstruction::InsertWithLiteralName {
+                    name,
+                    huffman_name,
+                    huffman_value,
+                    ..
+                } if ties.iter().any(|(k, _)| k == name) => {
+                    Some(format!("{name} {huffman_name}/{huffman_value}"))
+                }
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    fetcher
+        .send(&format!("{origin}/qpack/end"), &script, &[])
+        .await
+        .unwrap();
+    let last = server.next().await.unwrap();
+    let recorded = recording
+        .iter()
+        .rev()
+        .find(|c| c.protocol == "h3" && c.path.starts_with("/qpack/"))
+        .unwrap();
+    assert_eq!(inserts(&last), inserts(recorded));
+}
