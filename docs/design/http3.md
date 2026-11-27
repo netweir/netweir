@@ -837,9 +837,6 @@ What the recording can't show, Netweir has had to choose:
   recorded, nothing was evicted, and the two match throughout.
 - 0-RTT for methods other than GET and POST, which weren't recorded:
   they follow Chrome's rule.
-- The image request over HTTP/1.1. Safari's `[image]` headers are
-  recorded over HTTP/2 and HTTP/3; over HTTP/1.1, Host and Connection
-  go where Safari's other HTTP/1.1 requests put them.
 - Another recording disagrees on one field. curl-impersonate's Safari
   27.0 signature (`tests/signatures/safari270.yaml`) lists
   max_idle_timeout 300000 among the parameters. Safari 27.2 sent none

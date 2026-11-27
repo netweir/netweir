@@ -519,10 +519,9 @@ the first request to an https server that only speaks HTTP/1.1 carries that
 header; every request after it doesn't.
 
 Images a crawl downloads with `netweir.images` go out as an `<img>` on
-the page asks for them, not as a page, and the same test holds Chrome's
-and Firefox's to recordings of each loading an image. Safari's are
-written from what Safari is known to send, and not yet checked against a
-recording.
+the page asks for them, not as a page, and the same test holds them to
+recordings of each browser loading an image: Chrome's, Firefox's, and
+Safari 27.2's over HTTP/1.1, HTTP/2 and HTTP/3.
 
 A login goes where the browser puts it. Chrome 157 and Firefox 160 were
 recorded holding an HTTP login and sending it with a navigation, a form, a

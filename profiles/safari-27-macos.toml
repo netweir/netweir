@@ -196,10 +196,10 @@ headers = [
     ["Connection", "keep-alive"],
 ]
 
-# An <img> on a page loading its picture, as
-# safari-27-macos.h3.capture.json recorded Safari 27.2 loading /image's
-# over HTTP/2 and HTTP/3 alike. Over HTTP/1.1, Host and Connection are
-# where Safari's other requests put them; that isn't recorded.
+# An <img> on a page loading its picture, as Safari 27.2 loaded /image's
+# over HTTP/2 and HTTP/3 alike (safari-27-macos.h3.capture.json) and over
+# HTTP/1.1, Host first and Connection last
+# (safari-27-macos.image.http1.capture.json).
 [image]
 headers = [
     ["Host", ""],
