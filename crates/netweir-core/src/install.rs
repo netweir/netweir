@@ -188,27 +188,27 @@ pub struct FirefoxRelease<'a> {
 /// Firefox tests pass on it; the sums come from that release's
 /// SHA256SUMS, after checking its signature.
 pub const FIREFOX: FirefoxRelease<'static> = FirefoxRelease {
-    version: "159.0.1",
+    version: "161.0",
     sums: &[
         (
             "mac",
-            "0c214da4439c1eb4cea28a3c141ff112d511aa32c67f9d12e91116569c8d8dda",
+            "18f398ada9ba9faa5458dc01c2a68fc7df35517283be2e7a421a0867c5f47f83",
         ),
         (
             "linux-x86_64",
-            "469ce17120018e1c95411d254cf3c5f8db2dd1768a7acde5a2a089b00072ac65",
+            "3e9b1e5132d7b53b1ad968c7300281e90e6a0ef57d0656b1516202d686d25733",
         ),
         (
             "linux-aarch64",
-            "847651efd44351972a281afa54845708faffb358692f551af391dd77736bbd6b",
+            "b3c2992292efc4a2f7ab6abe2de0ba6e15a482d41813e469c255a2528cacf10a",
         ),
         (
             "win64",
-            "729af643b8e0a3809d6153a57a448cb96a01e6fa5e2e7ff782152ede6202eadd",
+            "8368757b8e39ffe0441b2489e051d0d5ffc016c246ed5634495104da0e66fa83",
         ),
         (
             "win64-aarch64",
-            "c4e5f2440df619b968aadb87db4f6948fcda23e24d8f6c211070bd7fbfe2c2b2",
+            "ea3faa9eee6961e26d7151d59cee15dc1b827e7076920180be37622b510f0a26",
         ),
     ],
 };

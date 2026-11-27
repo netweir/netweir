@@ -178,7 +178,7 @@ It starts the Firefox at `$NETWEIR_FIREFOX`, or else the newest one
 netweir install firefox
 ```
 
-That downloads Mozilla's Firefox 159.0.1 into `~/.netweir/firefox/`
+That downloads Mozilla's Firefox 161.0 into `~/.netweir/firefox/`
 (`$NETWEIR_HOME` moves it), checked against the SHA-256 sums Netweir
 keeps for that build. The browser tests run on Firefox too, and the
 table further down lists what they skip there and why.
