@@ -1670,7 +1670,12 @@ impl Fetcher {
                             }
                             crate::h3::Stack::Safari(Arc::new(tls))
                         }
-                        _ => crate::h3::Stack::Firefox,
+                        _ => crate::h3::Stack::Firefox {
+                            happy_eyeballs: profile
+                                .http3
+                                .as_ref()
+                                .is_some_and(|h| h.happy_eyeballs),
+                        },
                     };
                     let proving = client.clone();
                     let validate: crate::h3::Validate =

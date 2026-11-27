@@ -998,8 +998,9 @@ impl Pending {
 /// Whose QUIC and HTTP/3 a Fetcher sends, and whose rules it follows to
 /// move to it and off it.
 pub(crate) enum Stack {
-    /// Firefox 161: neqo and NSS (this file).
-    Firefox,
+    /// Firefox 161: neqo and NSS (this file); `happy_eyeballs` as the
+    /// profile's `[http3]` says.
+    Firefox { happy_eyeballs: bool },
     /// Chrome 157 and 158: netweir's quiche on btls (src/h3_chrome.rs), with the
     /// profile's TLS settings.
     Chrome(Arc<crate::profile::Tls>),
@@ -1409,7 +1410,7 @@ impl Routes {
     /// Whether requests over HTTP/3 carry `Alt-Used`, as Firefox's do
     /// and Chrome's don't.
     pub(crate) fn alt_used(&self) -> bool {
-        matches!(self.stack, Stack::Firefox)
+        matches!(self.stack, Stack::Firefox { .. })
     }
 
     /// Whether HTTP/3 is excluded from `host`, as Firefox's
@@ -1850,7 +1851,7 @@ impl Routes {
             .unwrap_or_default();
         let given = addresses.first().copied();
         let handle = match &self.stack {
-            Stack::Firefox => open(
+            Stack::Firefox { happy_eyeballs } => open(
                 host,
                 alternative,
                 given,
@@ -1860,6 +1861,7 @@ impl Routes {
                 &self.tickets,
                 self.host_cache.clone(),
                 for_request,
+                *happy_eyeballs,
             ),
             Stack::Chrome(tls) => crate::h3_chrome::open(
                 host,
@@ -2308,6 +2310,7 @@ fn open(
     tickets: &Tickets,
     host_cache: Option<Arc<crate::https_rr::HostCache>>,
     for_request: bool,
+    happy_eyeballs: bool,
 ) -> Handle {
     let (jobs, queue) = mpsc::unbounded_channel();
     let (state, watching) = watch::channel(State::Connecting);
@@ -2362,6 +2365,7 @@ fn open(
                 &retry_with,
                 &refused,
                 for_request,
+                happy_eyeballs,
             ));
             // However it ended, it isn't coming up any more.
             state.send_modify(|s| {
@@ -2480,6 +2484,7 @@ async fn run(
     ech_retry: &Mutex<Option<Vec<u8>>>,
     third_party: &std::sync::atomic::AtomicBool,
     for_request: bool,
+    happy_eyeballs: bool,
 ) {
     let given = given.zip(
         alternative
@@ -2524,8 +2529,15 @@ async fn run(
     let mut early: Option<Instant> = None;
     let mut had_early = false;
     // Whether the request this connection was made for has yet to have
-    // its chance to join the first flight.
-    let mut first_flight = for_request;
+    // its chance to join the first flight. Under Happy Eyeballs it has
+    // none: the page's channel connects speculatively before its cache
+    // lookup (nsHttpChannel::SpeculativeConnect), so the connection is
+    // made for a HappyEyeballsTransaction with no request yet, which turns
+    // 0-RTT down (ZeroRttHandle::Do0RTT), and the request that claims the
+    // attempt is dispatched once the handshake is done. Requests taken
+    // after it go in 0-RTT as before.
+    let mut first_flight = for_request && !happy_eyeballs;
+    let hold_first = for_request && happy_eyeballs;
     // Whether the certificate check failed, which Firefox reads as an NSS
     // error (Http3Session::Authenticated).
     let mut cert_rejected = false;
@@ -2785,7 +2797,13 @@ async fn run(
                 start(&mut client, &mut streams, job, false);
             }
         } else if early.is_some() {
-            for job in std::mem::take(&mut waiting) {
+            let mut jobs = std::mem::take(&mut waiting).into_iter();
+            // The request the connection was made for stays first in
+            // `waiting` until the handshake is done.
+            if hold_first && let Some(job) = jobs.next() {
+                waiting.push(job);
+            }
+            for job in jobs {
                 if safe_method(&job.request.method) {
                     had_early = true;
                     start(&mut client, &mut streams, job, true);
@@ -3085,7 +3103,9 @@ mod tests {
             validate,
             Arc::default(),
             None,
-            Stack::Firefox,
+            Stack::Firefox {
+                happy_eyeballs: false,
+            },
             None,
         );
         let route = Route {

@@ -155,6 +155,12 @@ pub struct Http3 {
     /// as `[tls]` gives it.
     #[serde(default)]
     pub extension_order: Vec<u16>,
+    /// Firefox's network.http.happy_eyeballs_enabled, which Mozilla's
+    /// happy-eyeballs-release-rollout turns on for release 157 and later:
+    /// a page's request goes through Happy Eyeballs, so a connection that
+    /// resumes in 0-RTT sends that request once its handshake is done.
+    #[serde(default)]
+    pub happy_eyeballs: bool,
 }
 
 /// What the browser sends for one kind of request, captured as `headers`

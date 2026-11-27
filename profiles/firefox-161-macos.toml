@@ -257,3 +257,8 @@ http2_headers = [
 # firefox-161-macos.h3.capture.json.
 [http3]
 stack = "firefox-161"
+# network.http.happy_eyeballs_enabled, on in release 157 and later through
+# Mozilla's happy-eyeballs-release-rollout: a connection that resumes in
+# 0-RTT sends the page's request once its handshake is done, as
+# firefox-161-macos.h3-0rtt.capture.json recorded.
+happy_eyeballs = true

@@ -17,11 +17,10 @@ use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
 use netweir_fingerprint::{Capture, Quic, Server, differences, transport_parameter_order_differs};
 
 const PROFILE: &str = "firefox-161-macos";
-/// Whose 0-RTT the 0-RTT tests hold Netweir to. Firefox 160 sent a
-/// resumed connection's GET in 0-RTT; Firefox 161 on macOS was recorded
-/// waiting for the handshake instead (profiles/firefox-161-macos.h3-0rtt
-/// and .h3-0rtt-qpack), with the same neqo Netweir runs, so that is
-/// Gecko's doing and not followed yet (docs/design/http3.md).
+/// The profile whose resumed connection sends the request it was made for
+/// in 0-RTT: Firefox 160, recorded before Mozilla's Happy Eyeballs rollout
+/// reached it. The 0-RTT tests run on it; Firefox 161, with Happy
+/// Eyeballs, sends that request once the handshake is done.
 const ZERO_RTT_PROFILE: &str = "firefox-160-macos";
 const PRE_SHARED_KEY: u16 = 0x0029;
 
@@ -32,7 +31,11 @@ fn recording() -> Vec<Capture> {
 }
 
 fn fetcher() -> Fetcher {
-    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    fetcher_as(PROFILE)
+}
+
+fn fetcher_as(profile: &str) -> Fetcher {
+    let mut options = FetchOptions::new(Profile::named(profile).unwrap());
     options.verify_certificates = false;
     Fetcher::new(options).unwrap()
 }
@@ -1599,15 +1602,15 @@ async fn the_archive_records_http3() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// What profiles/firefox-160-macos.h3-0rtt.capture.json recorded: Firefox
-/// 160.0.1 loading /zero-rtt from a server whose session tickets allow
-/// early data. Its script asked until a response came over HTTP/3, let
-/// that connection time out, and went to /again, which Firefox sent in
-/// 0-RTT on a connection that resumed, over ::1.
-fn zero_rtt_recording() -> Vec<Capture> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../profiles/{ZERO_RTT_PROFILE}.h3-0rtt.capture.json"
-    ));
+/// What profiles/{profile}.h3-0rtt.capture.json recorded: Firefox loading
+/// /zero-rtt from a server whose session tickets allow early data. Its
+/// script asked until a response came over HTTP/3, let that connection
+/// time out, and went to /again on a connection that resumed, over ::1.
+/// Firefox 160.0.1 sent /again in 0-RTT; Firefox 161.0 once the handshake
+/// was done.
+fn zero_rtt_recording(profile: &str) -> Vec<Capture> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../profiles/{profile}.h3-0rtt.capture.json"));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -1623,9 +1626,13 @@ fn packets(q: &Quic) -> Vec<Vec<String>> {
 /// A Fetcher whose next connection to `server` over ::1 resumes the
 /// session its first one got, with the ticket that allows early data.
 async fn resuming(server: &mut Server) -> (Fetcher, String) {
+    resuming_as(server, ZERO_RTT_PROFILE).await
+}
+
+async fn resuming_as(server: &mut Server, profile: &str) -> (Fetcher, String) {
     let port = server.port;
     let origin = format!("https://localhost:{port}");
-    let fetcher = fetcher();
+    let fetcher = fetcher_as(profile);
     fetcher
         .use_http3(&origin, &format!("[::1]:{port}"))
         .unwrap();
@@ -1636,8 +1643,8 @@ async fn resuming(server: &mut Server) -> (Fetcher, String) {
 }
 
 #[tokio::test]
-async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_did() {
-    let recording = zero_rtt_recording();
+async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_160_did() {
+    let recording = zero_rtt_recording(ZERO_RTT_PROFILE);
     let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
     assert!(recorded.http3.as_ref().unwrap().early);
     let mut server = Server::start_h3_early(0, None, None).await.unwrap();
@@ -1652,6 +1659,40 @@ async fn a_resumed_connection_sends_a_get_in_0rtt_as_firefox_did() {
     );
     // The request rides the first flight, in the 0-RTT packet coalesced
     // after the second Initial, which fills that datagram as Firefox's did.
+    let (expected, actual) = (
+        recorded.quic.as_ref().unwrap(),
+        again.quic.as_ref().unwrap(),
+    );
+    assert_eq!(packets(actual), packets(expected));
+    assert_eq!(
+        actual.datagrams.iter().map(|d| d.size).collect::<Vec<_>>(),
+        expected
+            .datagrams
+            .iter()
+            .map(|d| d.size)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_connection_sends_its_get_after_the_handshake_as_firefox_161_did() {
+    // Under Happy Eyeballs the connection is made before the request
+    // claims it, so its first flight's 0-RTT packet carries only the
+    // control and QPACK streams, and /again goes once the handshake is
+    // done.
+    let recording = zero_rtt_recording(PROFILE);
+    let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
+    assert!(!recorded.http3.as_ref().unwrap().early);
+    let mut server = Server::start_h3_early(0, None, None).await.unwrap();
+    let (fetcher, origin) = resuming_as(&mut server, PROFILE).await;
+    let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
+    assert_eq!((response.status, response.version), (200, "HTTP/3"));
+    let again = server.next().await.unwrap();
+    assert!(resumed(&again));
+    assert!(
+        !again.http3.as_ref().unwrap().early,
+        "the request waited for the handshake"
+    );
     let (expected, actual) = (
         recorded.quic.as_ref().unwrap(),
         again.quic.as_ref().unwrap(),
@@ -2013,20 +2054,33 @@ fn qpack_capacities(http3: &netweir_fingerprint::Http3) -> Vec<u64> {
 }
 
 #[tokio::test]
-async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_did() {
-    // profiles/{ZERO_RTT_PROFILE}.h3-0rtt-qpack.capture.json: Firefox 160.0.1 on
-    // /zero-rtt against a server that takes 0-RTT and offers a
-    // 64 KiB table with 100 blocked streams. Firefox's neqo keeps the server's SETTINGS
-    // in its resumption token and fills the table in 0-RTT, as Netweir's
-    // neqo does with Firefox's settings.
+async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_160_did() {
+    // Firefox 160.0.1's neqo keeps the server's SETTINGS in its resumption
+    // token and fills the table in 0-RTT, as Netweir's neqo does with
+    // Firefox's settings.
+    resumed_qpack_as(ZERO_RTT_PROFILE, true).await;
+}
+
+#[tokio::test]
+async fn a_resumed_connection_uses_the_qpack_table_as_firefox_161_did() {
+    // Firefox 161.0 sent /again once the handshake was done, still using
+    // the table as the resumption token's SETTINGS allowed.
+    resumed_qpack_as(PROFILE, false).await;
+}
+
+/// Holds `profile`'s /again on a resumed connection to
+/// profiles/{profile}.h3-0rtt-qpack.capture.json: Firefox on /zero-rtt
+/// against a server that takes 0-RTT and offers a 64 KiB table with 100
+/// blocked streams. `early`: whether /again went in 0-RTT.
+async fn resumed_qpack_as(profile: &str, early: bool) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../profiles/{ZERO_RTT_PROFILE}.h3-0rtt-qpack.capture.json"
+        "../../profiles/{profile}.h3-0rtt-qpack.capture.json"
     ));
     let recording: Vec<Capture> =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let recorded = recording.iter().position(|c| c.path == "/again").unwrap();
     let want = recording[recorded].http3.as_ref().unwrap();
-    assert!(want.early, "the recording's /again went in 0-RTT");
+    assert_eq!(want.early, early, "the recording's /again");
     let offer = netweir_fingerprint::QpackOffer {
         capacity: 65536,
         blocked_streams: 100,
@@ -2034,15 +2088,15 @@ async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_did() {
     let mut server = Server::start_h3_early_offering(0, None, None, Some(offer))
         .await
         .unwrap();
-    let (fetcher, origin) = resuming(&mut server).await;
+    let (fetcher, origin) = resuming_as(&mut server, profile).await;
     fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
     let again = server.next().await.unwrap();
     assert!(resumed(&again));
     let got = again.http3.as_ref().unwrap();
-    assert!(got.early, "the GET went in 0-RTT");
+    assert_eq!(got.early, early, "the GET");
     let refers = |h: &netweir_fingerprint::Http3| {
         h.field_section.as_ref().unwrap().required_insert_count > 0
     };
-    assert_eq!(refers(got), refers(want), "refers to the table in 0-RTT");
-    assert_eq!(qpack_capacities(got), qpack_capacities(want), "in 0-RTT");
+    assert_eq!(refers(got), refers(want), "refers to the table");
+    assert_eq!(qpack_capacities(got), qpack_capacities(want));
 }
