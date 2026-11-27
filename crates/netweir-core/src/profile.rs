@@ -119,6 +119,12 @@ pub struct Profile {
     /// The GET after a form submission is answered with a redirect.
     #[serde(default)]
     pub after_form_redirect: Option<Shape>,
+    /// The order of a request that carries a login, for a browser that
+    /// orders those differently from its others (Safari): the names it
+    /// lists in its order, then the rest in theirs. Not for a redirect,
+    /// whose order is its own.
+    #[serde(default)]
+    pub login_header_order: Vec<String>,
     /// How the browser sends HTTP/3, for a profile netweir can send it
     /// with.
     #[serde(default)]

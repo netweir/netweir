@@ -527,9 +527,13 @@ recording.
 A login goes where the browser puts it. Chrome 157 and Firefox 160 were
 recorded holding an HTTP login and sending it with a navigation, a form, a
 script's request and an image; Netweir's `Authorization` header lands in
-the same place in each, and the same test checks it. Safari's place isn't
-recorded yet, so with `profile="safari"` it goes after Safari's own
-headers. And `verify=False` or a CA file of your own only changes what
+the same place in each, and the same test checks it. Safari 27.2 was
+recorded too, logged in by a page's script, since a login in the address
+brings up its prompt: with a login it puts `Authorization` after
+`Sec-Fetch-Dest` and moves its other headers round it, over HTTP/1.1,
+HTTP/2 and HTTP/3, and Netweir does the same. That test holds the order
+of the headers, not the navigation's `Sec-Fetch-*` values, which were a
+script's. And `verify=False` or a CA file of your own only changes what
 Netweir accepts from the server, never what it sends: a test holds both
 handshakes to the browser's recording.
 

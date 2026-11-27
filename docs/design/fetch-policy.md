@@ -232,9 +232,12 @@ for a line about it.
 
 - Digest and other challenge schemes aren't supported: Basic is sent up
   front, and a 401 asking for Digest is returned as the page.
-- Safari's place for Authorization isn't recorded: Safari can only be
-  driven with no other Safari window open. Its profile sends it after its
-  own headers until it is. The capture server's `/auth` page is ready for
-  it.
+- Safari's place for Authorization after a typed redirect isn't
+  recorded. Its login was recorded by script (`/auth-xhr`, since a login
+  in the address brings up Safari's prompt): on a navigation, an image, a
+  script's request, a form and the GET after the form's redirect
+  (`profiles/safari-27-macos.auth-script*.capture.json`), which the
+  profile follows. After a redirect from a typed address it still sends
+  Authorization after Safari's own headers.
 - A CA file replaces the bundled roots rather than adding to them, as in
   requests; a crawl that needs both should put both in the file.

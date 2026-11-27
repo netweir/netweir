@@ -32,6 +32,32 @@ headers = [
 cookies_newest_first = true
 remembers_http1 = true
 
+# With a login, Safari 27.2 sent its navigations, images, script requests
+# and forms in one order, over HTTP/1.1, HTTP/2 and HTTP/3 alike
+# (safari-27-macos.auth*.capture.json): Authorization after Sec-Fetch-Dest,
+# and the rest moved round it. Cookie, which none of those carried, is
+# where Safari's other requests put it. After a redirect the order is its
+# own: [after_form_redirect] has Authorization where it was recorded, and
+# after a typed redirect, which wasn't, it goes after Safari's headers.
+login_header_order = [
+    "Host",
+    "Accept",
+    "Content-Type",
+    "Sec-Fetch-Site",
+    "Origin",
+    "Content-Length",
+    "Sec-Fetch-Mode",
+    "User-Agent",
+    "Referer",
+    "Sec-Fetch-Dest",
+    "Authorization",
+    "Accept-Language",
+    "Priority",
+    "Accept-Encoding",
+    "Cookie",
+    "Connection",
+]
+
 # After a redirect, Safari puts Accept first and Sec-Fetch-Dest later.
 redirect_header_order = [
     "Host",
@@ -221,6 +247,7 @@ headers = [
     ["Host", ""],
     ["Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
     ["Sec-Fetch-Site", ""],
+    ["Authorization", ""],
     ["Priority", "u=0, i"],
     ["Sec-Fetch-Mode", "navigate"],
     ["User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"],

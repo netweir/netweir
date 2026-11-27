@@ -647,6 +647,24 @@ document.body.append(img);
 fetch(o + "/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({q: "rust"})}).then(() => setTimeout(() => f.submit(), 500));
 </script>"#;
 
+/// The page `/auth-xhr` serves: its script logs in to `/auth` with the
+/// test login `ada:secret` through `XMLHttpRequest.open`, which a browser
+/// answers `/auth`'s 401 with as it is, where a login in the address can
+/// bring up a prompt (Safari's), and then goes to `/auth`, whose page sends
+/// its script request, image and form with the login the browser now
+/// holds. `?close` closes the TCP connection first, for a browser that
+/// moves to QUIC only on a new connection (Safari).
+const AUTH_XHR_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>auth</title>
+<script>
+const x = new XMLHttpRequest();
+x.open("GET", "/auth", true, "ada", "secret");
+x.onloadend = async () => {
+  if (location.search.includes("close")) await fetch("/close").catch(() => {});
+  location.href = "/auth";
+};
+x.send();
+</script>"#;
+
 /// What to answer a request with, from its path and query, and whether it
 /// carried Authorization.
 /// `s` with each `%XX` turned into its byte.
@@ -710,6 +728,10 @@ fn route(path: &str, authorized: bool) -> Answer {
         }
         ("/form-redirect", _) => {
             let page = html(&mut headers, FORM_REDIRECT_PAGE);
+            (200, headers, page)
+        }
+        ("/auth-xhr", _) => {
+            let page = html(&mut headers, AUTH_XHR_PAGE);
             (200, headers, page)
         }
         ("/auth", _) if !authorized => {

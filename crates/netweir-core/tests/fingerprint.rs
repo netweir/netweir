@@ -815,3 +815,124 @@ async fn logins_go_where_the_browser_puts_them() {
     }
     assert!(checked >= 4, "only {checked} auth recordings replayed");
 }
+
+/// What Safari sent once it held a login: Safari 27.2 on the capture
+/// server's `/auth-xhr`, whose script logs in with the test login through
+/// `XMLHttpRequest.open` (a login in the address brings up Safari's
+/// prompt instead) and then goes to `/auth`, whose page sends its script
+/// request, image and form. The requests with the login, as
+/// `login_requests` takes them from the other browsers' recordings: the
+/// navigation to `/auth` that carried it, then the page's own.
+fn safari_login_requests(recording: &[Capture]) -> Vec<Capture> {
+    let carries = |c: &Capture| {
+        c.headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    };
+    // The last /auth with the login: the script's answer to the 401 came
+    // first.
+    let navigation = recording
+        .iter()
+        .rev()
+        .find(|c| c.path == "/auth" && carries(c))
+        .expect("a visit to /auth with the login");
+    let mut out = vec![navigation.clone()];
+    for path in [
+        "/api",
+        "/picture.png",
+        "/redirect?to=/after-auth",
+        "/after-auth",
+    ] {
+        let c = recording.iter().find(|c| c.path == path).unwrap();
+        assert!(carries(c), "{path} was recorded without the login");
+        out.push(c.clone());
+    }
+    out
+}
+
+/// The names of `capture`'s headers in order, lowercase, without those
+/// that name the test server.
+fn header_names(capture: &Capture) -> Vec<String> {
+    headers_of(capture, &[])
+        .into_iter()
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect()
+}
+
+/// Safari puts Authorization after Sec-Fetch-Dest and moves the rest of a
+/// request round it, over HTTP/2 and HTTP/1.1 alike
+/// (profiles/safari-27-macos.auth-script*.capture.json). The navigation is
+/// sent as a link from the login page, as Safari's came from its script;
+/// only the order of the headers is compared, not their values, as the
+/// recorded navigation's Sec-Fetch-Site and Referer are a script's.
+#[tokio::test]
+async fn a_login_goes_where_safari_puts_it() {
+    let name = "safari-27-macos";
+    for http1 in [false, true] {
+        let scenario = if http1 {
+            ".auth-script.http1"
+        } else {
+            ".auth-script"
+        };
+        let recording = recorded(name, scenario).unwrap();
+        let expected = safari_login_requests(&recording);
+        let mut server = if http1 {
+            Server::start_http1(0).await
+        } else {
+            Server::start().await
+        }
+        .unwrap();
+        let fetcher = local_fetcher(name);
+        let login = recorded_login(&expected[0]);
+        let base = format!("https://localhost:{}", server.port);
+        let from = format!("{base}/auth-xhr");
+        let page = format!("{base}/auth");
+        let with_login = |mut outgoing: Outgoing| {
+            outgoing.policy.auth = Some(login.clone());
+            outgoing
+        };
+        let steps = [
+            ("/auth", with_login(Outgoing::link(from)), 1),
+            (
+                "/api",
+                with_login(Outgoing::fetch(
+                    "POST",
+                    Some(br#"{"q":"rust"}"#.to_vec()),
+                    Some("application/json".into()),
+                    Some(page.clone()),
+                )),
+                1,
+            ),
+            (
+                "/picture.png",
+                with_login(Outgoing::image(Some(page.clone()))),
+                1,
+            ),
+            (
+                "/redirect?to=/after-auth",
+                with_login(Outgoing::form(b"q=rust".to_vec(), None, Some(page.clone()))),
+                2,
+            ),
+        ];
+        let mut actual = Vec::new();
+        for (path, outgoing, requests) in steps {
+            let response = fetcher
+                .send(&format!("{base}{path}"), &outgoing, &[])
+                .await
+                .unwrap();
+            assert_eq!(response.status, 200, "{path}");
+            for _ in 0..requests {
+                actual.push(server.next().await.unwrap());
+            }
+        }
+        assert_eq!(expected.len(), actual.len(), "{scenario}");
+        for (e, a) in expected.iter().zip(&actual) {
+            assert_eq!(
+                header_names(a),
+                header_names(e),
+                "{scenario}: {} differs from Safari's",
+                e.path
+            );
+        }
+    }
+}

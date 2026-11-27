@@ -163,6 +163,8 @@ pub struct Fetcher {
     /// Header order for a navigation's first request, and after a redirect.
     navigation_order: Arc<Vec<String>>,
     redirect_order: Arc<Vec<String>>,
+    /// The order of a request with a login, if the profile has one.
+    login_order: Arc<Vec<String>>,
     /// https origins (`host:port`) that answered over HTTP/1.1, so get no
     /// HTTP/2-only headers.
     http1_hosts: Arc<Mutex<HashSet<String>>>,
@@ -1243,6 +1245,29 @@ pub fn masked(proxy: &str) -> String {
 /// Chrome follows at most 20 redirects.
 pub const MAX_REDIRECTS: u32 = 20;
 
+/// Whether the caller's headers carry a login.
+fn has_login(caller: &[(&str, HeaderName, HeaderValue)]) -> bool {
+    caller
+        .iter()
+        .any(|(_, n, _)| n == http::header::AUTHORIZATION)
+}
+
+/// `names` as the request's header order: those `first` lists, in its
+/// order, then the rest in theirs.
+fn ordered(names: &[String], first: &[String]) -> OrigHeaderMap {
+    let mut order = OrigHeaderMap::new();
+    let listed = |n: &str| first.iter().any(|f| f.eq_ignore_ascii_case(n));
+    for f in first {
+        if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(f)) {
+            order.insert(n.clone());
+        }
+    }
+    for n in names.iter().filter(|n| !listed(n)) {
+        order.insert(n.clone());
+    }
+    order
+}
+
 /// What a request's connection is doing, for [`telling_connects`]: a new
 /// one being made (DNS, TCP, a proxy's tunnel, TLS), made, or failed. A
 /// request on a connection already open goes out as it's sent, and is
@@ -1596,6 +1621,7 @@ impl Fetcher {
             http2_headers: Arc::new(http2_headers),
             navigation_order: Arc::new(profile.header_order(false)),
             redirect_order: Arc::new(profile.header_order(true)),
+            login_order: Arc::new(profile.login_header_order.clone()),
             http1_hosts: Arc::default(),
             jar,
             cookies: options.cookies,
@@ -2216,15 +2242,17 @@ impl Fetcher {
         } else {
             &self.navigation_order
         };
-        let mut order = OrigHeaderMap::new();
-        for name in base.iter() {
-            order.insert(name.clone());
-        }
+        let mut names: Vec<String> = base.iter().cloned().collect();
         for (raw, name, _) in caller {
             if !base.iter().any(|b| b.eq_ignore_ascii_case(name.as_str())) {
-                order.insert(raw.to_string());
+                names.push(raw.to_string());
             }
         }
+        let order = if !redirected && has_login(caller) {
+            ordered(&names, &self.login_order)
+        } else {
+            ordered(&names, &[])
+        };
         let mut request = self.client.get(uri.clone());
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
@@ -2308,7 +2336,7 @@ impl Fetcher {
             .map(|r| outgoing.furthest.max(Relation::between(r, target)));
         let method = wreq::Method::from_bytes(outgoing.method.as_bytes())
             .map_err(|_| FetchError::invalid(format!("bad method {:?}", outgoing.method)))?;
-        let mut order = OrigHeaderMap::new();
+        let mut names: Vec<String> = Vec::new();
         let client = match (&self.script_client, &self.image_client, outgoing.kind) {
             (Some(script), _, Kind::Fetch) => script,
             (_, Some(image), Kind::Image) => image,
@@ -2324,7 +2352,7 @@ impl Fetcher {
             if without == Some(name.as_str()) {
                 continue;
             }
-            order.insert(raw.clone());
+            names.push(raw.clone());
             let value = match name.as_str() {
                 // Host comes from the URL, Content-Length from the body and
                 // Cookie from the jar; here they only hold their places.
@@ -2381,12 +2409,12 @@ impl Fetcher {
                 .iter()
                 .any(|(k, _)| k.eq_ignore_ascii_case(name.as_str()))
             {
-                order.insert(raw.to_string());
+                names.push(raw.to_string());
             }
         }
         if self.expects_http2(uri) {
             for (raw, value) in &shape.http2_headers {
-                order.insert(raw.clone());
+                names.push(raw.clone());
                 let name = HeaderName::from_bytes(raw.to_ascii_lowercase().as_bytes())
                     .map_err(|_| FetchError::invalid(format!("bad header name {raw}")))?;
                 if !overridden(name.as_str()) {
@@ -2396,6 +2424,14 @@ impl Fetcher {
                 }
             }
         }
+        // A redirect keeps its own order, a login and all.
+        let redirect =
+            matches!(outgoing.kind, Kind::Navigate) && (outgoing.after_form || redirected);
+        let order = if !redirect && has_login(caller) {
+            ordered(&names, &self.login_order)
+        } else {
+            ordered(&names, &[])
+        };
         if self.remembers_http1 && uri.scheme_str() == Some("https") && !self.expects_http2(uri) {
             request = request.version(Version::HTTP_11);
         }

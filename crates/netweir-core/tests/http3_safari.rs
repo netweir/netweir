@@ -979,3 +979,120 @@ async fn a_small_qpack_table_is_filled_as_safaris_was() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_login_goes_where_safari_puts_it_over_http3() {
+    // profiles/safari-27-macos.auth-script.h3.capture.json: Safari 27.2 on
+    // /auth-xhr?close, which logs in with the test login by script
+    // (XMLHttpRequest.open; a login in the address brings up Safari's
+    // prompt), closes its TCP connection and goes to /auth over HTTP/3,
+    // whose page sends its script request, image and form. With the login,
+    // Authorization comes after Sec-Fetch-Dest and the rest moves round
+    // it, as over TCP. The navigation is sent as a link from the login
+    // page, and only the order of the headers is compared, not their
+    // values, as the recorded navigation's are a script's.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{PROFILE}.auth-script.h3.capture.json"
+    ));
+    let recording: Vec<Capture> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let carries = |c: &Capture| {
+        c.headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    };
+    let recorded = |path: &str| {
+        recording
+            .iter()
+            .rev()
+            .find(|c| c.protocol == "h3" && c.path == path && carries(c))
+            .unwrap_or_else(|| panic!("{path} isn't recorded over HTTP/3 with the login"))
+            .clone()
+    };
+    let names = |c: &Capture| -> Vec<String> {
+        c.headers
+            .iter()
+            .map(|(k, _)| k.to_ascii_lowercase())
+            .filter(|k| k != ":authority" && k != ":path")
+            .collect()
+    };
+    let login = {
+        let value = recorded("/api")
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let pair = data_encoding::BASE64
+            .decode(value.strip_prefix("Basic ").unwrap().as_bytes())
+            .unwrap();
+        let pair = String::from_utf8(pair).unwrap();
+        let (user, password) = pair.split_once(':').unwrap();
+        netweir_core::Auth::new(user, password, None)
+    };
+    let mut server = Server::start_h3(0, None).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{port}"))
+        .unwrap();
+    let from = format!("{origin}/auth-xhr?close");
+    let page = format!("{origin}/auth");
+    let with_login = |mut outgoing: Outgoing| {
+        outgoing.policy.auth = Some(login.clone());
+        outgoing
+    };
+    let steps = [
+        ("/auth", with_login(Outgoing::link(from)), 1),
+        (
+            "/api",
+            with_login(Outgoing::fetch(
+                "POST",
+                Some(br#"{"q":"rust"}"#.to_vec()),
+                Some("application/json".into()),
+                Some(page.clone()),
+            )),
+            1,
+        ),
+        (
+            "/picture.png",
+            with_login(Outgoing::image(Some(page.clone()))),
+            1,
+        ),
+        (
+            "/redirect?to=/after-auth",
+            with_login(Outgoing::form(b"q=rust".to_vec(), None, Some(page.clone()))),
+            2,
+        ),
+    ];
+    let mut sent = Vec::new();
+    for (path, outgoing, requests) in steps {
+        let response = fetcher
+            .send(&format!("{origin}{path}"), &outgoing, &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.status, response.version),
+            (200, "HTTP/3"),
+            "{path}"
+        );
+        for _ in 0..requests {
+            sent.push(server.next().await.unwrap());
+        }
+    }
+    let paths = [
+        "/auth",
+        "/api",
+        "/picture.png",
+        "/redirect?to=/after-auth",
+        "/after-auth",
+    ];
+    for (path, got) in paths.iter().zip(&sent) {
+        assert_eq!(
+            names(got),
+            names(&recorded(path)),
+            "{path} differs from Safari's"
+        );
+    }
+}
