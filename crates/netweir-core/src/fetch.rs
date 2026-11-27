@@ -358,6 +358,13 @@ struct Again {
     /// The TLS options of each connection after a failed one, if they
     /// aren't the profile's own.
     tls: Option<wreq::tls::TlsOptions>,
+    /// Whether a failed connection from an HTTPS record goes on to the
+    /// next one (PrepareConnInfoForRetry). With Happy Eyeballs
+    /// (`[http3] happy_eyeballs`), Firefox 161 resolves the records within
+    /// the connection attempt, and a failed one is only made again, on
+    /// the same route, when it was reset or closed (#436).
+    #[cfg(feature = "http3")]
+    records: bool,
 }
 
 /// `dispatch`, made again as Firefox makes a transaction again
@@ -1645,6 +1652,8 @@ impl Fetcher {
                     .then(|| profile.tls_options(false))
                     .transpose()
                     .map_err(|e| FetchError::invalid(e.to_string()))?,
+                #[cfg(feature = "http3")]
+                records: !profile.http3.as_ref().is_some_and(|h| h.happy_eyeballs),
             }),
             // Firefox never sends QUIC through a proxy (AltSvcCache::
             // UpdateAltServiceMapping refuses h3 behind one); nor does
@@ -2494,6 +2503,11 @@ impl Fetcher {
         sent: Option<&Sent>,
         view: Option<JarView>,
     ) -> Result<wreq::Response, FetchError> {
+        // With Happy Eyeballs, as if there were no record.
+        if !self.again.records {
+            let attempts = self.again.attempts;
+            return dispatch_again(request, order, sent, view, &self.again, false, attempts).await;
+        }
         let next = request.try_clone();
         let first = dispatch_again(
             request,
@@ -2620,6 +2634,9 @@ impl Fetcher {
                             && route.from.as_ref().is_some_and(|f| f.tcp.is_none()) =>
                     {
                         return match connecting.await {
+                            Ok(Err(e)) if !self.again.records => {
+                                self.after_failed(e, request, order, sent, view).await
+                            }
                             Ok(Err(e)) => {
                                 self.origin_again(e.into(), request, order, sent, view)
                                     .await
@@ -2883,6 +2900,19 @@ impl Fetcher {
                             Ok(Err(e)) if route.from.is_some() && reached(&e) => {
                                 let from = route.from.as_ref().expect("checked");
                                 let (tcp, _) = fallback.expect("a backup is made from it");
+                                // With Happy Eyeballs the backup's failure is the
+                                // request's: made again on its route if it was
+                                // reset or closed, else the end.
+                                // shortcut: Firefox runs QUIC again before each of
+                                // those connections; netweir goes straight to TCP.
+                                if !self.again.records {
+                                    if !handshake_broke(&e) {
+                                        return Err(e.into());
+                                    }
+                                    let left = self.again.attempts.saturating_sub(1);
+                                    return dispatch_again(tcp, order, sent, view, &self.again, true, left)
+                                        .await;
+                                }
                                 let after = from.after(from.attempts + 2);
                                 let going = Going {
                                     fetcher: self,
@@ -3200,6 +3230,16 @@ async fn send_from_records(
             ),
             Err(e) => {
                 let rejected = ech_rejected(&e);
+                // Happy Eyeballs: no other record after a failed one, but a
+                // reset or closed one is made again where it went.
+                if !again.records && rejected.is_none() {
+                    if handshake_broke(&e) && attempts < again.attempts {
+                        next = Next::To(to);
+                        retry = true;
+                        continue;
+                    }
+                    return Err(e.into());
+                }
                 Next::After(to, rejected, e.into())
             }
         };

@@ -7,7 +7,8 @@
 //! It serves DNS over HTTPS on 127.0.0.1:DOH_PORT (default 8053), which
 //! answers every name with 127.0.0.1 and an HTTPS record that offers h2
 //! and http/1.1 (or the ALPNs `ECH_CAPTURE_ALPN` lists, comma-separated)
-//! with an ECH configuration, and listens for TLS on
+//! with an ECH configuration (with a port, `ECH_CAPTURE_PORT`, if set),
+//! and listens for TLS on
 //! 127.0.0.1:TCP_PORT (default 8443), and on [::1] where it can. The ECH
 //! key, the configuration
 //! (`ech_config_list.hex`) and the DoH server's certificate
@@ -19,9 +20,13 @@
 //! Firefox uses ECH only with DNS over HTTPS. Point a profile at the DoH
 //! server with `network.trr.mode` 3, `network.trr.uri`
 //! `https://127.0.0.1:DOH_PORT/dns-query`, `network.trr.allow-rfc1918`
-//! true and `network.trr.confirmationNS` `skip`, trust `doh-cert.pem` in
-//! the profile's certificate database, and open
-//! `https://origin.test:TCP_PORT/`.
+//! true, `network.trr.confirmationNS` `skip` and `network.trr.useGET`
+//! false (this server answers POST only), and open
+//! `https://origin.test:TCP_PORT/`. Firefox 161 takes no self-signed
+//! certificate as a server's, even one trusted in the profile
+//! (MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT): put one a CA signed in DIR as
+//! `doh-cert.pem`, its PKCS #8 key as `doh-key.der`, and trust the CA in
+//! the profile's certificate database.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -148,6 +153,16 @@ fn answer(query: &[u8], ech: &[u8]) -> Option<Vec<u8>> {
             d.extend(1u16.to_be_bytes());
             d.extend((alpn.len() as u16).to_be_bytes());
             d.extend(&alpn);
+            // ECH_CAPTURE_PORT gives the record a port of its own, which
+            // gives it a routed host in Firefox.
+            if let Some(port) = std::env::var("ECH_CAPTURE_PORT")
+                .ok()
+                .and_then(|p| p.parse::<u16>().ok())
+            {
+                d.extend(3u16.to_be_bytes());
+                d.extend(2u16.to_be_bytes());
+                d.extend(port.to_be_bytes());
+            }
             // Without a configuration, the client sends ECH GREASE.
             if !ech.is_empty() {
                 d.extend(5u16.to_be_bytes());

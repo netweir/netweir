@@ -2167,7 +2167,8 @@ mod tests {
         // the origin's own host and port, so PrepareSVCBRecordsForRetry
         // finds nothing named like the failed connection: Firefox 160.0.1
         // made three connections for `. alpn=h2,http/1.1 ech=...`, its
-        // two entries and the first of them again (#436).
+        // two entries and the first of them again (#436), and so did
+        // Firefox 161.0 without Happy Eyeballs.
         let to = |host: &str, port, alpn: &str| Route {
             host: host.into(),
             port,

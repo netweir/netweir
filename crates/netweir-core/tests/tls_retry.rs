@@ -9,6 +9,13 @@
 //! tried again: security.tls.version.fallback-limit is TLS 1.3, so there
 //! is no version to fall back to. Recorded from Firefox 160.0.1 for #436.
 //! Chrome makes one connection either way.
+//!
+//! Firefox 161.0 does the same without Happy Eyeballs. With it, as
+//! Mozilla's happy-eyeballs-release-rollout has it in every release
+//! Firefox, the HTTPS records are part of the connection attempt, and
+//! PrepareConnInfoForRetry never runs: a failed connection from a record
+//! is made again only when it was reset or closed, where it went, with
+//! IS_RETRY. A failed fast fallback is the request's failure the same way.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -107,6 +114,14 @@ fn extensions(hello: &[u8]) -> Vec<u16> {
         at += 4 + u16::from_be_bytes([hello[at + 2], hello[at + 3]]) as usize;
     }
     out
+}
+
+/// firefox-161-macos with Happy Eyeballs on or off.
+#[cfg(feature = "http3")]
+fn firefox(happy_eyeballs: bool) -> Profile {
+    let mut profile = Profile::named("firefox-161-macos").unwrap();
+    profile.http3.as_mut().unwrap().happy_eyeballs = happy_eyeballs;
+    profile
 }
 
 fn fetcher(profile: &str) -> Fetcher {
@@ -214,12 +229,19 @@ enum Place {
 }
 
 /// The hellos of the first request to origin.test, whose one HTTPS record
-/// has `params` and whose every connection the front fails, that went by
-/// the record: the ones before it was in made one connection. A record
-/// with ECH makes hellos that name ech.com.
+/// has `params` and whose every connection the front fails as `then`
+/// says, that went by the record: the ones before it was in made one
+/// connection. A record with ECH makes hellos that name ech.com; with
+/// Happy Eyeballs, only those tell that the record was in.
 #[cfg(feature = "http3")]
-async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], place: Place) -> Vec<Vec<u8>> {
-    let (port, hellos) = front(|_| Then::Alert).await;
+async fn once_the_record_is_in(
+    params: &[(u16, Vec<u8>)],
+    place: Place,
+    profile: Profile,
+    then: Then,
+) -> Vec<Vec<u8>> {
+    let happy_eyeballs = profile.http3.as_ref().is_some_and(|h| h.happy_eyeballs);
+    let (port, hellos) = front(move |_| then).await;
     let mut params = params.to_vec();
     if place == Place::OwnPort {
         params.push((3, port.to_be_bytes().to_vec()));
@@ -228,7 +250,7 @@ async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], place: Place) -> Vec<V
     }
     let ech = params.iter().any(|p| p.0 == 5);
     let record = netweir_core::https_answer("origin.test", &[(1, ".", &params)], 300);
-    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    let mut options = FetchOptions::new(profile);
     options.verify_certificates = false;
     options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], port).into())];
     options.https_records.insert("origin.test".into(), record);
@@ -241,7 +263,7 @@ async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], place: Place) -> Vec<V
         // With ECH, a request whose own connection was under way when the
         // record came in made that one without it first.
         let with_ech = |h: &Vec<u8>| h.windows(7).any(|w| w == b"ech.com");
-        if made.len() > 1 && (!ech || made.iter().all(with_ech)) {
+        if (made.len() > 1 || happy_eyeballs && ech) && (!ech || made.iter().all(with_ech)) {
             return made;
         }
         assert!(
@@ -258,7 +280,8 @@ async fn once_the_record_is_in(params: &[(u16, Vec<u8>)], place: Place) -> Vec<V
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn a_failed_handshake_from_a_record_without_ech_goes_to_the_origin_once() {
-    let made = once_the_record_is_in(&[(1, b"\x02h2\x08http/1.1".to_vec())], Place::Origin).await;
+    let params = [(1, b"\x02h2\x08http/1.1".to_vec())];
+    let made = once_the_record_is_in(&params, Place::Origin, firefox(false), Then::Alert).await;
     assert_eq!(made.len(), 2);
     retried_as_firefox(&made);
 }
@@ -283,7 +306,7 @@ fn ech_config_list() -> Vec<u8> {
 #[tokio::test]
 async fn a_failed_handshake_with_ech_goes_through_the_records_alpns() {
     let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
-    let made = once_the_record_is_in(&params, Place::OwnPort).await;
+    let made = once_the_record_is_in(&params, Place::OwnPort, firefox(false), Then::Alert).await;
     assert_eq!(made.len(), 2);
     retried_as_firefox(&made);
 }
@@ -297,8 +320,32 @@ async fn a_failed_handshake_with_ech_goes_through_the_records_alpns() {
 #[tokio::test]
 async fn a_record_with_the_origins_port_is_tried_again_after_it_failed() {
     let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
-    let made = once_the_record_is_in(&params, Place::Origin).await;
+    let made = once_the_record_is_in(&params, Place::Origin, firefox(false), Then::Alert).await;
     assert_eq!(made.len(), 3);
+    retried_as_firefox(&made);
+}
+
+/// Firefox 161.0 with Happy Eyeballs, a record with ECH and the origin's
+/// port, and a server that fails the handshake with an alert: one
+/// connection, with ECH, and the error.
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn with_happy_eyeballs_a_record_that_failed_is_not_tried_again() {
+    let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
+    let made = once_the_record_is_in(&params, Place::Origin, firefox(true), Then::Alert).await;
+    assert_eq!(made.len(), 1);
+}
+
+/// The same with a server that resets the handshake: Firefox 161.0 made
+/// ten connections to the record's address, the first with
+/// compress_certificate, the rest without it, all with ECH
+/// (nsHttpTransaction::Restart).
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn with_happy_eyeballs_a_reset_record_is_made_again_where_it_went() {
+    let params = [(1, b"\x02h2\x08http/1.1".to_vec()), (5, ech_config_list())];
+    let made = once_the_record_is_in(&params, Place::Origin, firefox(true), Then::Reset).await;
+    assert_eq!(made.len(), 10);
     retried_as_firefox(&made);
 }
 
@@ -314,31 +361,55 @@ async fn a_record_with_the_origins_port_is_tried_again_after_it_failed() {
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn a_failed_fast_fallback_goes_on_over_tcp_as_firefox_does() {
-    let (port, hellos) = front(|_| Then::Alert).await;
-    let _quiet = std::net::UdpSocket::bind(("127.0.0.1", port)).unwrap();
+    let made = after_fast_fallback(firefox(false), Then::Alert, 3).await;
+    retried_as_firefox(&made);
+}
+
+/// With Happy Eyeballs, Firefox 161.0's fast fallback came 49 ms after
+/// QUIC as before, and its failure was the request's: one connection
+/// after an alert. After a reset, ten, the first with
+/// compress_certificate and the rest without.
+#[cfg(feature = "http3")]
+#[tokio::test]
+async fn with_happy_eyeballs_a_failed_fast_fallback_is_the_requests_failure() {
+    after_fast_fallback(firefox(true), Then::Alert, 1).await;
+    let made = after_fast_fallback(firefox(true), Then::Reset, 10).await;
+    retried_as_firefox(&made);
+}
+
+/// The TCP hellos of the first request to origin.test, whose h3 record
+/// with a port of its own goes unanswered over QUIC and whose TCP
+/// connections the front fails as `then` says, once it went over QUIC
+/// and made `connections` of them.
+#[cfg(feature = "http3")]
+async fn after_fast_fallback(profile: Profile, then: Then, connections: usize) -> Vec<Vec<u8>> {
+    let (port, hellos) = front(move |_| then).await;
+    let quiet = std::net::UdpSocket::bind(("127.0.0.1", port)).unwrap();
+    quiet.set_nonblocking(true).unwrap();
     let params = [
         (1, b"\x02h3\x02h2".to_vec()),
         (3, port.to_be_bytes().to_vec()),
     ];
     let record = netweir_core::https_answer("origin.test", &[(1, ".", &params)], 300);
-    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    let mut options = FetchOptions::new(profile);
     options.verify_certificates = false;
     options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], port).into())];
     options.https_records.insert("origin.test".into(), record);
     let fetcher = Fetcher::new(options).unwrap();
     let started = std::time::Instant::now();
     loop {
+        while quiet.recv(&mut [0; 2048]).is_ok() {}
         let before = hellos.lock().unwrap().len();
         let sent = std::time::Instant::now();
         fetcher.get("https://origin.test/", &[]).await.unwrap_err();
         let made = hellos.lock().unwrap()[before..].to_vec();
         // The first request's own connection may be under way before the
-        // record is in.
-        if made.len() == 3 {
-            retried_as_firefox(&made);
+        // record is in, and then it sends no QUIC.
+        let over_quic = quiet.recv(&mut [0; 2048]).is_ok();
+        if over_quic && made.len() == connections {
             // Not held for HTTP/3's handshake timeout.
             assert!(sent.elapsed() < Duration::from_secs(5));
-            return;
+            return made;
         }
         assert!(
             started.elapsed() < Duration::from_secs(20),

@@ -1320,7 +1320,8 @@ async fn a_fast_fallback_goes_to_the_best_record_without_h3() {
 
 #[tokio::test]
 async fn a_failed_tcp_record_goes_on_to_an_h3_record() {
-    // Both records have ECH. The h2 one comes first, and nothing listens
+    // Without Happy Eyeballs, which leaves a failed record the request's
+    // failure (tests/tls_retry.rs). Both records have ECH. The h2 one comes first, and nothing listens
     // on its port. HTTP/3 hasn't failed for the request, so Firefox's list
     // of records to go on to keeps the h3 one
     // (PrepareSVCBRecordsForRetry without NS_HTTP_DISALLOW_HTTP3), and the
@@ -1344,7 +1345,7 @@ async fn a_failed_tcp_record_goes_on_to_an_h3_record() {
         ech,
     ];
     let record = netweir_core::https_answer("origin.test", &[(1, ".", &h2), (2, ".", &h3)], 300);
-    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    let mut options = FetchOptions::new(without_happy_eyeballs(PROFILE));
     options.verify_certificates = false;
     options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], origin.port).into())];
     options.https_records.insert("origin.test".into(), record);
@@ -1415,6 +1416,7 @@ async fn closing() -> (u16, Arc<AtomicUsize>) {
 
 #[tokio::test]
 async fn a_request_from_records_makes_ten_connections_at_most() {
+    // Without Happy Eyeballs, which goes on to no other record.
     // network.http.request.max-attempts (10) bounds the whole request,
     // its HTTP/3 connection to a record included. The first record's TCP
     // connection is closed at once; the h3 record's port answers with
@@ -1447,7 +1449,7 @@ async fn a_request_from_records_makes_ten_connections_at_most() {
         records.push((3 + i as u16, target.as_str(), more.as_slice()));
     }
     let record = netweir_core::https_answer("origin.test", &records, 300);
-    let mut options = FetchOptions::new(Profile::named(PROFILE).unwrap());
+    let mut options = FetchOptions::new(without_happy_eyeballs(PROFILE));
     options.verify_certificates = false;
     options.resolve = vec![("origin.test".into(), ([127, 0, 0, 1], origin.port).into())];
     for target in &targets {

@@ -111,7 +111,10 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
   rollout, isn't ported. Firefox profiles send QUIC to the first address
   and race TCP on the backup timer, as Firefox did before it. Only what
   the race does to a resumed connection's first request is followed (see
-  0-RTT below).
+  0-RTT below), and what it does to a failed connection from an HTTPS
+  record (see HTTPS records above), except that Firefox tries QUIC again
+  before each connection it makes again. A server that rejects ECH, and
+  `h2` alternatives, weren't recorded with it.
 
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
@@ -209,11 +212,14 @@ default preferences; Chrome's rules are
   the host's name even for an IP address, which gets ECH GREASE but no
   `server_name`, and a second ClientHello after a HelloRetryRequest
   repeats the first one's ECH GREASE.
-  `profiles/firefox-160-macos.ech.capture.json` recorded Firefox
-  160.0.1's outer and inner ClientHellos, decrypted with a key
+  `profiles/firefox-161-macos.ech.capture.json` recorded Firefox
+  161.0's outer and inner ClientHellos, decrypted with a key
   `examples/ech_capture.rs` holds, for `maximum_name_length` 0 and 64
   and for cipher suites with ChaCha20-Poly1305 first and last, and its
-  ECH GREASE for a short and a long host name, 127.0.0.1 and ::1.
+  ECH GREASE for a short and a long host name, 127.0.0.1 and ::1. They
+  are Firefox 160.0.1's (`profiles/firefox-160-macos.ech.capture.json`)
+  but for what's drawn for each connection, with Happy Eyeballs on or
+  off.
   `tests/ech_tcp.rs` holds Netweir's to them: the same bytes but the
   randoms, key shares and encrypted payload, padding included. Since
   rounding to 32 bytes hides the name's length at those hosts, it also
@@ -246,7 +252,7 @@ default preferences; Chrome's rules are
   the origin's host and port has no routed host to compare, so the entry
   that failed is tried again (`nsHttpConnectionInfo`'s constructor):
   for `. alpn=h2,http/1.1 ech=...` Firefox 160.0.1 made three
-  connections. Such a record's connections go as the origin's do, with
+  connections, and so did Firefox 161.0 without Happy Eyeballs. Such a record's connections go as the origin's do, with
   no route of their own. Under the failed connection's name, an entry
   from a record that named no ALPN is left out as well
   (`SVCBRecord::GetSelectedAlpn` fails, `nsHttpTransaction.cpp:1227`).
@@ -259,7 +265,21 @@ default preferences; Chrome's rules are
   (`DnsAndConnectSocket::SetupConn`). An h3 record taken from the list
   gets its own HTTP/3 connection, with a fast fallback as above, and the
   request makes at most 10 connections in all
-  (`network.http.request.max-attempts`). An
+  (`network.http.request.max-attempts`). All of that is without Happy
+  Eyeballs. With it (`[http3] happy_eyeballs`, on in both Firefox
+  profiles for Mozilla's `happy-eyeballs-release-rollout`), Firefox 161.0
+  resolves the records within the connection attempt
+  (`HappyEyeballsConnectionAttempt`), and `PrepareConnInfoForRetry`
+  never runs: a failed connection from a record, or a failed fast
+  fallback, is the request's failure, made again only when it was reset
+  or closed, where it went, as without records (`IS_RETRY`, up to 10
+  connections, the ECH kept). For a record with ECH and the origin's
+  port it made one connection after an alert, ten after a reset; for a
+  fast fallback, one after an alert. After a reset each connection
+  again comes 50 ms after QUIC, which Firefox tries again first; Netweir
+  goes straight to TCP for those. A server that rejects ECH and sends
+  configurations to retry with, and `h2` alternatives, weren't recorded
+  with Happy Eyeballs, and go as without it. An
   http URL isn't upgraded to https from a record. Firefox's
   `network.dns.upgrade_with_https_rr` is on, but
   `nsHttpChannel::MaybeUseHTTPSRRForUpgrade` skips the upgrade unless TRR

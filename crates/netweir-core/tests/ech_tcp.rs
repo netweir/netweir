@@ -1,7 +1,9 @@
 //! A request over TCP with ECH from an HTTPS record must send Firefox's
-//! ClientHellos: profiles/firefox-160-macos.ech.capture.json recorded
-//! Firefox 160.0.1's outer and inner ones (examples/ech_capture.rs holds
-//! the ECH key, so the inner one is decrypted), and its ECH GREASE.
+//! ClientHellos: profiles/firefox-161-macos.ech.capture.json recorded
+//! Firefox 161.0's outer and inner ones (examples/ech_capture.rs holds
+//! the ECH key, so the inner one is decrypted), and its ECH GREASE. They
+//! are Firefox 160.0.1's (profiles/firefox-160-macos.ech.capture.json)
+//! but for what's drawn for each connection.
 //! Netweir's are recorded the same way here and held to it: every byte the
 //! same but what's drawn for each connection. Then a server holding the
 //! key must accept ECH and finish the handshake, with a HelloRetryRequest
@@ -43,7 +45,7 @@ struct Recording {
     inner: Vec<u8>,
 }
 
-/// What profiles/firefox-160-macos.ech.capture.json holds.
+/// What profiles/firefox-161-macos.ech.capture.json holds.
 struct Recorded {
     private: Vec<u8>,
     recordings: Vec<Recording>,
@@ -53,7 +55,7 @@ struct Recorded {
 
 fn recorded() -> Recorded {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../profiles/firefox-160-macos.ech.capture.json");
+        .join("../../profiles/firefox-161-macos.ech.capture.json");
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let field = |v: &serde_json::Value, name: &str| unhex(v[name].as_str().unwrap());
@@ -208,7 +210,7 @@ fn the_ech_client_hellos_over_tcp_are_firefoxs() {
             ech_open::hex(&list[45..45 + suites])
         );
         let config = &firefox.config_list[2..];
-        let ours = netweir_hello("firefox-160-macos", &firefox.config_list);
+        let ours = netweir_hello("firefox-161-macos", &firefox.config_list);
         assert_eq!(
             shape(&ours, false),
             shape(&firefox.outer, false),
@@ -334,8 +336,8 @@ fn nss_grease_plaintext_len(outer: &[u8], host: &str) -> usize {
 
 #[test]
 fn every_profile_that_asks_sends_nss_ech_grease() {
-    // Only firefox-160-macos has HTTP/3 and follows HTTPS records, so the
-    // older Firefox profiles never send a real ECH; what they all send is
+    // Only firefox-160-macos and firefox-161-macos have HTTP/3 and follow
+    // HTTPS records, so the older Firefox profiles never send a real ECH; what they all send is
     // ECH GREASE, and it has to be NSS's for each of them.
     let profiles = nss_inner_profiles();
     assert!(
@@ -418,9 +420,9 @@ fn proxied_hello_catcher() -> (String, mpsc::Receiver<Vec<u8>>) {
     (format!("http://127.0.0.1:{port}"), hellos)
 }
 
-/// A Fetcher with the Firefox 160 profile that goes through `proxy`.
+/// A Fetcher with the Firefox 161 profile that goes through `proxy`.
 fn proxied_fetcher(proxy: &str) -> Fetcher {
-    let mut options = FetchOptions::new(Profile::named("firefox-160-macos").unwrap());
+    let mut options = FetchOptions::new(Profile::named("firefox-161-macos").unwrap());
     options.verify_certificates = false;
     options.proxy = Some(proxy.to_string());
     Fetcher::new(options).unwrap()
@@ -571,7 +573,7 @@ fn accepted_handshake(
     config_list: &[u8],
     accepted: &mpsc::Receiver<Accepted>,
 ) -> Accepted {
-    let fetcher = fetcher("firefox-160-macos", "origin.test", port, Some(config_list));
+    let fetcher = fetcher("firefox-161-macos", "origin.test", port, Some(config_list));
     let runtime = tokio::runtime::Runtime::new().unwrap();
     for _ in 0..20 {
         let answer = runtime.block_on(fetcher.get(&format!("https://origin.test:{port}/"), &[]));
@@ -631,7 +633,7 @@ fn ech_grease_on_a_resumption_is_as_long_as_nss_makes_it() {
     let recorded = recorded();
     let firefox = &recorded.recordings[0];
     let (port, accepted) = ech_server(&recorded.private, &firefox.config_list[2..], None);
-    let fetcher = fetcher("firefox-160-macos", "origin.test", port, None);
+    let fetcher = fetcher("firefox-161-macos", "origin.test", port, None);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut resumed = 0;
     for _ in 0..4 {
@@ -710,7 +712,7 @@ fn ech_grease_is_the_same_in_the_second_client_hello() {
     let (server, accepted) =
         ech_server(&recorded.private, &firefox.config_list[2..], Some("P-384"));
     let (port, hellos) = hello_relay(server);
-    let fetcher = fetcher("firefox-160-macos", "origin.test", port, None);
+    let fetcher = fetcher("firefox-161-macos", "origin.test", port, None);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let answer = runtime.block_on(fetcher.get(&format!("https://origin.test:{port}/"), &[]));
     assert_eq!(answer.expect("answered").status, 200);
