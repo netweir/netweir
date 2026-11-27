@@ -781,12 +781,27 @@ async fn reload_loads_the_document_again_and_returns_its_response() {
     browser.close().await.unwrap();
 }
 
-/// A page Chrome won't keep in its back-forward cache, nor its HTTP
-/// cache: going back to it loads it again.
+/// A page Chrome won't keep in its HTTP cache. Chrome 158 can still keep
+/// it whole in its back-forward cache: see [`unkept`].
 fn uncached(body: &str) -> Reply {
     let mut r = html(body);
     r.headers.push(("Cache-Control", "no-store".into()));
     r
+}
+
+/// A page Chrome won't keep in its back-forward cache, nor its HTTP
+/// cache, so going back to it loads it again; the listener must live as
+/// long as the page. Chrome 158 keeps a page with an unload handler, and
+/// one sent with no-store, whole, but not one with a WebSocket open. The
+/// listener takes the connection and never answers, so the socket is
+/// still connecting when the page goes.
+fn unkept() -> (std::net::TcpListener, Reply) {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let page = uncached(&format!(
+        "<script>window.ws = new WebSocket('ws://{}/')</script>",
+        silent.local_addr().unwrap()
+    ));
+    (silent, page)
 }
 
 #[test]
@@ -815,11 +830,8 @@ async fn back_to_a_page_that_cant_be_reached_is_a_navigation_error() {
     let Some(browser) = browser().await else {
         return;
     };
-    // An unload handler keeps it out of the back-forward cache too.
-    let gone = serve(vec![(
-        "/a",
-        uncached("<script>addEventListener('unload', () => {})</script>"),
-    )]);
+    let (_silent, a_page) = unkept();
+    let gone = serve(vec![("/a", a_page)]);
     let stays = serve(vec![("/b", html("<p>b</p>"))]);
     let page = browser.new_page().await.unwrap();
     let a = format!("{}/a", gone.url);
@@ -875,7 +887,7 @@ async fn back_waits_for_its_own_navigation_not_one_the_page_made_meanwhile() {
     let Some(browser) = browser().await else {
         return;
     };
-    let mut slow = uncached("<script>addEventListener('unload', () => {})</script>");
+    let (_silent, mut slow) = unkept();
     slow.headers.push(("X-Delay-Ms", "600".into()));
     let server = serve(vec![
         ("/a", slow),
@@ -903,13 +915,8 @@ async fn a_history_step_that_never_commits_says_so_when_time_runs_out() {
     let Some(browser) = browser().await else {
         return;
     };
-    let server = serve(vec![
-        (
-            "/a",
-            uncached("<script>addEventListener('unload', () => {})</script>"),
-        ),
-        ("/b", html("<p>b</p>")),
-    ]);
+    let (_silent, a_page) = unkept();
+    let server = serve(vec![("/a", a_page), ("/b", html("<p>b</p>"))]);
     let page = browser.new_page().await.unwrap();
     page.goto(&format!("{}/a", server.url), WaitUntil::Load, None)
         .await
