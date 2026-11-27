@@ -157,6 +157,9 @@ async fn retries_with_the_servers_configurations(slow: Duration) {
     let (port, seen) = server(true, slow);
     let fetcher = fetcher(port);
     let started = Instant::now();
+    // What each fetch before the HTTP/3 answer came back with, so a
+    // failure says why it took more than one.
+    let mut before = Vec::new();
     loop {
         let answer = tokio::time::timeout(
             Duration::from_secs(5),
@@ -164,19 +167,23 @@ async fn retries_with_the_servers_configurations(slow: Duration) {
         )
         .await
         .expect("an answer in time");
-        if let Ok(answer) = answer
-            && answer.version == "HTTP/3"
-        {
-            break;
+        match answer {
+            Ok(answer) if answer.version == "HTTP/3" => break,
+            Ok(answer) => before.push(format!("answered over {}", answer.version)),
+            Err(e) => before.push(format!("failed: {e:?}")),
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "never answered over HTTP/3"
+            "never answered over HTTP/3; fetches: {before:?}"
         );
     }
     let seen = seen.lock().unwrap();
-    assert_eq!(seen.accepted, [true]);
-    assert_eq!(seen.ports.len(), 2, "one connection rejected, one accepted");
+    assert_eq!(seen.accepted, [true], "fetches before HTTP/3: {before:?}");
+    assert_eq!(
+        seen.ports.len(),
+        2,
+        "one connection rejected, one accepted; fetches before HTTP/3: {before:?}"
+    );
 }
 
 #[tokio::test]
