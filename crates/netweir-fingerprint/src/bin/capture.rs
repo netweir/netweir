@@ -26,7 +26,9 @@
 //! CAPACITY bytes and BLOCKED blocked streams (`Server::start_h3_qpack`),
 //! for a browser to open /qpack: each capture's `http3.encoder` and
 //! `http3.field_section` say what it put in the table and how each
-//! request used it; with `--early` too, on a server that takes 0-RTT. With `--http1` too, TCP offers only HTTP/1.1, which
+//! request used it. With `--early` too, the server also takes 0-RTT, to
+//! see whether a resumed connection fills the table before the server's
+//! SETTINGS come. With `--http1` too, TCP offers only HTTP/1.1, which
 //! Safari needs before it moves its requests to QUIC.
 
 #[tokio::main]
