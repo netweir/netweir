@@ -134,6 +134,27 @@ impl Server {
         .await
     }
 
+    /// Like `start_h3`, but its HTTP/3 offers clients the QPACK dynamic
+    /// table `offer` describes: each capture's `http3.encoder` holds the
+    /// client's encoder stream instructions so far, and
+    /// `http3.field_section` how its request's field section used them.
+    /// With `tcp_http1`, TCP offers only HTTP/1.1, as for a browser that
+    /// keeps to an HTTP/2 connection rather than move to QUIC (Safari).
+    pub async fn start_h3_qpack(
+        port: u16,
+        dir: Option<&Path>,
+        offer: crate::QpackOffer,
+        tcp_http1: bool,
+    ) -> io::Result<Server> {
+        let certificate = dir.map(lasting_certificate).transpose()?;
+        let alpn: &[&[u8]] = if tcp_http1 {
+            &[b"http/1.1"]
+        } else {
+            &[b"h2", b"http/1.1"]
+        };
+        Server::bind_offering(port, alpn, certificate, true, Early::No, true, Some(offer)).await
+    }
+
     /// Like `start_h3`, but listens for QUIC on 127.0.0.1 only, for a
     /// client that's to find nothing on ::1.
     pub async fn start_h3_ipv4(port: u16) -> io::Result<Server> {
@@ -263,6 +284,19 @@ impl Server {
         early: Early,
         ipv6: bool,
     ) -> io::Result<Server> {
+        Server::bind_offering(port, alpn, certificate, h3, early, ipv6, None).await
+    }
+
+    /// `bind_with`, its HTTP/3 offering `qpack`'s dynamic table if given.
+    async fn bind_offering(
+        port: u16,
+        alpn: &[&[u8]],
+        certificate: Option<(Vec<u8>, Vec<u8>)>,
+        h3: bool,
+        early: Early,
+        ipv6: bool,
+        qpack: Option<crate::QpackOffer>,
+    ) -> io::Result<Server> {
         let (listener, port, udp) = Server::listen(port, h3, ipv6).await?;
         let certificate = certificate.unwrap_or_else(|| {
             let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
@@ -294,7 +328,7 @@ impl Server {
             };
             let idle = hold.map(|_| EARLY_IDLE);
             let early = early != Early::No;
-            let quic = (early, idle, hold);
+            let quic = (early, idle, hold, qpack);
             listen_quic(v4, config.clone(), quic, connections.clone(), tx.clone())?;
             // A machine without IPv6 just doesn't get this one.
             if let Some(v6) = v6 {
@@ -475,6 +509,57 @@ const FETCH_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>fetch</t
 const IMAGE_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>image</title>
 <img src="/picture.png" alt="">"#;
 
+/// The page `/qpack` serves: its script asks until a response came over
+/// HTTP/3, then on that connection fetches /qpack/1 to /qpack/4 and loads
+/// two images, one after another, so a server offering a QPACK dynamic
+/// table sees how the browser fills it and refers to it over several
+/// requests. `?close` probes as `/zero-rtt` does.
+const QPACK_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>qpack</title>
+<script>
+(async () => {
+  const close = location.search.includes("close");
+  for (let i = 0; i < 50; i++) {
+    if (close) await fetch("/close").catch(() => {});
+    const seen = await (await fetch("/probe?" + i)).json();
+    if (seen.protocol === "h3") break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  for (let i = 1; i <= 4; i++) await fetch("/qpack/" + i);
+  for (let i = 1; i <= 2; i++) {
+    await new Promise(r => {
+      const img = new Image();
+      img.onload = img.onerror = r;
+      img.src = "/picture.png?" + i;
+    });
+  }
+  document.title = "done";
+})();
+</script>"#;
+
+/// The page `/qpack-nav?n=N` serves: it loads /picture.png?N, then
+/// after half a second closes its TCP connection with /close and goes on
+/// to `?n=N+1`, up to 6. A browser that keeps a page's own requests on
+/// HTTP/2 but moves a navigation to a new connection onto QUIC (Safari)
+/// sends its navigations over one QUIC connection this way.
+const QPACK_NAV_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>qpack</title>
+<script>
+(async () => {
+  const n = +(new URLSearchParams(location.search).get("n") || 0);
+  await new Promise(r => {
+    const img = new Image();
+    img.onload = img.onerror = r;
+    img.src = "/picture.png?" + n;
+  });
+  await new Promise(r => setTimeout(r, 500));
+  if (n >= 6) {
+    document.title = "done";
+    return;
+  }
+  await fetch("/close").catch(() => {});
+  location.href = "/qpack-nav?n=" + (n + 1);
+})();
+</script>"#;
+
 /// The page `/zero-rtt` serves: its script asks until a response came
 /// over HTTP/3, waits for that connection to time out, then goes to
 /// `/again`, whose request the browser may send in 0-RTT on the
@@ -607,6 +692,14 @@ fn route(path: &str, authorized: bool) -> Answer {
             let page = html(&mut headers, ZERO_RTT_PAGE);
             (200, headers, page)
         }
+        ("/qpack", _) => {
+            let page = html(&mut headers, QPACK_PAGE);
+            (200, headers, page)
+        }
+        ("/qpack-nav", _) => {
+            let page = html(&mut headers, QPACK_NAV_PAGE);
+            (200, headers, page)
+        }
         ("/image", _) => {
             let page = html(&mut headers, IMAGE_PAGE);
             (200, headers, page)
@@ -728,14 +821,16 @@ const EARLY_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
 /// what the socket received, and its HTTP/3 requests are answered as the
 /// TCP side answers them.
 /// `quic`: whether it takes 0-RTT, how long a connection with nothing on
-/// it lasts, and how long each datagram to the client is held back.
+/// it lasts, how long each datagram to the client is held back, and the
+/// QPACK dynamic table it offers.
 fn listen_quic(
     udp: std::net::UdpSocket,
     tls: rustls::ServerConfig,
-    (early, idle, hold): (
+    (early, idle, hold, qpack): (
         bool,
         Option<std::time::Duration>,
         Option<std::time::Duration>,
+        Option<crate::QpackOffer>,
     ),
     connections: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<Capture>,
@@ -788,7 +883,7 @@ fn listen_quic(
                 // a later connection's from the same address, as through a
                 // relay; what an unfinished one left is pushed out instead.
                 let early = early.then_some((&early_seen, &*secrets));
-                let _ = handle_quic(incoming, early, &seen, &connections, tx).await;
+                let _ = handle_quic(incoming, early, qpack, &seen, &connections, tx).await;
             });
         }
     });
@@ -821,6 +916,7 @@ impl rustls::KeyLog for EarlySecrets {
 async fn handle_quic(
     incoming: quinn::Incoming,
     early: Option<(&Seen, &EarlySecrets)>,
+    qpack: Option<crate::QpackOffer>,
     seen: &Seen,
     connections: &AtomicU64,
     tx: mpsc::UnboundedSender<Capture>,
@@ -893,7 +989,7 @@ async fn handle_quic(
             .get(&addr)
             .is_some_and(|d| quic::zero_rtt_streams(d, &secret).contains(&stream))
     };
-    let served = h3::serve(conn, |mut req| {
+    let served = h3::serve(conn, qpack, |mut req| {
         let pseudo = |name: &str| {
             req.headers
                 .iter()

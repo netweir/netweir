@@ -21,6 +21,13 @@
 //! (`Server::start_h3_early`): each capture's `http3.early` says whether
 //! its request came in 0-RTT. `--hold-ms N` holds each QUIC datagram to
 //! the browser back N ms, as a network would.
+//!
+//! `--qpack CAPACITY,BLOCKED` with `--h3` offers a QPACK dynamic table of
+//! CAPACITY bytes and BLOCKED blocked streams (`Server::start_h3_qpack`),
+//! for a browser to open /qpack: each capture's `http3.encoder` and
+//! `http3.field_section` say what it put in the table and how each
+//! request used it. With `--http1` too, TCP offers only HTTP/1.1, which
+//! Safari needs before it moves its requests to QUIC.
 
 #[tokio::main]
 async fn main() {
@@ -37,6 +44,17 @@ async fn main() {
         .nth(1)
         .and_then(|n| n.parse().ok())
         .map_or(std::time::Duration::ZERO, std::time::Duration::from_millis);
+    // `--qpack CAPACITY,BLOCKED`: the dynamic table offered.
+    let qpack = std::env::args()
+        .skip_while(|a| a != "--qpack")
+        .nth(1)
+        .and_then(|v| {
+            let (capacity, blocked) = v.split_once(',')?;
+            Some(netweir_fingerprint::QpackOffer {
+                capacity: capacity.parse().ok()?,
+                blocked_streams: blocked.parse().ok()?,
+            })
+        });
     let home = std::env::var_os("NETWEIR_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".netweir")))
@@ -44,6 +62,8 @@ async fn main() {
     let dir = home.join("capture");
     let mut server = if h3 && early {
         netweir_fingerprint::Server::start_h3_early(port, Some(&dir), Some(hold)).await
+    } else if let (true, Some(offer)) = (h3, qpack) {
+        netweir_fingerprint::Server::start_h3_qpack(port, Some(&dir), offer, http1).await
     } else if h3 {
         netweir_fingerprint::Server::start_h3(port, Some(&dir)).await
     } else {

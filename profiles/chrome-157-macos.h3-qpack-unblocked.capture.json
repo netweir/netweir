@@ -1,0 +1,5292 @@
+[
+  {
+    "connection": 1,
+    "request": 0,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ]
+      ],
+      "request_frames": [],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 94,
+            "name": "upgrade-insecure-requests",
+            "value": "1"
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "none",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "navigate",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-user",
+            "value": "?1",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "document",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=0, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/qpack"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "upgrade-insecure-requests",
+        "1"
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "sec-fetch-site",
+        "none"
+      ],
+      [
+        "sec-fetch-mode",
+        "navigate"
+      ],
+      [
+        "sec-fetch-user",
+        "?1"
+      ],
+      [
+        "sec-fetch-dest",
+        "document"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=0, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 1,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/probe?0",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/probe?0",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/probe?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 2,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/favicon.ico",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/favicon.ico",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/favicon.ico"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 3,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/1",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/1",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/qpack/1"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 4,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ],
+        [
+          984832,
+          "10753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/2",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/2",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/qpack/2"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 5,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ],
+        [
+          984832,
+          "10753d312c2069"
+        ],
+        [
+          984832,
+          "14753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/3",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/3",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/qpack/3"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 6,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ],
+        [
+          984832,
+          "10753d312c2069"
+        ],
+        [
+          984832,
+          "14753d312c2069"
+        ],
+        [
+          984832,
+          "18753d312c2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/qpack/4",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static",
+            "index": 29,
+            "name": "accept",
+            "value": "*/*"
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "empty",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "u=1, i",
+            "huffman_name": true,
+            "huffman_value": true
+          }
+        ]
+      }
+    },
+    "path": "/qpack/4",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/qpack/4"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "empty"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "u=1, i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 7,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ],
+        [
+          984832,
+          "10753d312c2069"
+        ],
+        [
+          984832,
+          "14753d312c2069"
+        ],
+        [
+          984832,
+          "18753d312c2069"
+        ],
+        [
+          984832,
+          "1c69"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/picture.png?1",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "i",
+            "huffman_name": true,
+            "huffman_value": false
+          }
+        ]
+      }
+    },
+    "path": "/picture.png?1",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png?1"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "i"
+      ]
+    ]
+  },
+  {
+    "connection": 1,
+    "request": 8,
+    "ja4": "q13d0313h3_55b375c5d22e_eb028bd37c08",
+    "client_hello": {
+      "legacy_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "extensions": [
+        17613,
+        57,
+        43,
+        65037,
+        51764,
+        27,
+        10,
+        51,
+        16,
+        13,
+        0,
+        4832,
+        45
+      ],
+      "server_name": "localhost",
+      "alpn": [
+        "h3"
+      ],
+      "supported_versions": [
+        772
+      ],
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        24
+      ],
+      "key_share_groups": [
+        4588,
+        29
+      ],
+      "signature_algorithms": [
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537,
+        513
+      ],
+      "cert_compression": [
+        2
+      ],
+      "alps": [
+        "h3"
+      ],
+      "psk_modes": [
+        1
+      ],
+      "ec_point_formats": [],
+      "record_size_limit": null,
+      "delegated_credentials": null,
+      "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f",
+      "grease_extension_lengths": [],
+      "grease_key_share_lengths": []
+    },
+    "protocol": "h3",
+    "http2": null,
+    "quic": {
+      "version": 1,
+      "dcid_len": 8,
+      "scid_len": 0,
+      "token": "",
+      "datagrams": [
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 1,
+              "packet_number_len": 1,
+              "frames": [
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 26,
+                  "length": 8
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 28
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1575,
+                  "length": 424
+                },
+                {
+                  "type": "crypto",
+                  "offset": 12,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 0,
+                  "length": 1
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1064,
+                  "length": 302
+                },
+                {
+                  "type": "crypto",
+                  "offset": 16,
+                  "length": 10
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1366,
+                  "length": 209
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 110
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 19
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 1,
+                  "length": 11
+                },
+                {
+                  "type": "crypto",
+                  "offset": 34,
+                  "length": 28
+                },
+                {
+                  "type": "ping"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "size": 1230,
+          "packets": [
+            {
+              "kind": "initial",
+              "size": 1230,
+              "packet_number": 2,
+              "packet_number_len": 2,
+              "frames": [
+                {
+                  "type": "crypto",
+                  "offset": 440,
+                  "length": 50
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "crypto",
+                  "offset": 568,
+                  "length": 4
+                },
+                {
+                  "type": "crypto",
+                  "offset": 533,
+                  "length": 35
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 572,
+                  "length": 492
+                },
+                {
+                  "type": "padding",
+                  "length": 64
+                },
+                {
+                  "type": "crypto",
+                  "offset": 62,
+                  "length": 199
+                },
+                {
+                  "type": "padding",
+                  "length": 51
+                },
+                {
+                  "type": "ping"
+                },
+                {
+                  "type": "padding",
+                  "length": 7
+                },
+                {
+                  "type": "crypto",
+                  "offset": 261,
+                  "length": 40
+                },
+                {
+                  "type": "padding",
+                  "length": 16
+                },
+                {
+                  "type": "crypto",
+                  "offset": 301,
+                  "length": 139
+                },
+                {
+                  "type": "padding",
+                  "length": 2
+                },
+                {
+                  "type": "crypto",
+                  "offset": 490,
+                  "length": 43
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transport_parameters": [
+        {
+          "id": 12583,
+          "value": "8001a00b",
+          "grease": false
+        },
+        {
+          "id": 12584,
+          "value": "4f5249474e4f4950",
+          "grease": false
+        },
+        {
+          "id": 15,
+          "value": "",
+          "grease": false
+        },
+        {
+          "id": 17,
+          "value": "00000001ea6a5a4a00000001",
+          "grease": false
+        },
+        {
+          "id": 3,
+          "value": "45c0",
+          "grease": false
+        },
+        {
+          "id": 32,
+          "value": "80010000",
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 4,
+          "value": "80f00000",
+          "grease": false
+        },
+        {
+          "id": 5,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": "80600000",
+          "grease": false
+        },
+        {
+          "id": 8,
+          "value": "4064",
+          "grease": false
+        },
+        {
+          "id": 9,
+          "value": "4067",
+          "grease": false
+        },
+        {
+          "id": 1,
+          "value": "80007530",
+          "grease": false
+        },
+        {
+          "id": 2765984709896214178,
+          "value": "cccf384eae13eaef7d16a2b83564c6",
+          "grease": true
+        }
+      ]
+    },
+    "http3": {
+      "streams": [
+        [
+          2,
+          0
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "settings": [
+        {
+          "id": 1,
+          "value": 65536,
+          "grease": false
+        },
+        {
+          "id": 6,
+          "value": 262144,
+          "grease": false
+        },
+        {
+          "id": 7,
+          "value": 100,
+          "grease": false
+        },
+        {
+          "id": 51,
+          "value": 1,
+          "grease": false
+        },
+        {
+          "id": 59733718807,
+          "value": 2413467776,
+          "grease": true
+        }
+      ],
+      "control_frames": [
+        [
+          84990297285,
+          ""
+        ],
+        [
+          984832,
+          "00753d302c2069"
+        ],
+        [
+          984832,
+          "04753d312c2069"
+        ],
+        [
+          984832,
+          "08753d312c2069"
+        ],
+        [
+          984832,
+          "0c753d312c2069"
+        ],
+        [
+          984832,
+          "10753d312c2069"
+        ],
+        [
+          984832,
+          "14753d312c2069"
+        ],
+        [
+          984832,
+          "18753d312c2069"
+        ],
+        [
+          984832,
+          "1c69"
+        ],
+        [
+          984832,
+          "2069"
+        ]
+      ],
+      "request_frames": [],
+      "encoder": [
+        {
+          "kind": "set_capacity",
+          "capacity": 65536
+        }
+      ],
+      "field_section": {
+        "required_insert_count": 0,
+        "base": 0,
+        "blocked": false,
+        "lines": [
+          {
+            "kind": "static",
+            "index": 17,
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "kind": "static_name",
+            "index": 0,
+            "name": ":authority",
+            "value": "localhost:18744",
+            "huffman_value": true
+          },
+          {
+            "kind": "static",
+            "index": 23,
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "kind": "static_name",
+            "index": 1,
+            "name": ":path",
+            "value": "/picture.png?2",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-platform",
+            "value": "\"macOS\"",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 95,
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\"",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-ch-ua-mobile",
+            "value": "?0",
+            "huffman_name": true,
+            "huffman_value": false
+          },
+          {
+            "kind": "static_name",
+            "index": 29,
+            "name": "accept",
+            "value": "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-site",
+            "value": "same-origin",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-mode",
+            "value": "no-cors",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "sec-fetch-dest",
+            "value": "image",
+            "huffman_name": true,
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 13,
+            "name": "referer",
+            "value": "https://localhost:18744/qpack",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 31,
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd",
+            "huffman_value": true
+          },
+          {
+            "kind": "static_name",
+            "index": 72,
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9",
+            "huffman_value": true
+          },
+          {
+            "kind": "literal",
+            "name": "priority",
+            "value": "i",
+            "huffman_name": true,
+            "huffman_value": false
+          }
+        ]
+      }
+    },
+    "path": "/picture.png?2",
+    "method": "GET",
+    "body": "",
+    "headers": [
+      [
+        ":method",
+        "GET"
+      ],
+      [
+        ":authority",
+        "localhost:18744"
+      ],
+      [
+        ":scheme",
+        "https"
+      ],
+      [
+        ":path",
+        "/picture.png?2"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "\"macOS\""
+      ],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Chromium\";v=\"157\", \"Not-A.Brand\";v=\"99\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "accept",
+        "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      ],
+      [
+        "sec-fetch-site",
+        "same-origin"
+      ],
+      [
+        "sec-fetch-mode",
+        "no-cors"
+      ],
+      [
+        "sec-fetch-dest",
+        "image"
+      ],
+      [
+        "referer",
+        "https://localhost:18744/qpack"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "accept-language",
+        "en-US,en;q=0.9"
+      ],
+      [
+        "priority",
+        "i"
+      ]
+    ]
+  }
+]

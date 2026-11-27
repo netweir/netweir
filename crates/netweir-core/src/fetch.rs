@@ -447,6 +447,7 @@ struct Shapes {
     link: Option<Shape>,
     form: Option<Shape>,
     fetch: Option<Shape>,
+    fetch_without_body: Option<Shape>,
     image: Option<Shape>,
     after_form_redirect: Option<Shape>,
 }
@@ -1605,6 +1606,7 @@ impl Fetcher {
                 link: profile.link.clone(),
                 form: profile.form.clone(),
                 fetch: profile.fetch.clone(),
+                fetch_without_body: profile.fetch_without_body.clone(),
                 image: profile.image.clone(),
                 after_form_redirect: profile.after_form_redirect.clone(),
             }),
@@ -2275,6 +2277,9 @@ impl Fetcher {
         let shapes = &self.shapes;
         let (shape, what, without) = match outgoing.kind {
             Kind::Form => (&shapes.form, "a form submission", None),
+            Kind::Fetch if outgoing.body.is_none() && shapes.fetch_without_body.is_some() => {
+                (&shapes.fetch_without_body, "a script's request", None)
+            }
             Kind::Fetch => (&shapes.fetch, "a script's request", None),
             Kind::Image => (&shapes.image, "an image", None),
             Kind::Navigate if outgoing.after_form => (

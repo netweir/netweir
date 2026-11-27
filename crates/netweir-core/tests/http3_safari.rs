@@ -645,3 +645,123 @@ async fn a_get_sent_in_0rtt_is_seen_as_early_when_the_finished_overtakes_it() {
     assert!(resumed(&again));
     assert!(again.http3.as_ref().unwrap().early, "the GET went in 0-RTT");
 }
+
+/// What Safari 27.2 sent a server offering a QPACK dynamic table, recorded
+/// on the capture server's `/qpack` page (TCP offering HTTP/1.1 only, as Safari keeps to HTTP/2 rather than move to QUIC, and `?close`): `variant` "" offered
+/// 64 KiB and 100 blocked streams, "-unblocked" 64 KiB and none,
+/// "-1mib" 1 MiB and 100.
+fn qpack_recording(variant: &str) -> Vec<Capture> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../profiles/{PROFILE}.h3-qpack{variant}.capture.json"
+    ));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// What each recording offered.
+const QPACK_OFFERS: [(&str, u64, u64); 3] = [
+    ("", 65536, 100),
+    ("-unblocked", 65536, 0),
+    ("-1mib", 1 << 20, 100),
+];
+
+/// Over one HTTP/3 connection to a server offering `offer`: `page`
+/// navigated to, then each of `requests` from it, one after another,
+/// then a last fetch, once whatever the encoder still had to send is in.
+/// Returns what the server saw, in order.
+async fn qpack_run(
+    offer: netweir_fingerprint::QpackOffer,
+    page: &str,
+    requests: &[(&str, bool)],
+) -> Vec<Capture> {
+    let mut server = Server::start_h3_qpack(0, None, offer, false).await.unwrap();
+    let port = server.port;
+    let origin = format!("https://localhost:{port}");
+    let fetcher = fetcher();
+    fetcher
+        .use_http3(&origin, &format!("127.0.0.1:{port}"))
+        .unwrap();
+    let page = format!("{origin}{page}");
+    fetcher.get(&page, &[]).await.unwrap();
+    let script = Outgoing::fetch("GET", None, None, Some(page.clone()));
+    let image = Outgoing::image(Some(page.clone()));
+    for (path, is_image) in requests {
+        let outgoing = if *is_image { &image } else { &script };
+        let response = fetcher
+            .send(&format!("{origin}{path}"), outgoing, &[])
+            .await;
+        assert_eq!(response.unwrap().version, "HTTP/3", "{path}");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    fetcher
+        .send(&format!("{origin}/qpack/end"), &script, &[])
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..requests.len() + 2 {
+        seen.push(server.next().await.unwrap());
+    }
+    seen
+}
+
+/// The last request over HTTP/3 in `captures`.
+fn last_h3(captures: &[Capture]) -> &netweir_fingerprint::Http3 {
+    captures
+        .iter()
+        .rev()
+        .find(|c| c.protocol == "h3")
+        .and_then(|c| c.http3.as_ref())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn requests_use_a_servers_qpack_table_as_safaris_did() {
+    // The quiche fork's Mode::Safari. Safari's first request over HTTP/3,
+    // the probe, went before the server's SETTINGS, as Netweir's
+    // navigation does; neither counts toward what's sent twice. Its
+    // favicon went over another connection.
+    for (variant, capacity, blocked_streams) in QPACK_OFFERS {
+        let recording = qpack_recording(variant);
+        let offer = netweir_fingerprint::QpackOffer {
+            capacity,
+            blocked_streams,
+        };
+        let got = qpack_run(
+            offer,
+            "/qpack?close",
+            &[
+                ("/qpack/1", false),
+                ("/qpack/2", false),
+                ("/qpack/3", false),
+                ("/qpack/4", false),
+                ("/picture.png?1", true),
+                ("/picture.png?2", true),
+            ],
+        )
+        .await;
+        let differences = netweir_fingerprint::qpack_differences(
+            &recording,
+            &got,
+            &[
+                "/qpack/1",
+                "/qpack/2",
+                "/qpack/3",
+                "/qpack/4",
+                "/picture.png?1",
+                "/picture.png?2",
+            ],
+            6,
+        );
+        assert!(differences.is_empty(), "{variant}: {differences:#?}");
+        let (recorded, sent) = (last_h3(&recording), last_h3(&got));
+        assert_eq!(
+            netweir_fingerprint::qpack_capacity(sent),
+            netweir_fingerprint::qpack_capacity(recorded),
+            "{variant}: the table's capacity"
+        );
+        assert_eq!(
+            netweir_fingerprint::qpack_inserts(sent),
+            netweir_fingerprint::qpack_inserts(recorded),
+            "{variant}: entries inserted"
+        );
+    }
+}

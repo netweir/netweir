@@ -415,6 +415,66 @@ so HEAD, OPTIONS and TRACE follow Chrome's rule. Safari marks nothing
 broken, so nothing makes a session wait for confirmation, and nothing
 races a request that went in 0-RTT, as for Chrome.
 
+### QPACK's dynamic table
+
+A server can offer a QPACK dynamic table (RFC 9204) in its SETTINGS, and
+each browser fills it its own way. What it inserts, when, and how each
+request refers to it is on the wire for that server to see.
+
+The fingerprint server offers one when asked to
+(`Server::start_h3_qpack`, `capture --h3 --qpack CAPACITY,BLOCKED`). It
+reads the encoder stream, decodes field sections that refer to the
+table, acknowledges them on its decoder stream as QUICHE's
+`QpackDecoder::OnDecodingCompleted` does, and records each request's
+`http3.field_section` and the encoder's instructions so far in
+`http3.encoder`. The page `/qpack` asks until a response comes over
+HTTP/3, then on that connection fetches `/qpack/1` to `/qpack/4` and
+loads two images, one after another. Each browser was recorded three
+times, offered 64 KiB and 100 blocked streams, 64 KiB and none, and 1 MiB
+and 100: `profiles/*.h3-qpack.capture.json`, `*.h3-qpack-unblocked` and
+`*.h3-qpack-1mib`. Chrome for Testing 157.0.8103.79 was forced onto QUIC
+through the 50 ms relay, as for 0-RTT. Firefox 160.0.1 found HTTP/3 from
+Alt-Svc. Safari 27.2 needed TCP to offer HTTP/1.1 only (`--http1`): with
+HTTP/2 it kept the page's requests on that connection.
+
+What they did:
+
+- Chrome refers to nothing in its first request, which it sends before
+  the server's SETTINGS. From the next on it is QUICHE's `QpackEncoder`
+  (`qpack_encoder.cc`): a field already in the table is referred to; any
+  other is inserted, under a name from either table or a literal one, and
+  referred to at once, while a stream may still block; Base is always the
+  Required Insert Count. A string is Huffman-coded only where that's
+  shorter (`?0` and `"macOS"` aren't). With no blocked streams allowed it
+  inserts nothing.
+- Firefox is neqo: it inserts only fields whose name isn't in the static
+  table, each once, refers to them past Base in the request that inserts
+  them, and Huffman-codes every string. With no blocked streams allowed
+  it inserts nothing either.
+- Safari inserts a field the second time it sends it once the table can
+  be used. The first request on a connection goes before the server's
+  SETTINGS and doesn't count. The insert names the field from the static
+  table, else from the dynamic one, else literally, and the request
+  refers to the new entries past its Base, later requests from below it.
+  With no blocked streams allowed it still inserts, refers only to
+  entries the server has acknowledged, and leaves out an insert that
+  would name a dynamic entry.
+- All three set the table to 64 KiB when offered 1 MiB. For Safari that
+  isn't its own SETTINGS_QPACK_MAX_TABLE_CAPACITY, which is 16383.
+
+Each profile does the same. Firefox's neqo already did, with Firefox's
+settings. Chrome's and Safari's encoders are in netweir's quiche fork:
+`Mode::Chromium`, a port of `QpackEncoder`, its header table's draining
+index and its blocking manager, and `Mode::Safari`, written from the
+recordings. The tests in `http3.rs`, `http3_chrome.rs` and
+`http3_safari.rs` send each browser's requests in its order to a server
+offering each table and hold every request to the recording with
+`compare::qpack_differences`: the entries it inserted, its Required
+Insert Count and Base, and each field line's representation, name and
+Huffman flags. Chrome fetched a favicon between the probe and
+`/qpack/1`; Netweir doesn't, so Chrome's later requests are compared
+without their dynamic indices.
+
 ## Chrome through netweir's quiche
 
 Chrome's QUIC is Google's QUICHE, in C++, and building it into the
@@ -451,7 +511,9 @@ that branch, each ported from or checked against QUICHE's source:
 - QPACK: quiche dropped whatever a server put in the dynamic table, and
   Chrome offers servers a 64 KiB one, so the decoder now fills and reads
   it, holds back headers that wait for entries, and acknowledges them as
-  Chromium's `QpackDecoder` does.
+  Chromium's `QpackDecoder` does. The other way, the encoder is QUICHE's
+  `QpackEncoder`, so a server that offers a table sees it filled as
+  Chrome fills it (see QPACK's dynamic table, above).
 
 `crates/netweir-core/src/h3_chrome.rs` sets each connection up from the
 profile, the way Chromium's QUIC sets up its own: TLS 1.3 only, with no
@@ -497,10 +559,10 @@ and 4 to 20 PINGs in all, a first piece of 55 to 86 bytes).
   and ACK timing are quiche's, not Chrome's. Only Google's QUICHE would
   copy them, and it's the build cost above. A server that studies how a
   connection behaves under loss can tell.
-- QPACK the other way: Chrome's encoder may put request headers in a
-  server's dynamic table; quiche's encodes from the static table only.
-  The fingerprint server offers no table, so this isn't in the
-  recording, but a server that offers one sees the difference.
+- QPACK on a resumed connection: Chrome applies the SETTINGS it
+  remembers for the server and may insert into its table in 0-RTT.
+  Netweir waits for the SETTINGS, so a request in 0-RTT uses no table.
+  The 0-RTT recording's server offered none, so this isn't recorded.
 - Packet numbers after the second: Netweir writes them in at least two
   bytes, which is what Chrome's congestion window gives at the start;
   Chrome's own length then follows its window.
@@ -707,7 +769,10 @@ Exactly as Safari sent them, on every run:
   GREASE setting in that order, nothing after them;
 - each request: `:method :scheme :authority :path`, then the TCP
   profile's headers in its order, lowercase, without Host and
-  Connection, Priority as a header and no PRIORITY_UPDATE.
+  Connection, Priority as a header and no PRIORITY_UPDATE. A `fetch()`
+  without a body has a link's order, Sec-Fetch-Dest first, as every one
+  recorded over HTTP/3 did; the profile's `[fetch_without_body]` holds
+  it, and `[fetch]` the POST's.
 
 Random per connection, and checked to vary: where the transport
 parameters start (they're always ascending from it, wrapping round), the
@@ -733,9 +798,9 @@ What the recording can't show, Netweir has had to choose:
 - The idle timeout. Safari advertises none, so neither does Netweir,
   and the connection lasts as long as the server's timeout allows.
   Safari surely closes idle connections itself; when isn't recorded.
-- QPACK the other way. The fingerprint server offers no dynamic table,
-  so whether Safari's encoder uses one isn't recorded; quiche's encodes
-  from the static table.
+- QPACK beyond what was recorded. No recording filled Safari's table,
+  so eviction follows QUICHE's rule, and no string Safari sent coded no
+  shorter in Huffman, so Netweir codes those as quiche does.
 - 0-RTT for methods other than GET and POST, which weren't recorded:
   they follow Chrome's rule.
 - The image request over HTTP/1.1. Safari's `[image]` headers are

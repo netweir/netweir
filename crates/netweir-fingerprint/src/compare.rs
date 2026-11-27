@@ -1,5 +1,6 @@
 use crate::client_hello::{ClientHello, is_grease};
 use crate::h3::{Http3, is_h3_grease};
+use crate::qpack::EncoderInstruction;
 use crate::quic::{Frame, Quic};
 use crate::server::Capture;
 
@@ -530,6 +531,168 @@ fn portless(value: &str) -> String {
         }
     }
     out
+}
+
+/// How a request used the QPACK dynamic table its server offered, with
+/// the values left out, as they name the server and its port: the
+/// entries from absolute index `from` up to its Required Insert Count, as
+/// the encoder stream inserted them, then its Required Insert Count and
+/// Base and each field line's representation, name and Huffman flags.
+/// Those entries are the ones the server waited for before it read the
+/// section, so they're in whatever the timing; inserts nothing referred
+/// to yet show up with the request that first does. Dynamic indices,
+/// Required Insert Count and Base go in only with `indices`: a comparison
+/// leaves them out after a request it couldn't make, as one that filled
+/// the table would have moved them.
+pub fn qpack_shape(http3: &Http3, from: u64, indices: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let section = http3.field_section.as_ref();
+    let to = section.map_or(0, |s| s.required_insert_count);
+    let inserts = http3
+        .encoder
+        .iter()
+        .filter(|i| !matches!(i, EncoderInstruction::SetCapacity { .. }));
+    for instruction in inserts
+        .skip(from as usize)
+        .take(to.saturating_sub(from) as usize)
+    {
+        out.push(match instruction {
+            EncoderInstruction::InsertWithNameReference {
+                static_table,
+                index,
+                name,
+                huffman,
+                ..
+            } => {
+                let table = if *static_table { "static" } else { "dynamic" };
+                let index = if *static_table || indices {
+                    index.to_string()
+                } else {
+                    "_".into()
+                };
+                format!("insert {name} by {table} name {index}, huffman {huffman}")
+            }
+            EncoderInstruction::InsertWithLiteralName {
+                name,
+                huffman_name,
+                huffman_value,
+                ..
+            } => format!("insert {name} literally, huffman {huffman_name}/{huffman_value}"),
+            EncoderInstruction::Duplicate { index, name, .. } => {
+                let index = if indices {
+                    index.to_string()
+                } else {
+                    "_".into()
+                };
+                format!("duplicate {name} {index}")
+            }
+            EncoderInstruction::SetCapacity { .. } => unreachable!("filtered out"),
+        });
+    }
+    let Some(section) = section else {
+        out.push("no field section".into());
+        return out;
+    };
+    let (ric, base) = (section.required_insert_count, section.base);
+    out.push(if indices {
+        format!("required insert count {ric}, base {base}")
+    } else {
+        format!(
+            "refers to the table {}, past its base {}",
+            ric > 0,
+            base < ric
+        )
+    });
+    for line in &section.lines {
+        let dynamic = matches!(
+            line.kind.as_str(),
+            "dynamic" | "post_base" | "dynamic_name" | "post_base_name"
+        );
+        let index = match line.index {
+            Some(i) if indices || !dynamic => format!(" {i}"),
+            Some(_) => " _".into(),
+            None => String::new(),
+        };
+        out.push(format!(
+            "{}{index} {}, huffman {:?}/{:?}{}",
+            line.kind,
+            line.name,
+            line.huffman_name,
+            line.huffman_value,
+            if line.never_indexed {
+                ", never indexed"
+            } else {
+                ""
+            }
+        ));
+    }
+    out
+}
+
+/// How the requests at `paths` in `actual` used the server's QPACK
+/// table differently from those in `recorded` (see [`qpack_shape`]),
+/// each list in the order it was sent. The entries a request inserted
+/// are counted from the most any earlier request on its connection
+/// referred to. The first `exact` paths are compared with their indices.
+pub fn qpack_differences(
+    recorded: &[Capture],
+    actual: &[Capture],
+    paths: &[&str],
+    exact: usize,
+) -> Vec<String> {
+    /// Each path's capture over HTTP/3 and where its inserts start.
+    fn shapes<'a>(captures: &'a [Capture], paths: &[&str]) -> Vec<Option<(u64, &'a Http3)>> {
+        let mut high = std::collections::HashMap::<u64, u64>::new();
+        let mut out = vec![None; paths.len()];
+        for c in captures {
+            let Some(http3) = c.http3.as_ref().filter(|_| c.protocol == "h3") else {
+                continue;
+            };
+            let from = high.entry(c.connection).or_default();
+            if let Some(i) = paths.iter().position(|p| *p == c.path) {
+                out[i] = Some((*from, http3));
+            }
+            let ric = http3
+                .field_section
+                .as_ref()
+                .map_or(0, |s| s.required_insert_count);
+            *from = (*from).max(ric);
+        }
+        out
+    }
+    let (want, got) = (shapes(recorded, paths), shapes(actual, paths));
+    let mut out = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        match (want[i], got[i]) {
+            (Some((wf, w)), Some((gf, g))) => {
+                let (w, g) = (qpack_shape(w, wf, i < exact), qpack_shape(g, gf, i < exact));
+                if w != g {
+                    out.push(format!("{path}:\n  expected {w:#?}\n  got {g:#?}"));
+                }
+            }
+            (None, _) => out.push(format!("{path}: not over HTTP/3 in the recording")),
+            (_, None) => out.push(format!("{path}: not sent over HTTP/3")),
+        }
+    }
+    out
+}
+
+/// The capacity a QPACK encoder set the server's table to, if its
+/// instructions so far set one.
+pub fn qpack_capacity(http3: &Http3) -> Option<u64> {
+    http3.encoder.iter().find_map(|i| match i {
+        EncoderInstruction::SetCapacity { capacity } => Some(*capacity),
+        _ => None,
+    })
+}
+
+/// How many entries a QPACK encoder's instructions so far inserted.
+pub fn qpack_inserts(http3: &Http3) -> usize {
+    http3
+        .encoder
+        .iter()
+        .filter(|i| !matches!(i, EncoderInstruction::SetCapacity { .. }))
+        .count()
 }
 
 #[cfg(test)]

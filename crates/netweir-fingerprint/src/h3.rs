@@ -1,7 +1,8 @@
 //! Just enough HTTP/3 (RFC 9114) to record what a client sends on a
-//! connection and answer each request. The server advertises a QPACK
-//! dynamic table of 0 (RFC 9204), so every request's headers decode from
-//! the static table and literals alone.
+//! connection and answer each request. By default the server advertises
+//! a QPACK dynamic table of 0 (RFC 9204), so every request's headers
+//! decode from the static table and literals alone; offered one, it reads
+//! the client's encoder stream and records how each request used it.
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -11,12 +12,17 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::h2::{hpack_int, hpack_string};
+use crate::qpack::{EncoderInstruction, FieldSection, QpackOffer, Table};
 use crate::quic::varint;
 
 const DATA: u64 = 0x00;
 const HEADERS: u64 = 0x01;
 const SETTINGS: u64 = 0x04;
 const CONTROL_STREAM: u64 = 0x00;
+const QPACK_ENCODER_STREAM: u64 = 0x02;
+const QPACK_DECODER_STREAM: u64 = 0x03;
+const QPACK_MAX_TABLE_CAPACITY: u64 = 0x01;
+const QPACK_BLOCKED_STREAMS: u64 = 0x07;
 
 /// What the client said on the connection, plus the frames it put on one
 /// request's stream around HEADERS and DATA.
@@ -42,6 +48,14 @@ pub struct Http3 {
     /// client's 0-RTT packets, on a server that offers early data.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub early: bool,
+    /// On a server that offers a QPACK dynamic table: the client's encoder
+    /// stream instructions so far, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encoder: Vec<EncoderInstruction>,
+    /// On a server that offers a QPACK dynamic table: how this request's
+    /// field section was encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_section: Option<FieldSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +214,7 @@ const STATIC: [(&str, &str); 99] = [
 ];
 
 /// A QPACK (HPACK) integer with an `n`-bit prefix (RFC 7541 §5.1).
-fn prefix_int(data: &mut &[u8], n: u32) -> Option<u64> {
+pub(crate) fn prefix_int(data: &mut &[u8], n: u32) -> Option<u64> {
     let (&first, rest) = data.split_first()?;
     *data = rest;
     let max = (1u64 << n) - 1;
@@ -222,6 +236,11 @@ fn prefix_int(data: &mut &[u8], n: u32) -> Option<u64> {
 /// A string literal whose length has an `n`-bit prefix, with the Huffman
 /// flag in the bit above it.
 fn string(data: &mut &[u8], n: u32) -> Option<String> {
+    string_huffman(data, n).map(|(s, _)| s)
+}
+
+/// [`string`], and whether it was Huffman-coded.
+pub(crate) fn string_huffman(data: &mut &[u8], n: u32) -> Option<(String, bool)> {
     let huffman = data.first()? & (1 << n) != 0;
     let len = prefix_int(data, n)? as usize;
     let raw = data.get(..len)?;
@@ -233,10 +252,10 @@ fn string(data: &mut &[u8], n: u32) -> Option<String> {
     } else {
         raw.to_vec()
     };
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some((String::from_utf8_lossy(&bytes).into_owned(), huffman))
 }
 
-fn static_entry(index: u64) -> Option<(String, String)> {
+pub(crate) fn static_entry(index: u64) -> Option<(String, String)> {
     let (name, value) = STATIC.get(index as usize)?;
     Some((name.to_string(), value.to_string()))
 }
@@ -318,12 +337,22 @@ fn failed(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
+/// The server's side of a QPACK dynamic table it offers: the table, and
+/// how many entries are in it, for a request stream waiting on inserts.
+#[derive(Clone)]
+struct Dynamic {
+    table: Arc<Mutex<Table>>,
+    inserted: watch::Sender<u64>,
+}
+
 /// Reads one unidirectional stream: its type, and for the control stream
-/// every frame, into `state`. `settled` is told once SETTINGS is in.
+/// every frame, into `state`. `settled` is told once SETTINGS is in. With
+/// a table offered, the encoder stream's instructions go into it.
 async fn read_uni(
     mut recv: quinn::RecvStream,
     state: Arc<Mutex<Http3>>,
     settled: watch::Sender<bool>,
+    dynamic: Option<Dynamic>,
 ) -> io::Result<()> {
     let id = u64::from(recv.id());
     let mut buf = Vec::new();
@@ -342,6 +371,21 @@ async fn read_uni(
             state.streams.push((id, k));
             // Each stream is read on its own task, so they finish in any order.
             state.streams.sort_unstable();
+        }
+        if kind == Some(QPACK_ENCODER_STREAM)
+            && let Some(dynamic) = &dynamic
+        {
+            let (got, inserted) = {
+                let mut table = dynamic.table.lock().unwrap();
+                let got = table
+                    .read_instructions(&mut data)
+                    .ok_or_else(|| failed("bad QPACK encoder instruction"))?;
+                (got, table.inserted())
+            };
+            state.lock().unwrap().encoder.extend(got);
+            dynamic.inserted.send_replace(inserted);
+            buf = data.to_vec();
+            continue;
         }
         if kind != Some(CONTROL_STREAM) {
             buf.clear(); // QPACK and GREASE streams: only the type is kept
@@ -367,7 +411,15 @@ async fn read_uni(
 /// control stream with empty SETTINGS (no dynamic table), records the
 /// client's unidirectional streams, and answers each request stream with
 /// what `on_request` returns.
-pub async fn serve<F>(conn: quinn::Connection, mut on_request: F) -> io::Result<()>
+/// With `qpack`, SETTINGS offer that table, the server opens its QPACK
+/// encoder and decoder streams, and each request records how its field
+/// section used the table; a section that needs inserts not in yet waits
+/// for them, and the decoder stream acknowledges it as QUICHE's does.
+pub async fn serve<F>(
+    conn: quinn::Connection,
+    qpack: Option<QpackOffer>,
+    mut on_request: F,
+) -> io::Result<()>
 where
     F: FnMut(Request) -> (u16, Vec<(&'static str, String)>, Vec<u8>),
 {
@@ -384,19 +436,67 @@ where
             let mut control = conn.open_uni().await.map_err(failed)?;
             let mut opening = Vec::new();
             put_varint(&mut opening, CONTROL_STREAM);
-            put_frame(&mut opening, SETTINGS, &[]);
+            let mut settings = Vec::new();
+            if let Some(offer) = qpack {
+                put_varint(&mut settings, QPACK_MAX_TABLE_CAPACITY);
+                put_varint(&mut settings, offer.capacity);
+                put_varint(&mut settings, QPACK_BLOCKED_STREAMS);
+                put_varint(&mut settings, offer.blocked_streams);
+            }
+            put_frame(&mut opening, SETTINGS, &settings);
             control.write_all(&opening).await.map_err(failed)?;
             Ok::<_, io::Error>(control)
         })
     };
 
+    let dynamic = qpack.map(|offer| Dynamic {
+        table: Arc::new(Mutex::new(Table::new(offer.capacity))),
+        inserted: watch::channel(0).0,
+    });
+    // The server's QPACK streams, opened once the client's stream limits
+    // are in: its encoder stream stays empty, and what the decoder owes
+    // the client is written to its decoder stream as each section is read.
+    // Each with a sender told once the bytes are written, so a response
+    // goes out after the acknowledgments for its section, as QUICHE's
+    // decoder sends them while it decodes.
+    let (decoder_out, mut decoder_in) =
+        tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>();
+    let qpack_streams = qpack.map(|_| {
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            while conn.handshake_data().is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let mut encoder = conn.open_uni().await.map_err(failed)?;
+            encoder
+                .write_all(&[QPACK_ENCODER_STREAM as u8])
+                .await
+                .map_err(failed)?;
+            let mut decoder = conn.open_uni().await.map_err(failed)?;
+            decoder
+                .write_all(&[QPACK_DECODER_STREAM as u8])
+                .await
+                .map_err(failed)?;
+            while let Some((bytes, written)) = decoder_in.recv().await {
+                decoder.write_all(&bytes).await.map_err(failed)?;
+                let _ = written.send(());
+            }
+            Ok::<_, io::Error>((encoder, decoder))
+        })
+    });
+
     let state = Arc::new(Mutex::new(Http3::default()));
     let (settled, mut settings_in) = watch::channel(false);
     let uni = {
-        let (conn, state) = (conn.clone(), state.clone());
+        let (conn, state, dynamic) = (conn.clone(), state.clone(), dynamic.clone());
         tokio::spawn(async move {
             while let Ok(recv) = conn.accept_uni().await {
-                tokio::spawn(read_uni(recv, state.clone(), settled.clone()));
+                tokio::spawn(read_uni(
+                    recv,
+                    state.clone(),
+                    settled.clone(),
+                    dynamic.clone(),
+                ));
             }
         })
     };
@@ -409,17 +509,57 @@ where
                 continue;
             };
             let mut data = &raw[..];
-            let (mut fields, mut body, mut request_frames) = (None, Vec::new(), Vec::new());
+            let (mut block, mut body, mut request_frames) = (None, Vec::new(), Vec::new());
             while let Some((kind, payload)) = frame(&mut data) {
                 match kind {
-                    HEADERS if fields.is_none() => {
-                        fields = Some(decode_fields(payload).ok_or_else(|| failed("bad QPACK"))?)
-                    }
+                    HEADERS if block.is_none() => block = Some(payload),
                     DATA => body.extend_from_slice(payload),
                     _ => request_frames.push((kind, hex(payload))),
                 }
             }
-            let headers = fields.ok_or_else(|| failed("request without HEADERS"))?;
+            let block = block.ok_or_else(|| failed("request without HEADERS"))?;
+            let (headers, field_section) = match &dynamic {
+                None => (
+                    decode_fields(block).ok_or_else(|| failed("bad QPACK"))?,
+                    None,
+                ),
+                Some(dynamic) => {
+                    // Inserts the client wrote before this section can come
+                    // in the same packet, and the task reading the encoder
+                    // stream may not have run yet: a moment for it, as a
+                    // server reading its packets in order has them first.
+                    // Otherwise a section that refers to none of them would
+                    // find them missing, and the Insert Count Increment it
+                    // owes the client would wait for the next one.
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    let needed = dynamic
+                        .table
+                        .lock()
+                        .unwrap()
+                        .required_insert_count(block)
+                        .ok_or_else(|| failed("bad Required Insert Count"))?;
+                    let mut inserted = dynamic.inserted.subscribe();
+                    let blocked = *inserted.borrow() < needed;
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        inserted.wait_for(|&n| n >= needed),
+                    )
+                    .await;
+                    let (headers, section, acks) = dynamic
+                        .table
+                        .lock()
+                        .unwrap()
+                        .decode(stream, block, blocked)
+                        .ok_or_else(|| failed("bad QPACK"))?;
+                    if !acks.is_empty() {
+                        let (written, wait) = tokio::sync::oneshot::channel();
+                        if decoder_out.send((acks, written)).is_ok() {
+                            let _ = tokio::time::timeout(Duration::from_secs(2), wait).await;
+                        }
+                    }
+                    (headers, Some(section))
+                }
+            };
             // `/close?code=N`: answered, then the connection closed with
             // application error N.
             let close = headers
@@ -433,6 +573,7 @@ where
                 .await;
             let mut http3 = state.lock().unwrap().clone();
             http3.request_frames = request_frames;
+            http3.field_section = field_section;
             let (status, reply_headers, reply) = on_request(Request {
                 stream,
                 http3,
@@ -456,6 +597,10 @@ where
     };
     let result = served.await;
     uni.abort();
+    drop(decoder_out);
+    if let Some(streams) = qpack_streams {
+        streams.abort();
+    }
     // Held until here: closing the control stream would be a connection
     // error for the client.
     let control = if control.is_finished() {

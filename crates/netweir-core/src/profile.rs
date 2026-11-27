@@ -109,6 +109,10 @@ pub struct Profile {
     /// A page's own script sending a request with `fetch()`.
     #[serde(default)]
     pub fetch: Option<Shape>,
+    /// A `fetch()` that sends no body, for a browser that orders its
+    /// headers otherwise (Safari); `fetch` covers it when not given.
+    #[serde(default)]
+    pub fetch_without_body: Option<Shape>,
     /// An `<img>` on a page loading its picture.
     #[serde(default)]
     pub image: Option<Shape>,
@@ -282,6 +286,7 @@ impl Profile {
             &mut self.link,
             &mut self.form,
             &mut self.fetch,
+            &mut self.fetch_without_body,
             &mut self.image,
             &mut self.after_form_redirect,
         ]
