@@ -67,8 +67,8 @@ crawl = [
     "scrapling[fetchers]==0.5.1; python_version < '3.14' and sys_platform != 'emscripten'",
     "httpx==0.28.1",
     "selectolax==1.0.2",
-    "crawlee[parsel]==1.11.1",
-    "crawl4ai==0.9.5; sys_platform != 'emscripten'",
+    "crawlee[parsel]==1.11.3",
+    "crawl4ai==0.9.6; sys_platform != 'emscripten'",
 ]
 
 [tool.maturin]
