@@ -62,7 +62,7 @@ quiche = { git = "https://github.com/netweir/quiche", rev = "d6baf79e04798338c09
 # from CCADB. 1.0.11 holds exactly the 118 server-auth trust anchors of
 # NSS 3.132, the NSS Firefox 160 ships (docs/design/roots.md).
 chromium-roots = "0.1.2"
-webpki-root-certs = "=1.0.11"
+webpki-root-certs = "=1.0.12"
 # wreq's own response decompression, for responses over HTTP/3.
 tower-http = { version = "0.7.1", default-features = false, features = ["decompression-gzip", "decompression-br", "decompression-zstd", "decompression-deflate"], optional = true }
 http-body = { version = "1", optional = true }
