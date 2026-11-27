@@ -1386,8 +1386,14 @@ impl Page {
         self.loaded(loader, wait, deadline, url).await
     }
 
-    /// A navigation to `url` that failed with Chrome's `error`.
+    /// A navigation to `url` that failed with Chrome's `error`, or
+    /// PageClosed if closing the page ended it.
     fn navigation_error(&self, url: &str, error: &str) -> Error {
+        // Closing the page aborts its navigation, and Chrome 158 says so
+        // (net::ERR_ABORTED) before it says the page has gone.
+        if self.inner.closed.load(Ordering::Relaxed) {
+            return Error::PageClosed;
+        }
         Error::Navigation {
             url: url.to_string(),
             error: error.to_string(),
