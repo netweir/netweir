@@ -337,7 +337,21 @@ jobs:
       - if: matrix.target == 'x86_64-apple-darwin'
         run: arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
       - if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        name: MSVC's environment
+        # vcvars64.bat's environment, as ilammy/msvc-dev-cmd set it; that
+        # action still runs on Node 20 and has had no release since 2024.
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "no Visual Studio with the x64 C++ tools" }
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $before[$matches[1]] -ne $matches[2]) {
+              "$($matches[1])=$($matches[2])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            }
+          }
+          if ($LASTEXITCODE) { throw "vcvars64.bat failed" }
       - if: runner.os == 'Windows'
         name: MSYS2 and nsinstall
         shell: bash
