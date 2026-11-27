@@ -85,7 +85,8 @@ Exactly as Firefox sends them, on every run:
   `/again`. Firefox sent that GET in 0-RTT on the connection that
   resumed, in its first flight: the 0-RTT packet coalesced after the
   second Initial, filling that datagram. Netweir's first flight has the
-  same packets in the same datagrams, and the request comes in 0-RTT.
+  same packets in the same datagrams, and the request comes in 0-RTT,
+  with `happy_eyeballs` off as that profile was (see 0-RTT below).
   `profiles/firefox-161-macos.h3-0rtt.capture.json` recorded Firefox
   161.0 on the same page, seven times, twice with each datagram held back
   50 ms: its first flight's 0-RTT packet, about 110 bytes, carries only
@@ -395,8 +396,11 @@ Firefox's, as Netweir follows it:
   and QPACK streams. The request then claims the attempt
   (HappyEyeballsConnectionAttempt::Claim) and is dispatched once the
   connection is up. Requests taken after it still go in 0-RTT.
-  `firefox-161` sets it. `firefox-160` doesn't: its recording predates
-  the rollout, though a Firefox 160 that has the rollout behaves as 161.
+  The rollout's recipe starts on 2026-09-28 and targets every release
+  Firefox from 157 at 100%, so `firefox-160` and `firefox-161` both set
+  it. Firefox 160.0.1's `h3-0rtt` recordings were made with a profile the
+  rollout hadn't reached, and sent the request in 0-RTT; the tests that
+  hold Netweir to them build the profile with `happy_eyeballs` off.
 - It keeps the backup timer: if the handshake isn't done when that
   fires, TCP races the request as for a connection still being made
   (MaybeStartHttp3BackupTimer; Finish0RTT cancels it).

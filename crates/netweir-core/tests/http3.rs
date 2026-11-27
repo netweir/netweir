@@ -17,10 +17,11 @@ use netweir_core::{FetchOptions, Fetcher, Outgoing, Profile};
 use netweir_fingerprint::{Capture, Quic, Server, differences, transport_parameter_order_differs};
 
 const PROFILE: &str = "firefox-161-macos";
-/// The profile whose resumed connection sends the request it was made for
-/// in 0-RTT: Firefox 160, recorded before Mozilla's Happy Eyeballs rollout
-/// reached it. The 0-RTT tests run on it; Firefox 161, with Happy
-/// Eyeballs, sends that request once the handshake is done.
+/// Whose 0-RTT recordings show a resumed connection sending the request it
+/// was made for in 0-RTT: Firefox 160.0.1, recorded with a profile that
+/// Mozilla's happy-eyeballs-release-rollout hadn't reached. The 0-RTT
+/// tests run on this profile with `happy_eyeballs` off, as it was then
+/// (`without_happy_eyeballs`).
 const ZERO_RTT_PROFILE: &str = "firefox-160-macos";
 const PRE_SHARED_KEY: u16 = 0x0029;
 
@@ -31,11 +32,19 @@ fn recording() -> Vec<Capture> {
 }
 
 fn fetcher() -> Fetcher {
-    fetcher_as(PROFILE)
+    fetcher_with(Profile::named(PROFILE).unwrap())
 }
 
-fn fetcher_as(profile: &str) -> Fetcher {
-    let mut options = FetchOptions::new(Profile::named(profile).unwrap());
+/// `name` as a Firefox without the Happy Eyeballs rollout: a resumed
+/// connection sends the request it was made for in 0-RTT.
+fn without_happy_eyeballs(name: &str) -> Profile {
+    let mut profile = Profile::named(name).unwrap();
+    profile.http3.as_mut().unwrap().happy_eyeballs = false;
+    profile
+}
+
+fn fetcher_with(profile: Profile) -> Fetcher {
+    let mut options = FetchOptions::new(profile);
     options.verify_certificates = false;
     Fetcher::new(options).unwrap()
 }
@@ -1625,14 +1634,15 @@ fn packets(q: &Quic) -> Vec<Vec<String>> {
 
 /// A Fetcher whose next connection to `server` over ::1 resumes the
 /// session its first one got, with the ticket that allows early data.
+/// With ZERO_RTT_PROFILE as recorded without the rollout.
 async fn resuming(server: &mut Server) -> (Fetcher, String) {
-    resuming_as(server, ZERO_RTT_PROFILE).await
+    resuming_as(server, without_happy_eyeballs(ZERO_RTT_PROFILE)).await
 }
 
-async fn resuming_as(server: &mut Server, profile: &str) -> (Fetcher, String) {
+async fn resuming_as(server: &mut Server, profile: Profile) -> (Fetcher, String) {
     let port = server.port;
     let origin = format!("https://localhost:{port}");
-    let fetcher = fetcher_as(profile);
+    let fetcher = fetcher_with(profile);
     fetcher
         .use_http3(&origin, &format!("[::1]:{port}"))
         .unwrap();
@@ -1684,7 +1694,7 @@ async fn a_resumed_connection_sends_its_get_after_the_handshake_as_firefox_161_d
     let recorded = recording.iter().find(|c| c.path == "/again").unwrap();
     assert!(!recorded.http3.as_ref().unwrap().early);
     let mut server = Server::start_h3_early(0, None, None).await.unwrap();
-    let (fetcher, origin) = resuming_as(&mut server, PROFILE).await;
+    let (fetcher, origin) = resuming_as(&mut server, Profile::named(PROFILE).unwrap()).await;
     let response = fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
     assert_eq!((response.status, response.version), (200, "HTTP/3"));
     let again = server.next().await.unwrap();
@@ -2055,9 +2065,9 @@ fn qpack_capacities(http3: &netweir_fingerprint::Http3) -> Vec<u64> {
 
 #[tokio::test]
 async fn a_resumed_connection_uses_the_qpack_table_in_0rtt_as_firefox_160_did() {
-    // Firefox 160.0.1's neqo keeps the server's SETTINGS in its resumption
-    // token and fills the table in 0-RTT, as Netweir's neqo does with
-    // Firefox's settings.
+    // Firefox 160.0.1, recorded without the Happy Eyeballs rollout: its
+    // neqo keeps the server's SETTINGS in its resumption token and fills
+    // the table in 0-RTT, as Netweir's neqo does with Firefox's settings.
     resumed_qpack_as(ZERO_RTT_PROFILE, true).await;
 }
 
@@ -2088,7 +2098,12 @@ async fn resumed_qpack_as(profile: &str, early: bool) {
     let mut server = Server::start_h3_early_offering(0, None, None, Some(offer))
         .await
         .unwrap();
-    let (fetcher, origin) = resuming_as(&mut server, profile).await;
+    let as_recorded = if early {
+        without_happy_eyeballs(profile)
+    } else {
+        Profile::named(profile).unwrap()
+    };
+    let (fetcher, origin) = resuming_as(&mut server, as_recorded).await;
     fetcher.get(&format!("{origin}/again"), &[]).await.unwrap();
     let again = server.next().await.unwrap();
     assert!(resumed(&again));
