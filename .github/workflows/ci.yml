@@ -27,8 +27,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
@@ -36,10 +34,6 @@ jobs:
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # XPath without the HTML parser, as a crate with a tree of its own
-      # uses it: tests/tree.rs queries a tree written by hand.
-      - run: cargo clippy -p netweir-xpath --no-default-features --all-targets -- -D warnings
-      - run: cargo test -p netweir-xpath --no-default-features
       # The fuzz crates sit outside the workspace and build only in the
       # nightly fuzz run, so a manifest that cargo can't load fails there.
       - run: for m in crates/*/fuzz/Cargo.toml; do cargo metadata --no-deps --format-version 1 --manifest-path "$m" > /dev/null || exit 1; done
@@ -161,8 +155,6 @@ jobs:
       - if: runner.os == 'macOS'
         run: defaults write com.apple.dock autohide -bool true && killall Dock
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
@@ -270,8 +262,6 @@ jobs:
       - if: runner.os == 'macOS'
         run: sudo mdutil -i off / /System/Volumes/Data
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
@@ -405,8 +395,6 @@ jobs:
       - if: runner.os == 'macOS'
         run: sudo mdutil -i off / /System/Volumes/Data
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
@@ -430,8 +418,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable

@@ -105,8 +105,6 @@ faulthandler_timeout = 300
 [tool.ruff]
 line-length = 100
 
-extend-exclude = ["crates/netweir-html/tests/html5lib-tests"]
-
 [tool.ruff.format]
 # Examples in the docs line up their comments for reading.
 exclude = ["*.md"]

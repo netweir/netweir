@@ -559,8 +559,9 @@ still a page; check `page.status`.
 
 ## Why it's fast
 
-Netweir parses with its own HTML parser, written in Rust from the HTML
-Standard. It passes the html5lib tokenizer tests and the web-platform-tests
+Netweir parses with [Parsec](https://github.com/parsec-html/parsec), an
+HTML parser written in Rust from the HTML Standard by the same author. It
+passes the html5lib tokenizer tests and the web-platform-tests
 tree-construction tests that don't need JavaScript, and on 50 real pages it
 builds the same trees as lexbor, the C parser selectolax uses, about twice
 as fast. Then the whole query runs in Rust too, and Python gets a finished

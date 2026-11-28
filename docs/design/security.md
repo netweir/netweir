@@ -39,9 +39,10 @@ to small blocks with a `SAFETY:` comment saying why each holds.
 state in a page's scripts (`__NEXT_DATA__` and the like) is read by a
 parser for object and array literals; nothing in it is executed.
 
-**Fuzzing.** Eleven fuzz targets (the HTML parser, CSS, XPath, XML, JS
-literals, Markdown, chunks, text, editing and auto-extraction) run every
-night in CI for five minutes each.
+**Fuzzing.** Ten fuzz targets (HTML parsing, CSS, XPath, XML, JS literals,
+Markdown, chunks, text, editing and auto-extraction) run every night in
+CI for five minutes each. Parsec, the HTML parser, runs fuzzers of its
+own in its repository.
 
 **Response size.** A crawl reads at most 64 MiB of a response, counted
 after decompression, so a small compressed answer that unpacks to

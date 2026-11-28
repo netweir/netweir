@@ -1563,8 +1563,8 @@ name = "netweir-dom"
 version = "0.11.0"
 dependencies = [
  "memchr",
- "netweir-html",
- "netweir-xpath",
+ "parsec-web-core",
+ "parsec-xpath",
  "quick-xml",
  "regex",
  "serde",
@@ -1591,15 +1591,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netweir-html"
-version = "0.11.0"
-dependencies = [
- "memchr",
- "serde_json",
- "url",
-]
-
-[[package]]
 name = "netweir-py"
 version = "0.11.0"
 dependencies = [
@@ -1614,14 +1605,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "netweir-xpath"
-version = "0.11.0"
-dependencies = [
- "netweir-html",
- "stacker",
 ]
 
 [[package]]
@@ -1773,6 +1756,26 @@ dependencies = [
  "seq-macro",
  "snap",
  "twox-hash",
+]
+
+[[package]]
+name = "parsec-web-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "701853b417f7b439e40b815dfa055f182a83193a93e69634bbb8d74637032149"
+dependencies = [
+ "memchr",
+ "url",
+]
+
+[[package]]
+name = "parsec-xpath"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef41c661153625674142952712b0d3d2df155e820170c1962a3d1d7c9bd4b6a5"
+dependencies = [
+ "parsec-web-core",
+ "stacker",
 ]
 
 [[package]]

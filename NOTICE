@@ -5,12 +5,17 @@ netweir is licensed under the GNU Affero General Public License, version 3
 (see LICENSE). A commercial licence is available for anyone who cannot use
 AGPL-licensed code.
 
-netweir's HTML parser includes the table of named character references
+netweir's HTML parser and XPath are Parsec's parsec-web-core and
+parsec-xpath crates (https://github.com/parsec-html/parsec), Copyright 2026
+James Conway, licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
+
+Parsec's HTML parser includes the table of named character references
 from the HTML Standard (https://html.spec.whatwg.org/), © WHATWG (Apple,
 Google, Mozilla, Microsoft), licensed under the Creative Commons
 Attribution 4.0 International License.
 
-netweir's HTML parser also includes Unicode property tables generated from
+Parsec's HTML parser also includes Unicode property tables generated from
 the Unicode Character Database (https://www.unicode.org/ucd/),
 © 1991-2025 Unicode, Inc., licensed under the Unicode License v3
 (https://www.unicode.org/license.txt).

@@ -1,4 +1,0 @@
-# web-platform-tests selector cases that fail here, one per line, as
-# tests/wpt-selectors.rs names them. The runner fails on a failure that
-# isn't listed and on a listed case that passes. Empty: every case that
-# runs passes; what can't run is skipped with its reason.

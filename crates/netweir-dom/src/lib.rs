@@ -1,9 +1,10 @@
 //! HTML and XML parsing, CSS and XPath queries, and declarative extraction
 //! for netweir.
 //!
-//! HTML is parsed by netweir-html, Netweir's own parser for the HTML
-//! Standard. XML is read with quick-xml and built into the same kind of
-//! tree (see [`xml`]). [`Node`] is a borrowed handle into the tree.
+//! HTML is parsed by Parsec's parser for the HTML Standard
+//! (parsec-web-core, named netweir-html here). XML is read with quick-xml
+//! and built into the same kind of tree (see [`xml`]). [`Node`] is a
+//! borrowed handle into the tree.
 
 pub mod auto;
 mod cache;
@@ -26,7 +27,8 @@ pub mod xml;
 mod xpath;
 
 /// The HTML parser's name and version, as `netweir version` reports it.
-pub const PARSER: &str = concat!("netweir-html ", env!("CARGO_PKG_VERSION"));
+/// tests/parser_version.rs holds it to the version in Cargo.lock.
+pub const PARSER: &str = "parsec-web-core 0.3.0";
 
 pub use cache::{QUERY_CACHE_SIZE, QUERY_CACHE_TEXT};
 pub use document::{Content, Document, EditError, Node, NodeId, NodeKind, ParseTimeout, Reading};

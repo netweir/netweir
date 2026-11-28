@@ -33,8 +33,6 @@ jobs:
       TRIPLE: ${{ matrix.target }}-unknown-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       # The commit's time, for the wheel's timestamps and SBOM: two builds
       # of one commit then give the same wheel, byte for byte.
       - name: Pin build timestamps to the commit
@@ -76,8 +74,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       # The commit's time, for the wheel's timestamps and SBOM: two builds
       # of one commit then give the same wheel, byte for byte.
       - name: Pin build timestamps to the commit
@@ -116,8 +112,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       # The commit's time, for the wheel's timestamps and SBOM: two builds
       # of one commit then give the same wheel, byte for byte.
       - name: Pin build timestamps to the commit
@@ -192,8 +186,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       # The commit's time, for the wheel's timestamps and SBOM: two builds
       # of one commit then give the same wheel, byte for byte.
       - name: Pin build timestamps to the commit
