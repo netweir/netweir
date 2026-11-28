@@ -1761,24 +1761,24 @@ dependencies = [
 
 [[package]]
 name = "parsec-base"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac632a7958df529d50e7b36a6b880bd8d0e275f02a305c80c3a804f58b1e6d18"
+checksum = "4c8923f98fc413cff6f98a010f6db9515958e289cfe0d74eb878b425ff07c993"
 
 [[package]]
 name = "parsec-js"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3862dc4c6862274f28f04224806dcbca5a1dfb3c4dd2ef4bd9f08470aa98ba"
+checksum = "1ce2eb3c622114af86e3e0aefa1b73b7ea3a28a067c7fa5cd04ca336f858b013"
 dependencies = [
  "parsec-base",
 ]
 
 [[package]]
 name = "parsec-web-core"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "701853b417f7b439e40b815dfa055f182a83193a93e69634bbb8d74637032149"
+checksum = "02b6df567ae8ad42778f00eecd2795921bf46b87e522ac8a428652ce83189332"
 dependencies = [
  "memchr",
  "url",
@@ -1786,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "parsec-xpath"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef41c661153625674142952712b0d3d2df155e820170c1962a3d1d7c9bd4b6a5"
+checksum = "94c88f13c343fd2966e62b67edf5700f825c0d850731c56da2df2be9d1a9047e"
 dependencies = [
  "parsec-web-core",
  "stacker",

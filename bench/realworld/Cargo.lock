@@ -307,9 +307,9 @@ dependencies = [
 
 [[package]]
 name = "parsec-web-core"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "701853b417f7b439e40b815dfa055f182a83193a93e69634bbb8d74637032149"
+checksum = "02b6df567ae8ad42778f00eecd2795921bf46b87e522ac8a428652ce83189332"
 dependencies = [
  "memchr",
  "url",

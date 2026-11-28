@@ -28,7 +28,7 @@ mod xpath;
 
 /// The HTML parser's name and version, as `netweir version` reports it.
 /// tests/parser_version.rs holds it to the version in Cargo.lock.
-pub const PARSER: &str = "parsec-web-core 0.3.0";
+pub const PARSER: &str = "parsec-web-core 0.3.1";
 
 pub use cache::{QUERY_CACHE_SIZE, QUERY_CACHE_TEXT};
 pub use document::{Content, Document, EditError, Node, NodeId, NodeKind, ParseTimeout, Reading};

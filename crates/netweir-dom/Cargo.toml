@@ -10,10 +10,10 @@ rust-version.workspace = true
 [dependencies]
 # The HTML parser and XPath are Parsec's (https://github.com/parsec-html/parsec),
 # under the names netweir-html and netweir-xpath that the code uses.
-netweir-html = { package = "parsec-web-core", version = "0.3.0" }
-netweir-xpath = { package = "parsec-xpath", version = "0.3.0" }
+netweir-html = { package = "parsec-web-core", version = "0.3.1" }
+netweir-xpath = { package = "parsec-xpath", version = "0.3.1" }
 # Reads the state pages assign in their scripts, without running them.
-parsec-js = "0.3.0"
+parsec-js = "0.3.1"
 memchr = "2"
 quick-xml = "0.42"
 regex = "1"
