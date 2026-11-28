@@ -1999,6 +1999,19 @@ impl Routes {
             })
     }
 
+    /// Forgets the connection being made for `route` to `host`, so the
+    /// next request opens one of its own: a Happy Eyeballs attempt whose
+    /// transaction restarts is given up (HappyEyeballsConnectionAttempt::
+    /// EnterRestartTransaction, Abandon), and the restart makes another.
+    pub(crate) fn abandon(&self, route: &Route, host: &str) {
+        let ech = route.record.as_ref().and_then(Option::as_deref);
+        let key = connection_key(&route.partition, host, &route.alternative, ech);
+        self.connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+
     /// The ECH configurations the server that rejected `route`'s
     /// connection for `host` sent to retry with, if it sent any
     /// (SSL_ERROR_ECH_RETRY_WITH_ECH).
@@ -2847,6 +2860,19 @@ async fn run(
             }
             !gone
         });
+        // Under Happy Eyeballs, an attempt given up before its handshake
+        // is done goes without a word to the server (Abandon): Firefox
+        // 161.0 sent nothing more on one.
+        if happy_eyeballs
+            && !accepting
+            && *state.borrow() == State::Connecting
+            && streams.is_empty()
+            && waiting.is_empty()
+        {
+            // Given up, not failed: HTTP/3 isn't ruled out for it.
+            state.send_replace(State::Failed { exclude: false });
+            return;
+        }
         // The caller went and nothing is in flight: close as Firefox does
         // a connection it no longer needs, with H3_NO_ERROR.
         if !accepting && !closing && streams.is_empty() && waiting.is_empty() {

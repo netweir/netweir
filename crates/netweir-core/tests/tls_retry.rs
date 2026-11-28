@@ -361,7 +361,7 @@ async fn with_happy_eyeballs_a_reset_record_is_made_again_where_it_went() {
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn a_failed_fast_fallback_goes_on_over_tcp_as_firefox_does() {
-    let made = after_fast_fallback(firefox(false), Then::Alert, 3).await;
+    let (made, _, _) = after_fast_fallback(firefox(false), Then::Alert, 3).await;
     retried_as_firefox(&made);
 }
 
@@ -372,17 +372,30 @@ async fn a_failed_fast_fallback_goes_on_over_tcp_as_firefox_does() {
 #[cfg(feature = "http3")]
 #[tokio::test]
 async fn with_happy_eyeballs_a_failed_fast_fallback_is_the_requests_failure() {
-    after_fast_fallback(firefox(true), Then::Alert, 1).await;
-    let made = after_fast_fallback(firefox(true), Then::Reset, 10).await;
+    let (_, quic, _) = after_fast_fallback(firefox(true), Then::Alert, 1).await;
+    // The attempt is over, and its QUIC connection said nothing more.
+    assert_eq!(quic.len(), 1, "{quic:?}");
+    let (made, quic, took) = after_fast_fallback(firefox(true), Then::Reset, 10).await;
     retried_as_firefox(&made);
+    // Firefox 161.0 restarted the attempt after each reset: a QUIC
+    // connection of its own each time, its first flight and no more, and
+    // the TCP one 50 ms after it.
+    assert_eq!(quic.len(), 10, "{quic:?}");
+    assert!(quic.iter().all(|&n| n == quic[0]), "{quic:?}");
+    assert!(took >= Duration::from_millis(9 * 45), "{took:?}");
 }
 
 /// The TCP hellos of the first request to origin.test, whose h3 record
 /// with a port of its own goes unanswered over QUIC and whose TCP
 /// connections the front fails as `then` says, once it went over QUIC
-/// and made `connections` of them.
+/// and made `connections` of them; with the datagrams each QUIC
+/// connection sent, in the order they came, and how long the request took.
 #[cfg(feature = "http3")]
-async fn after_fast_fallback(profile: Profile, then: Then, connections: usize) -> Vec<Vec<u8>> {
+async fn after_fast_fallback(
+    profile: Profile,
+    then: Then,
+    connections: usize,
+) -> (Vec<Vec<u8>>, Vec<usize>, Duration) {
     let (port, hellos) = front(move |_| then).await;
     let quiet = std::net::UdpSocket::bind(("127.0.0.1", port)).unwrap();
     quiet.set_nonblocking(true).unwrap();
@@ -402,14 +415,21 @@ async fn after_fast_fallback(profile: Profile, then: Then, connections: usize) -
         let before = hellos.lock().unwrap().len();
         let sent = std::time::Instant::now();
         fetcher.get("https://origin.test/", &[]).await.unwrap_err();
+        let took = sent.elapsed();
         let made = hellos.lock().unwrap()[before..].to_vec();
+        let mut quic: Vec<(u16, usize)> = Vec::new();
+        while let Ok((_, from)) = quiet.recv_from(&mut [0; 2048]) {
+            match quic.iter_mut().find(|(port, _)| *port == from.port()) {
+                Some((_, n)) => *n += 1,
+                None => quic.push((from.port(), 1)),
+            }
+        }
         // The first request's own connection may be under way before the
         // record is in, and then it sends no QUIC.
-        let over_quic = quiet.recv(&mut [0; 2048]).is_ok();
-        if over_quic && made.len() == connections {
+        if !quic.is_empty() && made.len() == connections {
             // Not held for HTTP/3's handshake timeout.
-            assert!(sent.elapsed() < Duration::from_secs(5));
-            return made;
+            assert!(took < Duration::from_secs(5));
+            return (made, quic.into_iter().map(|(_, n)| n).collect(), took);
         }
         assert!(
             started.elapsed() < Duration::from_secs(20),

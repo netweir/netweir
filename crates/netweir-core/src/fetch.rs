@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+#[cfg(feature = "http3")]
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -387,15 +389,10 @@ async fn dispatch_again(
     loop {
         left -= 1;
         let next = (left > 0).then(|| request.try_clone()).flatten();
-        let sending = match (&again.tls, retry) {
-            (Some(tls), true) => request.tls_options(tls.clone()),
-            _ => request,
-        };
-        let sending = match &view {
-            Some(view) => sending.cookie_provider(Arc::new(view.clone())),
-            None => sending,
-        };
-        match (send_raw(sending, order.clone(), sent).await, next) {
+        match (
+            send_once(request, &order, sent, &view, again, retry).await,
+            next,
+        ) {
             (Err(e), Some(next)) if handshake_broke(&e) => {
                 request = next;
                 retry = true;
@@ -410,6 +407,26 @@ async fn dispatch_again(
 #[cfg(feature = "http3")]
 fn reached(error: &wreq::Error) -> bool {
     handshake_broke(error) || error.is_tls() || caused_by_tls(error)
+}
+
+/// One go of `request`, with IS_RETRY's TLS options if it's a `retry`.
+async fn send_once(
+    request: wreq::RequestBuilder,
+    order: &OrigHeaderMap,
+    sent: Option<&Sent>,
+    view: &Option<JarView>,
+    again: &Again,
+    retry: bool,
+) -> Result<wreq::Response, wreq::Error> {
+    let sending = match (&again.tls, retry) {
+        (Some(tls), true) => request.tls_options(tls.clone()),
+        _ => request,
+    };
+    let sending = match view {
+        Some(view) => sending.cookie_provider(Arc::new(view.clone())),
+        None => sending,
+    };
+    send_raw(sending, order.clone(), sent).await
 }
 
 /// Whether a connection broke during its TLS handshake: reset, or closed
@@ -2764,6 +2781,8 @@ impl Fetcher {
             headers: lines,
             body: h3.body,
         };
+        // Kept for Happy Eyeballs' restarts, which send it again.
+        let resend = (!self.again.records).then(|| request.clone());
         let answer = tokio::time::timeout_at(
             deadline,
             routes.send(&route, &host, request, deadline, h3.idempotent),
@@ -2865,6 +2884,7 @@ impl Fetcher {
                         .and_then(|r| preconnect(&r, *require)),
                     false => preconnect(r, *require),
                 });
+                let mut restart = None;
                 let won = loop {
                     let Some(connecting) = backup.as_mut() else {
                         break pending.up().await;
@@ -2903,15 +2923,15 @@ impl Fetcher {
                                 // With Happy Eyeballs the backup's failure is the
                                 // request's: made again on its route if it was
                                 // reset or closed, else the end.
-                                // shortcut: Firefox runs QUIC again before each of
-                                // those connections; netweir goes straight to TCP.
                                 if !self.again.records {
                                     if !handshake_broke(&e) {
+                                        // The attempt is over, QUIC with it
+                                        // (Firefox 161.0 sent nothing more).
+                                        routes.abandon(&route, &host);
                                         return Err(e.into());
                                     }
-                                    let left = self.again.attempts.saturating_sub(1);
-                                    return dispatch_again(tcp, order, sent, view, &self.again, true, left)
-                                        .await;
+                                    restart = Some(tcp);
+                                    break false;
                                 }
                                 let after = from.after(from.attempts + 2);
                                 let going = Going {
@@ -2957,12 +2977,29 @@ impl Fetcher {
                 if won && let (Some(sent), Some(lines)) = (sent, recorded) {
                     *sent.lock().unwrap_or_else(|e| e.into_inner()) = lines;
                 }
-                h3_answer(
-                    routes.send_pending(&route, &host, pending, deadline, h3.idempotent),
-                    deadline,
-                    &uri,
-                )
-                .await
+                if let (Some(tcp), Some(request)) = (restart, resend) {
+                    drop((backup, pending));
+                    let restarted = self.restarts(
+                        &routes,
+                        &route,
+                        &host,
+                        request,
+                        (deadline, &uri, h3.idempotent),
+                        tcp,
+                        (order.clone(), sent, view.clone()),
+                    );
+                    match restarted.await {
+                        ControlFlow::Break(done) => return done,
+                        ControlFlow::Continue(answer) => answer,
+                    }
+                } else {
+                    h3_answer(
+                        routes.send_pending(&route, &host, pending, deadline, h3.idempotent),
+                        deadline,
+                        &uri,
+                    )
+                    .await
+                }
             }
             crate::h3::Answer::Response(answer) => Ok(answer),
             crate::h3::Answer::Tcp => Err(None),
@@ -3027,6 +3064,84 @@ impl Fetcher {
             view.set_cookies(&mut answer.headers().get_all(SET_COOKIE).iter(), &uri);
         }
         Ok(crate::h3::decompressed(answer, accept_encoding).await)
+    }
+
+    /// What Firefox does under Happy Eyeballs once a reset failed the TCP
+    /// connection a request raced against a QUIC one still being made:
+    /// the transaction restarts with IS_RETRY (nsHttpTransaction::Restart)
+    /// and makes an attempt of its own, which gives the last one up without
+    /// a word to the server (HappyEyeballsConnectionAttempt::Abandon) and
+    /// races QUIC on a new connection against TCP, made once the
+    /// connection attempt delay is up
+    /// (network.http.happy_eyeballs_connection_attempt_delay, 50 ms, as the
+    /// record's fast fallback). Each reset does it again, up to the
+    /// connections Firefox makes for a request (recorded from Firefox
+    /// 161.0: ten QUIC first flights, each with a TCP connection 50 ms
+    /// after it). Break is the request's end over TCP; Continue, its
+    /// answer over HTTP/3.
+    #[cfg(feature = "http3")]
+    #[allow(clippy::too_many_arguments, reason = "send_h3's own, handed on")]
+    async fn restarts(
+        &self,
+        routes: &Arc<crate::h3::Routes>,
+        route: &crate::h3::Route,
+        host: &str,
+        request: crate::h3::Request,
+        (deadline, uri, idempotent): (tokio::time::Instant, &Uri, bool),
+        mut tcp: wreq::RequestBuilder,
+        (order, sent, view): (OrigHeaderMap, Option<&Sent>, Option<JarView>),
+    ) -> ControlFlow<
+        Result<wreq::Response, FetchError>,
+        Result<http::Response<crate::h3::Body>, Option<FetchError>>,
+    > {
+        // The connection the backup was reset beside was the first.
+        let mut left = self.again.attempts.saturating_sub(1);
+        loop {
+            routes.abandon(route, host);
+            let sending = routes.send(route, host, request.clone(), deadline, idempotent);
+            let mut pending = match tokio::time::timeout_at(deadline, sending).await {
+                Ok(Ok(crate::h3::Answer::Race(pending))) => pending,
+                Ok(Ok(crate::h3::Answer::Response(answer))) => {
+                    return ControlFlow::Continue(Ok(answer));
+                }
+                Ok(Ok(crate::h3::Answer::Tcp)) => {
+                    let done =
+                        dispatch_again(tcp, order, sent, view, &self.again, true, left).await;
+                    return ControlFlow::Break(done);
+                }
+                Ok(Err(e)) => return ControlFlow::Continue(Err(Some(e))),
+                Err(_) => {
+                    return ControlFlow::Continue(Err(Some(FetchError::new(
+                        FetchErrorKind::Timeout,
+                        format!("{uri}: no answer over HTTP/3 in time"),
+                    ))));
+                }
+            };
+            let next = (left > 1).then(|| tcp.try_clone()).flatten();
+            let made = tokio::select! {
+                biased;
+                made = send_once(tcp, &order, sent, &view, &self.again, true) => Some(made),
+                true = pending.up() => None,
+            };
+            match (made, next) {
+                (None, _) => {
+                    let sending = routes.send_pending(route, host, pending, deadline, idempotent);
+                    return ControlFlow::Continue(h3_answer(sending, deadline, uri).await);
+                }
+                (Some(Err(e)), Some(next)) if handshake_broke(&e) => {
+                    left -= 1;
+                    tcp = next;
+                }
+                (Some(done), _) => {
+                    match &done {
+                        Ok(_) => routes.tcp_answered(route, host),
+                        // The attempt is over, QUIC with it.
+                        Err(_) => routes.abandon(route, host),
+                    }
+                    return ControlFlow::Break(done.map_err(Into::into));
+                }
+            }
+        }
     }
 }
 

@@ -112,9 +112,8 @@ loop driving neqo, which is Netweir's and not Firefox's socket thread.
   and race TCP on the backup timer, as Firefox did before it. Only what
   the race does to a resumed connection's first request is followed (see
   0-RTT below), and what it does to a failed connection from an HTTPS
-  record (see HTTPS records above), except that Firefox tries QUIC again
-  before each connection it makes again. A server that rejects ECH, and
-  `h2` alternatives, weren't recorded with it.
+  record (see HTTPS records above). A server that rejects ECH, and `h2`
+  alternatives, weren't recorded with it.
 
 - Images. Firefox gives an image Priority `u=4, i` or `u=5, i` depending on
   the page's layout; the profile sends `u=4, i`, as Firefox did over TCP.
@@ -275,9 +274,15 @@ default preferences; Chrome's rules are
   or closed, where it went, as without records (`IS_RETRY`, up to 10
   connections, the ECH kept). For a record with ECH and the origin's
   port it made one connection after an alert, ten after a reset; for a
-  fast fallback, one after an alert. After a reset each connection
-  again comes 50 ms after QUIC, which Firefox tries again first; Netweir
-  goes straight to TCP for those. A server that rejects ECH and sends
+  fast fallback, one after an alert. A reset restarts the transaction,
+  which makes an attempt of its own (`nsHttpTransaction::Restart`): the
+  last one's QUIC connection is dropped without a word to the server
+  (`HappyEyeballsConnectionAttempt::Abandon`), a new one sends its first
+  flight, and TCP follows once
+  `network.http.happy_eyeballs_connection_attempt_delay` (50 ms) is up.
+  Firefox 161.0 made ten such pairs for a fast fallback whose TCP was
+  reset each time, and nothing more on any of the ten QUIC connections,
+  nor on the one an alert ended. A server that rejects ECH and sends
   configurations to retry with, and `h2` alternatives, weren't recorded
   with Happy Eyeballs, and go as without it. An
   http URL isn't upgraded to https from a record. Firefox's

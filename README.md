@@ -484,7 +484,8 @@ with Firefox 161's settings, and a test holds the QUIC Initial, the
 ClientHello inside it and the HTTP/3 settings to a recording of the real
 browser. A site's ECH key is used the way Firefox uses it, retries and
 all, and a handshake that fails behind an HTTPS record is made again only
-if it was reset or closed, as Happy Eyeballs has it. A connection that resumes in 0-RTT sends the request it was made for
+if it was reset or closed, with QUIC tried again first, as Happy Eyeballs
+has it. A connection that resumes in 0-RTT sends the request it was made for
 once its handshake is done, as Firefox 160 and 161 do since Mozilla's
 `happy-eyeballs-release-rollout` turned Happy Eyeballs on for release
 Firefox (from 28 September 2026). What isn't Firefox's is in
