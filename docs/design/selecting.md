@@ -31,7 +31,8 @@ pages pay for it.
 
 ### Nothing is freed until the document is
 
-The tree is netweir-html's: every node in one arena, linked by index.
+The tree is Parsec's (`parsec-web-core`, which Netweir names
+`netweir-html`): every node in one arena, linked by index.
 Removing a node unlinks it and nothing more. It stays in the arena,
 still complete, until the document is dropped. That one rule makes
 handles safe: the id of a removed node, or of anything inside it, names
@@ -44,7 +45,7 @@ when it grows. The parser's strings never move once the parse is done:
 text that needed no change is a slice of the document's copy of its
 source, and the rest is in a buffer that only the parse writes. A string
 an edit adds gets an allocation of its own, which never moves either
-(netweir-html's `push_stable`; a test holds pointers across 10,000 edits
+(Parsec's `push_stable`; a test there holds pointers across 10,000 edits
 and fails if one does). So an `&'a str` borrowed before an edit still
 reads what it read, even though the node and attribute vectors may have
 grown and moved.
@@ -171,7 +172,7 @@ instead of following a null pointer.
 - The tree is Rust now. The unsafe code left is the document handing its
   tree to readers and edits through an `UnsafeCell` (the lock above
   decides who), and the parser borrowing the document's own source while
-  it fills the document (netweir-html's `source`).
+  it fills the document (Parsec's `source`).
 - A fuzz target, `edit`, applies any sequence of edits to a page and
   checks after each that the index agrees with a walk of the tree and that
   every node ever seen still reads: 129,000 runs under AddressSanitizer

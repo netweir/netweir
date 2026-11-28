@@ -560,9 +560,13 @@ still a page; check `page.status`.
 
 ## Why it's fast
 
-Netweir parses with [Parsec](https://github.com/parsec-html/parsec), an
-HTML parser written in Rust from the HTML Standard by the same author. It
-passes the html5lib tokenizer tests and the web-platform-tests
+Netweir is built on [Parsec](https://github.com/parsec-html/parsec), the
+parsing engine I write alongside it. The HTML parser and XPath are
+Parsec's `parsec-web-core` and `parsec-xpath`, taken from crates.io like
+any other dependency, so a parser fix lands in Parsec first and reaches
+Netweir with the next Parsec release. (That's on `main`; the next Netweir
+release is the first to ship on them.) The parser is written in Rust from
+the HTML Standard, and it passes the html5lib tokenizer tests and the web-platform-tests
 tree-construction tests that don't need JavaScript, and on 50 real pages it
 builds the same trees as lexbor, the C parser selectolax uses, about twice
 as fast. Then the whole query runs in Rust too, and Python gets a finished
@@ -634,7 +638,7 @@ the best possible text from a newspaper, test both on your own pages.
 
 All of that is one clean page at a time. A crawl doesn't come back like
 that, so `bench/boss.py` throws the batch I'd least like to get at every
-parser at once: the final boss from Netweir's parser,
+parser at once: the final boss from
 [Parsec](https://github.com/parsec-html/parsec), 1,000 pages built from a
 seed and the same bytes on every run. 900 are scraps of broken markup a
 few hundred bytes long: misnested tags, NUL bytes, `&amp` with no
@@ -725,7 +729,9 @@ and no tree that differed, except two pages with `<?php` and `<?start`
 in them: the web-platform-tests tree tests now read those as processing
 instructions, and html5ever 0.40 still reads them as comments. CI runs a different 300 of the URLs every
 Monday; the list is in `bench/realworld/urls.txt`, and the pages are never
-committed.
+committed. Since the parser is Parsec's, this run is Parsec's
+test on the real web too, the third of the layers on its
+[Testing](https://github.com/parsec-html/parsec/wiki/Testing) page.
 
 Parsing is one part of a crawl. `bench/crawl.py` times the whole thing: one
 local server plays 100 sites of 100 pages, each answer 50 ms late, and every
