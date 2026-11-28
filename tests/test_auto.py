@@ -512,3 +512,14 @@ def test_records_are_the_rows_that_repeat():
 
 def test_a_page_with_nothing_repeated_has_no_records():
     assert netweir.parse("<article><p>One.</p><p>Two.</p><p>Three.</p></article>").records() is None
+
+
+def test_product_from_next_app_router_flight():
+    # Next.js App Router streams the page's props in `self.__next_f`
+    # pushes; the product is read from them, its related products aren't.
+    item = page(fixture("product-next-app"), "https://woodco.example/products/oak-standing-desk")
+    item = item.extract(netweir.auto.Product)
+    assert item["name"] == "Oak standing desk"
+    assert item["price"] == "649.00"
+    assert item["currency"] == "GBP"
+    assert item["metadata"]["sources"]["name"] == "js:__next_f:3.children.children[0].product.name"

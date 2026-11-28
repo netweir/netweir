@@ -6,7 +6,8 @@ netweir is licensed under the GNU Affero General Public License, version 3
 AGPL-licensed code.
 
 netweir's HTML parser and XPath are Parsec's parsec-web-core and
-parsec-xpath crates (https://github.com/parsec-html/parsec), Copyright 2026
+parsec-xpath crates, and it reads the state in pages' scripts with
+Parsec's parsec-js (https://github.com/parsec-html/parsec), Copyright 2026
 James Conway, licensed under the Apache License, Version 2.0
 (https://www.apache.org/licenses/LICENSE-2.0).
 

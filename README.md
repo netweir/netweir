@@ -107,7 +107,8 @@ Working today:
   a business's page, a property, a social post or a search engine's
   results from the
   structured data the page carries (JSON-LD, microdata, Open Graph), the
-  state apps keep in their scripts (Next.js, Nuxt, Apollo), and its
+  state apps keep in their scripts (Next.js, App Router included, Nuxt,
+  Apollo), and its
   layout where those run out, in the common item schema
   Zyte's API uses, with where each field came from. When one field is
   wrong for a site, pin it with a selector and the rest stay automatic;

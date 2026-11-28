@@ -408,8 +408,16 @@ Shops built with Next.js, Nuxt or Apollo often send a page whose HTML is
 an empty `<div>`, with the product sitting in a script for the browser
 to draw. Netweir reads that state without running anything:
 `__NEXT_DATA__`, Nuxt's `__NUXT__` and `__NUXT_DATA__`, Apollo's cache
-(references followed), and the `__INITIAL_STATE__`-style objects
-Redux apps assign. It looks for objects shaped like a product (a name
+(references followed), the `__INITIAL_STATE__`-style objects Redux
+apps assign, and the payload Next.js's App Router streams in
+`self.__next_f` pushes. Scripts are parsed with
+[parsec-js](https://github.com/parsec-html/parsec), so a brace inside a
+string or a comment doesn't throw the reading off; what counts is a
+literal assigned at the top level to a name that starts with `__`
+(`window.__SHOP__ = {…}`, `var __DATA__ = …`), including
+`JSON.parse("…")` of a string and Nuxt 2's function called with its
+values. Nothing is evaluated, and a script over 8 MB isn't parsed. It
+looks for objects shaped like a product (a name
 and a price, plus codes, images, a brand) or a job (a title plus a
 salary or job type, and more besides), whatever key the framework
 filed them under. A product that stands alone beats one in a list, and
@@ -420,6 +428,9 @@ own page, where such lists are its variants and related products.
 
 These fields say `js:` and the path to the value, such as
 `js:__NEXT_DATA__.props.pageProps.product.price`, so you can find the
-value in `page.js_data("__NEXT_DATA__")` yourself. They come after
+value in `page.js_data("__NEXT_DATA__")` yourself. Rows of the App
+Router payload are named by their row id, `js:__next_f:3.children…`,
+with each React element read as its props; `js_data` doesn't read
+those. They come after
 JSON-LD and microdata but before meta tags and the layout, and an item
 read from state carries a probability of 0.7 to 0.85.

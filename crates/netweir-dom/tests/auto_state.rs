@@ -373,3 +373,67 @@ fn shared_references_are_bounded() {
         flat.join(",")
     ));
 }
+
+fn source<'e>(item: &'e Extracted, field: &str) -> &'e str {
+    &item.sources.iter().find(|(f, _)| *f == field).unwrap().1
+}
+
+#[test]
+fn state_written_as_json_parse_of_a_string_is_read() {
+    let item = read(
+        Schema::Product,
+        r#"<script>window.__INITIAL_STATE__ = JSON.parse("{\"product\":{\"name\":\"Kettle\",\"price\":30,\"sku\":\"K7\"}}");</script>"#,
+    );
+    assert_eq!(get(&item, "name"), "Kettle");
+    assert_eq!(source(&item, "name"), "js:__INITIAL_STATE__.product.name");
+}
+
+#[test]
+fn state_under_a_name_of_its_own_is_read() {
+    // Not one of the names apps usually pick, but `__` like them.
+    let item = read(
+        Schema::Product,
+        r#"<script>window.__SHOP_STATE__ = {page: {item: {name: "Desk lamp", price: 42, sku: "DL1"}}};
+        var config = {item: {name: "Not this", price: 1, sku: "N"}};</script>"#,
+    );
+    assert_eq!(get(&item, "name"), "Desk lamp");
+    assert_eq!(source(&item, "name"), "js:__SHOP_STATE__.page.item.name");
+}
+
+#[test]
+fn next_app_router_flight_rows_are_read() {
+    // Next.js App Router hands its payload over a chunk at a time, and a
+    // row can start in one push and end in the next.
+    let item = read(
+        Schema::Product,
+        r#"<script>(self.__next_f=self.__next_f||[]).push([0])</script>
+        <script>self.__next_f.push([1,"1:I[\"app/page\",[],\"\"]\n5:[\"$\",\"main\",null,{\"product\":{\"name\":\"Oak desk\","])</script>
+        <script>self.__next_f.push([1,"\"price\":120,\"sku\":\"OD1\",\"brand\":\"Woodco\"}}]\n"])</script>"#,
+    );
+    assert_eq!(get(&item, "name"), "Oak desk");
+    assert!(
+        source(&item, "name").starts_with("js:__next_f"),
+        "{}",
+        source(&item, "name")
+    );
+}
+
+#[test]
+fn deep_or_huge_state_costs_little() {
+    // Nested past parsec-js's depth limit, and a long run of literals: the
+    // parse refuses the first, and both come back fast with no item.
+    let deep = format!(
+        "<script>window.__STATE__ = {};</script>",
+        "[".repeat(200_000)
+    );
+    let wide = format!(
+        "<script>window.__STATE__ = [{}];</script>",
+        "{a:[1,2,3]},".repeat(200_000)
+    );
+    for html in [deep, wide] {
+        let started = std::time::Instant::now();
+        let item = read(Schema::Product, &html);
+        assert_eq!(get(&item, "name"), &Value::Null);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}

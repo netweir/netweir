@@ -67,13 +67,18 @@ pub(crate) fn roots(root: Node<'_>) -> Vec<(String, Value)> {
             }
         }
     }
+    let mut flight = Vec::new();
     for s in &scripts {
         let kind = s.attr("type").unwrap_or_default().to_ascii_lowercase();
         if kind.contains("json") {
             continue;
         }
         let text = s.text();
+        parsed(s, &text, &mut out, &mut flight);
+        // What the parse didn't find, from a script it couldn't read or
+        // state assigned below the top level, the older reader looks for.
         if text.contains("__NUXT__")
+            && !out.iter().any(|(n, _)| n == "__NUXT__")
             && let Some(v) = js::nuxt(&text)
         {
             out.push(("__NUXT__".into(), to_json(v)));
@@ -93,10 +98,145 @@ pub(crate) fn roots(root: Node<'_>) -> Vec<(String, Value)> {
             }
         }
     }
+    out.extend(flight_rows(&flight));
     let mut budget = BUDGET;
     out.into_iter()
         .map(|(name, v)| (name, apollo_within(v, 0, &mut budget)))
         .collect()
+}
+
+/// Scripts longer than this are left to the older reader: no page puts
+/// its state in a script this size, and a parse costs time in step.
+const MAX_SCRIPT: usize = 8 << 20;
+
+/// The state in `script` as parsec-js reads it, parsing the script and
+/// taking only literals: `window.__X__ = …`, `self.__X__ = …` and
+/// `var __X__ = …` at the top level, `JSON.parse("…")` of a literal,
+/// Nuxt 2's function called with its values, and Next.js App Router's
+/// `self.__next_f` pushes, kept in `flight` to be put back together
+/// across scripts by [`flight_rows`]. Nothing runs.
+/// Names are kept only when they start with `__`, the habit frameworks
+/// share, so a page's own `var config = {…}` doesn't count as its state.
+fn parsed(
+    script: &Node<'_>,
+    text: &str,
+    out: &mut Vec<(String, Value)>,
+    flight: &mut Vec<parsec_js::data::Found>,
+) {
+    use parsec_js::data::{page_state_in, script_type};
+    // Only a script that names something `__…` can hold state this reads;
+    // the rest (analytics, ads, inline bundles) aren't worth a parse.
+    if !(text.contains(".__")
+        || text.contains("var __")
+        || text.contains("let __")
+        || text.contains("const __"))
+    {
+        return;
+    }
+    let Some(source_type) = script_type(script.attr("type"), script.attr("language")) else {
+        return;
+    };
+    let options = parsec_js::Options {
+        source_type,
+        limits: parsec_js::Limits {
+            max_input: Some(MAX_SCRIPT),
+            ..Default::default()
+        },
+    };
+    let Ok(ast) = parsec_js::parse(text, &options) else {
+        return;
+    };
+    for piece in page_state_in(&ast, text) {
+        let name = piece
+            .name
+            .strip_prefix("window.")
+            .or_else(|| piece.name.strip_prefix("self."))
+            .or_else(|| piece.name.strip_prefix("globalThis."))
+            .unwrap_or(&piece.name);
+        if piece.name == "self.__next_f" {
+            flight.push(piece);
+            continue;
+        }
+        if !name.starts_with("__") || name.contains(['.', '[']) {
+            continue;
+        }
+        let Ok(value) = piece.value else { continue };
+        let value = from_parsec(value);
+        if (value.is_object() || value.is_array()) && !out.iter().any(|(n, _)| n == name) {
+            let value = if name == "__APOLLO_STATE__" {
+                apollo(value)
+            } else {
+                value
+            };
+            out.push((name.to_string(), value));
+        }
+    }
+}
+
+/// The JSON rows of the payload Next.js App Router streamed into the
+/// page's scripts as `id:value` lines, each named `__next_f:id`; they hold
+/// the props the page was drawn with.
+fn flight_rows(flight: &[parsec_js::data::Found]) -> Vec<(String, Value)> {
+    let text = parsec_js::data::next_flight(flight);
+    let mut budget = BUDGET;
+    text.lines()
+        .filter_map(|row| row.split_once(':'))
+        .filter(|(_, v)| v.starts_with(['[', '{']))
+        .filter_map(|(id, v)| Some((id, parsec_js::data::json(v).ok()?)))
+        .map(|(id, v)| {
+            let v = unwrap_elements(from_parsec(v), 0, &mut budget);
+            (format!("__next_f:{id}"), v)
+        })
+        .filter(|(_, v)| v.is_object() || v.is_array())
+        .collect()
+}
+
+/// `v` with each React element, `["$", type, key, props]`, replaced by its
+/// props, so a product in them isn't taken for one entry of a list.
+fn unwrap_elements(v: Value, depth: usize, budget: &mut usize) -> Value {
+    if depth > MAX_DEPTH || *budget == 0 {
+        return v;
+    }
+    *budget -= 1;
+    match v {
+        Value::Array(mut items) if items.len() == 4 && items[0] == "$" && items[3].is_object() => {
+            unwrap_elements(items.swap_remove(3), depth + 1, budget)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|x| unwrap_elements(x, depth + 1, budget))
+                .collect(),
+        ),
+        Value::Object(o) => Value::Object(
+            o.into_iter()
+                .map(|(k, x)| (k, unwrap_elements(x, depth + 1, budget)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// parsec-js's JSON as serde's, a whole number staying an integer as the
+/// older reader keeps it, so `49` doesn't turn into `49.0`.
+fn from_parsec(v: parsec_js::data::Json) -> Value {
+    use parsec_js::data::Json;
+    match v {
+        Json::Null => Value::Null,
+        Json::Bool(b) => Value::Bool(b),
+        Json::Number(x) if x.fract() == 0.0 && x.abs() < 9_007_199_254_740_992.0 => {
+            Value::from(x as i64)
+        }
+        Json::Number(x) => serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number),
+        Json::String(s) => Value::String(s),
+        Json::Array(items) => Value::Array(items.into_iter().map(from_parsec).collect()),
+        Json::Object(members) => Value::Object(
+            members
+                .into_iter()
+                .map(|(k, v)| (k, from_parsec(v)))
+                .collect(),
+        ),
+    }
 }
 
 /// `v` with any Apollo cache inside it (an object with a `ROOT_QUERY`, as

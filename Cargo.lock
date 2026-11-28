@@ -1563,6 +1563,7 @@ name = "netweir-dom"
 version = "0.11.0"
 dependencies = [
  "memchr",
+ "parsec-js",
  "parsec-web-core",
  "parsec-xpath",
  "quick-xml",
@@ -1756,6 +1757,21 @@ dependencies = [
  "seq-macro",
  "snap",
  "twox-hash",
+]
+
+[[package]]
+name = "parsec-base"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac632a7958df529d50e7b36a6b880bd8d0e275f02a305c80c3a804f58b1e6d18"
+
+[[package]]
+name = "parsec-js"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c3862dc4c6862274f28f04224806dcbca5a1dfb3c4dd2ef4bd9f08470aa98ba"
+dependencies = [
+ "parsec-base",
 ]
 
 [[package]]

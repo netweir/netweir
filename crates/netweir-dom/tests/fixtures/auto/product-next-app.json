@@ -1,0 +1,8 @@
+{"type": "product", "url": "https://woodco.example/products/oak-standing-desk",
+ "item": {"url": "https://woodco.example/products/oak-standing-desk",
+  "name": "Oak standing desk", "price": "649.00", "currency": "GBP", "currency_raw": "GBP",
+  "availability": "InStock", "sku": "OD-120", "product_id": "od-120",
+  "brand": {"name": "Woodco"},
+  "main_image": {"url": "https://woodco.example/i/od-120.jpg"}, "images": [{"url": "https://woodco.example/i/od-120.jpg"}]},
+ "sources": {"name": "js:__next_f:3.children.children[0].product.name"},
+ "probability": [0.8, 0.9], "validation": [], "page_type": "product"}
